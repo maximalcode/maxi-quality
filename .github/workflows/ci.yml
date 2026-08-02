@@ -34,8 +34,12 @@
 name: ci
 
 on:
+  # Both long-lived branches, so the MERGE COMMIT is tested and not only the
+  # branch that produced it — a PR is green against a base that may have moved.
+  # Only `main` wakes release-tag.yml (it filters on the triggering run's head
+  # branch), so a push to develop runs the suite and moves no tag.
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
 
 concurrency:

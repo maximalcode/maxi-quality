@@ -6,6 +6,12 @@
 # adopt `@v1`. A stale moving tag is worse than no moving tag, because everyone
 # assumes it moved.
 #
+# WHICH BRANCH: `main` only, and that is the whole point of the two-branch flow.
+# Contributions land on `develop`, which runs the same suite and releases
+# nothing. Promoting develop to main IS the release decision, and this workflow
+# is what makes it take effect — so a merge to main is never a checkpoint.
+# The immutable `v1.0.x` tags stay manual (see the bottom of this comment).
+#
 # WHY IT IS SAFE TO AUTOMATE: it triggers on `workflow_run` from `ci`, and only
 # when that run CONCLUDED SUCCESSFULLY on main. ci asserts exact sample counts
 # (8 TS / 13 C# / 3 tests / 0+0 on both clean fixtures / 60 findings across 19
@@ -97,6 +103,23 @@ jobs:
           # Identity rail (CLAUDE.md §1) — repo-local, never global.
           git config user.name maximalcode
           git config user.email 213183497+maximalcode@users.noreply.github.com
+
+          # THE COMMIT MUST BE ON main. The workflow_run path is filtered to it
+          # already; this is for the manual one, which got sharper the day
+          # `develop` became the default branch: workflow_dispatch resolves
+          # github.sha from the ref it was dispatched on, so a bare
+          # `gh workflow run release-tag.yml` now means DEVELOP — and would move
+          # the tag every consumer pins to an unreleased commit.
+          #
+          # Asserting the SHA rather than the trigger keeps this true if either
+          # filter is ever loosened, which is the failure mode that matters:
+          # both guards above are about who woke the workflow, and neither is
+          # about what it is being pointed at.
+          git fetch --no-tags --quiet origin main
+          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "::error::${SHA} is not on main — refusing to move v1. Promote develop to main first, or dispatch this workflow with --ref main."
+            exit 1
+          fi
 
           CURRENT="$(git rev-parse -q --verify 'refs/tags/v1^{commit}' 2>/dev/null || echo none)"
           if [[ "$CURRENT" == "$SHA" ]]; then
