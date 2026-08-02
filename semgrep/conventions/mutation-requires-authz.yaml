@@ -46,9 +46,20 @@ rules:
       - metavariable-regex:
           metavariable: $METHOD
           regex: '^(create|update|delete|remove|set|assign|revoke|grant)\w*'
+      # TWO exemptions, not three, and neither mentions `await`.
+      #
+      # `await $AUTHZ.require(...)` used to be listed separately and was dead:
+      # semgrep matches the inner call inside the await expression, so the plain
+      # form already covered both spellings. Proved by deleting it — nothing
+      # changed — and that is the problem with a branch no fixture can single
+      # out. It cannot be shown to work, and it cannot be shown to have stopped.
+      #
+      # Dropping it took `authorize` with it, which was listed ONLY in its
+      # awaited form: an un-awaited `authorize` was a finding while an
+      # un-awaited `require` was not, for no reason anyone chose. Forgetting to
+      # await a gate is its own bug and a real one; it is not this rule's, and
+      # the rule now says the same thing about both spellings of both names.
       - pattern-not: |
           async $METHOD(...) { ... $AUTHZ.require(...); ... }
       - pattern-not: |
-          async $METHOD(...) { ... await $AUTHZ.require(...); ... }
-      - pattern-not: |
-          async $METHOD(...) { ... await $AUTHZ.authorize(...); ... }
+          async $METHOD(...) { ... $AUTHZ.authorize(...); ... }

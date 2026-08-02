@@ -42,3 +42,20 @@ The exemptions are themselves gated: a `connectionString` holding real-looking
 credentials **must** fire in both languages, which proves the URL exemption is
 credential-aware rather than a blanket hole. One exemption plus one must-fire
 counterexample is what makes a guard safe to have.
+
+## One fixture per rule branch
+
+A rule branch with no bait is untested by definition, and it fails silently: it
+can stop matching without any count moving, because nothing ever made it match.
+That is not hypothetical — `sql-string-concat-ts` shipped with only its
+double-quoted branch and the suite was green over the gap for months, and
+`command-injection-ts` carried the same hole for as long again.
+
+So every branch of every rule has a fixture here, and every branch of every
+`pattern-not` exemption has a counterexample. `samples/expected/semgrep.json`
+records each one by rule id, file and line, which is what makes a branch going
+quiet show up as a **named missing finding** instead of as a total that still
+looks about right.
+
+Adding a branch means adding bait for it in the same change. Do not add one
+without.

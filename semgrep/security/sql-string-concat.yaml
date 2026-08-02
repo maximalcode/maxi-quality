@@ -33,11 +33,24 @@ rules:
     severity: ERROR
     languages: [typescript]
     patterns:
+      # The entry point is a BOUND NAME plus a regex, not a fixed list of
+      # patterns. The fixed list was `.query` / `.execute` / `.raw`, which meant
+      # Prisma's `$queryRawUnsafe` and `$executeRawUnsafe` — the two methods
+      # whose names say outright that they do not parameterise — matched nothing
+      # whatsoever, while the README showed this rule as covering TypeScript.
+      #
+      # The list stays short on purpose. A rule that flags every method call
+      # taking a string gets switched off, and a switched-off rule finds less
+      # than a narrow one. Prisma's `$queryRaw` / `$executeRaw` are deliberately
+      # NOT here: they are tagged templates and Prisma parameterises their
+      # interpolations, so flagging them would be a false positive on the SAFE
+      # form of the same API.
       - pattern-either:
-          - pattern: $DB.query($SQL, ...)
-          - pattern: $DB.query($SQL)
-          - pattern: $DB.execute($SQL, ...)
-          - pattern: $DB.raw($SQL)
+          - pattern: $DB.$METHOD($SQL, ...)
+          - pattern: $DB.$METHOD($SQL)
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: '^(query|execute|raw|\$queryRawUnsafe|\$executeRawUnsafe)$'
       - metavariable-pattern:
           metavariable: $SQL
           patterns:
@@ -53,6 +66,11 @@ rules:
             # commonest SQL-injection shape in JavaScript. Found in security
             # review pass 3; the root cause is that no fixture ever covered the
             # concatenation branch, so CI was green over the gap.
+            #
+            # command-injection-ts carried the IDENTICAL defect and was not
+            # looked at when this one was fixed, so it kept it for as long
+            # again. A defect found by measurement is a class, not an instance —
+            # check the sibling rule first. Every branch of both is baited now.
             - pattern-either:
                 - pattern-regex: |-
                     `[^`]*\b(SELECT|INSERT|UPDATE|DELETE|WHERE|FROM)\b[^`]*\$\{
