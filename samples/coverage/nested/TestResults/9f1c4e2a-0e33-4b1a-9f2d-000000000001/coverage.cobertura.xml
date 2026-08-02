@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  20 lines valid, 11 covered = 55.00%.
+
+  The POINT of this fixture is where it lives, not what it contains. Running
+  dotnet test with the XPlat Code Coverage collector writes
+  TestResults/[guid]/coverage.cobertura.xml, which is why every doc for this
+  action shows the `**/coverage.cobertura.xml` pattern. That pattern matching
+  only one directory level meant the documented configuration could never find
+  a coverlet report at all: the action's glob loop had no `shopt -s globstar`,
+  so `**` behaved as `*`, and nothing ever ran the pattern to notice.
+
+  Keep the directory depth. Flattening it makes the ci.yml coverage-action job
+  pass with or without globstar, which is the same as deleting the test.
+-->
+<coverage line-rate="0.55" branch-rate="0.5" version="1.9" timestamp="0"
+          lines-covered="11" lines-valid="20" branches-covered="1" branches-valid="2">
+  <sources>
+    <source>/src</source>
+  </sources>
+  <packages>
+    <package name="Demo.Nested" line-rate="0.55" branch-rate="0.5" complexity="1">
+      <classes>
+        <class name="Demo.Nested.Gadget" filename="Gadget.cs" line-rate="0.55" branch-rate="0.5" complexity="1">
+          <lines>
+            <line number="1" hits="3" branch="false" />
+            <line number="2" hits="0" branch="false" />
+          </lines>
+        </class>
+      </classes>
+    </package>
+  </packages>
+</coverage>

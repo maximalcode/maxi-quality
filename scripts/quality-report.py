@@ -18,8 +18,23 @@ the trend lives where the work already is.
 ONE issue, updated forever — never a new issue per run. A weekly bot that opens
 issues is noise, and noise gets muted, and a muted report is worse than none.
 
+A SCAN THAT BROKE IS NOT A SCAN THAT FOUND NOTHING
+
+Semgrep reports a run that failed to load a rule, or crashed part-way, as
+`results: []` with the reason in `.errors` — so reading only `.results` rendered
+`| Semgrep | **0** findings |` and wrote a `0` into the history table, where it
+is preserved forever. The reassuring answer was the wrong one, and the table
+that exists to show a trend recorded an outage as an achievement. So `.errors`
+and `.paths.scanned` are read too, an errored run renders as ERRORED, and the
+script exits 2 — after printing the body, so the issue still shows what happened
+rather than the workflow dying with the news.
+
 Reads Semgrep JSON, emits Markdown. Deliberately does no network I/O — the
 workflow does the GitHub side, so this stays unit-testable with a fixture.
+
+Exit codes: 0 rendered · 2 rendered, but the scan had ERRORED · 3 the results
+file could not be read at all (nothing is printed, so nothing overwrites the
+standing issue)
 """
 
 from __future__ import annotations
@@ -75,12 +90,51 @@ def load_sbom(path: str | None) -> tuple[int, collections.Counter[str]] | None:
     return len(components), counts
 
 
-def load_findings(path: str) -> collections.Counter[str]:
+def _first_error(errors: list) -> str:
+    """Semgrep's `.errors` entries are objects, but not reliably so across
+    versions — and a report that crashes while explaining a crash is useless.
+
+    The result lands inside a Markdown table cell, so a newline or a bare pipe
+    from a tool's error text would break the table it is being reported in.
+    """
+    first = errors[0]
+    if isinstance(first, dict):
+        text = str(first.get("long_msg") or first.get("message") or first.get("type") or first)
+    else:
+        text = str(first)
+    text = " ".join(text.split()).replace("|", "\\|")
+    return text[:197] + "..." if len(text) > 200 else text
+
+
+def load_findings(path: str) -> tuple[collections.Counter[str], str | None]:
+    """Return (counts, reason-this-is-not-a-finding-set).
+
+    The second element is what stops a broken run from rendering as a clean one.
+    Two shapes reach here as `results: []`:
+
+      - `.errors` is populated — a rule failed to parse, a target could not be
+        read, semgrep aborted. It scanned some or none of the tree and does not
+        know what it missed.
+      - `.paths.scanned` is empty — it ran to completion over nothing at all,
+        which on a full-repo report means the target was wrong, not that the
+        repo is empty. (`.paths` absent entirely is an older/leaner output and
+        is NOT treated as an error; only an explicit empty list is.)
+    """
     with open(path) as fh:
         data = json.load(fh)
-    return collections.Counter(
+
+    errors = data.get("errors") or []
+    if errors:
+        return collections.Counter(), f"semgrep reported {len(errors)} error(s): {_first_error(errors)}"
+
+    scanned = (data.get("paths") or {}).get("scanned")
+    if scanned is not None and len(scanned) == 0:
+        return collections.Counter(), "semgrep scanned 0 files"
+
+    counts = collections.Counter(
         r["check_id"].split(".")[-1] for r in data.get("results", [])
     )
+    return counts, None
 
 
 def previous_history(body: str | None) -> dict[str, str]:
@@ -107,7 +161,8 @@ def previous_history(body: str | None) -> dict[str, str]:
     return {m.group(1): m.group(0) for m in HISTORY_ROW.finditer(tail)}
 
 
-def build(counts, date, gitleaks, osv, previous, target, licenses="not run", sbom=None) -> str:
+def build(counts, date, gitleaks, osv, previous, target, licenses="not run",
+          sbom=None, scan_error=None) -> str:
     total = sum(counts.values())
     top = counts.most_common(1)[0] if counts else None
     top_txt = f"{top[0]} ({top[1]})" if top else "—"
@@ -124,18 +179,36 @@ def build(counts, date, gitleaks, osv, previous, target, licenses="not run", sbo
         "half: everything already here. A number that stops falling is the "
         "signal worth acting on.",
         "",
+    ]
+
+    if scan_error:
+        lines += [
+            f"> ⚠️ **The Semgrep scan for {date} ERRORED and produced no usable "
+            f"result: {scan_error}**",
+            ">",
+            "> Nothing was measured. This is not a clean repo — it is a repo "
+            "nobody looked at. The history table below still holds the last runs "
+            "that worked; fix the scan and re-run before reading a trend into it.",
+            "",
+        ]
+
+    semgrep_cell = f"**ERRORED** — {scan_error}" if scan_error else f"**{total}** findings"
+    lines += [
         f"## Current — {date}",
         "",
         "| Tool | Result |",
         "|---|---|",
-        f"| Semgrep | **{total}** findings |",
+        f"| Semgrep | {semgrep_cell} |",
         f"| Gitleaks | {gitleaks} |",
         f"| OSV-Scanner | {osv} |",
         f"| Licenses | {licenses} |",
         "",
     ]
 
-    if counts:
+    if scan_error:
+        # NOT "No Semgrep findings." — that sentence is the bug in prose form.
+        lines.append("No Semgrep breakdown: the scan did not complete. ")
+    elif counts:
         lines += ["### Semgrep by rule", "", "| Rule | Count |", "|---|---:|"]
         lines += [f"| `{rule}` | {n} |" for rule, n in counts.most_common()]
     else:
@@ -168,7 +241,13 @@ def build(counts, date, gitleaks, osv, previous, target, licenses="not run", sbo
     # they are read back from a newest-first table, and every ordering bug here
     # has come from assuming otherwise.
     history = dict(previous)
-    history[date] = f"| {date} | {total} | {top_txt} |"
+    # An errored run gets a row, and the row says so. Skipping it would hide the
+    # outage; writing `0` would record it as the best week the repo ever had and
+    # then preserve that forever, since this table is the only store there is.
+    history[date] = (
+        f"| {date} | ERRORED | — |" if scan_error
+        else f"| {date} | {total} | {top_txt} |"
+    )
     rows = [history[d] for d in sorted(history)][-MAX_HISTORY:]
     rows.reverse()  # newest first, which is what a reader wants on top
 
@@ -205,9 +284,18 @@ def main() -> int:
             # means there is no history yet.
             body = None
 
+    try:
+        counts, scan_error = load_findings(args.json)
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        # Nothing is printed on this path, deliberately: the caller writes
+        # stdout over the standing issue, and an empty body would erase the
+        # history this script exists to keep.
+        print(f"error: cannot read Semgrep results from {args.json}: {exc}", file=sys.stderr)
+        return 3
+
     print(
         build(
-            load_findings(args.json),
+            counts,
             args.date,
             args.gitleaks,
             args.osv,
@@ -215,8 +303,14 @@ def main() -> int:
             args.target,
             args.licenses,
             load_sbom(args.sbom),
+            scan_error,
         )
     )
+    if scan_error:
+        # Body first, THEN the failure. The issue has to show the outage; the
+        # exit code is what makes the run red so somebody looks.
+        print(f"error: {scan_error} — reported as ERRORED, not as a clean scan", file=sys.stderr)
+        return 2
     return 0
 
 

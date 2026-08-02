@@ -24,6 +24,11 @@
 # CI is a write to the consumer's default branch, and this baseline does not
 # take that permission on a consumer's behalf — see README for the six-line
 # commit-back step if you want it.
+#
+# ONE-TIME SETUP: run this action once with `raise: true` and commit the file it
+# writes. Until a floor exists the step FAILS rather than passing, because a
+# ratchet with nothing to compare against reports ok at any coverage — which is
+# what the default configuration silently did.
 
 name: 'maxi-quality coverage ratchet'
 description: >-
@@ -55,7 +60,10 @@ outputs:
     description: 'Measured line coverage, percent to 2dp.'
     value: ${{ steps.ratchet.outputs.coverage }}
   floor:
-    description: 'The floor it was compared against.'
+    description: >-
+      The floor the file holds once this run is over, or 'none' if it still
+      holds nothing. Pair it with `raised` to tell a run that moved the floor
+      from one that met it.
     value: ${{ steps.ratchet.outputs.floor }}
   raised:
     description: "'true' when the floor file was rewritten."
@@ -75,12 +83,35 @@ runs:
       run: |
         set -Eeuo pipefail
 
+        # globstar, or `**` is just `*`.
+        #
+        # Without it the documented pattern — `**/coverage.cobertura.xml`, which
+        # this action's own input description and the README both show — matched
+        # exactly one directory level and therefore could not match coverlet's
+        # real output, which lands in TestResults/[guid]/. The pattern was in the
+        # docs from the start and nothing ever ran it.
+        #
+        # bash 3.2 (macOS system bash) has no globstar at all, so this is a
+        # question and not an assumption. A runner without it must not quietly
+        # match one level less than the pattern says — see the check below.
+        GLOBSTAR=1
+        shopt -s globstar 2>/dev/null || GLOBSTAR=0
+
+        # nullglob so an unmatched pattern expands to nothing rather than to
+        # itself; the `matched` check below then reports it as the missing
+        # report it is, instead of as a path that fails to open.
+        shopt -s nullglob
+
         # Globs are expanded HERE, not by the script, so an unmatched pattern
         # is caught loudly instead of being passed through as a literal path
         # that then fails to open with a confusing message.
         ARGS=()
         while IFS= read -r pattern; do
           [[ -n "${pattern// }" ]] || continue
+          if (( ! GLOBSTAR )) && [[ "$pattern" == *'**'* ]]; then
+            echo "::error::'$pattern' uses ** but this runner's bash ($BASH_VERSION) has no globstar, so it would match a single directory level and silently miss anything deeper. Use a runner with bash 4+, or write the path out."
+            exit 1
+          fi
           matched=0
           # shellcheck disable=SC2086
           for f in $pattern; do
@@ -94,7 +125,11 @@ runs:
           fi
         done <<< "$REPORTS"
 
-        ARGS+=(--floor-file "$FLOOR_FILE" --tolerance "$TOLERANCE")
+        # --require-floor is not optional and has no input to switch it off. A
+        # consumer who has never recorded a floor has a step that cannot fail,
+        # and an opt-out would just be the old behaviour with a name. Recording
+        # one is a single run with `raise: true`.
+        ARGS+=(--floor-file "$FLOOR_FILE" --tolerance "$TOLERANCE" --require-floor)
         # An `if`, not `[[ ... ]] && ARGS+=(--write)`. Under `set -e` a false
         # `[[ ]] && cmd` does NOT abort mid-script — it bites as the LAST
         # statement of a script (the script exits 1, failing the step) or of a

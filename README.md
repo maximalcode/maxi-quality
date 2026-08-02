@@ -327,6 +327,13 @@ detected language: the TS lint (npm or corepack-pnpm — a pnpm repo must pin
 `"packageManager"` in package.json), the .NET build (the props make the build
 the analysis run), and the Layer 2 umbrella (Semgrep + Gitleaks + OSV-Scanner).
 
+**Detection fails loud rather than skipping.** A `package.json` with no
+`package-lock.json` or `pnpm-lock.yaml` at or above it stops the run, and so
+does a `.csproj` that no solution in the tree references. Both used to detect as
+"no such language here" and skip in silence, leaving a green gate over code
+nothing had opened. Pass `languages:` without the one you mean to exclude if the
+skip is deliberate.
+
 **No token, no secret, no checkout of this repo.** The Layer 2 job receives
 this repo's rules through GitHub's own action-download mechanism. Because this
 repo is public, any repo may call it — there is nothing to configure and no
@@ -477,6 +484,12 @@ genuinely shared:
             **/coverage.cobertura.xml
 ```
 
+**One-time setup: record a floor.** Run it once with `raise: 'true'` and commit
+the `.maxi-quality/coverage.json` it writes. Until that file exists the step
+**fails** — a ratchet with nothing to compare against reports ok at any coverage
+at all, and that is what the snippet above silently did before, because `raise`
+defaults to false and nothing else ever wrote the file.
+
 lcov and Cobertura are both accepted, detected **by content, not by filename** —
 `coverage.xml`, `cobertura.xml`, `lcov.info` and `coverage.info` are all in
 circulation and CI configs rename them freely. Multiple reports are summed, so a
@@ -510,10 +523,13 @@ automatic, that is six lines in your own workflow:
           git push
 ```
 
-Three failure modes are treated as errors rather than passes, because each one
+Four failure modes are treated as errors rather than passes, because each one
 turns the ratchet into a permanently green step: a report with **zero measurable
-lines** (a broken coverage run, not 100%), a **missing report file**, and an
-**unparseable floor** (never silently restarted from today's number).
+lines** (a broken coverage run, not 100%), a **missing report file**, an
+**unparseable floor** (never silently restarted from today's number), and **no
+floor at all**. The `floor` output reads `none` in that last case rather than
+echoing back the measured number, so a run that compared against nothing cannot
+be mistaken for one that met its floor exactly.
 
 ---
 
@@ -545,6 +561,16 @@ hard** — new ones get added when a real bug slips through, never speculatively
 `no-ambient-clock` and `weak-crypto` are single rule ids covering both languages
 — that is the concept §10 criterion (*the same rule fires in a TS and a C#
 sample*) and it is asserted by the samples below.
+
+**A ✅ means every shape the rule advertises, and that is now measured.** These
+rules match raw source text in places, so quote style is not interchangeable:
+`sql-string-concat-ts` and `command-injection-ts` each cover backtick,
+double-quoted and single-quoted forms, `sql-string-concat-ts` covers Prisma's
+`$queryRawUnsafe` and `$executeRawUnsafe` alongside `.query` / `.execute` /
+`.raw`, and `sql-string-concat-dotnet` covers Dapper's four entry points and
+`CommandText` as well as `new SqlCommand`. Each of those branches has its own
+fixture, so one going quiet shows up as a named missing finding rather than as a
+total that still looks about right.
 
 **Division of labour with Gitleaks:** Gitleaks catches secrets whose *shape* is a
 known token (AWS keys, GitHub PATs, JWTs). `hardcoded-secret-*` catches the
@@ -660,7 +686,7 @@ fix the config, never silence the fixture.
 ./scripts/scan.sh
 ```
 
-Expect exit `1` with **32 Semgrep findings across all 19 rule ids**, and Gitleaks
+Expect exit `1` with **59 Semgrep findings across all 19 rule ids**, and Gitleaks
 plus OSV-Scanner clean.
 
 `samples/semgrep/` sits deliberately **outside** the `samples/typescript` and
@@ -674,13 +700,23 @@ the rules are provably not just matching on names:
 | Negative control | Proves |
 |---|---|
 | `TODO(#412):` / `TODO(#918):` | `todo-without-issue` accepts a tracked TODO |
-| `createUser()` calling `authz.require(...)` | `mutation-requires-authz-*` sees the gate |
+| `Require` / `Authorize` / `RequireAsync` / `AuthorizeAsync` | all four `mutation-requires-authz-dotnet` gates are seen |
+| `require` / `authorize`, awaited or not | …and both on the TypeScript side |
 | `readUser()` | reads are not treated as mutations |
 | `decimal NetTotal` | `no-float-for-money` accepts the correct type |
 | `tokenEndpoint = 'https://…'` | `hardcoded-secret-*` exempts a bare endpoint URL |
 | `UNASSIGNED_TOKEN = 'none'` | …and exempts a short sentinel |
 | `db.query('… WHERE id = ?', [id])` | `sql-string-concat-ts` accepts a parameterised query |
+| ``prisma.$queryRaw`…` `` | …and the tagged-template form Prisma parameterises for you |
+| `conn.Query("… = @id", new { id })` | `sql-string-concat-dotnet` accepts Dapper's parameters |
+| `return NotFound()` | `no-permission-denied-*` accepts the fix its message asks for |
+| `catch { /* why */ }` | `catch-and-swallow-*` accepts a documented silence |
 | `createHash('sha256')`, `createCipheriv('aes-256-gcm', …)` | `weak-crypto` accepts modern algorithms |
+
+Every exemption above has bait behind it as well as a control. That pairing is
+the point: an exemption with no counterexample is a hole nobody can see, and an
+exemption with no *positive* fixture can stop matching without anything going
+red. Both directions are in `samples/expected/semgrep.json`, per rule and line.
 
 The secret rule's exemptions are themselves gated: `connectionString =
 'postgres://admin:…@db.internal/prod'` **must** fire in both languages, proving

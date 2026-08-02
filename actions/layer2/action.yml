@@ -83,6 +83,13 @@ inputs:
     default: '15314940c10d26af9c6649f150b8a47c1262e8fc7e17b1d1029b0e479e8ed8a0'
 
 outputs:
+  # semgrep was the one tool with no output, which is backwards: it is the tool
+  # the standing report is mostly about, and `no-fail: true` swallows its exit
+  # code by design. A caller running in report mode had no way at all to tell a
+  # clean scan from a semgrep that never ran.
+  semgrep:
+    description: 'Semgrep status line from the scan summary (clean / FINDINGS / SKIPPED).'
+    value: ${{ steps.scan.outputs.semgrep }}
   gitleaks:
     description: 'Gitleaks status line from the scan summary (clean / FINDINGS / SKIPPED).'
     value: ${{ steps.scan.outputs.gitleaks }}
@@ -191,6 +198,7 @@ runs:
           echo "${v:-not run}"
         }
         {
+          echo "semgrep=$(status semgrep)"
           echo "gitleaks=$(status gitleaks)"
           echo "osv=$(status osv)"
           echo "licenses=$(status licenses)"

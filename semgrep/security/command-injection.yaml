@@ -13,9 +13,26 @@ rules:
           - pattern: execSync($CMD, ...)
       - metavariable-pattern:
           metavariable: $CMD
+          # `pattern-regex` matches RAW SOURCE TEXT, not the parsed literal — so
+          # unlike a semgrep string pattern it does NOT treat '...' and "..." as
+          # the same thing. The single-quoted branch was missing, and single
+          # quotes are the prevailing TypeScript style, so
+          #
+          #     exec('ls -la ' + dir)
+          #
+          # matched nothing at all, while the identical shape in
+          # sql-string-concat-ts matched every quote style. Same defect, found
+          # and fixed once in the sibling rule and left standing here.
+          #
+          # The root cause both times: NEITHER concatenation branch had a
+          # fixture, so the gap could not show up as a lost finding. Both do now.
           pattern-either:
-            - pattern-regex: '`[^`]*\$\{'
-            - pattern-regex: '"[^"]*"\s*\+'
+            - pattern-regex: |-
+                `[^`]*\$\{
+            - pattern-regex: |-
+                "[^"]*"\s*\+
+            - pattern-regex: |-
+                '[^']*'\s*\+
 
   - id: command-injection-dotnet
     message: >-

@@ -26,6 +26,13 @@ it, and two concurrent PRs would race).
 A committed file is boring, diffable, and shows up in review — when the floor
 moves, someone sees it move.
 
+AND IT HAS TO EXIST. Recording the first floor is a deliberate act (--write),
+so a repo that never performs it has a ratchet comparing against nothing and
+reporting ok at any coverage at all. That was the DOCUMENTED setup: the action
+defaults raise:false and the README snippet did not override it. --require-floor
+turns that state into an error instead of a permanent pass, and the composite
+action always passes it.
+
 WHAT IS MEASURED
 
 Line coverage only, deliberately. Branch coverage is reported inconsistently
@@ -186,6 +193,14 @@ def main() -> int:
         help="Raise the floor to the measured value when it improved. Never "
         "lowers it — that is the whole point.",
     )
+    ap.add_argument(
+        "--require-floor",
+        action="store_true",
+        help="Fail when no floor file exists and --write was not given. The "
+        "composite action always passes this: without it the documented "
+        "configuration never records a floor, so every run compares against "
+        "nothing and reports ok forever.",
+    )
     args = ap.parse_args()
 
     try:
@@ -207,10 +222,34 @@ def main() -> int:
 
     pct = 100.0 * hit / found
 
+    # A ratchet with no floor is not a gate, and this was the state the
+    # DOCUMENTED configuration left every consumer in: the action defaults
+    # `raise: false`, the README snippet did not set it, so nothing ever wrote a
+    # floor — and a repo measured at 5% against no floor exited 0 with
+    # status=ok, run after run, forever. Recording the floor has to be a
+    # deliberate act, so refusing here is the only place it can be demanded.
+    if floor is None and not args.write and args.require_floor:
+        print(
+            f"error: no floor at {args.floor_file}, and --write was not given — "
+            f"so this run compared {pct:.2f}% against nothing and would have "
+            "reported ok whatever the number was. Record the floor once (run "
+            "the action with `raise: true`, or this script with --write) and "
+            "commit the file it writes.",
+            file=sys.stderr,
+        )
+        return 3
+
     # stdout is machine-readable (the composite action appends it to
     # $GITHUB_OUTPUT verbatim); prose goes to stderr.
     raised = False
     rc = 0
+    # What to REPORT as the floor: the value the floor FILE holds once this run
+    # is over, or `none` when it still holds nothing. It used to print the
+    # measured percentage whenever there was no floor, which rendered "compared
+    # against nothing" identically to "met its floor exactly" — in the one
+    # output a reader would use to tell those apart. `raised` says whether this
+    # run moved it, so the pair is unambiguous either way.
+    floor_out = floor
 
     if floor is None:
         msg = (
@@ -222,6 +261,7 @@ def main() -> int:
         if args.write:
             write_floor(args.floor_file, pct)
             raised = True
+            floor_out = pct
     elif pct < floor - args.tolerance:
         msg = (
             f"coverage DROPPED: {pct:.2f}% is below the floor of {floor:.2f}% "
@@ -234,6 +274,7 @@ def main() -> int:
         if args.write:
             write_floor(args.floor_file, pct)
             raised = True
+            floor_out = pct
             msg += f" — floor raised, commit {args.floor_file}"
         else:
             msg += f" — the floor can be raised to {pct:.2f}%"
@@ -241,7 +282,7 @@ def main() -> int:
         msg = f"coverage held at {pct:.2f}% (floor {floor:.2f}%)"
 
     print(f"coverage={pct:.2f}")
-    print(f"floor={floor if floor is not None else pct:.2f}")
+    print(f"floor={floor_out:.2f}" if floor_out is not None else "floor=none")
     print(f"lines_hit={hit}")
     print(f"lines_found={found}")
     print(f"raised={'true' if raised else 'false'}")
