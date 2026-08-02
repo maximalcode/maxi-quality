@@ -101,8 +101,24 @@ runs:
           ARGS+=(--previous-body "$RUNNER_TEMP/prev.md")
         fi
 
+        # rc is CARRIED, not swallowed and not fatal here.
+        #
+        # exit 2 means "the scan errored, and the body says so". The issue is
+        # the only place that news can land, so the upsert has to happen first
+        # and the failure has to happen after — dying now would leave the last
+        # good report standing as if it were current.
+        #
+        # exit 3 means the results file could not be read at all and nothing was
+        # printed. The guard below refuses to overwrite the standing issue with
+        # an empty body, because the history in it is the only copy.
+        rc=0
         python3 "${GITHUB_ACTION_PATH}/../../scripts/quality-report.py" \
-          "${ARGS[@]}" > "$RUNNER_TEMP/body.md"
+          "${ARGS[@]}" > "$RUNNER_TEMP/body.md" || rc=$?
+
+        if [[ ! -s "$RUNNER_TEMP/body.md" ]]; then
+          echo '::error::the report body is empty — refusing to overwrite the standing issue with it'
+          exit "$(( rc == 0 ? 1 : rc ))"
+        fi
 
         if [[ -n "$NUM" ]]; then
           gh issue edit "$NUM" --body-file "$RUNNER_TEMP/body.md"
@@ -124,3 +140,11 @@ runs:
           exit 1
         fi
         echo "issue=$NUM" >> "$GITHUB_OUTPUT"
+
+        # The report landed. If the scan behind it was broken, the run still
+        # goes red — a green weekly report over a semgrep that never ran is the
+        # exact failure this action was rebuilt to stop.
+        if (( rc != 0 )); then
+          echo "::error::the standing issue was updated, but the Semgrep scan behind it ERRORED (exit $rc). The report is showing an outage, not a clean repo."
+          exit "$rc"
+        fi

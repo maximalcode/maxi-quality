@@ -450,6 +450,70 @@ jobs:
             echo "::error::a malformed SBOM cost the report its history ($n rows, expected 4)"; exit 1; }
           echo 'OK: dependency table parses every licence shape and fails soft'
 
+      - name: An errored scan must render as ERRORED, never as zero findings
+        shell: bash
+        run: |
+          set -uo pipefail
+          # The body comes back on stdout and the exit code comes back through
+          # the command substitution — `rc` set INSIDE the function would be set
+          # in the subshell the substitution creates and lost on the way out.
+          gen() {  # gen <json> <date> [previous-body]  -> body on stdout
+            local -a a=(--json "$1" --date "$2" --target demo/repo)
+            if [[ -n "${3:-}" ]]; then a+=(--previous-body "$3"); fi
+            python3 scripts/quality-report.py "${a[@]}" 2>/tmp/report.err
+          }
+
+          # Semgrep reports a rule that failed to load as results:[] with the
+          # reason in .errors. Reading only .results rendered "0 findings" and
+          # wrote a 0 into the permanent history — an outage recorded as the
+          # best week the repo ever had.
+          cat > /tmp/errored.json <<'JSON'
+          {"results": [], "errors": [{"type": "PartialParsing", "message": "rule x failed to parse"}],
+           "paths": {"scanned": ["a.ts"]}}
+          JSON
+          rc=0; body=$(gen /tmp/errored.json 2026-04-01 /tmp/b3.md) || rc=$?
+          [[ "$rc" == "2" ]] || { echo "::error::an errored scan exited $rc, expected 2"; exit 1; }
+          grep -q 'ERRORED' <<<"$body" || {
+            echo '::error::an errored scan did not render as ERRORED'; echo "$body"; exit 1; }
+          if grep -qE '^\| Semgrep \| \*\*0\*\* findings \|$' <<<"$body"; then
+            echo '::error::an errored scan still rendered as 0 findings'; exit 1
+          fi
+          grep -qE '^\| 2026-04-01 \| ERRORED \|' <<<"$body" || {
+            echo '::error::the history row for an errored run is not marked ERRORED'
+            sed -n '/## History/,$p' <<<"$body"; exit 1; }
+
+          # The outage must not cost the history either — that table is the only
+          # store there is.
+          n=$(grep -cE '^\| 2026-0[0-9]-[0-9]{2} \|' <<<"$body")
+          [[ "$n" -eq 4 ]] || { echo "::error::history lost rows on an errored run ($n, expected 4)"; exit 1; }
+
+          # A scan that ran to completion over nothing is the same failure with
+          # a different shape: it knows it looked at no files.
+          cat > /tmp/nofiles.json <<'JSON'
+          {"results": [], "errors": [], "paths": {"scanned": []}}
+          JSON
+          rc=0; body=$(gen /tmp/nofiles.json 2026-04-02) || rc=$?
+          [[ "$rc" == "2" ]] || { echo "::error::a scan of 0 files exited $rc, expected 2"; exit 1; }
+          grep -q 'ERRORED' <<<"$body" || { echo '::error::a 0-file scan did not render as ERRORED'; exit 1; }
+
+          # A genuinely clean scan must still be clean — the point is to tell
+          # the two apart, not to call everything broken.
+          cat > /tmp/clean.json <<'JSON'
+          {"results": [], "errors": [], "paths": {"scanned": ["a.ts", "b.ts"]}}
+          JSON
+          rc=0; body=$(gen /tmp/clean.json 2026-04-03) || rc=$?
+          [[ "$rc" == "0" ]] || { echo "::error::a clean scan exited $rc, expected 0"; exit 1; }
+          grep -q 'No Semgrep findings' <<<"$body" || {
+            echo '::error::a clean scan no longer renders as clean'; echo "$body"; exit 1; }
+
+          # And an unreadable results file must print NOTHING, so the caller's
+          # `-s` guard stops it overwriting the standing issue with a blank.
+          echo 'not json' > /tmp/broken.json
+          rc=0; body=$(gen /tmp/broken.json 2026-04-04) || rc=$?
+          [[ "$rc" == "3" ]] || { echo "::error::an unreadable results file exited $rc, expected 3"; exit 1; }
+          [[ -z "$body" ]] || { echo '::error::a body was printed for an unreadable results file'; exit 1; }
+          echo 'OK: errored, empty, clean and unreadable scans are four different things'
+
   # The coverage ratchet, asserted in BOTH directions and on every parse path.
   #
   # The failure mode that matters is not "it reported the wrong percentage", it
@@ -549,6 +613,139 @@ jobs:
           [[ "$(run --report samples/coverage/cobertura.xml)" == "3" ]] || {
             echo '::error::a corrupt floor file was treated as a fresh start'; exit 1; }
           echo 'OK: broken inputs error out instead of going green'
+
+      - name: No floor at all must be an error, and must never be reported as one
+        shell: bash
+        run: |
+          set -uo pipefail
+          F=/tmp/floor3.json
+          run() { python3 scripts/coverage.py --floor-file "$F" "$@" >/dev/null 2>&1; echo $?; }
+          rm -f "$F"
+
+          # The state every consumer was left in: the action defaults
+          # raise:false and the README snippet did not override it, so no floor
+          # was ever written and every run compared against nothing. 65% against
+          # nothing exited 0 with status=ok, forever.
+          [[ "$(run --report samples/coverage/lcov.info --require-floor)" == "3" ]] || {
+            echo '::error::--require-floor accepted a run with no floor'; exit 1; }
+
+          # ...and the refusal must not have invented one on the way out.
+          if [[ -f "$F" ]]; then
+            echo '::error::a refused run wrote a floor file'; exit 1
+          fi
+
+          # Recording it is still one deliberate run.
+          [[ "$(run --report samples/coverage/lcov.info --require-floor --write)" == "0" ]] || {
+            echo '::error::--write did not record the first floor'; exit 1; }
+          grep -q '65' "$F" || { echo '::error::the first floor is wrong'; cat "$F"; exit 1; }
+
+          # `floor=` reported the MEASURED value when there was no floor, so
+          # "compared against nothing" and "met its floor exactly" rendered
+          # identically — in the one output that exists to tell them apart.
+          rm -f "$F"
+          got=$(python3 scripts/coverage.py --report samples/coverage/lcov.info \
+                  --floor-file "$F" 2>/dev/null | sed -n 's/^floor=//p')
+          [[ "$got" == "none" ]] || {
+            echo "::error::no floor reported as floor=$got, expected floor=none"; exit 1; }
+          echo 'OK: a missing floor errors, records on demand, and never reports itself as met'
+
+  # scripts/coverage.py was tested directly and the composite action wrapped
+  # around it was tested by nothing — so the action's OWN glob expansion had no
+  # coverage, which is where the documented `**` pattern silently matched one
+  # directory level and could never reach coverlet's TestResults/[guid]/ output.
+  #
+  # This job runs the real action, the way the layer2 job runs the real layer2.
+  coverage-action:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # 1. The documented default — no floor file, raise unset — used to pass at
+      #    any coverage at all.
+      - id: nofloor
+        uses: ./actions/coverage
+        continue-on-error: true
+        with:
+          report: samples/coverage/lcov.info
+          floor-file: /tmp/nofloor.json
+      - name: A run with no floor must fail rather than pass against nothing
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.nofloor.outcome }}
+        run: |
+          set -Eeuo pipefail
+          if [[ "$OUTCOME" != 'failure' ]]; then
+            echo '::error::the action passed with no floor file — the ratchet compares against nothing'
+            exit 1
+          fi
+          if [[ -f /tmp/nofloor.json ]]; then
+            echo '::error::a refused run still wrote a floor'; exit 1
+          fi
+          echo 'OK: no floor is an error, not a green step'
+
+      # 2. The pattern from the README, against coverlet's real directory shape.
+      #    Without globstar this step reports "no coverage report matched" and
+      #    the job stops here.
+      - id: nested
+        uses: ./actions/coverage
+        with:
+          report: samples/coverage/**/coverage.cobertura.xml
+          floor-file: /tmp/floor.json
+          raise: 'true'
+      - name: The nested report must be found and its floor recorded
+        shell: bash
+        env:
+          COVERAGE: ${{ steps.nested.outputs.coverage }}
+          FLOOR: ${{ steps.nested.outputs.floor }}
+          RAISED: ${{ steps.nested.outputs.raised }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$COVERAGE" == '55.00' ]] || {
+            echo "::error::the nested cobertura measured $COVERAGE, expected 55.00 — the glob matched something else"; exit 1; }
+          [[ "$RAISED" == 'true' ]] || { echo '::error::the first run did not record a floor'; exit 1; }
+          [[ "$FLOOR" == '55.00' ]] || {
+            echo "::error::floor reported as $FLOOR after recording 55.00"; exit 1; }
+          grep -q '55' /tmp/floor.json || { echo '::error::floor file wrong'; cat /tmp/floor.json; exit 1; }
+          echo 'OK: ** reached TestResults/[guid]/ and the floor was recorded'
+
+      # 3. And the ratchet ratchets THROUGH the action, not just in the script.
+      - id: drop
+        uses: ./actions/coverage
+        continue-on-error: true
+        with:
+          report: samples/coverage/lcov-no-summary.info
+          floor-file: /tmp/floor.json
+      - name: A drop must fail the action
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.drop.outcome }}
+        run: |
+          set -Eeuo pipefail
+          if [[ "$OUTCOME" != 'failure' ]]; then
+            echo '::error::40% against a 55% floor passed — the action swallows the exit code'
+            exit 1
+          fi
+          echo 'OK: the action propagates a drop'
+
+      # 4. A pattern that matches nothing is a test step that produced nothing,
+      #    which must never read as a passing gate.
+      - id: nomatch
+        uses: ./actions/coverage
+        continue-on-error: true
+        with:
+          report: samples/coverage/**/no-such-report.xml
+          floor-file: /tmp/floor.json
+      - name: An unmatched pattern must fail
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.nomatch.outcome }}
+        run: |
+          set -Eeuo pipefail
+          if [[ "$OUTCOME" != 'failure' ]]; then
+            echo '::error::a pattern matching no report passed'
+            exit 1
+          fi
+          echo 'OK: a missing report is an error'
 
   # The three tool ladders are now ONE function. This job is what stops them
   # drifting apart again — the last time they did, the docker path set semgrep's
@@ -1160,17 +1357,39 @@ jobs:
       - uses: ./actions/layer2
         id: scan
         continue-on-error: true
-      - name: Scan must have failed with 32 findings across all 19 rule ids
+        with:
+          json-out: ${{ runner.temp }}/layer2.json
+      - name: The scan must have FAILED, with exactly the expected finding set
         shell: bash
         env:
           OUTCOME: ${{ steps.scan.outcome }}
+          SEMGREP: ${{ steps.scan.outputs.semgrep }}
+          JSON: ${{ runner.temp }}/layer2.json
         run: |
           set -Eeuo pipefail
           if [[ "$OUTCOME" != 'failure' ]]; then
             echo '::error::Layer 2 scan passed on the bait samples — the ruleset regressed'
             exit 1
           fi
-          echo 'OK: Layer 2 rejected the samples (composite action path works)'
+
+          # `outcome == failure` on its own was the whole assertion, under a
+          # step title claiming a specific count. It cannot tell a working gate
+          # from a broken one: scan.sh exits 2 when a tool is missing and 3 on a
+          # usage error, and both of those printed OK here. So the finding SET
+          # is the assertion now, and it comes from the same manifest
+          # layer2-counts uses — through the composite action this time, which
+          # is the path a consumer actually runs.
+          python3 scripts/check-expected.py --tool semgrep \
+            --input "$JSON" --expected samples/expected/semgrep.json
+
+          # And the semgrep status output must exist and be honest. A scan whose
+          # tool never installed records SKIPPED, which under `no-fail: true`
+          # was previously indistinguishable from a clean run.
+          case "$SEMGREP" in
+            FINDINGS*) ;;
+            *) echo "::error::layer2 reported semgrep as '$SEMGREP'; the bait samples must produce FINDINGS"; exit 1 ;;
+          esac
+          echo "OK: Layer 2 rejected the samples through the composite action, semgrep=$SEMGREP"
 
   # A consumer's FILENAMES reach quality.yml's matrix, and a matrix value that
   # is interpolated into a run body is code. This job proves the safe form is
@@ -1250,6 +1469,156 @@ jobs:
           grep -qE 'dotnet build ".TARGET"' .github/workflows/quality.yml || {
             echo '::error::the dotnet build step no longer uses the env variable'; exit 1; }
           echo 'OK: quality.yml passes matrix.target through env:'
+
+  # quality.yml is the file every consumer actually runs, and ci.yml executed
+  # none of it. Detection was the worst of that: it is inline in the workflow,
+  # so the only way to "test" it was to keep a second copy here — and a copy
+  # drifts, which is how the gap below survived to begin with.
+  #
+  # A yarn or bun repo has package.json and no supported lockfile, so has_ts
+  # came back false, every TypeScript job skipped, and the run was green — while
+  # scripts/adopt.sh, which keys on package.json, had already told the same repo
+  # it was ADOPTED. Same shape for a .sln that omits a project, and for a Python
+  # project pinning only requirements-dev.txt.
+  #
+  # So this job EXTRACTS the detect step's script out of the shipped workflow
+  # and runs it verbatim. There is no second copy to drift: edit quality.yml and
+  # this job runs the edit.
+  detect-fixtures:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: The shipped detect step must classify every fixture, or fail loud
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -c 'import yaml' 2>/dev/null \
+            || python3 -m pip install --quiet --break-system-packages pyyaml
+          python3 - <<'PY'
+          import yaml
+          wf = yaml.safe_load(open('.github/workflows/quality.yml'))
+          step = next(s for s in wf['jobs']['detect']['steps'] if s.get('id') == 'scan')
+          open('/tmp/detect.sh', 'w').write(step['run'])
+          PY
+
+          OUT=/tmp/detect.out
+          LOG=/tmp/detect.log
+          rc=0
+          # A subshell, so the fixture cd never leaks into the next case, and
+          # `|| rc=$?` so a deliberate exit 1 is data rather than a dead job.
+          run() {
+            : > "$OUT"; rc=0
+            ( cd "$1" && LANGS="$2" GITHUB_OUTPUT="$OUT" bash /tmp/detect.sh ) > "$LOG" 2>&1 || rc=$?
+          }
+          val() { sed -n "s/^$1=//p" "$OUT" | tail -1; }
+          fail() { echo "::error::$*"; echo '--- log ---'; cat "$LOG"; echo '--- outputs ---'; cat "$OUT"; exit 1; }
+          eq() { [[ "$2" == "$3" ]] || fail "$1: got [$2], expected [$3]"; }
+          says() { grep -q "$2" "$LOG" || fail "$1: the error never mentioned '$2'"; }
+
+          F=/tmp/fx; rm -rf "$F"; mkdir -p "$F"
+
+          mkdir -p "$F/npm"
+          echo '{}' > "$F/npm/package.json"; echo '{}' > "$F/npm/package-lock.json"
+
+          # A workspace member has a package.json and no lockfile of its own.
+          # Detection must walk UP to the root rather than call it uncovered.
+          mkdir -p "$F/workspace/packages/a"
+          echo '{}' > "$F/workspace/package.json"
+          echo '{}' > "$F/workspace/package-lock.json"
+          echo '{}' > "$F/workspace/packages/a/package.json"
+
+          mkdir -p "$F/yarn"
+          echo '{}' > "$F/yarn/package.json"; : > "$F/yarn/yarn.lock"
+
+          mkdir -p "$F/nested/ts"
+          echo '{}' > "$F/nested/ts/package.json"; echo '{}' > "$F/nested/ts/pnpm-lock.yaml"
+
+          # The project paths are written with BACKSLASHES on purpose: that is
+          # what a .sln carries even when it was written on Linux, so a parser
+          # that reads them as-is finds nothing at all.
+          sln() {
+            local f="$1"; shift
+            { echo 'Microsoft Visual Studio Solution File, Format Version 12.00'
+              local i=0
+              for p in "$@"; do
+                i=$((i+1))
+                printf 'Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "P%s", "%s", "{%s}"\nEndProject\n' \
+                  "$i" "$p" "$i"
+              done
+            } > "$f"
+          }
+
+          mkdir -p "$F/sln-full/src/Api" "$F/sln-full/src/Data"
+          : > "$F/sln-full/src/Api/Api.csproj"; : > "$F/sln-full/src/Data/Data.csproj"
+          sln "$F/sln-full/Sample.sln" 'src\Api\Api.csproj' 'src\Data\Data.csproj'
+
+          mkdir -p "$F/sln-partial/src/Api" "$F/sln-partial/src/Worker"
+          : > "$F/sln-partial/src/Api/Api.csproj"; : > "$F/sln-partial/src/Worker/Worker.csproj"
+          sln "$F/sln-partial/Sample.sln" 'src\Api\Api.csproj'
+
+          mkdir -p "$F/sln-nested/build" "$F/sln-nested/src/Api"
+          : > "$F/sln-nested/src/Api/Api.csproj"
+          sln "$F/sln-nested/build/Sample.sln" '..\src\Api\Api.csproj'
+
+          mkdir -p "$F/no-sln/src/A" "$F/no-sln/src/B"
+          : > "$F/no-sln/src/A/A.csproj"; : > "$F/no-sln/src/B/B.csproj"
+
+          mkdir -p "$F/py-dev"; : > "$F/py-dev/requirements-dev.txt"
+
+          run "$F/npm" auto
+          eq 'npm rc' "$rc" 0
+          eq 'npm ts_dirs' "$(val ts_dirs)" '["."]'
+          eq 'npm has_ts' "$(val has_ts)" true
+
+          run "$F/workspace" auto
+          eq 'workspace rc' "$rc" 0
+          eq 'workspace ts_dirs' "$(val ts_dirs)" '["."]'
+
+          # THE BUG. Before the fix this returned rc 0 with has_ts=false.
+          run "$F/yarn" auto
+          eq 'yarn rc' "$rc" 1
+          says 'yarn' 'yarn.lock'
+
+          # ...and it must stay escapable, or the fix is a new way to be stuck.
+          run "$F/yarn" none
+          eq 'yarn+none rc' "$rc" 0
+          eq 'yarn+none has_ts' "$(val has_ts)" false
+          run "$F/yarn" dotnet
+          eq 'yarn+dotnet rc' "$rc" 0
+          eq 'yarn+dotnet has_ts' "$(val has_ts)" false
+
+          run "$F/nested" auto
+          eq 'nested rc' "$rc" 0
+          eq 'nested ts_dirs' "$(val ts_dirs)" '["ts"]'
+
+          run "$F/sln-full" auto
+          eq 'sln-full rc' "$rc" 0
+          eq 'sln-full targets' "$(val dotnet_targets)" '["Sample.sln"]'
+
+          run "$F/sln-partial" auto
+          eq 'sln-partial rc' "$rc" 1
+          says 'sln-partial' 'Worker.csproj'
+
+          run "$F/sln-nested" auto
+          eq 'sln-nested rc' "$rc" 0
+          eq 'sln-nested targets' "$(val dotnet_targets)" '["build/Sample.sln"]'
+
+          run "$F/no-sln" auto
+          eq 'no-sln rc' "$rc" 0
+          eq 'no-sln targets' "$(val dotnet_targets)" '["src/A/A.csproj","src/B/B.csproj"]'
+
+          run "$F/py-dev" auto
+          eq 'py-dev rc' "$rc" 0
+          eq 'py-dev has_python' "$(val has_python)" true
+          eq 'py-dev python_dirs' "$(val python_dirs)" '["."]'
+
+          # And this repo itself, which is the workspace shape in miniature:
+          # a root lockfile with two sample package.json files under it.
+          run "$GITHUB_WORKSPACE" auto
+          eq 'self rc' "$rc" 0
+          eq 'self ts_dirs' "$(val ts_dirs)" '["."]'
+
+          echo 'OK: every detection fixture classified, and the two silent skips now fail loud'
 
   # The counts, asserted precisely — semgrep JSON, no fragile CLI-output greps.
   layer2-counts:

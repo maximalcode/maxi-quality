@@ -327,6 +327,13 @@ detected language: the TS lint (npm or corepack-pnpm — a pnpm repo must pin
 `"packageManager"` in package.json), the .NET build (the props make the build
 the analysis run), and the Layer 2 umbrella (Semgrep + Gitleaks + OSV-Scanner).
 
+**Detection fails loud rather than skipping.** A `package.json` with no
+`package-lock.json` or `pnpm-lock.yaml` at or above it stops the run, and so
+does a `.csproj` that no solution in the tree references. Both used to detect as
+"no such language here" and skip in silence, leaving a green gate over code
+nothing had opened. Pass `languages:` without the one you mean to exclude if the
+skip is deliberate.
+
 **No token, no secret, no checkout of this repo.** The Layer 2 job receives
 this repo's rules through GitHub's own action-download mechanism. Because this
 repo is public, any repo may call it — there is nothing to configure and no
@@ -477,6 +484,12 @@ genuinely shared:
             **/coverage.cobertura.xml
 ```
 
+**One-time setup: record a floor.** Run it once with `raise: 'true'` and commit
+the `.maxi-quality/coverage.json` it writes. Until that file exists the step
+**fails** — a ratchet with nothing to compare against reports ok at any coverage
+at all, and that is what the snippet above silently did before, because `raise`
+defaults to false and nothing else ever wrote the file.
+
 lcov and Cobertura are both accepted, detected **by content, not by filename** —
 `coverage.xml`, `cobertura.xml`, `lcov.info` and `coverage.info` are all in
 circulation and CI configs rename them freely. Multiple reports are summed, so a
@@ -510,10 +523,13 @@ automatic, that is six lines in your own workflow:
           git push
 ```
 
-Three failure modes are treated as errors rather than passes, because each one
+Four failure modes are treated as errors rather than passes, because each one
 turns the ratchet into a permanently green step: a report with **zero measurable
-lines** (a broken coverage run, not 100%), a **missing report file**, and an
-**unparseable floor** (never silently restarted from today's number).
+lines** (a broken coverage run, not 100%), a **missing report file**, an
+**unparseable floor** (never silently restarted from today's number), and **no
+floor at all**. The `floor` output reads `none` in that last case rather than
+echoing back the measured number, so a run that compared against nothing cannot
+be mistaken for one that met its floor exactly.
 
 ---
 

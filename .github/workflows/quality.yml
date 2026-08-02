@@ -20,8 +20,9 @@
 # Version coupling: this file references actions/layer2@v1. The v1 tag pins
 # BOTH the workflow and the action — they move together, never independently.
 #
-# v1 scope (deliberate): npm and pnpm-with-packageManager-field consumers,
-# TS + C#. Anything else fails loud, not silent.
+# v1 scope (deliberate): TypeScript (npm, or pnpm with a packageManager field),
+# C#, and Python (uv or pip). Anything else fails loud, not silent — detection
+# refuses to hand back "no TypeScript here" for a repo that plainly has some.
 
 name: quality
 
@@ -120,22 +121,124 @@ jobs:
 
           # TS: every directory holding a lockfile (workspace roots carry the
           # only lockfile in npm/pnpm monorepos, so this finds package roots).
+          #
+          # The lockfile is the right KEY and was the wrong TEST. A yarn or bun
+          # repo has package.json and no supported lockfile, so has_ts came out
+          # false, every TypeScript job skipped, and the run went green — while
+          # scripts/adopt.sh, which keys on package.json, had already told the
+          # same repo it was ADOPTED. Two halves of this baseline disagreeing
+          # about whether a language is even present is the exact failure the
+          # has_ts output exists to make visible, arriving through the one path
+          # that output cannot see.
+          #
+          # So package.json is now the CROSS-CHECK, not the key: every one of
+          # them must have a supported lockfile at or above it. Any that does
+          # not stops the run. v1 gates npm and pnpm; per the header, anything
+          # else fails loud rather than silently not running.
           ts_dirs='[]'
           if want ts; then
-            ts_dirs=$(find . -name node_modules -prune -o -type f \
-                        \( -name package-lock.json -o -name pnpm-lock.yaml \) -print0 \
-                      | xargs -0 -r -n1 dirname | sort -u \
-                      | sed 's|^\./||' | jq -R . | jq -sc .)
+            lock_dirs=$(find . -name node_modules -prune -o -type f \
+                          \( -name package-lock.json -o -name pnpm-lock.yaml \) -print0 \
+                        | xargs -0 -r -n1 dirname | sed 's|^\./||' | sort -u)
+
+            # Walking UP from each package.json rather than comparing directory
+            # sets: in an npm/pnpm workspace only the root carries a lockfile and
+            # every member carries a package.json, so a set comparison would
+            # report every member as uncovered.
+            uncovered=()
+            while IFS= read -r -d '' pj; do
+              d=$(dirname "$pj"); d=${d#./}
+              probe="$d"; covered=0
+              while :; do
+                if grep -qxF -- "$probe" <<< "$lock_dirs"; then covered=1; break; fi
+                [[ "$probe" == "." ]] && break
+                probe=$(dirname "$probe")
+              done
+              (( covered )) || uncovered+=("$d")
+            done < <(find . -name node_modules -prune -o -type f -name package.json -print0)
+
+            if (( ${#uncovered[@]} )); then
+              # Naming the lockfile they DO have is the difference between a
+              # message someone acts on and one they file a bug about.
+              other=$(find . -name node_modules -prune -o -type f \
+                        \( -name yarn.lock -o -name bun.lockb -o -name bun.lock \) -print \
+                      | sed 's|^\./||' | sort | tr '\n' ' ')
+              hint='Commit a supported lockfile, or pass languages: without ts to skip them deliberately.'
+              if [[ -n "$other" ]]; then
+                hint="Found instead: ${other}— ${hint}"
+              fi
+              # tr, because a path may legally contain a newline and a newline in
+              # an ::error:: line starts a second workflow command.
+              list=$(printf '%s ' "${uncovered[@]}" | tr '\n' ' ')
+              echo "::error::${#uncovered[@]} JavaScript/TypeScript project(s) have no supported lockfile at or above them: ${list}— so nothing would have linted them. v1 gates npm (package-lock.json) and pnpm (pnpm-lock.yaml). ${hint}"
+              exit 1
+            fi
+
+            # Guarded, because `printf '%s\n' ""` emits one empty line and any
+            # filter that drops it exits 1 — which fails the assignment under
+            # `set -e` and aborts detection on every repo with no JavaScript.
+            if [[ -n "$lock_dirs" ]]; then
+              ts_dirs=$(printf '%s\n' "$lock_dirs" | jq -R . | jq -sc .)
+            fi
           fi
 
           # .NET: solutions if any exist, else loose csproj files.
+          #
+          # A solution is preferred because building it once is faster than
+          # building N projects and gets the reference ordering right. But
+          # "prefer the .sln" TRUSTED it to reference everything, and a project
+          # the solution omits is never built, so it is never analysed — and the
+          # gate is green about code it never opened. The solutions are checked
+          # against the tree now, and an omission is an error rather than a
+          # silently smaller scan.
           dotnet_targets='[]'
           if want dotnet; then
-            dotnet_targets=$(find . -name node_modules -prune -o -type f -name '*.sln' -print \
-                             | sed 's|^\./||' | jq -R . | jq -sc .)
-            if [[ "$dotnet_targets" == "[]" ]]; then
-              dotnet_targets=$(find . -name node_modules -prune -o -type f -name '*.csproj' -print \
-                               | sed 's|^\./||' | jq -R . | jq -sc .)
+            slns=$(find . -name node_modules -prune -o -type f -name '*.sln' -print \
+                   | sed 's|^\./||' | sort)
+            csprojs=$(find . -name node_modules -prune -o -type f -name '*.csproj' -print \
+                      | sed 's|^\./||' | sort)
+
+            if [[ -n "$slns" ]]; then
+              # A .sln lists each project as
+              #   Project("{GUID}") = "Api", "src\Api\Api.csproj", "{GUID}"
+              # with Windows separators even in solutions written on Linux, and
+              # the path relative to the .sln's own directory. Comparing
+              # realpath output sidesteps ../ normalisation, and skipping
+              # references that do not exist is deliberate: a stale reference is
+              # the solution's problem, not an uncovered project.
+              sln_covered=$(
+                while IFS= read -r sln; do
+                  base=$(dirname "$sln")
+                  { grep -oE '"[^"]+\.csproj"' "$sln" || true; } \
+                    | tr -d '"' \
+                    | while IFS= read -r p; do
+                        p=${p//\\//}
+                        # An `if`, not `[[ -f x ]] && realpath x` — as the last
+                        # statement of this loop the && form returns 1 on a
+                        # missing file, which fails the command substitution
+                        # under `set -e`.
+                        if [[ -f "$base/$p" ]]; then realpath "$base/$p"; fi
+                      done
+                done <<< "$slns" | sort -u
+              )
+
+              missing=()
+              while IFS= read -r c; do
+                [[ -n "$c" ]] || continue
+                if ! grep -qxF -- "$(realpath "$c")" <<< "$sln_covered"; then
+                  missing+=("$c")
+                fi
+              done <<< "$csprojs"
+
+              if (( ${#missing[@]} )); then
+                list=$(printf '%s ' "${missing[@]}" | tr '\n' ' ')
+                echo "::error::${#missing[@]} project(s) exist in the tree but no solution references them: ${list}— they would never be built and therefore never analysed. Add them to a solution, or delete the solutions so every .csproj is built individually."
+                exit 1
+              fi
+
+              dotnet_targets=$(printf '%s\n' "$slns" | jq -R . | jq -sc .)
+            elif [[ -n "$csprojs" ]]; then
+              dotnet_targets=$(printf '%s\n' "$csprojs" | jq -R . | jq -sc .)
             fi
           fi
 
@@ -144,6 +247,14 @@ jobs:
           # its own pyproject.toml. Keying on pyproject would fan out one job
           # per workspace member and check the same tree N times.
           # pyproject/requirements are the fallback for un-locked projects.
+          #
+          # requirements-dev.txt is in that list because the job below accepts it
+          # as a toolchain marker on its own — and ruff/mypy are dev dependencies,
+          # so a project that pins ONLY its dev requirements is the normal shape
+          # rather than an edge case. Detection used to omit it, which meant that
+          # project was never detected and its Python job never ran, while the
+          # step that would have run it was perfectly happy to. Two components
+          # disagreeing about whether a language is present, again.
           python_dirs='[]'
           if want python; then
             python_dirs=$(find . \( -name node_modules -o -name .venv -o -name .git \) -prune -o -type f \
@@ -152,7 +263,7 @@ jobs:
                           | sed 's|^\./||' | jq -R . | jq -sc .)
             if [[ "$python_dirs" == "[]" ]]; then
               python_dirs=$(find . \( -name node_modules -o -name .venv -o -name .git \) -prune -o -type f \
-                              \( -name pyproject.toml -o -name requirements.txt \) -print0 \
+                              \( -name pyproject.toml -o -name requirements.txt -o -name requirements-dev.txt \) -print0 \
                             | xargs -0 -r -n1 dirname | sort -u \
                             | sed 's|^\./||' | jq -R . | jq -sc .)
             fi
