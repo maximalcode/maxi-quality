@@ -562,6 +562,16 @@ hard** — new ones get added when a real bug slips through, never speculatively
 — that is the concept §10 criterion (*the same rule fires in a TS and a C#
 sample*) and it is asserted by the samples below.
 
+**A ✅ means every shape the rule advertises, and that is now measured.** These
+rules match raw source text in places, so quote style is not interchangeable:
+`sql-string-concat-ts` and `command-injection-ts` each cover backtick,
+double-quoted and single-quoted forms, `sql-string-concat-ts` covers Prisma's
+`$queryRawUnsafe` and `$executeRawUnsafe` alongside `.query` / `.execute` /
+`.raw`, and `sql-string-concat-dotnet` covers Dapper's four entry points and
+`CommandText` as well as `new SqlCommand`. Each of those branches has its own
+fixture, so one going quiet shows up as a named missing finding rather than as a
+total that still looks about right.
+
 **Division of labour with Gitleaks:** Gitleaks catches secrets whose *shape* is a
 known token (AWS keys, GitHub PATs, JWTs). `hardcoded-secret-*` catches the
 homegrown ones it cannot fingerprint, by matching the variable **name** instead.
@@ -676,7 +686,7 @@ fix the config, never silence the fixture.
 ./scripts/scan.sh
 ```
 
-Expect exit `1` with **32 Semgrep findings across all 19 rule ids**, and Gitleaks
+Expect exit `1` with **59 Semgrep findings across all 19 rule ids**, and Gitleaks
 plus OSV-Scanner clean.
 
 `samples/semgrep/` sits deliberately **outside** the `samples/typescript` and
@@ -690,13 +700,23 @@ the rules are provably not just matching on names:
 | Negative control | Proves |
 |---|---|
 | `TODO(#412):` / `TODO(#918):` | `todo-without-issue` accepts a tracked TODO |
-| `createUser()` calling `authz.require(...)` | `mutation-requires-authz-*` sees the gate |
+| `Require` / `Authorize` / `RequireAsync` / `AuthorizeAsync` | all four `mutation-requires-authz-dotnet` gates are seen |
+| `require` / `authorize`, awaited or not | …and both on the TypeScript side |
 | `readUser()` | reads are not treated as mutations |
 | `decimal NetTotal` | `no-float-for-money` accepts the correct type |
 | `tokenEndpoint = 'https://…'` | `hardcoded-secret-*` exempts a bare endpoint URL |
 | `UNASSIGNED_TOKEN = 'none'` | …and exempts a short sentinel |
 | `db.query('… WHERE id = ?', [id])` | `sql-string-concat-ts` accepts a parameterised query |
+| ``prisma.$queryRaw`…` `` | …and the tagged-template form Prisma parameterises for you |
+| `conn.Query("… = @id", new { id })` | `sql-string-concat-dotnet` accepts Dapper's parameters |
+| `return NotFound()` | `no-permission-denied-*` accepts the fix its message asks for |
+| `catch { /* why */ }` | `catch-and-swallow-*` accepts a documented silence |
 | `createHash('sha256')`, `createCipheriv('aes-256-gcm', …)` | `weak-crypto` accepts modern algorithms |
+
+Every exemption above has bait behind it as well as a control. That pairing is
+the point: an exemption with no counterexample is a hole nobody can see, and an
+exemption with no *positive* fixture can stop matching without anything going
+red. Both directions are in `samples/expected/semgrep.json`, per rule and line.
 
 The secret rule's exemptions are themselves gated: `connectionString =
 'postgres://admin:…@db.internal/prod'` **must** fire in both languages, proving

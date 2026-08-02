@@ -9,6 +9,7 @@
  */
 
 using System;
+using System.Data;
 using System.Data.SqlClient;
 using System.Diagnostics;
 using System.Security.Cryptography;
@@ -61,6 +62,50 @@ public static class Billing
         return new SqlCommand($"SELECT * FROM Users WHERE Id = '{id}'");
     }
 
+    // The CONCATENATION form of the same constructor. Interpolation had bait;
+    // concatenation did not, and they are separate patterns.
+    public static SqlCommand FindUserConcat(string id)
+    {
+        return new SqlCommand("SELECT * FROM Users WHERE Id = " + id);
+    }
+
+    // The Dapper / CommandText group: five entry points advertised by the rule,
+    // and not one of them had a fixture. Both regex branches are exercised
+    // across them — concatenation and interpolation are matched by different
+    // expressions over raw source text, so covering one says nothing about the
+    // other.
+    public static void QueryUsers(IDbConnection conn, string id)
+    {
+        conn.Query("SELECT * FROM Users WHERE Id = " + id);
+    }
+
+    public static Task QueryUsersAsync(IDbConnection conn, string id)
+    {
+        return conn.QueryAsync($"SELECT * FROM Users WHERE Id = '{id}'");
+    }
+
+    public static void DeleteUser(IDbConnection conn, string id)
+    {
+        conn.Execute("DELETE FROM Users WHERE Id = " + id);
+    }
+
+    public static Task DeleteUserAsync(IDbConnection conn, string id)
+    {
+        return conn.ExecuteAsync($"DELETE FROM Users WHERE Id = '{id}'");
+    }
+
+    public static void SetCommandText(SqlCommand cmd, string id)
+    {
+        cmd.CommandText = "SELECT * FROM Users WHERE Id = " + id;
+    }
+
+    // NEGATIVE CONTROL for the Dapper group. A parameterised call must NOT
+    // fire, or the rule is "any Query call" and gets switched off.
+    public static void QueryUsersSafe(IDbConnection conn, string id)
+    {
+        conn.Query("SELECT * FROM Users WHERE Id = @id", new { id });
+    }
+
     // --- command-injection-dotnet -----------------------------------------
     public static void Archive(string path)
     {
@@ -81,6 +126,33 @@ public static class Billing
             flush();
         }
         catch (Exception ex)
+        {
+        }
+    }
+
+    // The other two branches. `catch { }`, `catch (T e) { }` and `catch (T) { }`
+    // are three separate AST shapes and the rule spells out all three — but
+    // only the bound form had bait, and the bare form was "covered" solely by
+    // the negative control below, which proves the escape hatch works and
+    // nothing about the branch still matching.
+    public static void TryFlushBare(Action flush)
+    {
+        try
+        {
+            flush();
+        }
+        catch
+        {
+        }
+    }
+
+    public static void TryFlushTyped(Action flush)
+    {
+        try
+        {
+            flush();
+        }
+        catch (InvalidOperationException)
         {
         }
     }
