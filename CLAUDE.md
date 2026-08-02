@@ -173,9 +173,17 @@ per-language id is not new scope; inventing a new convention is.
   is a success criterion, not a preference.
 - **Conventional commits** (`feat:`, `chore:`, `docs:`, `fix:`), one logical
   commit per unit of work.
+- **Branch off `develop`, PR into `develop`.** `develop` is the default branch
+  and where all work lands. `main` is the RELEASE branch: `release-tag.yml`
+  moves `v1` on a green push to it, so a merge to `main` is not a checkpoint —
+  it ships to every consumer pinning `@v1`. Promoting `develop` to `main` is
+  the user's decision, not yours; do not open or merge that PR unasked. Both
+  branches carry the same 18 required checks, admins included.
 - **Tags gate the consumers.** Projects pin the baseline by tag (`@v1`), so an
   updated ruleset never silently breaks an old project. Do not tag until the
-  step that the tag represents is actually verified working.
+  step that the tag represents is actually verified working. The immutable
+  `v1.0.x` tags are cut by hand, one per release worth naming; only `v1` moves
+  on its own.
 - **`samples/` is the test suite.** Every config in `configs/` must be proven by
   an intentionally-bad sample that fails. If a sample stops failing, the config
   regressed — fix the config, do not weaken the sample.
