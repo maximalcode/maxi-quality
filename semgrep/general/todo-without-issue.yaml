@@ -6,16 +6,27 @@ rules:
     severity: WARNING
     languages: [generic]
     paths:
+      # `.py` was missing until issue #21, which is the whole of why Python had
+      # ZERO Layer 2 coverage while shipping as a full Layer 1 language: the
+      # rule is `languages: [generic]` and would have matched a Python file all
+      # along — nothing but this list excluded it.
       include:
         - "*.ts"
         - "*.tsx"
         - "*.js"
         - "*.mjs"
         - "*.cs"
+        - "*.py"
+        - "*.pyi"
       exclude:
         - "*.min.js"
     patterns:
       # A comment marker followed by a TODO-family keyword...
-      - pattern-regex: '(?i)(?://|/\*|^\s*\*)\s*(TODO|FIXME|HACK|XXX)\b'
+      - pattern-regex: '(?i)(?://|/\*|#|^\s*\*)\s*(TODO|FIXME|HACK|XXX)\b'
       # ...that does not carry an issue reference on the same line.
-      - pattern-not-regex: '(?i)(?://|/\*|^\s*\*)\s*(TODO|FIXME|HACK|XXX)\b[^\n]*#[0-9]+'
+      #
+      # `#` is a comment marker AND the issue sigil, which is why the exemption
+      # below is anchored on `#[0-9]+` rather than on `#`: `# TODO(#412):` opens
+      # with a marker and carries a reference, and only the second one is
+      # digits.
+      - pattern-not-regex: '(?i)(?://|/\*|#|^\s*\*)\s*(TODO|FIXME|HACK|XXX)\b[^\n]*#[0-9]+'

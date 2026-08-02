@@ -28,3 +28,52 @@ rules:
           - metavariable-regex:
               metavariable: $NAME
               regex: '(?i).*(amount|price|total|balance|cost|fee|salary|payment|subtotal|discount|tax).*'
+
+  # Python, added for issue #21. Same convention, and the same fix on the other
+  # side: `decimal.Decimal` or integer minor units.
+  #
+  # THE COVERAGE IS NARROWER THAN THE C# RULE, AND HONESTLY SO. C# declares a
+  # type on every local, so the rule sees `double total`. Python only has a type
+  # where somebody wrote an annotation, so an unannotated `total = 0.0` is not
+  # reachable here. That is a real limit, not an oversight: a rule keyed on the
+  # literal instead would fire on every float in the codebase. Consumer C runs
+  # mypy strict, which means annotations exist on parameters and attributes —
+  # which is where money crosses a boundary and where getting it wrong costs
+  # something. The gap has a fixture that stays silent, so it is visible.
+  - id: no-float-for-money-python
+    message: >-
+      Binary floating point cannot represent 0.10 exactly, so money in a float
+      silently drifts once you sum enough rows. Use decimal.Decimal or integer
+      minor units for any amount, price, total, balance or fee.
+    severity: ERROR
+    languages: [python]
+    paths:
+      exclude:
+        - "*_test.py"
+        - "test_*.py"
+        - "**/tests/**"
+        - "**/conftest.py"
+    pattern-either:
+      # Annotated assignments and bare annotations — module level, class
+      # attributes, and locals.
+      - patterns:
+          - pattern-either:
+              - pattern: '$NAME: float = ...'
+              - pattern: '$NAME: float'
+          - metavariable-regex:
+              metavariable: $NAME
+              regex: '(?i).*(amount|price|total|balance|cost|fee|salary|payment|subtotal|discount|tax).*'
+      # Function and method parameters, sync and async. The body is `...` rather
+      # than omitted, for the same reason as the C# rule: without it the pattern
+      # does not match a real definition.
+      - patterns:
+          - pattern-either:
+              - pattern: |
+                  def $F(..., $NAME: float, ...):
+                      ...
+              - pattern: |
+                  async def $F(..., $NAME: float, ...):
+                      ...
+          - metavariable-regex:
+              metavariable: $NAME
+              regex: '(?i).*(amount|price|total|balance|cost|fee|salary|payment|subtotal|discount|tax).*'

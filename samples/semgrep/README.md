@@ -26,10 +26,11 @@ no suppression file. A path allowlist survives both.
 
 ## Why these files sit outside the language projects
 
-`samples/typescript/` and `samples/dotnet/` have exact expected finding counts of
-their own. Keeping the Semgrep bait out of those projects means adding a rule
-fixture can never shift a Layer 1 count. Nothing here is ever compiled or linted
-— Semgrep only parses it.
+`samples/typescript/`, `samples/dotnet/` and `samples/python/` have exact
+expected finding counts of their own. Keeping the Semgrep bait out of those
+projects means adding a rule fixture can never shift a Layer 1 count. Nothing
+here is ever compiled, linted or type-checked — `ruff` and `mypy` run against
+`samples/python/`, not this directory, and Semgrep only parses what is here.
 
 ## Negative controls
 

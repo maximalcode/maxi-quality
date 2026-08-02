@@ -63,3 +63,69 @@ rules:
           async $METHOD(...) { ... $AUTHZ.require(...); ... }
       - pattern-not: |
           async $METHOD(...) { ... $AUTHZ.authorize(...); ... }
+
+  # Python, added for issue #21.
+  #
+  # The name regex is anchored differently from the two above and it matters.
+  # C# and TypeScript spell a mutation `DeleteOrder` / `deleteOrder`, so a
+  # prefix match on `Delete\w*` is unambiguous. Python spells it `delete_order`,
+  # and a bare prefix match would also take `settle_invoice` and `granted_at`
+  # along with it — `set` and `grant` are prefixes of real words. So the verb
+  # must be the whole name or be followed by an underscore.
+  #
+  # A LEADING UNDERSCORE IS NOT MATCHED, deliberately: `_delete_row` is a
+  # private helper, and the convention is about ENTRY POINTS. Python has no
+  # `public` keyword for the rule to key on the way the C# twin does, and the
+  # underscore is the language's own answer to the same question.
+  - id: mutation-requires-authz-python
+    message: >-
+      Service mutation method with no authorisation check. Every create/update/
+      delete entry point must call the authz gate before it touches state —
+      "the caller already checked" is how privilege-escalation bugs happen.
+    severity: ERROR
+    languages: [python]
+    paths:
+      include:
+        - "*service.py"
+        - "*handler.py"
+      exclude:
+        - "*_test.py"
+        - "test_*.py"
+        - "**/tests/**"
+        - "**/conftest.py"
+    patterns:
+      - pattern-either:
+          - pattern: |
+              def $METHOD(...):
+                  ...
+          - pattern: |
+              async def $METHOD(...):
+                  ...
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: '^(create|update|delete|remove|set|assign|revoke|grant)(_\w*)?$'
+      # As in the TS rule, `await` is not spelled out: semgrep matches the inner
+      # call inside the await expression, so one form covers both. Both sync and
+      # async definitions need their own exemption pattern, though — unlike the
+      # await case, `async def` is a different node and the plain form does not
+      # cover it.
+      - pattern-not: |
+          def $METHOD(...):
+              ...
+              $AUTHZ.require(...)
+              ...
+      - pattern-not: |
+          def $METHOD(...):
+              ...
+              $AUTHZ.authorize(...)
+              ...
+      - pattern-not: |
+          async def $METHOD(...):
+              ...
+              $AUTHZ.require(...)
+              ...
+      - pattern-not: |
+          async def $METHOD(...):
+              ...
+              $AUTHZ.authorize(...)
+              ...

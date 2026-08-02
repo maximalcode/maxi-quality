@@ -47,3 +47,42 @@ rules:
           if (!$X) { ... $RES.status(403); ... }
       - pattern: |
           if (!$X) { ... return $RES.status(403).$SEND(...); ... }
+
+  # Python, added for issue #21. Three web idioms, because Python has three: a
+  # FastAPI/Starlette `HTTPException(status_code=403)`, a returned response
+  # object, and Django/DRF's `PermissionDenied` — which is the closest twin of
+  # the C# rule's `StatusCode.PermissionDenied` and carries no number at all.
+  - id: no-permission-denied-for-invisible-resource-python
+    message: >-
+      Raising 403 / PermissionDenied after a not-found check leaks the
+      resource's existence — an enumeration oracle. Return 404 unless the caller
+      is already allowed to know the resource exists.
+    severity: ERROR
+    languages: [python]
+    paths:
+      exclude:
+        - "*_test.py"
+        - "test_*.py"
+        - "**/tests/**"
+        - "**/conftest.py"
+    pattern-either:
+      - pattern: |
+          if $X is None:
+              ...
+              raise $EX(status_code=403, ...)
+      - pattern: |
+          if not $X:
+              ...
+              raise $EX(status_code=403, ...)
+      - pattern: |
+          if $X is None:
+              ...
+              return $RES(status_code=403, ...)
+      - pattern: |
+          if not $X:
+              ...
+              return HttpResponseForbidden(...)
+      - pattern: |
+          if $X is None:
+              ...
+              raise PermissionDenied(...)

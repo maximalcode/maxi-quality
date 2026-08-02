@@ -160,7 +160,7 @@ Adding a 13th convention requires removing one, or an explicit decision from the
 user to raise the cap. A new rule is justified by *a real bug that slipped
 through*, never by "this would be nice to catch".
 
-Note the distinction: 12 **conventions**, currently 23 **rule ids**. Semgrep
+Note the distinction: 12 **conventions**, currently 28 **rule ids**. Semgrep
 patterns are language-specific, so one convention needs a separate id per
 language when the syntax differs. Splitting an existing convention into a
 per-language id is not new scope; inventing a new convention is.

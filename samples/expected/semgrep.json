@@ -208,6 +208,91 @@
     },
     {
       "rule": "todo-without-issue",
+      "file": "samples/semgrep/bad.py",
+      "line": 29
+    },
+    {
+      "rule": "hardcoded-secret-python",
+      "file": "samples/semgrep/bad.py",
+      "line": 41
+    },
+    {
+      "rule": "hardcoded-secret-python",
+      "file": "samples/semgrep/bad.py",
+      "line": 47
+    },
+    {
+      "rule": "hardcoded-secret-python",
+      "file": "samples/semgrep/bad.py",
+      "line": 57
+    },
+    {
+      "rule": "no-ambient-clock-python",
+      "file": "samples/semgrep/bad.py",
+      "line": 86
+    },
+    {
+      "rule": "no-ambient-clock-python",
+      "file": "samples/semgrep/bad.py",
+      "line": 91
+    },
+    {
+      "rule": "no-ambient-clock-python",
+      "file": "samples/semgrep/bad.py",
+      "line": 99
+    },
+    {
+      "rule": "no-ambient-clock-python",
+      "file": "samples/semgrep/bad.py",
+      "line": 105
+    },
+    {
+      "rule": "no-float-for-money-python",
+      "file": "samples/semgrep/bad.py",
+      "line": 116
+    },
+    {
+      "rule": "no-float-for-money-python",
+      "file": "samples/semgrep/bad.py",
+      "line": 121
+    },
+    {
+      "rule": "no-float-for-money-python",
+      "file": "samples/semgrep/bad.py",
+      "line": 125
+    },
+    {
+      "rule": "no-float-for-money-python",
+      "file": "samples/semgrep/bad.py",
+      "line": 130
+    },
+    {
+      "rule": "no-permission-denied-for-invisible-resource-python",
+      "file": "samples/semgrep/bad.py",
+      "line": 178
+    },
+    {
+      "rule": "no-permission-denied-for-invisible-resource-python",
+      "file": "samples/semgrep/bad.py",
+      "line": 186
+    },
+    {
+      "rule": "no-permission-denied-for-invisible-resource-python",
+      "file": "samples/semgrep/bad.py",
+      "line": 194
+    },
+    {
+      "rule": "no-permission-denied-for-invisible-resource-python",
+      "file": "samples/semgrep/bad.py",
+      "line": 203
+    },
+    {
+      "rule": "no-permission-denied-for-invisible-resource-python",
+      "file": "samples/semgrep/bad.py",
+      "line": 212
+    },
+    {
+      "rule": "todo-without-issue",
       "file": "samples/semgrep/bad.ts",
       "line": 16
     },
@@ -405,6 +490,16 @@
       "rule": "mutation-requires-authz-ts",
       "file": "samples/semgrep/user-service.ts",
       "line": 31
+    },
+    {
+      "rule": "mutation-requires-authz-python",
+      "file": "samples/semgrep/user_service.py",
+      "line": 17
+    },
+    {
+      "rule": "mutation-requires-authz-python",
+      "file": "samples/semgrep/user_service.py",
+      "line": 21
     }
   ]
 }
