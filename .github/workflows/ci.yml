@@ -1119,7 +1119,7 @@ jobs:
           echo 'OK: re-run is idempotent and non-destructive'
 
   # #13 — Semgrep is pinned in two places: the layer2 action's input default and
-  # the layer2-counts job below. If they drift, CI asserts 59 findings against a
+  # the layer2-counts job below. If they drift, CI asserts 60 findings against a
   # Semgrep that consumers never run, and the samples quietly stop meaning what
   # they claim. Offline on PRs; the weekly `pins` workflow does the upstream half.
   version-pins:

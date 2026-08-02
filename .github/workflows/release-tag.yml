@@ -14,7 +14,7 @@
 #
 # WHY IT IS SAFE TO AUTOMATE: it triggers on `workflow_run` from `ci`, and only
 # when that run CONCLUDED SUCCESSFULLY on main. ci asserts exact sample counts
-# (8 TS / 13 C# / 3 tests / 0+0 on both clean fixtures / 59 findings across 19
+# (8 TS / 13 C# / 3 tests / 0+0 on both clean fixtures / 60 findings across 19
 # rule ids), so a ruleset that changed behaviour cannot reach a green main in
 # the first place. The tag inherits that gate rather than adding a new one.
 #

@@ -130,7 +130,7 @@ mypy --config-file configs/python/mypy.ini samples/python/src
 ruff check samples/python-clean          # expect exit 0, ZERO findings
 mypy --config-file configs/python/mypy.ini samples/python-clean/src
                                          # expect exit 0, ZERO findings
-./scripts/scan.sh                        # expect exit 1, 59 semgrep findings / 19 rule ids
+./scripts/scan.sh                        # expect exit 1, 60 semgrep findings / 19 rule ids
 
 python3 scripts/coverage.py --report samples/coverage/lcov.info \
         --floor-file /tmp/f.json         # expect coverage=65.00
@@ -187,10 +187,10 @@ Gitleaks v8.30.1 and OSV-Scanner v2 via Docker — nothing was installed globall
 | **Gitleaks auto-loads `.gitleaks.toml`** | So a "control" run without `--config` is *not* a control. The honest control (default rules, explicit `--config`) gives `leaks found: 2` vs `no leaks found`. |
 | **`scan.sh` targets bash 3.2** | macOS ships 3.2.57, where `"${arr[@]}"` on an empty array is fatal under `set -u`. Uses `${arr[@]+"${arr[@]}"}`. |
 | **Cross-language Semgrep rules** | A rule listing two languages needs every pattern to parse in *both*. 5 patterns were rejected for this. Where syntax differs, split into `-ts` / `-dotnet` ids with an identical message. |
-| **A rule's message can lie about its own escape hatch** | `catch-and-swallow` told you to explain the silence in a comment; comments are not AST nodes, so a comment-only block was still `{ }` and still matched. Following the instruction verbatim did not clear the finding. Fixed 2026-07-31 with a `pattern-not-regex` that re-reads the source text. **On real code this rule was 4/4 false positives in TypeScript** (Consumer A). If a rule documents an escape hatch, test the escape hatch — the pattern proves the rule fires, never that it can be satisfied. |
+| **A rule's message can lie about its own escape hatch** | `catch-and-swallow` told you to explain the silence in a comment; comments are not AST nodes, so a comment-only block was still `{ }` and still matched. Following the instruction verbatim did not clear the finding. Fixed 2026-07-31 with a `pattern-not-regex` that re-reads the source text. **On real code this rule was 4/4 false positives in TypeScript** (Consumer A). If a rule documents an escape hatch, test the escape hatch — the pattern proves the rule fires, never that it can be satisfied. **It then recurred on 2026-08-02**: the regex walks from the exception parens straight to the brace, so a C# exception filter (`catch (T e) when (…)`) stepped over it and a documented-and-intentional filtered catch could not be cleared either. The deeper lesson is the shape, not the syntax — a lexical negation bolted onto an AST rule can silently miss every catch-clause form nobody thought to plant, and each miss costs a consumer a false positive first. |
 | **`pattern-not-regex` must be nested under `patterns:`** | Placed at rule level next to a top-level `pattern-either`, Semgrep **silently ignores it** — no error, no warning, the rule just behaves as if it were absent. Verified the hard way: identical output before and after adding it. It only takes effect inside a `patterns:` block alongside the `pattern-either`. |
 | **Analyzer versions pinned, not floating** | With `TreatWarningsAsErrors`, an analyzer upgrade that adds rules is a breaking change. Bump deliberately — the policy and its mechanism are §6 (#13). |
-| **Semgrep is pinned twice** | `actions/layer2/action.yml` (what consumers get) and `ci.yml`'s `layer2-counts` (what validates the 59/19 assertion). They must match or CI is testing a tool nobody runs. `scripts/check-pins.sh --offline` guards it on every PR. |
+| **Semgrep is pinned twice** | `actions/layer2/action.yml` (what consumers get) and `ci.yml`'s `layer2-counts` (what validates the 60/19 assertion). They must match or CI is testing a tool nobody runs. `scripts/check-pins.sh --offline` guards it on every PR. |
 | **osv-scanner emits empty licences unless you ask** | `--format=cyclonedx-1-6` alone gives every component `"licenses": []` — the key is present and the array empty. Bare `--licenses` (no `=allowlist`) is the report-only mode that actually resolves them, and it exits 0. Without it the standing report renders a tidy table of *N* UNKNOWNs and looks completely fine. Measured: 104 components, 0 with licences vs 102 with. |
 | **osv-scanner needs `--all-packages` for an SBOM** | Otherwise the CycloneDX output holds only the packages in the *results* — 28 instead of 94 on this repo. An inventory that shrinks as things improve is not an inventory. |
 | **osv-scanner will not create its output directory** | It exits **127** with `failed to create output file`, which reads as "the tool is broken" rather than "make the folder". `scan.sh` `mkdir -p`s the parent. |
@@ -310,7 +310,7 @@ before anything was written, and the measurement changed what got built.
 repo's own planted samples: 22 rules loaded (2 multilang + 20 TS, **zero C#**),
 ~100% of lines parsed, **0 findings**, on files carrying planted SQL injection
 and command injection. Our 12 hand-written conventions found 28 on those same
-files at the time of that scan (59 today — the ruleset gained fixtures and
+files at the time of that scan (60 today — the ruleset gained fixtures and
 branches since, which is why this number is left as measured rather than
 refreshed). Same result as `docs/EVAL-vs-sonarqube.md`. Adding scanners would
 have made the gate slower and no better.

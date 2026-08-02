@@ -22,6 +22,31 @@
 #
 # The escape hatch is now real. A bare `catch { }` still fires, which is the
 # whole point and is what samples/semgrep asserts.
+#
+# 2026-08-02 — THE SAME BUG, ONE SYNTAX FURTHER ALONG.
+#
+# A regex that re-reads source text has to step over every token the language
+# allows between `catch` and `{`, and C# allows one the original expression did
+# not know about: an exception filter, `catch (T e) when (cond) { }`. The old
+# `catch\s*(\([^)]*\))?\s*\{` walks straight from the closing paren to the
+# brace, so a FILTERED catch never matched the negation and could not be cleared
+# by the comment the message asks for — while an unfiltered one beside it could.
+# Documented-and-intentional flagged again, and the message again promising an
+# escape hatch that did not exist for that shape. Found the same way as the
+# first one: measuring against Consumer A, where the filter is how a specific
+# error code gets caught by name.
+#
+# Only the C# id needs the extra branch. JavaScript and TypeScript have no
+# exception filter, so the TS negation is left alone rather than grown a branch
+# for syntax that cannot occur.
+#
+# The lesson worth keeping is not about `when` specifically: this negation is a
+# LEXICAL patch over an AST rule, so every catch-clause syntax is a separate
+# thing it can silently miss, and each one costs a real consumer a false
+# positive before anyone notices. Both halves of the filter form are planted in
+# samples/semgrep/Bad.cs — one that must fire, one that must not — because a
+# negative control on its own proves the escape hatch works and nothing about
+# whether the branch still matches.
 
 rules:
   - id: catch-and-swallow-ts
@@ -54,4 +79,7 @@ rules:
               try { ... } catch ($T $E) { }
           - pattern: |
               try { ... } catch ($T) { }
-      - pattern-not-regex: 'catch\s*(\([^)]*\))?\s*\{\s*(//|/\*)'
+      # The `(when ...)` group is the 2026-08-02 fix; see the header. Greedy
+      # `.*` rather than lazy so a filter containing its own parens —
+      # `when (IsTransient(e))` — still reaches the brace by backtracking.
+      - pattern-not-regex: 'catch\s*(\([^)]*\))?\s*(when\s*\(.*\)\s*)?\{\s*(//|/\*)'

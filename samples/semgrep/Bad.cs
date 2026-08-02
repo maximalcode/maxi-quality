@@ -173,6 +173,41 @@ public static class Billing
         }
     }
 
+    // The exception-filter form. C# lets a catch carry a `when (...)` clause
+    // between the type and the block, and that clause is source text the
+    // `pattern-not-regex` has to step over — until 2026-08-02 it did not, so a
+    // FILTERED catch could not be cleared by the comment the message asks for
+    // even though an unfiltered one could. The same bug as 2026-07-31, one
+    // syntax further along, and found the same way: measuring against
+    // Consumer A.
+    //
+    // Both halves are planted, per the lesson above the bare form: a negative
+    // control on its own proves the escape hatch works and nothing about
+    // whether the branch still matches. This one must FIRE.
+    public static void TryFlushFiltered(Action flush)
+    {
+        try
+        {
+            flush();
+        }
+        catch (InvalidOperationException e) when (e.Message.Length > 0)
+        {
+        }
+    }
+
+    // NEGATIVE CONTROL for the filter form. This one must NOT fire.
+    public static void TryDisposeFiltered(IDisposable resource)
+    {
+        try
+        {
+            resource.Dispose();
+        }
+        catch (InvalidOperationException e) when (e.Message.Length > 0)
+        {
+            // Disposal races on a shared handle are expected; the object is going away regardless.
+        }
+    }
+
     // --- debug-print-left-behind-dotnet -----------------------------------
     public static void Trace(string message)
     {
