@@ -1,0 +1,44 @@
+{
+  // maxi-quality — strict TypeScript compiler baseline.
+  //
+  // USAGE — the consuming project's tsconfig.json extends this and only sets
+  // what is genuinely project-specific (paths, target, lib, outDir):
+  //
+  //   {
+  //     "extends": "../../configs/typescript/tsconfig.strict.json",
+  //     "compilerOptions": { "outDir": "dist", "rootDir": "src" },
+  //     "include": ["src"]
+  //   }
+  //
+  // Note: "extends" resolves relative paths against THIS file, so relative
+  // options like outDir/rootDir are deliberately not set here.
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "compilerOptions": {
+    // --- The strict family ---------------------------------------------
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "useUnknownInCatchVariables": true,
+
+    // --- Module semantics ----------------------------------------------
+    // Imports mean exactly what they say; no elision surprises at runtime.
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "target": "es2022",
+    "lib": ["es2023"],
+
+    // --- Output ---------------------------------------------------------
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "skipLibCheck": true
+  }
+}

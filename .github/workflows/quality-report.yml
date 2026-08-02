@@ -1,0 +1,122 @@
+# maxi-quality — the standing backlog report.
+#
+# WHAT THIS IS FOR
+#
+# `quality.yml` is a GATE: it answers "is this PR clean?" and, on an existing
+# codebase adopted with `changed-only`, deliberately says nothing about the
+# backlog it grandfathered. That is correct for a gate and useless as a view of
+# where the repo actually stands. Nothing answered "what is still wrong from
+# before?" — the one thing SonarQube genuinely did better (docs/EVAL-vs-
+# sonarqube.md; it lost on detection, not on memory).
+#
+# WHERE THE STATE LIVES
+#
+# In a GitHub issue. There is no server and no cloud here, on purpose — zero
+# spend is a success criterion. GitHub code scanning would be the better store,
+# but on a private repo owned by a personal account it requires Advanced
+# Security, which is the paid path.
+#
+# So: ONE issue per repo, updated in place forever, holding the current
+# breakdown plus a history table that grows a row per run. Never a new issue
+# per run — a weekly bot that opens issues becomes noise, noise gets muted, and
+# a muted report is worse than no report.
+#
+# USAGE — in the consuming repo:
+#
+#   name: quality-report
+#   on:
+#     schedule: [{ cron: '0 6 * * 1' }]
+#     workflow_dispatch:
+#   permissions:
+#     contents: read
+#     issues: write          # REQUIRED — this workflow writes the issue
+#   jobs:
+#     report:
+#       uses: maximalcode/maxi-quality/.github/workflows/quality-report.yml@v1
+#
+# `issues: write` must be granted by the CALLER. A reusable workflow cannot
+# raise its own permissions, so without it the job fails at the gh call rather
+# than silently reporting nothing.
+
+name: quality-report
+
+on:
+  workflow_call:
+    inputs:
+      title:
+        description: 'Title of the standing issue. Used to find it again.'
+        type: string
+        default: 'Quality backlog'
+      label:
+        description: >-
+          Label identifying the standing issue. This is the lookup key — change
+          it and the next run opens a SECOND issue and starts history over.
+        type: string
+        default: 'quality-report'
+      sbom-retention-days:
+        description: 'How long the CycloneDX SBOM artifact is kept.'
+        type: number
+        default: 90
+    outputs:
+      issue:
+        description: >-
+          Number of the standing issue this run wrote. Exposed so a caller can
+          assert the report LANDED. Without it a broken report path is
+          indistinguishable from a clean repo — which is exactly how this
+          workflow shipped broken (#46).
+        value: ${{ jobs.report.outputs.issue }}
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    outputs:
+      issue: ${{ steps.write.outputs.issue }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Gitleaks scans history, not just the tree.
+          fetch-depth: 0
+
+      # NO checkout of maxi-quality here. The first version of this workflow did
+      # exactly that and died with "Repository not found" on every consumer,
+      # because a consumer's default token could not clone a private baseline.
+      # Composite actions resolve on GitHub's own scoped token and need no PAT,
+      # which is why layer2 is shaped this way — and it keeps working for anyone
+      # who forks this baseline and keeps their copy private.
+      - name: Full scan
+        id: scan
+        uses: maximalcode/maxi-quality/actions/layer2@v1
+        with:
+          # A FULL scan, never changed-only: the backlog IS the point here.
+          # no-fail because a report must not fail merely because findings
+          # exist — failing on findings is quality.yml's job, not this one's.
+          json-out: ${{ runner.temp }}/semgrep.json
+          # The SBOM belongs to the REPORT, not to the gate: an inventory of
+          # every dependency and its licence is a thing you consult, and a gate
+          # that produced one on every PR would just be slower.
+          sbom-out: ${{ runner.temp }}/sbom.cdx.json
+          no-fail: 'true'
+
+      - name: Write the standing issue
+        id: write
+        uses: maximalcode/maxi-quality/actions/report-issue@v1
+        with:
+          json: ${{ runner.temp }}/semgrep.json
+          sbom: ${{ runner.temp }}/sbom.cdx.json
+          title: ${{ inputs.title }}
+          label: ${{ inputs.label }}
+          gitleaks: ${{ steps.scan.outputs.gitleaks }}
+          osv: ${{ steps.scan.outputs.osv }}
+          licenses: ${{ steps.scan.outputs.licenses }}
+
+      # The issue holds the SUMMARY (counts per licence); this is the artifact
+      # an auditor actually asks for. Uploaded even if the issue write failed —
+      # producing it was the expensive half.
+      - name: Upload the CycloneDX SBOM
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-cyclonedx
+          path: ${{ runner.temp }}/sbom.cdx.json
+          if-no-files-found: warn
+          retention-days: ${{ inputs.sbom-retention-days }}

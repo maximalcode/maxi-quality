@@ -1,0 +1,61 @@
+{
+  "$comment": [
+    "Hand-written CycloneDX 1.6 fixture for scripts/quality-report.py.",
+    "It exists because CycloneDX spells a licence three different ways and all",
+    "three occur in real osv-scanner output: an SPDX id, a free-text name, and",
+    "an expression. A parser that only handles `license.id` looks correct",
+    "against one producer and silently reports UNKNOWN for everything else.",
+    "The fifth component has an EMPTY licences array — that is what osv-scanner",
+    "emits without the bare --licenses flag, and reading it as 'no licence' is",
+    "exactly right; reading it as 'the flag is unnecessary' is what nearly",
+    "shipped an SBOM with 104 UNKNOWNs.",
+    "Expected: 6 components -> MIT 2, Apache-2.0 1, MIT OR Apache-2.0 1,",
+    "UNKNOWN 2."
+  ],
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "version": 1,
+  "components": [
+    {
+      "bom-ref": "pkg:npm/alpha@1.0.0",
+      "type": "library",
+      "name": "alpha",
+      "version": "1.0.0",
+      "licenses": [{ "license": { "id": "MIT" } }]
+    },
+    {
+      "bom-ref": "pkg:npm/beta@2.0.0",
+      "type": "library",
+      "name": "beta",
+      "version": "2.0.0",
+      "licenses": [{ "license": { "name": "MIT" } }]
+    },
+    {
+      "bom-ref": "pkg:npm/gamma@3.0.0",
+      "type": "library",
+      "name": "gamma",
+      "version": "3.0.0",
+      "licenses": [{ "license": { "id": "Apache-2.0" } }]
+    },
+    {
+      "bom-ref": "pkg:npm/delta@4.0.0",
+      "type": "library",
+      "name": "delta",
+      "version": "4.0.0",
+      "licenses": [{ "expression": "MIT OR Apache-2.0" }]
+    },
+    {
+      "bom-ref": "pkg:npm/epsilon@5.0.0",
+      "type": "library",
+      "name": "epsilon",
+      "version": "5.0.0",
+      "licenses": []
+    },
+    {
+      "bom-ref": "pkg:npm/zeta@6.0.0",
+      "type": "library",
+      "name": "zeta",
+      "version": "6.0.0"
+    }
+  ]
+}

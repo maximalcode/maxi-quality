@@ -1,0 +1,115 @@
+# maxi-quality — dependency bump policy (issue #13).
+#
+# WHY AUTOMATED BUMPS ARE SAFE HERE, when they usually are not:
+#
+# Every config in this repo is pinned by hand because `TreatWarningsAsErrors`
+# turns an analyzer upgrade that adds one rule into a breaking change for every
+# consumer. Normally that argues against automation.
+#
+# It does not here, because samples/ asserts EXACT counts — 8 TS errors, 13 C#
+# errors, 3 in the Tests sample, 32 Semgrep findings across 19 rule ids, and
+# zero on both clean fixtures. An analyzer bump that changes what fires cannot
+# merge quietly: it turns CI red with a count mismatch. The bump PR becomes the
+# place where someone looks at the new rule and decides.
+#
+# So the policy is: let Dependabot open the PR, let CI decide whether it is a
+# behaviour change, and let a human resolve the ones that are.
+#
+# WHEN CI GOES RED ON A BUMP:
+#   1. Read which rule ids moved. `layer2-counts` prints defined vs fired.
+#   2. If the new finding is genuine, update the expected count AND say why in
+#      the commit. Never weaken a sample to make a bump green (CLAUDE.md §5).
+#   3. Then move the `v1` tag, or consumers keep the old ruleset (STATUS §4).
+#
+# NOT COVERED HERE: the Semgrep / Gitleaks / OSV-Scanner versions pinned as
+# strings in actions/layer2/action.yml. Dependabot has no ecosystem for "a
+# version number inside an action input default", so those are checked by
+# scripts/check-pins.sh and the weekly `pins` workflow instead.
+
+version: 2
+
+updates:
+  # --- The lint toolchain -----------------------------------------------------
+  # Grouped so five related packages arrive as one reviewable PR rather than
+  # five PRs that each turn the samples a different shade of red.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      eslint-toolchain:
+        patterns:
+          - eslint
+          - '@eslint/*'
+          - typescript-eslint
+          - '@types/node'
+    ignore:
+      # TypeScript majors are NOT routine here. typescript-eslint 8.x declares
+      # `>=4.8.4 <6.1.0`, and TS 7 is refused outright rather than warned about
+      # — that is the live blocker in #28. A major bump is a decision, not a PR
+      # to approve on a Friday.
+      - dependency-name: typescript
+        update-types: [version-update:semver-major]
+      # @types/node majors track the Node RUNTIME major. Bumping the types
+      # ahead of the runtime is silently unsafe: TypeScript starts accepting
+      # APIs that do not exist when the code actually runs, which is precisely
+      # the class of bug this repo exists to catch.
+      #
+      # Caught in practice — Dependabot's first batch (#32) proposed
+      # 24.13.3 -> 26.1.2 while ci.yml pins `node-version: '24'`. All eight
+      # checks passed, because the samples happen not to call a Node 26-only
+      # API. Green CI was not evidence of safety here.
+      #
+      # Bump this together with the Node version in ci.yml and quality.yml's
+      # default, as one deliberate change.
+      - dependency-name: '@types/node'
+        update-types: [version-update:semver-major]
+
+  # --- Roslyn analyzers -------------------------------------------------------
+  # SonarAnalyzer.CSharp and Roslynator.Analyzers are declared in
+  # configs/dotnet/Directory.Build.props, which the NuGet updater discovers as
+  # an imported file. samples/dotnet imports that same props file, so the
+  # sample projects are what give Dependabot a project graph to resolve against.
+  - package-ecosystem: nuget
+    directories:
+      - /configs/dotnet
+      - /samples/dotnet
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      roslyn-analyzers:
+        patterns:
+          - SonarAnalyzer.*
+          - Roslynator.*
+
+  # --- Python lint toolchain --------------------------------------------------
+  # ruff and mypy are pinned in samples/python/requirements-dev.txt because the
+  # asserted counts (14 ruff findings, 5 mypy errors) are only meaningful
+  # against a known version.
+  #
+  # ruff ships new rules in PATCH releases — 0.x has no stable-API promise — so
+  # a bump here is more likely to move counts than the npm or nuget groups are.
+  # That is working as intended: the count mismatch is the notification.
+  - package-ecosystem: pip
+    directory: /samples/python
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      python-linters:
+        patterns:
+          - ruff
+          - mypy
+
+  # --- Actions used by this repo's own workflows ------------------------------
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      ci-actions:
+        patterns:
+          - '*'

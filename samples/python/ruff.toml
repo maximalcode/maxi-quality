@@ -1,0 +1,7 @@
+# This is the whole config a consuming project writes. One line.
+#
+# It uses `extend` rather than `--config` deliberately: extend is the path real
+# consumers take, so exercising it here means the sample tests the CONSUMPTION
+# mechanism, not just the ruleset. A `--config` invocation would pass even if
+# extend resolution were broken.
+extend = "../../configs/python/ruff.toml"

@@ -1,0 +1,31 @@
+# maxi-quality — weekly upstream drift check for the hand-pinned tools (#13).
+#
+# Dependabot handles npm, NuGet and GitHub Actions (see .github/dependabot.yml).
+# It has no ecosystem for a version string written into an action input default,
+# which is how Semgrep, Gitleaks and OSV-Scanner are pinned. This is the
+# mechanism for those three.
+#
+# It FAILS on drift on purpose. With TreatWarningsAsErrors downstream, staying
+# roughly current is a maintenance obligation rather than a nice-to-have, and a
+# red weekly run is the only signal that reliably gets noticed. If it becomes
+# noisy, drop --fail-on-drift and the script reports without failing.
+
+name: pins
+
+on:
+  schedule:
+    # Mondays, 07:00 UTC — a bump is a decision, and decisions want a weekday.
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Are the pinned tools still current?
+        shell: bash
+        run: ./scripts/check-pins.sh --fail-on-drift

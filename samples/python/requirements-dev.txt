@@ -1,0 +1,11 @@
+# Pinned so the asserted finding counts in ci.yml mean something. An unpinned
+# ruff would change what fires between runs and the counts would rot silently.
+#
+# These are the versions Consumer C runs, deliberately — the baseline is only
+# honest if it is verified against the toolchain the real consumer uses.
+#
+# Dependabot bumps these (pip ecosystem). A bump that changes what fires turns
+# ci.yml red on a count mismatch, which is the intended behaviour: the PR is
+# where a human looks at the new rule and decides. See .github/dependabot.yml.
+ruff==0.16.0
+mypy==2.3.0

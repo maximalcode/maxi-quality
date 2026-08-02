@@ -1,0 +1,75 @@
+{
+  "tool": "ruff",
+  "findings": [
+    {
+      "rule": "I001",
+      "file": "samples/python/src/bad.py",
+      "line": 12
+    },
+    {
+      "rule": "UP035",
+      "file": "samples/python/src/bad.py",
+      "line": 12
+    },
+    {
+      "rule": "F401",
+      "file": "samples/python/src/bad.py",
+      "line": 15
+    },
+    {
+      "rule": "B006",
+      "file": "samples/python/src/bad.py",
+      "line": 19
+    },
+    {
+      "rule": "N802",
+      "file": "samples/python/src/bad.py",
+      "line": 19
+    },
+    {
+      "rule": "S105",
+      "file": "samples/python/src/bad.py",
+      "line": 21
+    },
+    {
+      "rule": "W605",
+      "file": "samples/python/src/bad.py",
+      "line": 25
+    },
+    {
+      "rule": "SIM108",
+      "file": "samples/python/src/bad.py",
+      "line": 28
+    },
+    {
+      "rule": "C401",
+      "file": "samples/python/src/bad.py",
+      "line": 34
+    },
+    {
+      "rule": "T201",
+      "file": "samples/python/src/bad.py",
+      "line": 37
+    },
+    {
+      "rule": "E501",
+      "file": "samples/python/src/bad.py",
+      "line": 39
+    },
+    {
+      "rule": "UP006",
+      "file": "samples/python/src/bad.py",
+      "line": 43
+    },
+    {
+      "rule": "ASYNC230",
+      "file": "samples/python/src/bad.py",
+      "line": 45
+    },
+    {
+      "rule": "RUF006",
+      "file": "samples/python/src/bad.py",
+      "line": 52
+    }
+  ]
+}

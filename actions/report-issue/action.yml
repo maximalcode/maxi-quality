@@ -1,0 +1,126 @@
+# maxi-quality — write the standing backlog report into a GitHub issue.
+#
+# WHY THIS IS A COMPOSITE ACTION AND NOT A CHECKOUT
+#
+# The first version of the reporting workflow did `actions/checkout` on
+# maximalcode/maxi-quality to get at scripts/. That failed for every consumer
+# while this repo was private: a consumer's default GITHUB_TOKEN had no access
+# to it, and the run died with "Repository not found", which reads like the repo
+# was deleted rather than like a permissions design error.
+#
+# Composite actions do not have that problem. GitHub resolves
+# `maximalcode/maxi-quality/actions/...@v1` on its own scoped token, so a
+# consumer needs no PAT and no checkout — which is exactly why the layer2 action
+# is shaped this way. Reaching for checkout threw that property away, and it
+# would do so again for anyone who forks this baseline and keeps it private.
+# (While the repo was private this also required an Actions access policy,
+# access_level=user — issues #5/#8.)
+#
+# Consequence for anything added here later: baseline files reach a consumer
+# through GITHUB_ACTION_PATH, never through a checkout of this repo.
+
+name: 'maxi-quality report issue'
+description: 'Render the backlog report and upsert it into a single GitHub issue.'
+
+inputs:
+  json:
+    description: "Semgrep JSON produced by the layer2 action's json-out."
+    required: true
+  title:
+    description: 'Title used when the standing issue is first created.'
+    default: 'Quality backlog'
+  label:
+    description: >-
+      Label identifying the standing issue. This is the LOOKUP KEY — change it
+      and the next run opens a second issue and restarts history.
+    default: 'quality-report'
+  gitleaks:
+    description: 'Gitleaks status, from the layer2 action output.'
+    default: 'not run'
+  osv:
+    description: 'OSV-Scanner status, from the layer2 action output.'
+    default: 'not run'
+  licenses:
+    description: 'License-allowlist status, from the layer2 action output.'
+    default: 'not run'
+  sbom:
+    description: >-
+      CycloneDX SBOM from the layer2 action's sbom-out. Optional: a missing or
+      malformed file costs the report its dependency table, never its history.
+    default: ''
+  token:
+    description: 'Token with issues:write on the CONSUMER repo.'
+    default: ${{ github.token }}
+
+outputs:
+  issue:
+    description: >-
+      Number of the standing issue. Exposed so a caller can ASSERT the report
+      actually landed — this whole path shipped broken once because nothing
+      downstream ever looked at its result.
+    value: ${{ steps.upsert.outputs.issue }}
+
+runs:
+  using: composite
+  steps:
+    - name: Build and upsert the standing issue
+      id: upsert
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        LABEL: ${{ inputs.label }}
+        TITLE: ${{ inputs.title }}
+        JSON: ${{ inputs.json }}
+        GITLEAKS: ${{ inputs.gitleaks }}
+        OSV: ${{ inputs.osv }}
+        LICENSES: ${{ inputs.licenses }}
+        SBOM: ${{ inputs.sbom }}
+      run: |
+        set -Eeuo pipefail
+
+        # --state all so a manually-closed issue is reused and reopened rather
+        # than duplicated. Duplicates would each carry half the history.
+        NUM=$(gh issue list --label "$LABEL" --state all --limit 1 \
+                --json number --jq '.[0].number // empty')
+
+        ARGS=(--json "$JSON"
+              --date "$(date -u +%Y-%m-%d)"
+              --target "$GITHUB_REPOSITORY"
+              --gitleaks "$GITLEAKS"
+              --osv "$OSV"
+              --licenses "$LICENSES")
+
+        if [[ -n "$SBOM" && -f "$SBOM" ]]; then
+          ARGS+=(--sbom "$SBOM")
+        fi
+
+        if [[ -n "$NUM" ]]; then
+          gh issue view "$NUM" --json body --jq .body > "$RUNNER_TEMP/prev.md"
+          # An array, not string interpolation — a flag glued to its value in
+          # one argv token is silently rejected by argparse.
+          ARGS+=(--previous-body "$RUNNER_TEMP/prev.md")
+        fi
+
+        python3 "${GITHUB_ACTION_PATH}/../../scripts/quality-report.py" \
+          "${ARGS[@]}" > "$RUNNER_TEMP/body.md"
+
+        if [[ -n "$NUM" ]]; then
+          gh issue edit "$NUM" --body-file "$RUNNER_TEMP/body.md"
+          gh issue reopen "$NUM" 2>/dev/null || true
+          echo "updated the standing issue #$NUM"
+        else
+          gh label create "$LABEL" --color 0E8A16 \
+            --description 'Standing maxi-quality backlog report' 2>/dev/null || true
+          URL=$(gh issue create --title "$TITLE" --label "$LABEL" \
+                  --body-file "$RUNNER_TEMP/body.md")
+          NUM="${URL##*/}"
+          echo "created the standing issue #$NUM"
+        fi
+
+        # Fail rather than emit an empty output. A caller that asserts on this
+        # number must not be handed "" and left to decide what that means.
+        if [[ -z "$NUM" ]]; then
+          echo '::error::the standing issue number could not be determined — the report did not land'
+          exit 1
+        fi
+        echo "issue=$NUM" >> "$GITHUB_OUTPUT"

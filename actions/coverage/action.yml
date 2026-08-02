@@ -1,0 +1,124 @@
+# maxi-quality — the coverage ratchet.
+#
+# WHY THIS IS AN ACTION AND NOT A JOB IN quality.yml
+#
+# quality.yml runs TOOLS over a checkout. Coverage needs the consumer's TESTS
+# to run first, and a test suite is not something this baseline can drive: it
+# needs services, fixtures, env, a database, a build. Every attempt to guess a
+# "standard" test command ends with a gate that is either skipped or wrong.
+#
+# So the split is: the consumer runs its own tests and produces an lcov or
+# Cobertura report — which every mainstream runner already does with one flag —
+# and this action does the part that is genuinely shared, which is remembering
+# the number and refusing to let it fall.
+#
+#   - vitest    : --coverage.reporter=lcov          -> coverage/lcov.info
+#   - jest / c8 : --coverage --coverageReporters=lcov
+#   - coverlet  : dotnet test --collect:"XPlat Code Coverage"
+#                                                   -> **/coverage.cobertura.xml
+#   - pytest    : --cov --cov-report=xml            -> coverage.xml
+#
+# THE FLOOR IS COMMITTED, AND RAISING IT IS THE CONSUMER'S COMMIT
+#
+# `raise: true` rewrites the floor file, it does NOT commit it. Committing from
+# CI is a write to the consumer's default branch, and this baseline does not
+# take that permission on a consumer's behalf — see README for the six-line
+# commit-back step if you want it.
+
+name: 'maxi-quality coverage ratchet'
+description: >-
+  Compare measured line coverage against a committed floor. Fails when it
+  drops; never demands a number the repo has not already reached.
+
+inputs:
+  report:
+    description: >-
+      Coverage report path or glob. Repeatable: one per line. lcov and
+      Cobertura are both accepted and detected by content, not by filename.
+    required: true
+  floor-file:
+    description: 'Committed floor. Lives in the CONSUMER repo.'
+    default: '.maxi-quality/coverage.json'
+  tolerance:
+    description: >-
+      Percentage points of slack below the floor. A ratchet that fires on
+      rounding noise gets switched off within a week.
+    default: '0.1'
+  raise:
+    description: >-
+      'true' rewrites the floor file when coverage improved. It does NOT
+      commit — that is the consumer's decision, not this action's.
+    default: 'false'
+
+outputs:
+  coverage:
+    description: 'Measured line coverage, percent to 2dp.'
+    value: ${{ steps.ratchet.outputs.coverage }}
+  floor:
+    description: 'The floor it was compared against.'
+    value: ${{ steps.ratchet.outputs.floor }}
+  raised:
+    description: "'true' when the floor file was rewritten."
+    value: ${{ steps.ratchet.outputs.raised }}
+
+runs:
+  using: composite
+  steps:
+    - name: Coverage ratchet
+      id: ratchet
+      shell: bash
+      env:
+        REPORTS: ${{ inputs.report }}
+        FLOOR_FILE: ${{ inputs.floor-file }}
+        TOLERANCE: ${{ inputs.tolerance }}
+        RAISE: ${{ inputs.raise }}
+      run: |
+        set -Eeuo pipefail
+
+        # Globs are expanded HERE, not by the script, so an unmatched pattern
+        # is caught loudly instead of being passed through as a literal path
+        # that then fails to open with a confusing message.
+        ARGS=()
+        while IFS= read -r pattern; do
+          [[ -n "${pattern// }" ]] || continue
+          matched=0
+          # shellcheck disable=SC2086
+          for f in $pattern; do
+            [[ -f "$f" ]] || continue
+            ARGS+=(--report "$f")
+            matched=1
+          done
+          if (( ! matched )); then
+            echo "::error::no coverage report matched '$pattern'. The test step did not produce one — a missing report must not read as a passing gate."
+            exit 1
+          fi
+        done <<< "$REPORTS"
+
+        ARGS+=(--floor-file "$FLOOR_FILE" --tolerance "$TOLERANCE")
+        # An `if`, not `[[ ... ]] && ARGS+=(--write)`. Under `set -e` a false
+        # `[[ ]] && cmd` does NOT abort mid-script — it bites as the LAST
+        # statement of a script (the script exits 1, failing the step) or of a
+        # function (it returns 1). Written as an `if` so reordering can never
+        # make it the last statement and turn `raise: false` into a red step.
+        if [[ "$RAISE" == "true" ]]; then
+          ARGS+=(--write)
+        fi
+
+        rc=0
+        python3 "${GITHUB_ACTION_PATH}/../../scripts/coverage.py" "${ARGS[@]}" \
+          > "$RUNNER_TEMP/coverage.out" 2> "$RUNNER_TEMP/coverage.msg" || rc=$?
+
+        # The script prints key=value on stdout precisely so this is a copy,
+        # not a parse.
+        cat "$RUNNER_TEMP/coverage.out" >> "$GITHUB_OUTPUT"
+        cat "$RUNNER_TEMP/coverage.msg"
+
+        {
+          echo "### Coverage ratchet"
+          echo
+          echo '```'
+          cat "$RUNNER_TEMP/coverage.msg"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        exit "$rc"

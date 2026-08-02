@@ -1,0 +1,49 @@
+rules:
+  - id: weak-crypto
+    message: >-
+      MD5/SHA1/DES/RC4 are broken for anything security-relevant. Use SHA-256+
+      for digests, and a password hash (Argon2/bcrypt/PBKDF2) for passwords —
+      never a raw digest.
+    severity: ERROR
+    languages: [typescript, csharp]
+    pattern-either:
+      # C#
+      - pattern: MD5.Create(...)
+      - pattern: SHA1.Create(...)
+      - pattern: new MD5CryptoServiceProvider(...)
+      - pattern: new SHA1CryptoServiceProvider(...)
+      - pattern: DES.Create(...)
+      - pattern: TripleDES.Create(...)
+      # TypeScript / Node
+      - pattern: crypto.createHash("md5")
+      - pattern: crypto.createHash("sha1")
+      - pattern: createHash("md5")
+      - pattern: createHash("sha1")
+      - pattern: crypto.createCipheriv("des", ...)
+      - pattern: crypto.createCipheriv("rc4", ...)
+      # Everything above is a LITERAL spelling, and that matters: semgrep
+      # constant-propagates those, so `const a = 'md5'; createHash(a)` matches.
+      # The regex branch below cannot — a metavariable-regex sees the
+      # variable's NAME, not its value. Both are kept for that reason; dropping
+      # the literals in favour of the "cleaner" regex silently loses a
+      # detection the rule already had.
+      #
+      # The regex branch covers what the literals miss, found by testing the
+      # rule against evasions in security review pass 3:
+      #   - CASE. OpenSSL algorithm names are case-insensitive, so
+      #     createHash('MD5') works and was not matched.
+      #   - REAL DES NAMES. Only the exact string "des" was listed, while
+      #     Triple-DES is des-ede3 / des-ede3-cbc and plain DES is des-cbc.
+      #     The rule's own message promised "MD5/SHA1/DES/RC4" and the README
+      #     repeated it, so documented coverage exceeded real coverage.
+      - patterns:
+          - pattern-either:
+              - pattern: createHash($ALGO, ...)
+              - pattern: crypto.createHash($ALGO, ...)
+              - pattern: createCipheriv($ALGO, ...)
+              - pattern: crypto.createCipheriv($ALGO, ...)
+              - pattern: createDecipheriv($ALGO, ...)
+              - pattern: crypto.createDecipheriv($ALGO, ...)
+          - metavariable-regex:
+              metavariable: $ALGO
+              regex: (?i)^["'](md[245]|sha-?1|rc4[-a-z0-9]*|des(-[a-z0-9]+)*|3des[-a-z0-9]*)["']$

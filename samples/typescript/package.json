@@ -1,0 +1,18 @@
+{
+  "name": "@maximalcode/sample-typescript",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Intentionally-bad TypeScript. `npm run lint` MUST fail — that is the test.",
+  "scripts": {
+    "lint": "eslint src --max-warnings 0",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.10.1",
+    "eslint": "^10.8.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.65.0"
+  }
+}

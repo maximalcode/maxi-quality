@@ -1,0 +1,18 @@
+# Gitleaks config for THIS repo.
+#
+# samples/semgrep/ contains deliberately planted fake credentials — they are
+# bait for the hardcoded-secret Semgrep rules. Without this allowlist, Gitleaks
+# fails on our own test suite forever.
+#
+# scripts/scan.sh auto-detects a .gitleaks.toml at the scan root and passes it
+# through, so a consuming repo can do the same for its own fixtures.
+#
+# This is a narrow, path-scoped allowlist. Never widen it to real source paths —
+# a suppression is how a real leak gets committed.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Intentionally-planted fake secrets in the Layer 2 Semgrep samples"
+paths = ['''samples/semgrep/''']

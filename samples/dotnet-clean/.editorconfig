@@ -1,0 +1,155 @@
+# maxi-quality — shared .editorconfig baseline (all languages)
+#
+# Consume by copying this file to your repo root as `.editorconfig`:
+#   cp ~/dev/mine/maxi-quality/configs/editorconfig <repo>/.editorconfig
+#
+# C# projects additionally append configs/dotnet/dotnet.editorconfig — see
+# configs/dotnet/dotnet.editorconfig for the exact instructions.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+max_line_length = 100
+
+# 4-space languages
+[*.{cs,csx,vb}]
+indent_size = 4
+
+[*.{java,kt,kts,gradle}]
+indent_size = 4
+
+[*.py]
+indent_size = 4
+
+[*.go]
+indent_style = tab
+
+# Makefiles require real tabs
+[{Makefile,makefile,*.mk}]
+indent_style = tab
+
+# Generated / vendored lockfiles: leave exactly as the tool wrote them
+[{package-lock.json,pnpm-lock.yaml,yarn.lock,*.lock}]
+insert_final_newline = unset
+trim_trailing_whitespace = unset
+
+# Markdown uses trailing double-space for hard line breaks
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[*.{csproj,props,targets,xml,xaml}]
+indent_size = 2
+# maxi-quality — C# analyzer severities and style.
+#
+# USAGE: append this to the consuming repo's .editorconfig (which starts life as
+# a copy of configs/editorconfig):
+#
+#   cat ~/dev/mine/maxi-quality/configs/dotnet/dotnet.editorconfig >> <repo>/.editorconfig
+#
+# Deliberately minimal. Bug-finding lives in the analyzers (Roslyn CA*, Sonar S*,
+# Roslynator RCS*) configured by Directory.Build.props — not in style rules.
+# What follows is the small set of style rules worth failing a build over, plus
+# severity corrections where the defaults are wrong for how I work.
+
+[*.cs]
+
+# --- Style rules promoted to errors (via EnforceCodeStyleInBuild) ------------
+# Dead code is a bug that hasn't happened yet.
+dotnet_diagnostic.IDE0051.severity = error   # unused private member
+dotnet_diagnostic.IDE0052.severity = error   # unread private member
+dotnet_diagnostic.IDE0005.severity = error   # unnecessary using directive
+
+# Correctness-adjacent style.
+dotnet_diagnostic.IDE0035.severity = error   # unreachable code
+dotnet_diagnostic.IDE0059.severity = error   # unnecessary value assignment
+dotnet_diagnostic.IDE0060.severity = error   # unused parameter
+
+# --- Severity corrections ---------------------------------------------------
+# ConfigureAwait(false) matters in libraries, is noise in apps/tests. Opt in
+# per-repo rather than paying for it everywhere.
+dotnet_diagnostic.CA2007.severity = none
+# I do not ship XML docs for internal code.
+dotnet_diagnostic.CS1591.severity = none
+# Sonar's "remove commented-out code" is right but too eager on TODO blocks.
+dotnet_diagnostic.S125.severity = suggestion
+
+# --- Style preferences (autofixable by `dotnet format`) ---------------------
+csharp_style_namespace_declarations = file_scoped:error
+csharp_using_directive_placement = outside_namespace:error
+dotnet_sort_system_directives_first = true
+dotnet_separate_import_directive_groups = false
+
+csharp_prefer_braces = true:suggestion
+csharp_style_var_for_built_in_types = false:suggestion
+csharp_style_var_when_type_is_apparent = true:suggestion
+
+dotnet_style_qualification_for_field = false:error
+dotnet_style_qualification_for_property = false:error
+dotnet_style_qualification_for_method = false:error
+dotnet_style_predefined_type_for_locals_parameters_members = true:error
+
+csharp_style_expression_bodied_methods = when_on_single_line:suggestion
+csharp_style_expression_bodied_properties = true:suggestion
+csharp_prefer_simple_using_statement = true:suggestion
+csharp_style_prefer_pattern_matching = true:suggestion
+
+# --- Naming: the three rules that actually get violated ---------------------
+dotnet_naming_rule.interfaces_start_with_i.severity = error
+dotnet_naming_rule.interfaces_start_with_i.symbols = interface_symbols
+dotnet_naming_rule.interfaces_start_with_i.style = prefix_i_pascal
+dotnet_naming_symbols.interface_symbols.applicable_kinds = interface
+dotnet_naming_style.prefix_i_pascal.required_prefix = I
+dotnet_naming_style.prefix_i_pascal.capitalization = pascal_case
+
+dotnet_naming_rule.types_are_pascal_case.severity = error
+dotnet_naming_rule.types_are_pascal_case.symbols = type_symbols
+dotnet_naming_rule.types_are_pascal_case.style = pascal
+dotnet_naming_symbols.type_symbols.applicable_kinds = class,struct,enum,delegate
+dotnet_naming_style.pascal.capitalization = pascal_case
+
+dotnet_naming_rule.private_fields_are_camel_underscore.severity = error
+dotnet_naming_rule.private_fields_are_camel_underscore.symbols = private_field_symbols
+dotnet_naming_rule.private_fields_are_camel_underscore.style = underscore_camel
+dotnet_naming_symbols.private_field_symbols.applicable_kinds = field
+dotnet_naming_symbols.private_field_symbols.applicable_accessibilities = private
+dotnet_naming_style.underscore_camel.required_prefix = _
+dotnet_naming_style.underscore_camel.capitalization = camel_case
+
+# --- Generated code is not ours to lint ------------------------------------
+[*.{Designer.cs,generated.cs,g.cs,g.i.cs}]
+generated_code = true
+
+# --- EF Core migration scaffolds -------------------------------------------
+# EF names only the model-snapshot half of the pair `*.Designer.cs`; the scaffold
+# itself is a plain `Migrations/<timestamp>_Name.cs`, so the section above misses
+# it. Measured cost of that miss on Consumer A: 41 of 197 diagnostics, all
+# IDE0161/IDE0005, all of them errors — enough to fail the data-access project
+# and make MSBuild skip the eight downstream ones.
+#
+# NOT `generated_code = true`. That would disable every analyzer here, and a
+# migration is the one piece of "generated" code people do hand-edit — custom
+# SQL in Up() is routine. Style rules are switched off; CA*/S*/RCS* keep
+# running, so raw SQL in a migration is still analysed.
+# The brace form is load-bearing: a bare `**/Migrations/*.cs` requires at least
+# one leading path segment, so it matches `src/<project>/Migrations/x.cs` but NOT a
+# `Migrations/` folder sitting next to the .editorconfig. Cover both.
+[{Migrations,**/Migrations}/*.cs]
+dotnet_analyzer_diagnostic.category-Style.severity = none
+# Category severity does not override an explicit per-id severity, so the ids
+# escalated in [*.cs] above have to be named individually.
+dotnet_diagnostic.IDE0005.severity = none   # unnecessary using
+dotnet_diagnostic.IDE0051.severity = none   # unused private member
+dotnet_diagnostic.IDE0052.severity = none   # unread private member
+dotnet_diagnostic.IDE0035.severity = none   # unreachable code
+dotnet_diagnostic.IDE0059.severity = none   # unnecessary value assignment
+dotnet_diagnostic.IDE0060.severity = none   # unused parameter
+dotnet_diagnostic.IDE0161.severity = none   # file-scoped namespace

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The fallback path: no lines-valid/lines-covered on the root, so coverage.py
+  must count <line> elements instead. 6 lines, 4 hit = 66.67%.
+
+  Not every Cobertura producer writes the root summary (some ReportGenerator
+  and pytest-cov versions do not), and the whole ratchet reads zero if the
+  fallback is missing — which presents as "0% coverage", i.e. a failing gate
+  rather than a silent pass. Still wrong, still tested.
+-->
+<coverage version="1.9" timestamp="0">
+  <packages>
+    <package name="Demo">
+      <classes>
+        <class name="Demo.Thing" filename="thing.py">
+          <lines>
+            <line number="1" hits="2" />
+            <line number="2" hits="2" />
+            <line number="3" hits="1" />
+            <line number="4" hits="1" />
+            <line number="5" hits="0" />
+            <line number="6" hits="0" />
+          </lines>
+        </class>
+      </classes>
+    </package>
+  </packages>
+</coverage>

@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+"""Assert a tool's findings against a committed manifest, per rule id.
+
+WHY THIS EXISTS — A SCALAR TOTAL ABSORBS REGRESSIONS
+
+Every gate in this repo used to assert a count: "8 problems", "13 Error(s)",
+"32 findings", "Found 14 errors". A count answers "did roughly the right amount
+of stuff fire?" and nothing else. Three things it cannot see:
+
+  1. A rule stops firing while another fires one more time. The total holds.
+     This is not hypothetical — `sql-string-concat-ts` shipped with only its
+     double-quoted branch, so `db.query('SELECT ... ' + id)` was silently exempt
+     and 28/19 stayed green over the gap for months (docs/STATUS.md §4).
+  2. A rule that was never covered in the first place. configs/typescript
+     enables 140 ESLint rules; the "8 problems" grep pinned 8 of them, so 94% of
+     the TypeScript baseline could be deleted with CI green.
+  3. A substring match. `grep -q '3 Error(s)'` matches "13 Error(s)", so the
+     Tests sample passed on a build with thirteen errors.
+
+So the assertion is now the SET of findings — rule id, file and line — diffed
+against a committed manifest. A regression names the rule that stopped firing
+instead of showing a number that moved, and adding a fixture shows up in review
+as a new manifest entry rather than as "the number went from 32 to 33".
+
+WHY LINE NUMBERS ARE IN THE MANIFEST
+
+They churn when a fixture is edited, and that is the point: `samples/` is the
+test suite and CONTRIBUTING.md forbids weakening it, so a fixture edit is always
+deliberate and always worth reading. `--update` regenerates the manifest so the
+churn lands in one reviewable diff. CI never passes `--update` — a gate that can
+rewrite its own expectations is not a gate.
+
+Reads a tool's own machine-readable output. Does no network I/O and writes
+nothing unless `--update` is given.
+
+Exit codes: 0 manifest matches · 1 findings drifted · 3 usage/parse error
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+
+# dotnet has no JSON diagnostic output, so its build log is parsed. MSBuild
+# prints each diagnostic twice (once inline, once in the summary) — the caller
+# gets a de-duplicated set, so counting matters here, not just membership.
+DOTNET_RE = re.compile(
+    r"(?P<file>[^\s(]+\.cs)\((?P<line>\d+),\d+\): error (?P<rule>[A-Za-z]+\d+)"
+)
+
+
+class ParseError(Exception):
+    pass
+
+
+def _rel(path: str) -> str:
+    """Manifests are repo-relative so they do not encode anyone's home directory."""
+    return os.path.relpath(path, os.getcwd()) if os.path.isabs(path) else path
+
+
+def parse_semgrep(text: str) -> list[dict]:
+    data = json.loads(text)
+    # A semgrep run that errored and scanned nothing reports `results: []`, which
+    # is indistinguishable from a clean repo unless the errors are read.
+    if data.get("errors"):
+        raise ParseError(
+            f"semgrep reported {len(data['errors'])} error(s); refusing to treat "
+            f"the result as a finding set: {data['errors'][0].get('message', '?')}"
+        )
+    return [
+        # The check_id is prefixed by the config path it was loaded from; the
+        # last dotted segment is the rule id as written in semgrep/.
+        {"rule": r["check_id"].split(".")[-1], "file": _rel(r["path"]), "line": r["start"]["line"]}
+        for r in data.get("results", [])
+    ]
+
+
+def parse_eslint(text: str) -> list[dict]:
+    return [
+        {"rule": m["ruleId"] or "<fatal>", "file": _rel(f["filePath"]), "line": m["line"]}
+        for f in json.loads(text)
+        for m in f.get("messages", [])
+    ]
+
+
+def parse_ruff(text: str) -> list[dict]:
+    return [
+        {"rule": r["code"], "file": _rel(r["filename"]), "line": r["location"]["row"]}
+        for r in json.loads(text)
+    ]
+
+
+def parse_mypy(text: str) -> list[dict]:
+    """mypy --output=json emits JSONL — one object per line, not an array."""
+    out = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        d = json.loads(line)
+        if d.get("severity") != "error":
+            continue
+        out.append({"rule": d.get("code") or "<no-code>", "file": _rel(d["file"]), "line": d["line"]})
+    return out
+
+
+def parse_dotnet(text: str) -> list[dict]:
+    seen = set()
+    out = []
+    for m in DOTNET_RE.finditer(text):
+        key = (m["rule"], _rel(m["file"]), int(m["line"]))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"rule": key[0], "file": key[1], "line": key[2]})
+    return out
+
+
+PARSERS = {
+    "semgrep": parse_semgrep,
+    "eslint": parse_eslint,
+    "ruff": parse_ruff,
+    "mypy": parse_mypy,
+    "dotnet": parse_dotnet,
+}
+
+
+def canonical(findings: list[dict]) -> list[dict]:
+    return sorted(findings, key=lambda f: (f["file"], f["line"], f["rule"]))
+
+
+def key(f: dict) -> tuple:
+    return (f["file"], f["line"], f["rule"])
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--tool", required=True, choices=sorted(PARSERS))
+    ap.add_argument("--input", required=True, metavar="FILE", help="the tool's output ('-' for stdin)")
+    ap.add_argument("--expected", required=True, metavar="FILE", help="the committed manifest")
+    ap.add_argument(
+        "--update",
+        action="store_true",
+        help="rewrite the manifest from this run. Never use in CI — a gate that "
+        "can rewrite its own expectations is not a gate.",
+    )
+    args = ap.parse_args()
+
+    try:
+        text = sys.stdin.read() if args.input == "-" else open(args.input, encoding="utf-8").read()
+    except OSError as exc:
+        print(f"error: cannot read {args.input}: {exc}", file=sys.stderr)
+        return 3
+
+    try:
+        actual = canonical(PARSERS[args.tool](text))
+    except (ParseError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        print(f"error: cannot parse {args.tool} output from {args.input}: {exc}", file=sys.stderr)
+        return 3
+
+    if args.update:
+        with open(args.expected, "w", encoding="utf-8") as fh:
+            json.dump({"tool": args.tool, "findings": actual}, fh, indent=2)
+            fh.write("\n")
+        print(f"wrote {len(actual)} findings to {args.expected}", file=sys.stderr)
+        return 0
+
+    try:
+        with open(args.expected, encoding="utf-8") as fh:
+            expected = canonical(json.load(fh)["findings"])
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        # An unreadable manifest is NOT "nothing expected" — that would make a
+        # deleted manifest a passing gate.
+        print(f"error: manifest {args.expected} is unusable: {exc}", file=sys.stderr)
+        return 3
+
+    exp_keys = {key(f) for f in expected}
+    act_keys = {key(f) for f in actual}
+    missing = sorted(exp_keys - act_keys)
+    unexpected = sorted(act_keys - exp_keys)
+
+    print(f"{args.tool}_expected={len(expected)}")
+    print(f"{args.tool}_actual={len(actual)}")
+    print(f"{args.tool}_missing={len(missing)}")
+    print(f"{args.tool}_unexpected={len(unexpected)}")
+
+    if not missing and not unexpected:
+        print(f"OK: {args.tool} matches {args.expected} exactly ({len(actual)} findings)", file=sys.stderr)
+        return 0
+
+    # A rule that vanished ENTIRELY is the regression that matters most: it means
+    # a detection was lost, not that a fixture moved. Say so first and loudest.
+    gone = sorted({f["rule"] for f in expected} - {f["rule"] for f in actual})
+    if gone:
+        for rule in gone:
+            print(f"::error::{args.tool}: rule '{rule}' no longer fires anywhere — a detection was LOST", file=sys.stderr)
+
+    for f, ln, rule in missing:
+        print(f"  MISSING     {rule:<50} {f}:{ln}", file=sys.stderr)
+    for f, ln, rule in unexpected:
+        print(f"  UNEXPECTED  {rule:<50} {f}:{ln}", file=sys.stderr)
+    print(
+        f"\n{args.tool} drifted from {args.expected}: "
+        f"{len(missing)} missing, {len(unexpected)} unexpected.\n"
+        "If this is a deliberate fixture or rule change, regenerate with --update "
+        "and say in the commit message what changed and why the new set is correct "
+        "(CONTRIBUTING.md rule 2). Never regenerate to make a red build green.",
+        file=sys.stderr,
+    )
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

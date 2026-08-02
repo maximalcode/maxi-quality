@@ -1,0 +1,30 @@
+{
+  "tool": "mypy",
+  "findings": [
+    {
+      "rule": "no-untyped-def",
+      "file": "samples/python/src/bad_types.py",
+      "line": 15
+    },
+    {
+      "rule": "return-value",
+      "file": "samples/python/src/bad_types.py",
+      "line": 21
+    },
+    {
+      "rule": "arg-type",
+      "file": "samples/python/src/bad_types.py",
+      "line": 26
+    },
+    {
+      "rule": "arg-type",
+      "file": "samples/python/src/bad_types.py",
+      "line": 31
+    },
+    {
+      "rule": "unreachable",
+      "file": "samples/python/src/bad_types.py",
+      "line": 39
+    }
+  ]
+}

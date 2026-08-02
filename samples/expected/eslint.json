@@ -1,0 +1,45 @@
+{
+  "tool": "eslint",
+  "findings": [
+    {
+      "rule": "@typescript-eslint/no-floating-promises",
+      "file": "samples/typescript/src/bad.ts",
+      "line": 25
+    },
+    {
+      "rule": "@typescript-eslint/no-explicit-any",
+      "file": "samples/typescript/src/bad.ts",
+      "line": 29
+    },
+    {
+      "rule": "@typescript-eslint/no-unsafe-assignment",
+      "file": "samples/typescript/src/bad.ts",
+      "line": 34
+    },
+    {
+      "rule": "@typescript-eslint/no-unsafe-member-access",
+      "file": "samples/typescript/src/bad.ts",
+      "line": 37
+    },
+    {
+      "rule": "@typescript-eslint/no-unsafe-return",
+      "file": "samples/typescript/src/bad.ts",
+      "line": 37
+    },
+    {
+      "rule": "eqeqeq",
+      "file": "samples/typescript/src/bad.ts",
+      "line": 43
+    },
+    {
+      "rule": "@typescript-eslint/no-unused-vars",
+      "file": "samples/typescript/src/bad.ts",
+      "line": 48
+    },
+    {
+      "rule": "@typescript-eslint/no-non-null-assertion",
+      "file": "samples/typescript/src/bad.ts",
+      "line": 60
+    }
+  ]
+}

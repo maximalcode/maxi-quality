@@ -1,0 +1,10 @@
+<Project>
+
+  <!--
+    Same harness trick as samples/dotnet — import the canonical baseline rather
+    than copying it, so this test cannot silently drift from the config it
+    exists to prove.
+  -->
+  <Import Project="../../configs/dotnet/Directory.Build.props" />
+
+</Project>

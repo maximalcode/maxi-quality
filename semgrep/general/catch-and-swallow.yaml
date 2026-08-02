@@ -1,0 +1,57 @@
+# One convention, two rule ids: `catch (...)` is not valid C# and
+# `catch (Exception e)` is not valid TypeScript, so Semgrep needs a pattern per
+# language. Keep the message identical so the finding reads the same either way.
+#
+# WHY THE `pattern-not-regex`, AND WHY IT IS NESTED UNDER `patterns:`
+#
+# The message tells you the escape hatch is a comment explaining the silence.
+# Until 2026-07-31 that was a lie: Semgrep matches on the AST, comments are not
+# AST nodes, so a block containing only a comment is still `{ }` and still
+# matched. Following the instruction verbatim did not clear the finding — the
+# rule flagged documented-and-intentional catches identically to silent ones.
+#
+# Found by measuring against Consumer A before adoption: 6 of its 38 Layer 2
+# findings were this rule, and the blocks it flagged already carried exactly the
+# comment the message asks for.
+#
+# The regex re-reads the matched source text (where comments DO survive) and
+# drops matches whose catch block opens with one. It must sit inside a
+# `patterns:` block alongside the `pattern-either` — a `pattern-not-regex` at
+# rule level next to a top-level `pattern-either` is silently ignored, which was
+# verified the hard way: it changed nothing.
+#
+# The escape hatch is now real. A bare `catch { }` still fires, which is the
+# whole point and is what samples/semgrep asserts.
+
+rules:
+  - id: catch-and-swallow-ts
+    message: >-
+      Empty catch block — the failure is discarded silently. Log it, wrap it, or
+      rethrow. If ignoring really is correct, say why in a comment inside the
+      block so the next reader does not have to guess.
+    severity: ERROR
+    languages: [typescript]
+    patterns:
+      - pattern-either:
+          - pattern: |
+              try { ... } catch ($E) { }
+          - pattern: |
+              try { ... } catch { }
+      - pattern-not-regex: 'catch\s*(\([^)]*\))?\s*\{\s*(//|/\*)'
+
+  - id: catch-and-swallow-dotnet
+    message: >-
+      Empty catch block — the failure is discarded silently. Log it, wrap it, or
+      rethrow. If ignoring really is correct, say why in a comment inside the
+      block so the next reader does not have to guess.
+    severity: ERROR
+    languages: [csharp]
+    patterns:
+      - pattern-either:
+          - pattern: |
+              try { ... } catch { }
+          - pattern: |
+              try { ... } catch ($T $E) { }
+          - pattern: |
+              try { ... } catch ($T) { }
+      - pattern-not-regex: 'catch\s*(\([^)]*\))?\s*\{\s*(//|/\*)'

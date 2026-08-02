@@ -1,0 +1,70 @@
+# DELIBERATE CALL on audit timestamps (Phase A #18): `CreatedAt = UtcNow` and
+# friends KEEP FIRING. They were the ambiguous third of the Consumer A hits
+# (~8 of 26), and they stay in scope because "was this row created before the
+# cutoff?" is exactly the assertion you cannot write a test for without
+# sleeping. Injecting the clock at a persistence boundary is cheap; the
+# exemptions below are for code whose *purpose* is to read the clock, not for
+# code that merely finds it convenient.
+rules:
+  # This is the cross-language proof rule: ONE rule id, one message, firing in
+  # both the TypeScript and the C# sample. See docs/CONCEPT.md §10.
+  - id: no-ambient-clock
+    message: >-
+      Reading the ambient clock directly makes this code untestable — you cannot
+      write a test for "expires tomorrow" without sleeping. Inject a clock
+      (TimeProvider in .NET, a `now()` port in TS) and read the time from it.
+    severity: ERROR
+    languages: [typescript, csharp]
+    paths:
+      exclude:
+        - "*Tests*"
+        - "*.test.ts"
+        - "*.spec.ts"
+        # Phase A #18 — infrastructure where reading the clock IS the function.
+        # Each entry is justified by an OBSERVED false positive, never a
+        # speculative one.
+        #
+        # These are generic shapes, not consumer-specific file names, on
+        # purpose. This glob list must NOT become a junk drawer of every
+        # consumer's module names — that would silently exempt future
+        # business logic that happens to live in an already-listed file.
+        # The supported fix for a one-off site is an inline suppression that
+        # states WHY, next to the code:
+        #
+        #   // nosemgrep: no-ambient-clock — this ID scheme encodes wall-clock
+        #   // time by definition; the overload taking an explicit instant is
+        #   // the testable entry point.
+        #
+        # Observed instances of that at Phase A: two ID generators (one C#,
+        # one TypeScript) and one health endpoint whose whole purpose is
+        # reporting server time. All three take a comment at adoption, not a
+        # glob here.
+        - "*Seeder*"    # dev-only data seeding
+        - "**/Dev/**"
+        - "*.config.ts" # perf/playwright/harness configs
+    patterns:
+      - pattern-either:
+          # C#
+          - pattern: DateTime.Now
+          - pattern: DateTime.UtcNow
+          - pattern: DateTime.Today
+          - pattern: DateTimeOffset.Now
+          - pattern: DateTimeOffset.UtcNow
+          # TypeScript
+          - pattern: new Date()
+          - pattern: Date.now()
+      # Stamping a timestamp into a log line is not untestable business logic.
+      # Done by context rather than by excluding "*Worker*" wholesale, because
+      # background workers DO carry time-sensitive logic (backoff, scheduling)
+      # that this rule should still catch. Verified to parse in both languages.
+      - pattern-not-inside: $LOG.LogTrace(...)
+      - pattern-not-inside: $LOG.LogDebug(...)
+      - pattern-not-inside: $LOG.LogInformation(...)
+      - pattern-not-inside: $LOG.LogWarning(...)
+      - pattern-not-inside: $LOG.LogError(...)
+      - pattern-not-inside: $LOG.LogCritical(...)
+      - pattern-not-inside: console.log(...)
+      - pattern-not-inside: console.debug(...)
+      - pattern-not-inside: console.info(...)
+      - pattern-not-inside: console.warn(...)
+      - pattern-not-inside: console.error(...)

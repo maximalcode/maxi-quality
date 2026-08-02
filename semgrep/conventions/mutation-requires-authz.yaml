@@ -1,0 +1,54 @@
+rules:
+  - id: mutation-requires-authz-dotnet
+    message: >-
+      Service mutation method with no authorisation check. Every Create/Update/
+      Delete entry point must call the authz gate before it touches state —
+      "the caller already checked" is how privilege-escalation bugs happen.
+    severity: ERROR
+    languages: [csharp]
+    paths:
+      include:
+        - "*Service.cs"
+        - "*Handler.cs"
+      exclude:
+        - "*Tests*"
+    patterns:
+      - pattern: |
+          public $RET $METHOD(...) { ... }
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: '^(Create|Update|Delete|Remove|Set|Assign|Revoke|Grant)\w*'
+      - pattern-not: |
+          public $RET $METHOD(...) { ... $AUTHZ.Require(...); ... }
+      - pattern-not: |
+          public $RET $METHOD(...) { ... $AUTHZ.Authorize(...); ... }
+      - pattern-not: |
+          public $RET $METHOD(...) { ... await $AUTHZ.RequireAsync(...); ... }
+      - pattern-not: |
+          public $RET $METHOD(...) { ... await $AUTHZ.AuthorizeAsync(...); ... }
+
+  - id: mutation-requires-authz-ts
+    message: >-
+      Service mutation method with no authorisation check. Every create/update/
+      delete entry point must call the authz gate before it touches state.
+    severity: ERROR
+    languages: [typescript]
+    paths:
+      include:
+        - "*service.ts"
+        - "*handler.ts"
+      exclude:
+        - "*.test.ts"
+        - "*.spec.ts"
+    patterns:
+      - pattern: |
+          async $METHOD(...) { ... }
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: '^(create|update|delete|remove|set|assign|revoke|grant)\w*'
+      - pattern-not: |
+          async $METHOD(...) { ... $AUTHZ.require(...); ... }
+      - pattern-not: |
+          async $METHOD(...) { ... await $AUTHZ.require(...); ... }
+      - pattern-not: |
+          async $METHOD(...) { ... await $AUTHZ.authorize(...); ... }

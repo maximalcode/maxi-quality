@@ -1,0 +1,20 @@
+{
+  "tool": "dotnet",
+  "findings": [
+    {
+      "rule": "CS0414",
+      "file": "samples/dotnet-tests/TestIdioms.cs",
+      "line": 18
+    },
+    {
+      "rule": "IDE0051",
+      "file": "samples/dotnet-tests/TestIdioms.cs",
+      "line": 18
+    },
+    {
+      "rule": "S1144",
+      "file": "samples/dotnet-tests/TestIdioms.cs",
+      "line": 18
+    }
+  ]
+}

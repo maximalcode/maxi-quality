@@ -1,0 +1,12 @@
+<Project>
+
+  <!--
+    The sample imports the canonical baseline instead of copying it, so this
+    test can never silently drift from the config it is supposed to be testing.
+
+    A REAL consuming repo copies configs/dotnet/Directory.Build.props to its own
+    root instead — see README.md. The import here is a test-harness detail.
+  -->
+  <Import Project="../../configs/dotnet/Directory.Build.props" />
+
+</Project>

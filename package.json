@@ -1,0 +1,36 @@
+{
+  "name": "@maximalcode/maxi-quality",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Reusable static-analysis baseline (TypeScript + C#). See docs/CONCEPT.md.",
+  "license": "MIT",
+  "exports": {
+    "./configs/typescript/eslint.config.mjs": "./configs/typescript/eslint.config.mjs",
+    "./configs/typescript/tsconfig.strict.json": "./configs/typescript/tsconfig.strict.json"
+  },
+  "files": [
+    "configs"
+  ],
+  "workspaces": [
+    "samples/typescript",
+    "samples/typescript-clean"
+  ],
+  "scripts": {
+    "verify:ts": "npm run lint --workspace @maximalcode/sample-typescript",
+    "verify:ts:clean": "npm run lint --workspace @maximalcode/sample-typescript-clean"
+  },
+  "peerDependencies": {
+    "@eslint/js": ">=9",
+    "eslint": ">=9",
+    "typescript": ">=5.4 <6.1",
+    "typescript-eslint": ">=8"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.10.1",
+    "eslint": "^10.8.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.65.0"
+  }
+}

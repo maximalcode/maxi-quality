@@ -1,0 +1,52 @@
+rules:
+  - id: debug-print-left-behind-ts
+    message: >-
+      Printf-debugging left in the tree. Use the project logger so the output has
+      a level, a category and somewhere to go in production.
+    severity: WARNING
+    languages: [typescript]
+    paths:
+      exclude:
+        - "*.test.ts"
+        - "*.spec.ts"
+        - "**/scripts/**"
+        - "*.config.ts"
+        - "*.config.mjs"
+        # Phase A #19 — a server entrypoint announcing that it started is the
+        # process reporting liveness, not printf-debugging left behind. The
+        # C# rule has always excluded Program.cs for exactly this reason; the
+        # TS equivalents are the process entrypoints below.
+        #
+        # This also keeps Layer 1 and Layer 2 agreeing about the same line:
+        # configs/typescript/eslint.config.mjs already turns `no-console` off
+        # for **/scripts/** and *.config.*. Two layers disagreeing about one
+        # line is worse than either verdict alone.
+        #
+        # Narrow on purpose — the rule's whole value is catching a stray
+        # console.log in business logic, so these match entrypoint filenames,
+        # not whole directories.
+        - "**/dev.ts"
+        - "**/main.ts"
+        - "**/server.ts"
+        - "**/cli.ts"
+        - "**/bin/**"
+    pattern-either:
+      - pattern: console.log(...)
+      - pattern: console.debug(...)
+      - pattern: console.trace(...)
+      - pattern: console.dir(...)
+
+  - id: debug-print-left-behind-dotnet
+    message: >-
+      Printf-debugging left in the tree. Use the project logger (ILogger) so the
+      output has a level, a category and somewhere to go in production.
+    severity: WARNING
+    languages: [csharp]
+    paths:
+      exclude:
+        - "*Tests*"
+        - "Program.cs"
+    pattern-either:
+      - pattern: System.Diagnostics.Debug.WriteLine(...)
+      - pattern: Debug.WriteLine(...)
+      - pattern: Console.WriteLine(...)

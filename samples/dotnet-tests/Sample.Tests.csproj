@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Proof for #25 — the test-project relaxation in
+    configs/dotnet/Directory.Build.props.
+
+    The project NAME is the whole point. The relaxation is gated on
+    `$(MSBuildProjectName.EndsWith('Tests'))`, so this file must stay named
+    Sample.Tests.csproj — renaming it silently voids the test.
+
+    Unlike samples/dotnet this is NOT a "must fail with N errors" sample in the
+    usual sense. It is a two-sided assertion: the waived rules must be silent
+    AND the non-waived ones must still fire. See TestIdioms.cs.
+
+    No test framework is referenced on purpose. Pulling in xunit to prove an
+    MSBuild condition would add a restore step and a dependency to a project
+    that needs neither — S2699 ("test has no assertions") is waived anyway.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Maximalcode.Sample.Tests</RootNamespace>
+  </PropertyGroup>
+
+</Project>

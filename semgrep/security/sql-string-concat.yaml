@@ -1,0 +1,62 @@
+rules:
+  - id: sql-string-concat-dotnet
+    message: >-
+      SQL built by string concatenation or interpolation — this is SQL injection.
+      Use parameters (cmd.Parameters.Add / Dapper's anonymous-object args), or
+      FormattableString with a provider that parameterises it.
+    severity: ERROR
+    languages: [csharp]
+    pattern-either:
+      - pattern: |
+          new SqlCommand($"...{...}...", ...)
+      - pattern: |
+          new SqlCommand("..." + $X, ...)
+      - patterns:
+          - pattern-either:
+              - pattern: $CONN.Query(...)
+              - pattern: $CONN.QueryAsync(...)
+              - pattern: $CONN.Execute(...)
+              - pattern: $CONN.ExecuteAsync(...)
+              - pattern: $CMD.CommandText = $SQL
+          - pattern-either:
+              # Only double quotes here, and that is CORRECT rather than an
+              # oversight: C# has no single-quoted string type ('x' is a char).
+              # The TypeScript twin needed both — see the note there before
+              # copying this shape into another language.
+              - pattern-regex: '"[^"]*\b(SELECT|INSERT|UPDATE|DELETE|WHERE|FROM)\b[^"]*"\s*\+'
+              - pattern-regex: '\$"[^"]*\b(SELECT|INSERT|UPDATE|DELETE|WHERE|FROM)\b[^"]*\{'
+
+  - id: sql-string-concat-ts
+    message: >-
+      SQL built by template literal or concatenation — this is SQL injection.
+      Use placeholders and pass values as the query's parameter array.
+    severity: ERROR
+    languages: [typescript]
+    patterns:
+      - pattern-either:
+          - pattern: $DB.query($SQL, ...)
+          - pattern: $DB.query($SQL)
+          - pattern: $DB.execute($SQL, ...)
+          - pattern: $DB.raw($SQL)
+      - metavariable-pattern:
+          metavariable: $SQL
+          patterns:
+            # `pattern-regex` matches RAW SOURCE TEXT, not the parsed literal —
+            # so unlike a semgrep string pattern it does NOT treat '...' and
+            # "..." as the same thing. The double-quoted branch shipped alone,
+            # which meant
+            #
+            #     db.query('SELECT * FROM u WHERE id = ' + id)
+            #
+            # — single quotes being the prevailing TypeScript style, and this
+            # baseline shipping no quote rule — was silently exempt. That is the
+            # commonest SQL-injection shape in JavaScript. Found in security
+            # review pass 3; the root cause is that no fixture ever covered the
+            # concatenation branch, so CI was green over the gap.
+            - pattern-either:
+                - pattern-regex: |-
+                    `[^`]*\b(SELECT|INSERT|UPDATE|DELETE|WHERE|FROM)\b[^`]*\$\{
+                - pattern-regex: |-
+                    "[^"]*\b(SELECT|INSERT|UPDATE|DELETE|WHERE|FROM)\b[^"]*"\s*\+
+                - pattern-regex: |-
+                    '[^']*\b(SELECT|INSERT|UPDATE|DELETE|WHERE|FROM)\b[^']*'\s*\+

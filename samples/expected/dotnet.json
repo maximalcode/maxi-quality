@@ -1,0 +1,70 @@
+{
+  "tool": "dotnet",
+  "findings": [
+    {
+      "rule": "CS0414",
+      "file": "samples/dotnet/Program.cs",
+      "line": 22
+    },
+    {
+      "rule": "IDE0051",
+      "file": "samples/dotnet/Program.cs",
+      "line": 22
+    },
+    {
+      "rule": "S1144",
+      "file": "samples/dotnet/Program.cs",
+      "line": 22
+    },
+    {
+      "rule": "CA1304",
+      "file": "samples/dotnet/Program.cs",
+      "line": 26
+    },
+    {
+      "rule": "CA1311",
+      "file": "samples/dotnet/Program.cs",
+      "line": 26
+    },
+    {
+      "rule": "CA1862",
+      "file": "samples/dotnet/Program.cs",
+      "line": 26
+    },
+    {
+      "rule": "RCS1155",
+      "file": "samples/dotnet/Program.cs",
+      "line": 26
+    },
+    {
+      "rule": "CA1310",
+      "file": "samples/dotnet/Program.cs",
+      "line": 29
+    },
+    {
+      "rule": "S2930",
+      "file": "samples/dotnet/Program.cs",
+      "line": 35
+    },
+    {
+      "rule": "CS0162",
+      "file": "samples/dotnet/Program.cs",
+      "line": 54
+    },
+    {
+      "rule": "CS0219",
+      "file": "samples/dotnet/Program.cs",
+      "line": 63
+    },
+    {
+      "rule": "IDE0059",
+      "file": "samples/dotnet/Program.cs",
+      "line": 63
+    },
+    {
+      "rule": "S1481",
+      "file": "samples/dotnet/Program.cs",
+      "line": 63
+    }
+  ]
+}

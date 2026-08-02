@@ -1,0 +1,30 @@
+rules:
+  - id: no-float-for-money
+    message: >-
+      Binary floating point cannot represent 0.10 exactly, so money in a
+      double/float silently drifts once you sum enough rows. Use decimal (C#) or
+      integer minor units for any amount, price, total, balance or fee.
+    severity: ERROR
+    languages: [csharp]
+    pattern-either:
+      # Fields and locals.
+      - patterns:
+          - pattern-either:
+              - pattern: double $NAME;
+              - pattern: float $NAME;
+              - pattern: double $NAME = ...;
+              - pattern: float $NAME = ...;
+          - metavariable-regex:
+              metavariable: $NAME
+              regex: '(?i).*(amount|price|total|balance|cost|fee|salary|payment|subtotal|discount|tax).*'
+      # Method parameters. The body matters: without `{ ... }` the pattern does
+      # not match a real method declaration.
+      - patterns:
+          - pattern-either:
+              - pattern: $RET $M(..., double $NAME, ...) { ... }
+              - pattern: $RET $M(..., float $NAME, ...) { ... }
+              - pattern: $RET $M(..., double $NAME, ...) => ...;
+              - pattern: $RET $M(..., float $NAME, ...) => ...;
+          - metavariable-regex:
+              metavariable: $NAME
+              regex: '(?i).*(amount|price|total|balance|cost|fee|salary|payment|subtotal|discount|tax).*'

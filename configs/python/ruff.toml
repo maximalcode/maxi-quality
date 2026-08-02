@@ -1,0 +1,73 @@
+# maxi-quality — Python lint baseline (Ruff).
+#
+# USAGE — a consuming project's own ruff.toml is one line:
+#
+#   extend = "path/to/maxi-quality/configs/python/ruff.toml"
+#
+# Projects that keep tool config in pyproject.toml instead:
+#
+#   [tool.ruff]
+#   extend = "path/to/maxi-quality/configs/python/ruff.toml"
+#
+# Ruff resolves `extend` relative to the file doing the extending, and a local
+# key overrides the inherited one. `select` REPLACES rather than merges, so a
+# project that wants extra families must use `extend-select`. Getting that
+# wrong silently narrows the ruleset — it does not error.
+#
+# WHY THIS RULESET, AND WHY IT IS NOT NEGOTIABLE DOWNWARD:
+#
+# These 13 families are not a wishlist. They are the set Consumer C already runs
+# in anger across 165 source files, and the reason this file exists at all is to
+# stop that from regressing — not to raise its bar. An early draft
+# proposed `E,F,B,UP,SIM,S`, which is a strict SUBSET; shipping that would have
+# quietly downgraded the only project consuming it. Measure before you narrow.
+#
+# Ruff is the linter half of Python Layer 1. The type half is mypy.ini next to
+# this file. Neither substitutes for the other: ruff does not do inference, and
+# mypy does not flag a bare `except` or a hardcoded password.
+
+target-version = "py312"
+
+# 100, not the ruff default of 88. Matches the real consumer; 88 would have
+# reformatted a working codebase to satisfy a number nobody chose deliberately.
+line-length = 100
+
+[lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes — undefined names, unused imports, the classic bugs
+    "I",     # isort — import order, so diffs stay boring
+    "B",     # flake8-bugbear — mutable default args, loop-variable capture
+    "C4",    # flake8-comprehensions
+    "UP",    # pyupgrade — keeps syntax current with target-version
+    "N",     # pep8-naming
+    "SIM",   # flake8-simplify
+    "ASYNC", # flake8-async — blocking calls inside async def
+    "S",     # flake8-bandit — the security half
+    "T20",   # flake8-print — stray print() is the Python `console.log`
+    "RUF",   # ruff-specific, incl. RUF006 dangling asyncio task
+]
+
+# Deliberately EMPTY at the global level.
+#
+# A global `ignore` is invisible at the call site: nothing in the file tells the
+# next reader the rule was switched off, and it applies to production code as
+# readily as to the one place that needed it. Per-file-ignores below are scoped
+# and greppable, so that is where exemptions go.
+ignore = []
+
+[lint.per-file-ignores]
+# S101 (assert) is off ONLY here. In production code `assert` is not a check —
+# `python -O` strips it, so an assert-based guard silently evaporates in exactly
+# the deployment that needs it most. In a test, assert IS the test.
+"**/tests/**" = ["S101"]
+"**/test_*.py" = ["S101"]
+"**/conftest.py" = ["S101"]
+
+# Scripts and dev tooling print to a terminal; that is their interface.
+"**/scripts/**" = ["T20"]
+
+[format]
+quote-style = "double"
+indent-style = "space"

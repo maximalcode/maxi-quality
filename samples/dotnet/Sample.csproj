@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Intentionally-bad C#. `dotnet build` MUST fail — that is the test.
+
+    This project deliberately declares almost nothing: the analyzer settings all
+    come from the Directory.Build.props sitting next to it, which is a verbatim
+    copy of configs/dotnet/Directory.Build.props.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Maximalcode.Sample</RootNamespace>
+  </PropertyGroup>
+
+</Project>

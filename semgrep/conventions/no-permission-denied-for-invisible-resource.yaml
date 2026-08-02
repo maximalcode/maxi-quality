@@ -1,0 +1,49 @@
+# From the Consumer A rails. One convention, two rule ids: C# `is null` and the
+# TS `!x` idiom do not parse in each other's language.
+rules:
+  - id: no-permission-denied-for-invisible-resource-dotnet
+    message: >-
+      Returning PermissionDenied / 403 after a not-found check leaks the
+      resource's existence — an enumeration oracle. Return NotFound / 404 unless
+      the caller is already allowed to know the resource exists.
+    severity: ERROR
+    languages: [csharp]
+    paths:
+      exclude:
+        - "*Tests*"
+    pattern-either:
+      - pattern: |
+          if ($X is null) { ... throw new $EX(StatusCode.PermissionDenied, ...); ... }
+      - pattern: |
+          if ($X == null) { ... throw new $EX(StatusCode.PermissionDenied, ...); ... }
+      - pattern: |
+          if ($X is null) { ... return Forbid(...); ... }
+      - pattern: |
+          if ($X == null) { ... return Forbid(...); ... }
+      - pattern: |
+          if ($X is null) { ... return StatusCode(403, ...); ... }
+      - pattern: |
+          if ($X == null) { ... return Unauthorized(...); ... }
+
+  - id: no-permission-denied-for-invisible-resource-ts
+    message: >-
+      Returning 403 after a not-found check leaks the resource's existence — an
+      enumeration oracle. Return 404 unless the caller is already allowed to know
+      the resource exists.
+    severity: ERROR
+    languages: [typescript]
+    paths:
+      exclude:
+        - "*.test.ts"
+        - "*.spec.ts"
+    pattern-either:
+      - pattern: |
+          if (!$X) { ... throw new $EX(403, ...); ... }
+      - pattern: |
+          if ($X === null) { ... throw new $EX(403, ...); ... }
+      - pattern: |
+          if ($X === undefined) { ... throw new $EX(403, ...); ... }
+      - pattern: |
+          if (!$X) { ... $RES.status(403); ... }
+      - pattern: |
+          if (!$X) { ... return $RES.status(403).$SEND(...); ... }

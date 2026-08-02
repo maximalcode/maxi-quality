@@ -1,0 +1,12 @@
+{
+  "extends": "../../configs/typescript/tsconfig.strict.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "noEmit": true,
+    // Project-specific, deliberately NOT in the shared strict base: which
+    // ambient type packages this project runs against.
+    "types": ["node"]
+  },
+  "include": ["src"]
+}

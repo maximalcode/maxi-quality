@@ -1,0 +1,97 @@
+<Project>
+
+  <!--
+    maxi-quality — C#/.NET analyzer baseline.
+
+    USAGE: copy this file to the consuming repo's root (next to the .sln).
+    MSBuild picks it up automatically for every project underneath it.
+
+      cp ~/dev/mine/maxi-quality/configs/dotnet/Directory.Build.props <repo>/Directory.Build.props
+
+    .NET has no remote "extends" for Directory.Build.props, so this is the one
+    accepted copy in the baseline. It is small and changes rarely.
+
+    If the repo already has a Directory.Build.props, merge these properties into
+    it rather than overwriting — or keep yours and add
+    <Import Project="path/to/this.props" /> at the top.
+  -->
+
+  <PropertyGroup>
+    <!-- Latest analyzer wave, recommended (not "all" — that includes noise). -->
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+
+    <!-- Style rules (IDExxxx) run at build time, not just in the IDE. This is
+         what makes "unused private member" and friends fail CI. -->
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+
+    <!-- Required for IDE0005 (unnecessary using) to run on build at all —
+         without it Roslyn emits a meta-diagnostic telling you to set this.
+         See https://github.com/dotnet/roslyn/issues/41640.
+         CS1591 is suppressed here (not only in the .editorconfig) so this file
+         stays self-consistent even if a repo copies it without the editorconfig. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+
+    <!-- The gate. A warning nobody fixes is not a warning. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WarningLevel>9999</WarningLevel>
+
+    <!-- Nullable reference types are the single highest-value C# analyzer. -->
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+
+    <!-- Deterministic, reproducible builds. -->
+    <Deterministic>true</Deterministic>
+
+    <!-- In CI, refuse to silently resolve a different dependency graph than the
+         one committed — but only once a lock file actually exists, so a repo
+         that never opted into a lock file isn't broken by this line. -->
+    <RestoreLockedMode
+        Condition="'$(ContinuousIntegrationBuild)' == 'true' AND Exists('$(MSBuildProjectDirectory)/packages.lock.json')">true</RestoreLockedMode>
+  </PropertyGroup>
+
+  <!--
+    Third-party Roslyn analyzers. PrivateAssets=all so they never leak into a
+    consuming package's dependency graph.
+
+    Pinned versions: bump deliberately, not by floating range — an analyzer
+    upgrade that adds rules is a breaking change for a repo with
+    TreatWarningsAsErrors.
+  -->
+  <ItemGroup>
+    <PackageReference Include="SonarAnalyzer.CSharp" Version="10.31.0.145097">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Roslynator.Analyzers" Version="4.15.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <!--
+    Test projects: relax the rules that fight with test code idioms.
+
+    The list below is evidence-driven. Phase B ran the baseline against
+    Consumer A's test project: 36 findings, and NONE of them were the three
+    rules originally guessed at here. What actually fired:
+
+      S1199  14   "extract this nested code block"  -> arrange/act/assert
+      CA1822 12   "mark member as static"           -> every non-static helper
+      S2325   8   "make this method static"         -> same idea, Sonar's copy
+      S927    6   parameter name mismatch with base
+      S4487   6   unread private field
+      IDE0052 6   unread private member
+
+    Only the first three are waived. S927 is a real readability bug in a test as
+    much as anywhere, and S4487/IDE0052 on an unread field is often a genuine
+    "this fixture is dead" signal — waiving those would hide defects to buy
+    quiet.
+  -->
+  <PropertyGroup Condition="$(MSBuildProjectName.EndsWith('Tests'))">
+    <NoWarn>$(NoWarn);CA1707;CA2007;S2699;S1199;CA1822;S2325</NoWarn>
+  </PropertyGroup>
+
+</Project>

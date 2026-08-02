@@ -1,0 +1,199 @@
+# maxi-quality — Layer 2 composite action.
+#
+# This action is the delivery vehicle for the private-repo rules (issue #5):
+# when a consumer's workflow resolves `maximalcode/maxi-quality/actions/layer2@v1`,
+# GitHub downloads THIS ENTIRE REPO at that ref onto the runner — semgrep/,
+# scripts/scan.sh, everything — using GitHub's own scoped token. No PAT in the
+# consumer, no public rules split, no vendored copy.
+#
+# While this repo was private that also needed an Actions access policy
+# (access_level=user). Publishing removed that constraint.
+#
+# `#NN` below refers to this project's pre-publication tracker, which stayed
+# private. Not this repo's issue numbers, which start fresh at #1.
+#
+# Version pinning: quality.yml@v1 references this action @v1 — the tag moves
+# both together. Tool versions below are pinned deliberately (STATUS §4:
+# "an analyzer upgrade that adds rules is a breaking change").
+
+name: 'maxi-quality Layer 2 scan'
+description: >-
+  Cross-language umbrella: Semgrep (this repo's rules) + Gitleaks +
+  OSV-Scanner, via scripts/scan.sh --require-tools. Fails on findings.
+
+inputs:
+  target:
+    description: 'Directory to scan (the consumer checkout).'
+    default: ${{ github.workspace }}
+  changed-only:
+    description: >-
+      New-code-only mode: pass a base ref (e.g. "origin/main") to report only
+      findings introduced since it. Empty = full scan.
+    default: ''
+  json-out:
+    description: >-
+      Also write Semgrep's JSON results here. Used by the reporting workflow,
+      which needs machine-readable output; the human-readable scan log is
+      unchanged either way.
+    default: ''
+  sbom-out:
+    description: >-
+      Write a CycloneDX 1.6 SBOM of every resolved dependency here. Produced by
+      osv-scanner, which is already installed and pinned for the vulnerability
+      scan — no fourth tool, no second supply chain to trust.
+    default: ''
+  licenses:
+    description: >-
+      Comma-separated SPDX allowlist. Any dependency outside it FAILS the scan.
+      Empty (the default) means no license gate: an allowlist is a per-repo
+      policy call, and shipping a default one would gate wrongly everywhere.
+    default: ''
+  no-fail:
+    description: >-
+      'true' reports everything and exits 0. For the standing REPORT, which
+      must not fail a run just because a backlog exists. Never set this on a
+      gate — a gate that cannot fail is not a gate.
+    default: 'false'
+  semgrep-version:
+    description: 'Pinned Semgrep version.'
+    default: '1.172.0'
+  gitleaks-version:
+    description: 'Pinned Gitleaks version (no leading v).'
+    default: '8.30.1'
+  osv-scanner-version:
+    description: 'Pinned OSV-Scanner version (with leading v).'
+    default: 'v2.4.0'
+  # A VERSION IS NOT A PIN. A git tag and a release asset are both mutable —
+  # that is the whole argument SECURITY.md makes about `uses:` tags, and it
+  # applies just as well to a tarball fetched from a fixed release URL. These
+  # binaries are installed and executed in every consumer's CI, so the digest
+  # is pinned beside the version and verified before anything runs.
+  #
+  # Overriding a version input without its digest is meant to fail loudly:
+  # a bump is a decision, and an unverified download is not one this action
+  # will make on a consumer's behalf.
+  #
+  #   gitleaks    : gitleaks_<version>_checksums.txt in the release
+  #   osv-scanner : osv-scanner_SHA256SUMS in the release
+  gitleaks-sha256:
+    description: 'sha256 of gitleaks_<version>_linux_x64.tar.gz.'
+    default: '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb'
+  osv-scanner-sha256:
+    description: 'sha256 of osv-scanner_linux_amd64.'
+    default: '15314940c10d26af9c6649f150b8a47c1262e8fc7e17b1d1029b0e479e8ed8a0'
+
+outputs:
+  gitleaks:
+    description: 'Gitleaks status line from the scan summary (clean / FINDINGS / SKIPPED).'
+    value: ${{ steps.scan.outputs.gitleaks }}
+  osv:
+    description: 'OSV-Scanner status line from the scan summary.'
+    value: ${{ steps.scan.outputs.osv }}
+  licenses:
+    description: 'License-allowlist status. "not run" when no allowlist was given.'
+    value: ${{ steps.scan.outputs.licenses }}
+  sbom:
+    description: 'SBOM status line, including the component count.'
+    value: ${{ steps.scan.outputs.sbom }}
+
+runs:
+  using: composite
+  steps:
+    # EVERY input reaches the shell through `env:`, never through `${{ }}`
+    # interpolated into the script body.
+    #
+    # `${{ }}` is textual substitution performed BEFORE bash sees the script, so
+    # an input containing a quote or a `;` stops being a value and becomes code.
+    # These inputs come from a caller's workflow file rather than from a PR
+    # title, so the exposure is small — but "the untrusted thing is currently
+    # somewhere else" is not a property this repo should be relying on, and a
+    # baseline that gates other people's supply chains should not model the
+    # pattern it exists to catch. `env:` passes values as values.
+    - name: Install pinned tools
+      shell: bash
+      env:
+        SEMGREP_VERSION: ${{ inputs.semgrep-version }}
+        GITLEAKS_VERSION: ${{ inputs.gitleaks-version }}
+        OSV_VERSION: ${{ inputs.osv-scanner-version }}
+        GITLEAKS_SHA256: ${{ inputs.gitleaks-sha256 }}
+        OSV_SHA256: ${{ inputs.osv-scanner-sha256 }}
+      run: |
+        set -Eeuo pipefail
+        echo "::group::Install semgrep $SEMGREP_VERSION"
+        # pipx resolves from PyPI, where a version binds to immutable artifacts,
+        # so the version IS the pin here. The two GitHub release downloads below
+        # are the ones that need a digest.
+        pipx install "semgrep==$SEMGREP_VERSION"
+        echo "::endgroup::"
+
+        echo "::group::Install gitleaks $GITLEAKS_VERSION"
+        curl -sSfL -o /tmp/gitleaks.tgz \
+          "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+        echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tgz" | sha256sum -c -
+        tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+        sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+        echo "::endgroup::"
+
+        echo "::group::Install osv-scanner $OSV_VERSION"
+        curl -sSfL -o /tmp/osv-scanner \
+          "https://github.com/google/osv-scanner/releases/download/${OSV_VERSION}/osv-scanner_linux_amd64"
+        echo "${OSV_SHA256}  /tmp/osv-scanner" | sha256sum -c -
+        sudo install -m 0755 /tmp/osv-scanner /usr/local/bin/osv-scanner
+        echo "::endgroup::"
+
+        semgrep --version && gitleaks version && osv-scanner --version
+
+    - name: Layer 2 scan
+      id: scan
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target }}
+        JSON_OUT: ${{ inputs.json-out }}
+        SBOM_OUT: ${{ inputs.sbom-out }}
+        LICENSES: ${{ inputs.licenses }}
+        NO_FAIL: ${{ inputs.no-fail }}
+        CHANGED_ONLY: ${{ inputs.changed-only }}
+      run: |
+        set -Eeuo pipefail
+        ARGS=(--require-tools)
+        if [[ -n "$JSON_OUT" ]]; then
+          ARGS+=(--json-out "$JSON_OUT")
+        fi
+        if [[ -n "$SBOM_OUT" ]]; then
+          ARGS+=(--sbom "$SBOM_OUT")
+        fi
+        if [[ -n "$LICENSES" ]]; then
+          ARGS+=(--licenses "$LICENSES")
+        fi
+        if [[ "$NO_FAIL" == "true" ]]; then
+          ARGS+=(--no-fail)
+        fi
+        if [[ -n "$CHANGED_ONLY" ]]; then
+          # A shallow checkout has no base ref to diff against. Fetching the
+          # branch updates its remote-tracking ref (origin/<branch>).
+          git -C "$TARGET" fetch --no-tags --depth=200 \
+            origin "${CHANGED_ONLY#origin/}" 2>/dev/null || true
+          ARGS+=(--changed-only "$CHANGED_ONLY")
+        fi
+        # tee so the log still streams to the runner while the summary lines
+        # stay parseable. A `|| true` guard is deliberate: without --no-fail the
+        # scan is a GATE and must keep its exit code, so the status parsing is
+        # done after, from the captured log, rather than swallowing it here.
+        rc=0
+        "${GITHUB_ACTION_PATH}/../../scripts/scan.sh" \
+          "$TARGET" "${ARGS[@]}" 2>&1 | tee "$RUNNER_TEMP/scan.log" || rc=$?
+
+        # "not run" rather than "" when the summary has no such line: an empty
+        # output renders as a blank cell in the report, which reads as "clean".
+        status() {
+          local v
+          v=$(sed -n "s/^  $1 \{1,\}//p" "$RUNNER_TEMP/scan.log" | tail -1)
+          echo "${v:-not run}"
+        }
+        {
+          echo "gitleaks=$(status gitleaks)"
+          echo "osv=$(status osv)"
+          echo "licenses=$(status licenses)"
+          echo "sbom=$(status sbom)"
+        } >> "$GITHUB_OUTPUT"
+        exit "$rc"

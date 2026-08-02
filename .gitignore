@@ -1,0 +1,11 @@
+# Node
+node_modules/
+*.tsbuildinfo
+
+# .NET
+bin/
+obj/
+
+# OS / editor
+.DS_Store
+*.swp

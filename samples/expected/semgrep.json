@@ -1,0 +1,165 @@
+{
+  "tool": "semgrep",
+  "findings": [
+    {
+      "rule": "no-float-for-money",
+      "file": "samples/semgrep/Bad.cs",
+      "line": 22
+    },
+    {
+      "rule": "no-float-for-money",
+      "file": "samples/semgrep/Bad.cs",
+      "line": 24
+    },
+    {
+      "rule": "hardcoded-secret-dotnet",
+      "file": "samples/semgrep/Bad.cs",
+      "line": 33
+    },
+    {
+      "rule": "hardcoded-secret-dotnet",
+      "file": "samples/semgrep/Bad.cs",
+      "line": 35
+    },
+    {
+      "rule": "todo-without-issue",
+      "file": "samples/semgrep/Bad.cs",
+      "line": 42
+    },
+    {
+      "rule": "no-ambient-clock",
+      "file": "samples/semgrep/Bad.cs",
+      "line": 46
+    },
+    {
+      "rule": "no-float-for-money",
+      "file": "samples/semgrep/Bad.cs",
+      "line": 49
+    },
+    {
+      "rule": "weak-crypto",
+      "file": "samples/semgrep/Bad.cs",
+      "line": 54
+    },
+    {
+      "rule": "sql-string-concat-dotnet",
+      "file": "samples/semgrep/Bad.cs",
+      "line": 61
+    },
+    {
+      "rule": "command-injection-dotnet",
+      "file": "samples/semgrep/Bad.cs",
+      "line": 67
+    },
+    {
+      "rule": "sync-over-async",
+      "file": "samples/semgrep/Bad.cs",
+      "line": 73
+    },
+    {
+      "rule": "catch-and-swallow-dotnet",
+      "file": "samples/semgrep/Bad.cs",
+      "line": 79
+    },
+    {
+      "rule": "debug-print-left-behind-dotnet",
+      "file": "samples/semgrep/Bad.cs",
+      "line": 107
+    },
+    {
+      "rule": "mutation-requires-authz-dotnet",
+      "file": "samples/semgrep/UserService.cs",
+      "line": 42
+    },
+    {
+      "rule": "mutation-requires-authz-dotnet",
+      "file": "samples/semgrep/UserService.cs",
+      "line": 48
+    },
+    {
+      "rule": "no-permission-denied-for-invisible-resource-dotnet",
+      "file": "samples/semgrep/UserService.cs",
+      "line": 64
+    },
+    {
+      "rule": "todo-without-issue",
+      "file": "samples/semgrep/bad.ts",
+      "line": 15
+    },
+    {
+      "rule": "hardcoded-secret-ts",
+      "file": "samples/semgrep/bad.ts",
+      "line": 19
+    },
+    {
+      "rule": "hardcoded-secret-ts",
+      "file": "samples/semgrep/bad.ts",
+      "line": 22
+    },
+    {
+      "rule": "no-ambient-clock",
+      "file": "samples/semgrep/bad.ts",
+      "line": 31
+    },
+    {
+      "rule": "weak-crypto",
+      "file": "samples/semgrep/bad.ts",
+      "line": 36
+    },
+    {
+      "rule": "weak-crypto",
+      "file": "samples/semgrep/bad.ts",
+      "line": 42
+    },
+    {
+      "rule": "weak-crypto",
+      "file": "samples/semgrep/bad.ts",
+      "line": 48
+    },
+    {
+      "rule": "sql-string-concat-ts",
+      "file": "samples/semgrep/bad.ts",
+      "line": 63
+    },
+    {
+      "rule": "sql-string-concat-ts",
+      "file": "samples/semgrep/bad.ts",
+      "line": 72
+    },
+    {
+      "rule": "sql-string-concat-ts",
+      "file": "samples/semgrep/bad.ts",
+      "line": 76
+    },
+    {
+      "rule": "command-injection-ts",
+      "file": "samples/semgrep/bad.ts",
+      "line": 90
+    },
+    {
+      "rule": "debug-print-left-behind-ts",
+      "file": "samples/semgrep/bad.ts",
+      "line": 92
+    },
+    {
+      "rule": "catch-and-swallow-ts",
+      "file": "samples/semgrep/bad.ts",
+      "line": 98
+    },
+    {
+      "rule": "no-permission-denied-for-invisible-resource-ts",
+      "file": "samples/semgrep/bad.ts",
+      "line": 133
+    },
+    {
+      "rule": "mutation-requires-authz-ts",
+      "file": "samples/semgrep/user-service.ts",
+      "line": 25
+    },
+    {
+      "rule": "mutation-requires-authz-ts",
+      "file": "samples/semgrep/user-service.ts",
+      "line": 30
+    }
+  ]
+}

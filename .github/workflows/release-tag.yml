@@ -1,0 +1,125 @@
+# maxi-quality — keep the moving `v1` tag pointing at verified main.
+#
+# WHY THIS EXISTS: `v1` is what consumers pin. Every merge that touches
+# configs/, semgrep/ or actions/ has to move it, and doing that by hand failed
+# twice — the tag sat 11 commits behind main while two repos were being told to
+# adopt `@v1`. A stale moving tag is worse than no moving tag, because everyone
+# assumes it moved.
+#
+# WHY IT IS SAFE TO AUTOMATE: it triggers on `workflow_run` from `ci`, and only
+# when that run CONCLUDED SUCCESSFULLY on main. ci asserts exact sample counts
+# (8 TS / 13 C# / 3 tests / 0+0 on both clean fixtures / 32 findings across 19
+# rule ids), so a ruleset that changed behaviour cannot reach a green main in
+# the first place. The tag inherits that gate rather than adding a new one.
+#
+# It does NOT touch the immutable v1.0.x tags. Those stay manual, because a
+# point release is a deliberate act with a written changelog.
+
+name: release-tag
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    # NOT a security control. `branches` filters the triggering run's HEAD
+    # BRANCH NAME, and for a pull request from a fork that name is the branch
+    # inside the FORK — so anyone who forks and commits on their own `main`
+    # (the default behaviour of anyone who does not branch) matches this filter.
+    # The real gate is the `if:` on the job. See the comment there.
+    branches: [main]
+  # Manual escape hatch — also how this workflow was verified before anyone
+  # relied on it, since a workflow_run trigger cannot be tested from a PR.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-tag
+  cancel-in-progress: false
+
+jobs:
+  move-v1:
+    # THE TAG-HIJACK GATE. Read this before touching the condition.
+    #
+    # `workflow_run` runs in the context of the BASE repo with the permissions
+    # declared above — here, contents: write — no matter who triggered the run
+    # that woke it. A green `ci` run alone is NOT evidence that the commit came
+    # from this repository.
+    #
+    # The attack it closes, which was live until 2026-08-01 and would have
+    # become reachable by any GitHub user the moment this repo went public:
+    #
+    #   1. fork, commit to the fork's `main` — one exfiltration line in
+    #      scripts/scan.sh, samples/ untouched
+    #   2. open a PR. `ci` runs on it (ci.yml triggers on unqualified
+    #      pull_request) and PASSES: every count assertion is about fixtures the
+    #      attacker did not modify
+    #   3. workflow_run fires; head_branch is "main" because that is the branch
+    #      name in the FORK, so `branches: [main]` matches
+    #   4. this job force-pushes v1 to the attacker's commit
+    #   5. every consumer pinning @v1 — the pin this repo recommends — executes
+    #      attacker code in their own CI with their own GITHUB_TOKEN
+    #
+    # The PR never has to be merged, reviewed, or read. Branch protection does
+    # not help: this pushes a TAG, not a branch.
+    #
+    # `event == 'push'` is the load-bearing clause — push events only ever
+    # originate from this repository, so a PR-triggered run can never reach the
+    # tag move. The head_repository check is belt and braces, and says the
+    # intent out loud for whoever edits this next.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The exact commit ci validated — NOT whatever main happens to be by
+          # the time this job starts. If another merge landed in between, that
+          # merge's own ci run moves the tag again.
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+          fetch-depth: 0
+
+      - name: Move v1 to the verified commit
+        shell: bash
+        env:
+          # Through env:, like everything else. These particular values are
+          # GitHub-generated SHAs and not attacker-influenceable, but the rule
+          # is kept absolute so the guard in ci.yml needs no allowlist — an
+          # exception list is where the next real one hides.
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -Eeuo pipefail
+
+          # Identity rail (CLAUDE.md §1) — repo-local, never global.
+          git config user.name maximalcode
+          git config user.email 213183497+maximalcode@users.noreply.github.com
+
+          CURRENT="$(git rev-parse -q --verify 'refs/tags/v1^{commit}' 2>/dev/null || echo none)"
+          if [[ "$CURRENT" == "$SHA" ]]; then
+            echo "v1 already points at $SHA — nothing to do"
+            exit 0
+          fi
+
+          echo "moving v1: ${CURRENT:0:7} -> ${SHA:0:7}"
+          git tag -f -a v1 -m "v1 — TS + C# baseline: moving pointer to the newest verified main.
+
+          Moved automatically after a green ci run on $SHA.
+          Pin a v1.0.x tag instead if you need a ref that never moves." "$SHA"
+          git push --force origin v1
+
+      - name: Summary
+        shell: bash
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          {
+            echo "### v1 moved"
+            echo ""
+            echo "\`v1\` -> \`$(git rev-parse --short "$SHA")\`"
+            echo ""
+            echo "Consumers pinning \`@v1\` now resolve this commit."
+          } >> "$GITHUB_STEP_SUMMARY"

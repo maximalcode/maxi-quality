@@ -1,0 +1,30 @@
+rules:
+  - id: command-injection-ts
+    message: >-
+      Shell command built from an interpolated value — command injection. Use
+      execFile/spawn with an argument array so the shell never parses the input.
+    severity: ERROR
+    languages: [typescript]
+    patterns:
+      - pattern-either:
+          - pattern: $CP.exec($CMD, ...)
+          - pattern: $CP.execSync($CMD, ...)
+          - pattern: exec($CMD, ...)
+          - pattern: execSync($CMD, ...)
+      - metavariable-pattern:
+          metavariable: $CMD
+          pattern-either:
+            - pattern-regex: '`[^`]*\$\{'
+            - pattern-regex: '"[^"]*"\s*\+'
+
+  - id: command-injection-dotnet
+    message: >-
+      Process arguments built by string interpolation — command injection. Use
+      ProcessStartInfo.ArgumentList so each argument is passed separately.
+    severity: ERROR
+    languages: [csharp]
+    pattern-either:
+      - pattern: Process.Start($"...{...}...", ...)
+      - pattern: Process.Start($EXE, $"...{...}...")
+      - pattern: |
+          $PSI.Arguments = $"...{...}...";

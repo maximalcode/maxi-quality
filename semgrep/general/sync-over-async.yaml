@@ -1,0 +1,14 @@
+rules:
+  - id: sync-over-async
+    message: >-
+      Blocking on a Task (.Result / .Wait() / .GetAwaiter().GetResult()) can
+      deadlock and always burns a thread. Make the caller async and await it.
+    severity: ERROR
+    languages: [csharp]
+    paths:
+      exclude:
+        - "*Tests*"
+    pattern-either:
+      - pattern: $TASK.GetAwaiter().GetResult()
+      - pattern: $TASK.Result
+      - pattern: $TASK.Wait()
