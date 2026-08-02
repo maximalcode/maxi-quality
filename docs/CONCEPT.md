@@ -13,14 +13,16 @@ A personal, reusable static-analysis baseline that makes every current and futur
 project (TypeScript, C#/.NET, Python) professional by default — free tools only,
 one-time setup, stamped onto new repos in minutes.
 
-**On CodeQL.** Free CodeQL needs a public repo or GitHub Advanced Security, so
-for most of this project's life it was unavailable, and that was an acceptable
-tradeoff: Semgrep + Gitleaks + OSV-Scanner run fine on private repos, and the
-measured comparison in [EVAL-vs-sonarqube.md](EVAL-vs-sonarqube.md) is not kind
-to the alternatives. Publishing makes CodeQL free — which is a reason to
-**measure** it against `samples/`, not a reason to adopt it. It has not been
-measured yet, so it is not wired in. Prior evidence for why that order matters:
-the free Semgrep registry scored 0 of 28 planted findings, SonarQube 1 of 8.
+**On CodeQL — measured 2026-08-02, and it is not wired in.** Publishing this
+repo made CodeQL free *for this repo*, which was a reason to measure it, not to
+adopt it. Measured: 1 of 8 planted TypeScript findings, 2 of 19 Python, 4 of 30
+C#, and 0 false positives on the clean fixtures. It is in a class of its own on
+one thing — interprocedural taint tracking, 4 of 4 on probes where this
+baseline's pattern rules score 0 of 4. None of that is available downstream:
+free code scanning is public-repos-only on Free/Pro plans, and the CodeQL CLI
+licence separately forbids use on a non-open-source codebase. **Every consumer
+of this baseline is private, so CodeQL can only ever be a self-check here.**
+Full numbers in [EVAL-vs-oss-tools.md](EVAL-vs-oss-tools.md).
 
 ---
 
