@@ -686,7 +686,7 @@ fix the config, never silence the fixture.
 ./scripts/scan.sh
 ```
 
-Expect exit `1` with **59 Semgrep findings across all 19 rule ids**, and Gitleaks
+Expect exit `1` with **60 Semgrep findings across all 19 rule ids**, and Gitleaks
 plus OSV-Scanner clean.
 
 `samples/semgrep/` sits deliberately **outside** the `samples/typescript` and
@@ -711,6 +711,7 @@ the rules are provably not just matching on names:
 | `conn.Query("… = @id", new { id })` | `sql-string-concat-dotnet` accepts Dapper's parameters |
 | `return NotFound()` | `no-permission-denied-*` accepts the fix its message asks for |
 | `catch { /* why */ }` | `catch-and-swallow-*` accepts a documented silence |
+| `catch (T e) when (…) { /* why */ }` | …including on an exception filter, which it did not until 2026-08-02 |
 | `createHash('sha256')`, `createCipheriv('aes-256-gcm', …)` | `weak-crypto` accepts modern algorithms |
 
 Every exemption above has bait behind it as well as a control. That pairing is
