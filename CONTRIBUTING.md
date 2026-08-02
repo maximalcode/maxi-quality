@@ -1,8 +1,9 @@
 # Contributing
 
 This is a personal baseline that happens to be public. Issues and discussion are
-welcome; please read the two hard rules first, because they are the reason the
-project has stayed useful rather than growing into a rule zoo.
+welcome; please read the three hard rules first. The first two are why the
+project has stayed useful rather than growing into a rule zoo. The third is why
+a merge here does not surprise anyone downstream.
 
 ## Rule 1 — the ruleset is capped at 12 conventions
 
@@ -42,11 +43,35 @@ is not hypothetical: `catch-and-swallow` told people to explain the silence in a
 comment, comments are not AST nodes, and following the instruction verbatim did
 not clear the finding — 4 out of 4 real-world hits were false positives.
 
+## Rule 3 — PRs go to `develop`, never to `main`
+
+`main` is not a checkpoint, it is a **release**. The moving `v1` tag follows it
+automatically, so anything that lands on `main` is running in every consuming
+repo that pinned `@v1` within about a minute.
+
+So the flow is:
+
+```
+  feature branch ──PR──▶ develop ──PR──▶ main ──▶ v1 moves
+     your work            default        maintainer   consumers
+                          branch         decides      pick it up
+```
+
+`develop` is the default branch, so `gh pr create` and the web UI already target
+it — you should not have to change the base. Both branches carry the same
+protection: 18 required checks, admins included, branch must be up to date, no
+force-pushes, no direct commits.
+
+Promoting `develop` to `main` is a maintainer decision, because it is where the
+version gets chosen. It is not part of a contribution, and a PR that targets
+`main` will be asked to retarget rather than merged.
+
 ## Practical
 
 - **Conventional commits**: `feat:`, `fix:`, `chore:`, `docs:`, `ci:`. One
   logical commit per unit of work.
-- **Branch, then PR.** CI is the gate; nothing lands on `main` directly.
+- **Branch off `develop`, then PR back into it.** CI is the gate; nothing lands
+  on either long-lived branch directly.
 - **Third-party actions are pinned to a full commit SHA**, never a tag, and CI
   fails if one is not. Keep the tag as a trailing comment so Dependabot can still
   bump it.
