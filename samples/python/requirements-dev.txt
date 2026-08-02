@@ -7,5 +7,5 @@
 # Dependabot bumps these (pip ecosystem). A bump that changes what fires turns
 # ci.yml red on a count mismatch, which is the intended behaviour: the PR is
 # where a human looks at the new rule and decides. See .github/dependabot.yml.
-ruff==0.16.0
+ruff==0.16.1
 mypy==2.3.0
