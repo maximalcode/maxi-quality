@@ -539,11 +539,11 @@ be mistaken for one that met its floor exactly.
 
 ---
 
-## The ruleset — 12 conventions, 19 rule ids
+## The ruleset — 12 conventions, 23 rule ids
 
 Semgrep patterns are language-specific, so a convention whose C# and TypeScript
 syntax differ needs one rule id per language with an identical message. That is
-why 12 conventions produce 19 ids. **The cap is on conventions, and it is 12,
+why 12 conventions produce 23 ids. **The cap is on conventions, and it is 12,
 hard** — new ones get added when a real bug slips through, never speculatively.
 
 | Convention | Rule id(s) | TS | C# |
@@ -554,8 +554,8 @@ hard** — new ones get added when a real bug slips through, never speculatively
 | Printf-debugging left behind | `debug-print-left-behind-{ts,dotnet}` | ✅ | ✅ |
 | Blocking on a Task | `sync-over-async` | — | ✅ |
 | **security** | | | |
-| SQL built by concat/interpolation | `sql-string-concat-{ts,dotnet}` | ✅ | ✅ |
-| Shell command from interpolation | `command-injection-{ts,dotnet}` | ✅ | ✅ |
+| SQL built by concat/interpolation | `sql-string-concat-{ts,dotnet}`, `sql-string-concat-builder-{ts,dotnet}` | ✅ | ✅ |
+| Shell command from interpolation | `command-injection-{ts,dotnet}`, `command-injection-indirect-{ts,dotnet}` | ✅ | ✅ |
 | MD5/SHA1/DES/RC4, any case, all DES variants | `weak-crypto` | ✅ | ✅ |
 | Secret-named var assigned a literal | `hardcoded-secret-{ts,dotnet}` | ✅ | ✅ |
 | **conventions** (mine) | | | |
@@ -577,6 +577,28 @@ double-quoted and single-quoted forms, `sql-string-concat-ts` covers Prisma's
 `CommandText` as well as `new SqlCommand`. Each of those branches has its own
 fixture, so one going quiet shows up as a named missing finding rather than as a
 total that still looks about right.
+
+**Two conventions carry a second rule id for the same bug one step away from the
+sink** (issue #20). The sink-anchored rules require the concatenation to sit
+syntactically inside the query or exec call, so binding it to a local variable
+one line up silenced all of them. The two halves close it differently, and the
+difference is the point:
+
+- **SQL** drops the sink and matches the *string* — a literal carrying a SQL
+  keyword, concatenated or interpolated, wherever it is built. That reaches a
+  helper function as well as a local.
+- **Commands** cannot do that: `"ls -la " + dir` and `"Hello " + name` are the
+  same shape, so a sink-free command rule is a rule against string concatenation
+  and gets switched off. It uses Semgrep's taint mode instead, keeping the sink.
+
+Which leaves one measured gap, stated rather than papered over: **Semgrep OSS
+taint is intraprocedural.** It crosses a local variable and not a function call,
+so `exec(buildCommand(dir))` is still silent. Interprocedural taint is a Semgrep
+Pro feature, and the one free tool in the eval that reached it —
+CodeQL — cannot run against a private repo at all
+([`EVAL-vs-oss-tools.md`](docs/EVAL-vs-oss-tools.md) §0). The gap has a fixture
+of its own in `samples/semgrep/`, kept silent on purpose, so the day something
+free does reach it the manifest is where that shows up.
 
 **Division of labour with Gitleaks:** Gitleaks catches secrets whose *shape* is a
 known token (AWS keys, GitHub PATs, JWTs). `hardcoded-secret-*` catches the
@@ -692,7 +714,7 @@ fix the config, never silence the fixture.
 ./scripts/scan.sh
 ```
 
-Expect exit `1` with **60 Semgrep findings across all 19 rule ids**, and Gitleaks
+Expect exit `1` with **81 Semgrep findings across all 23 rule ids**, and Gitleaks
 plus OSV-Scanner clean.
 
 `samples/semgrep/` sits deliberately **outside** the `samples/typescript` and

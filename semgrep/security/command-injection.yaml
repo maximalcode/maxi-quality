@@ -45,3 +45,83 @@ rules:
       - pattern: Process.Start($EXE, $"...{...}...")
       - pattern: |
           $PSI.Arguments = $"...{...}...";
+
+  # ---------------------------------------------------------------------------
+  # THE SAME CONVENTION, ONE STEP AWAY FROM THE SINK.
+  #
+  # Both rules above require the interpolation to sit syntactically inside the
+  # sink call, so binding it to a variable one line up silences them (issue #20,
+  # docs/EVAL-vs-oss-tools.md §2d):
+  #
+  #     const cmd = `tar -czf backup.tgz ${path}`;   // silent
+  #     exec(cmd);                                   // silent
+  #
+  # sql-string-concat closes its half of this by dropping the sink and matching
+  # the string. THAT DOES NOT TRANSFER HERE, and the reason is the whole design
+  # of these two rules. A SQL string identifies itself — SELECT, INSERT, WHERE.
+  # A shell command does not: `"ls -la " + dir` and `"Hello " + name` are the
+  # same shape, so a sink-free command rule is a rule against string
+  # concatenation, which means it gets switched off, which finds nothing.
+  #
+  # So this half is done with taint instead, and the sink stays. The source is
+  # the interpolation, the sink is the exec call, and Semgrep carries the taint
+  # across the local binding. The METAVARIABLE-REGEX ON THE SINK ARGUMENT is
+  # what keeps this from double-reporting: restricted to a bare identifier, the
+  # inline form (`exec(\`ls -la ${dir}\`)`) belongs to the pattern rules above and
+  # is matched only there. `samples/semgrep/` carries a duplication control for
+  # it in both languages.
+  #
+  # MEASURED, AND THE MEASUREMENT IS THE LIMIT OF THIS FIX: Semgrep OSS taint is
+  # INTRAPROCEDURAL. It crosses a local variable; it does not cross a function
+  # call, so `exec(buildCommand(dir))` stays silent here. Interprocedural taint
+  # is a Semgrep Pro feature, and the free tool that did reach it in the eval
+  # (CodeQL) cannot run on a private repo — see docs/EVAL-vs-oss-tools.md §0.
+  # Nothing free closes the remaining gap, so it is documented rather than
+  # papered over with a noisy pattern.
+  - id: command-injection-indirect-ts
+    mode: taint
+    message: >-
+      Shell command built from an interpolated value and passed to exec through
+      a variable — command injection. Use execFile/spawn with an argument array
+      so the shell never parses the input.
+    severity: ERROR
+    languages: [typescript]
+    pattern-sources:
+      # Same three quote styles as the pattern rule above, and for the same
+      # reason: these are regexes over raw source text, so covering one quote
+      # style says nothing about the others.
+      - pattern-regex: '`[^`]*\$\{'
+      - pattern-regex: '"[^"]*"\s*\+'
+      - pattern-regex: "'[^']*'\\s*\\+"
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: $CP.exec($CMD, ...)
+              - pattern: $CP.execSync($CMD, ...)
+              - pattern: exec($CMD, ...)
+              - pattern: execSync($CMD, ...)
+          # A bare identifier only. Anything else is the inline form, which the
+          # pattern rule above already owns.
+          - metavariable-regex:
+              metavariable: $CMD
+              regex: '^[A-Za-z_$][A-Za-z0-9_$]*$'
+
+  - id: command-injection-indirect-dotnet
+    mode: taint
+    message: >-
+      Process arguments built by string interpolation and passed to the process
+      through a variable — command injection. Use ProcessStartInfo.ArgumentList
+      so each argument is passed separately.
+    severity: ERROR
+    languages: [csharp]
+    pattern-sources:
+      - pattern: $"...{...}..."
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: Process.Start($EXE, $CMD)
+              - pattern: Process.Start($CMD)
+              - pattern: $PSI.Arguments = $CMD;
+          - metavariable-regex:
+              metavariable: $CMD
+              regex: '^[A-Za-z_][A-Za-z0-9_]*$'

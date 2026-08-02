@@ -78,3 +78,83 @@ rules:
                     "[^"]*\b(SELECT|INSERT|UPDATE|DELETE|WHERE|FROM)\b[^"]*"\s*\+
                 - pattern-regex: |-
                     '[^']*\b(SELECT|INSERT|UPDATE|DELETE|WHERE|FROM)\b[^']*'\s*\+
+
+  # ---------------------------------------------------------------------------
+  # THE SAME CONVENTION, ONE STEP AWAY FROM THE SINK.
+  #
+  # Both rules above match the SINK CALL and require the concatenation to sit
+  # syntactically inside it. Measured 2026-08-02 (docs/EVAL-vs-oss-tools.md §2d,
+  # issue #20): move the string one step and every branch above goes quiet on the
+  # identical bug — not only across a function boundary, but across a local
+  # variable, which is the commoner shape of the two:
+  #
+  #     var sql = "SELECT * FROM Users WHERE Id = " + id;   // silent
+  #     conn.Execute(sql);                                  // silent
+  #
+  # So these two rules drop the sink entirely and match the STRING: a literal
+  # carrying a SQL keyword, concatenated or interpolated, wherever it is built.
+  # That is the precision trade the free registry's `csharp-sqli` makes, and on
+  # this corpus it is the only shape that reaches a helper at all — Semgrep OSS
+  # has no interprocedural taint. Measured, because "OSS taint mode would do
+  # this" is exactly the kind of assumption this repo does not ship on: taint
+  # mode crosses a local variable and does NOT cross a function call. It is used
+  # for the local-variable half of command-injection, where there is no keyword
+  # to match on; here there is one, so the wider rule is affordable.
+  #
+  # THE `^` ANCHORS ARE LOAD-BEARING. `pattern-regex` inside a
+  # `metavariable-pattern` is a SUBSTRING match over the metavariable's source
+  # text, so unanchored it also matches `return db.query("SELECT ..." + id)` —
+  # where the concatenation is the sink's argument and the rules above already
+  # fire — and one bug gets reported twice under two ids. `samples/semgrep/`
+  # carries a duplication control for exactly that, per language.
+  - id: sql-string-concat-builder-dotnet
+    message: >-
+      SQL assembled by concatenation or interpolation outside a query call. It
+      is still SQL injection wherever the string is built — parameterise it here
+      (cmd.Parameters.Add / Dapper's anonymous-object args) rather than at the
+      sink.
+    severity: ERROR
+    languages: [csharp]
+    patterns:
+      - pattern-either:
+          - pattern: return $SQL;
+          - pattern: $T $VAR = $SQL;
+          - pattern: var $VAR = $SQL;
+          - pattern: $VAR = $SQL;
+          - pattern: $RET $M(...) => $SQL;
+      # `CommandText` is a sink, and sql-string-concat-dotnet already owns it.
+      # Without this the assignment branch above reports it a second time.
+      - pattern-not: $CMD.CommandText = $SQL;
+      - metavariable-pattern:
+          metavariable: $SQL
+          pattern-either:
+            # Only double quotes, for the same reason as the sink rule: C# has
+            # no single-quoted string type.
+            - pattern-regex: '^"[^"]*\b(SELECT|INSERT|UPDATE|DELETE|WHERE|FROM)\b[^"]*"\s*\+'
+            - pattern-regex: '^\$"[^"]*\b(SELECT|INSERT|UPDATE|DELETE|WHERE|FROM)\b[^"]*\{'
+
+  - id: sql-string-concat-builder-ts
+    message: >-
+      SQL assembled by template literal or concatenation outside a query call.
+      It is still SQL injection wherever the string is built — use placeholders
+      here and pass the values as the query's parameter array.
+    severity: ERROR
+    languages: [typescript]
+    patterns:
+      - pattern-either:
+          - pattern: return $SQL;
+          # `var $VAR = $SQL` covers const and let too — semgrep normalises the
+          # three declaration keywords. A concise arrow body (`=> 'SELECT ...'`)
+          # is normalised to a return and is covered by the branch above; adding
+          # an explicit arrow pattern here reported it twice.
+          - pattern: var $VAR = $SQL;
+          - pattern: $VAR = $SQL;
+      - metavariable-pattern:
+          metavariable: $SQL
+          pattern-either:
+            - pattern-regex: |-
+                ^`[^`]*\b(SELECT|INSERT|UPDATE|DELETE|WHERE|FROM)\b[^`]*\$\{
+            - pattern-regex: |-
+                ^"[^"]*\b(SELECT|INSERT|UPDATE|DELETE|WHERE|FROM)\b[^"]*"\s*\+
+            - pattern-regex: |-
+                ^'[^']*\b(SELECT|INSERT|UPDATE|DELETE|WHERE|FROM)\b[^']*'\s*\+

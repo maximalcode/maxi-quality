@@ -137,6 +137,61 @@
       "line": 74
     },
     {
+      "rule": "sql-string-concat-builder-dotnet",
+      "file": "samples/semgrep/QueryBuilder.cs",
+      "line": 25
+    },
+    {
+      "rule": "sql-string-concat-builder-dotnet",
+      "file": "samples/semgrep/QueryBuilder.cs",
+      "line": 29
+    },
+    {
+      "rule": "sql-string-concat-builder-dotnet",
+      "file": "samples/semgrep/QueryBuilder.cs",
+      "line": 36
+    },
+    {
+      "rule": "sql-string-concat-builder-dotnet",
+      "file": "samples/semgrep/QueryBuilder.cs",
+      "line": 43
+    },
+    {
+      "rule": "sql-string-concat-builder-dotnet",
+      "file": "samples/semgrep/QueryBuilder.cs",
+      "line": 52
+    },
+    {
+      "rule": "sql-string-concat-dotnet",
+      "file": "samples/semgrep/QueryBuilder.cs",
+      "line": 61
+    },
+    {
+      "rule": "sql-string-concat-dotnet",
+      "file": "samples/semgrep/QueryBuilder.cs",
+      "line": 69
+    },
+    {
+      "rule": "command-injection-indirect-dotnet",
+      "file": "samples/semgrep/QueryBuilder.cs",
+      "line": 97
+    },
+    {
+      "rule": "command-injection-indirect-dotnet",
+      "file": "samples/semgrep/QueryBuilder.cs",
+      "line": 104
+    },
+    {
+      "rule": "command-injection-indirect-dotnet",
+      "file": "samples/semgrep/QueryBuilder.cs",
+      "line": 112
+    },
+    {
+      "rule": "command-injection-dotnet",
+      "file": "samples/semgrep/QueryBuilder.cs",
+      "line": 120
+    },
+    {
       "rule": "mutation-requires-authz-dotnet",
       "file": "samples/semgrep/UserService.cs",
       "line": 48
@@ -290,6 +345,56 @@
       "rule": "no-permission-denied-for-invisible-resource-ts",
       "file": "samples/semgrep/bad.ts",
       "line": 247
+    },
+    {
+      "rule": "sql-string-concat-builder-ts",
+      "file": "samples/semgrep/query-builder.ts",
+      "line": 24
+    },
+    {
+      "rule": "sql-string-concat-builder-ts",
+      "file": "samples/semgrep/query-builder.ts",
+      "line": 31
+    },
+    {
+      "rule": "sql-string-concat-builder-ts",
+      "file": "samples/semgrep/query-builder.ts",
+      "line": 37
+    },
+    {
+      "rule": "sql-string-concat-builder-ts",
+      "file": "samples/semgrep/query-builder.ts",
+      "line": 44
+    },
+    {
+      "rule": "sql-string-concat-ts",
+      "file": "samples/semgrep/query-builder.ts",
+      "line": 54
+    },
+    {
+      "rule": "command-injection-indirect-ts",
+      "file": "samples/semgrep/query-builder.ts",
+      "line": 78
+    },
+    {
+      "rule": "command-injection-indirect-ts",
+      "file": "samples/semgrep/query-builder.ts",
+      "line": 84
+    },
+    {
+      "rule": "command-injection-indirect-ts",
+      "file": "samples/semgrep/query-builder.ts",
+      "line": 90
+    },
+    {
+      "rule": "command-injection-indirect-ts",
+      "file": "samples/semgrep/query-builder.ts",
+      "line": 96
+    },
+    {
+      "rule": "command-injection-ts",
+      "file": "samples/semgrep/query-builder.ts",
+      "line": 103
     },
     {
       "rule": "mutation-requires-authz-ts",
