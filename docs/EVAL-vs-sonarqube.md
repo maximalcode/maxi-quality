@@ -389,7 +389,7 @@ Verified locally on 2026-07-31 (macOS, Node 24/npm 11, .NET SDK 10, Semgrep via
 
 - `npm run verify:ts` → 8 errors, exit 1
 - `samples/dotnet && dotnet build` → 13 errors, 0 warnings, FAILED
-- `./scripts/scan.sh` → `Ran 19 rules on 8 files: 26 findings`, exit 1, **3.02 s** (the ruleset has since gained fixtures and branches; it is 59 today)
+- `./scripts/scan.sh` → `Ran 19 rules on 8 files: 26 findings`, exit 1, **3.02 s** (the ruleset has since gained fixtures and branches; it is 60 today)
 - distinct semgrep rule ids in output (19) vs `- id:` entries in `semgrep/` (19)
 - `gh api repos/maximalcode/maxi-quality/actions/permissions/access` →
   `{"access_level":"none"}`

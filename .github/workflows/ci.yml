@@ -34,8 +34,12 @@
 name: ci
 
 on:
+  # Both long-lived branches, so the MERGE COMMIT is tested and not only the
+  # branch that produced it — a PR is green against a base that may have moved.
+  # Only `main` wakes release-tag.yml (it filters on the triggering run's head
+  # branch), so a push to develop runs the suite and moves no tag.
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
 
 concurrency:
@@ -1115,7 +1119,7 @@ jobs:
           echo 'OK: re-run is idempotent and non-destructive'
 
   # #13 — Semgrep is pinned in two places: the layer2 action's input default and
-  # the layer2-counts job below. If they drift, CI asserts 59 findings against a
+  # the layer2-counts job below. If they drift, CI asserts 60 findings against a
   # Semgrep that consumers never run, and the samples quietly stop meaning what
   # they claim. Offline on PRs; the weekly `pins` workflow does the upstream half.
   version-pins:

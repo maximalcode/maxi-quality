@@ -102,9 +102,14 @@
       "line": 151
     },
     {
+      "rule": "catch-and-swallow-dotnet",
+      "file": "samples/semgrep/Bad.cs",
+      "line": 189
+    },
+    {
       "rule": "debug-print-left-behind-dotnet",
       "file": "samples/semgrep/Bad.cs",
-      "line": 179
+      "line": 214
     },
     {
       "rule": "no-permission-denied-for-invisible-resource-dotnet",

@@ -148,7 +148,12 @@ merge by hand — silently replacing someone's build config is not a decision a
 script should make. Re-running is safe: the C# `.editorconfig` section is
 appended once, not once per run.
 
-`--ref v1.0.4` pins the workflow to an immutable tag instead of the moving `v1`.
+`--ref <tag>` pins the workflow to an immutable tag instead of the moving `v1` —
+see [Releases](https://github.com/maximalcode/maxi-quality/releases) for the
+current one. Deliberately not a version number here: this line has named a
+superseded tag twice, and once named `v1.0.3`, which never existed at all. A doc
+that hard-codes a version goes stale on the next release by construction, and a
+`--ref` a reader copies verbatim is the one place that costs them something.
 `--no-workflow` skips the CI scaffold.
 
 CI proves this end-to-end in both directions: a repo adopted by the script
@@ -686,7 +691,7 @@ fix the config, never silence the fixture.
 ./scripts/scan.sh
 ```
 
-Expect exit `1` with **59 Semgrep findings across all 19 rule ids**, and Gitleaks
+Expect exit `1` with **60 Semgrep findings across all 19 rule ids**, and Gitleaks
 plus OSV-Scanner clean.
 
 `samples/semgrep/` sits deliberately **outside** the `samples/typescript` and
@@ -711,6 +716,7 @@ the rules are provably not just matching on names:
 | `conn.Query("… = @id", new { id })` | `sql-string-concat-dotnet` accepts Dapper's parameters |
 | `return NotFound()` | `no-permission-denied-*` accepts the fix its message asks for |
 | `catch { /* why */ }` | `catch-and-swallow-*` accepts a documented silence |
+| `catch (T e) when (…) { /* why */ }` | …including on an exception filter, which it did not until 2026-08-02 |
 | `createHash('sha256')`, `createCipheriv('aes-256-gcm', …)` | `weak-crypto` accepts modern algorithms |
 
 Every exemption above has bait behind it as well as a control. That pairing is
@@ -775,6 +781,46 @@ brew install semgrep gitleaks osv-scanner
 
 `scan.sh` targets **bash 3.2**, the version macOS actually ships, so it runs from
 `/bin/bash` with no Homebrew bash required.
+
+## How this repo is developed
+
+Two long-lived branches, and the split exists for one reason: **`main` is what
+consumers are running.** The moving `v1` tag follows `main`, so a merge there is
+not a checkpoint — it is a release to everyone who pinned `@v1`.
+
+```
+  feature branch ──PR──▶ develop ──PR──▶ main ──▶ v1 moves
+     your work            default        release      consumers
+                          branch         decision     pick it up
+```
+
+| Branch | What it is |
+|---|---|
+| `develop` | **The default branch, and where every PR goes.** Full CI, protected, no direct pushes. Merged work sits here until it is released. |
+| `main` | **The release branch.** A green push to it moves `v1`, automatically, via [`release-tag.yml`](.github/workflows/release-tag.yml). Same protection, same 18 required checks. |
+
+**Contributing, concretely:**
+
+1. Branch off `develop`.
+2. Open a PR **against `develop`** — it is the default base, so `gh pr create`
+   and the web UI already point there.
+3. All 18 CI jobs must pass. They are required checks and admins are not exempt;
+   the branch must also be up to date before it merges.
+4. Releasing is a separate, deliberate PR from `develop` to `main`. That is not
+   a contributor step — it is where the maintainer decides a version.
+
+**On tags.** `v1` moves on its own after a green `ci` run on `main`, because a
+moving tag that someone has to remember to move goes stale and everyone assumes
+it did not. The immutable `v1.0.x` tags are the opposite: cut by hand, one per
+release worth naming, and never rewritten. Pin `@v1` to follow fixes, pin a
+`v1.0.x` when you need a ref that cannot change under you.
+
+Nothing here triggers off `develop`. `release-tag.yml` filters on `main` and
+additionally refuses to run for anything but a `push` event from this
+repository — a fork's branch called `main` matches a branch filter, which is why
+the filter is not the gate.
+
+---
 
 ## Conventions
 

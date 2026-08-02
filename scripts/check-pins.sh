@@ -103,7 +103,7 @@ if [ "$SEMGREP_PIN" != "$CI_SEMGREP" ]; then
   printf '\033[31mFAIL\033[0m — semgrep pins disagree:\n'
   printf '  actions/layer2/action.yml : %s\n' "$SEMGREP_PIN"
   printf '  .github/workflows/ci.yml  : %s\n' "$CI_SEMGREP"
-  printf '\nCI would assert 59 findings against a Semgrep that consumers never run.\n'
+  printf '\nCI would assert 60 findings against a Semgrep that consumers never run.\n'
   printf 'Set both to the same version.\n'
   exit 2
 fi
