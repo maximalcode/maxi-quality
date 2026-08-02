@@ -148,7 +148,12 @@ merge by hand — silently replacing someone's build config is not a decision a
 script should make. Re-running is safe: the C# `.editorconfig` section is
 appended once, not once per run.
 
-`--ref v1.0.4` pins the workflow to an immutable tag instead of the moving `v1`.
+`--ref <tag>` pins the workflow to an immutable tag instead of the moving `v1` —
+see [Releases](https://github.com/maximalcode/maxi-quality/releases) for the
+current one. Deliberately not a version number here: this line has named a
+superseded tag twice, and once named `v1.0.3`, which never existed at all. A doc
+that hard-codes a version goes stale on the next release by construction, and a
+`--ref` a reader copies verbatim is the one place that costs them something.
 `--no-workflow` skips the CI scaffold.
 
 CI proves this end-to-end in both directions: a repo adopted by the script
