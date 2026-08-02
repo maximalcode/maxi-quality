@@ -113,6 +113,7 @@ capped at **12 conventions**, and the cap is the feature.
 | Reusable CI workflow, `@v1` tag | ✅ `.github/workflows/quality.yml` + `actions/layer2/` |
 | Java | ⬜ deliberately not built until a real project needs it |
 | SonarQube CE dashboard | ❌ **dropped.** Measured in [`EVAL-vs-sonarqube.md`](docs/EVAL-vs-sonarqube.md) and lost: 1 of 8 planted TS bugs out of the box, no rule id for `no-floating-promises` or the `no-unsafe-*` family, custom C#/TS rules unavailable in every edition. The C# value is already banked in-build via `SonarAnalyzer.CSharp`. |
+| The rest of the free field | 🔍 **measured, nothing adopted.** [`EVAL-vs-oss-tools.md`](docs/EVAL-vs-oss-tools.md) scores SonarJS, Unicorn, `eslint-plugin-security`, Semgrep's registry packs, Bandit, Trivy, Grype, TruffleHog and CodeQL against the 103 planted findings in `samples/`. The rule that decides most of it: a tool that is free only *because* a repo is public can gate this repo and never a consumer. |
 
 The acceptance test that gated the first tag: a scratch consumer repo,
 onboarded from this README alone, went red in CI on a planted floating
