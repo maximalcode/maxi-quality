@@ -7,7 +7,7 @@
 # consumer. Normally that argues against automation.
 #
 # It does not here, because samples/ asserts EXACT counts — 8 TS errors, 13 C#
-# errors, 3 in the Tests sample, 60 Semgrep findings across 19 rule ids, and
+# errors, 3 in the Tests sample, 100 Semgrep findings across 28 rule ids, and
 # zero on both clean fixtures. An analyzer bump that changes what fires cannot
 # merge quietly: it turns CI red with a count mismatch. The bump PR becomes the
 # place where someone looks at the new rule and decides.

@@ -20,7 +20,7 @@ incident, the PR, or the outage. It is never justified by "this would be nice to
 catch". If your rule is genuinely better than one of the twelve, say which one it
 replaces and why.
 
-Note the distinction: **12 conventions, currently 19 rule ids.** Semgrep patterns
+Note the distinction: **12 conventions, currently 28 rule ids.** Semgrep patterns
 are language-specific, so one convention needs a separate id per language when
 the syntax differs. Splitting an existing convention into a per-language id is
 not new scope. Inventing a new convention is.

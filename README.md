@@ -108,7 +108,7 @@ capped at **12 conventions**, and the cap is the feature.
 | C#/.NET — Roslyn + Sonar + Roslynator | ✅ `configs/dotnet/` |
 | Python — Ruff + mypy strict | ✅ `configs/python/` — 13 rule families |
 | Samples proving all three fail | ✅ `samples/` |
-| Semgrep ruleset (Layer 2) | ✅ `semgrep/` — 12 conventions |
+| Semgrep ruleset (Layer 2) | ✅ `semgrep/` — 12 conventions, TypeScript + C# + Python |
 | `scan.sh` (Semgrep + Gitleaks + OSV) | ✅ `scripts/scan.sh` |
 | Reusable CI workflow, `@v1` tag | ✅ `.github/workflows/quality.yml` + `actions/layer2/` |
 | Java | ⬜ deliberately not built until a real project needs it |
@@ -539,34 +539,55 @@ be mistaken for one that met its floor exactly.
 
 ---
 
-## The ruleset — 12 conventions, 19 rule ids
+## The ruleset — 12 conventions, 28 rule ids
 
-Semgrep patterns are language-specific, so a convention whose C# and TypeScript
-syntax differ needs one rule id per language with an identical message. That is
-why 12 conventions produce 19 ids. **The cap is on conventions, and it is 12,
-hard** — new ones get added when a real bug slips through, never speculatively.
+Semgrep patterns are language-specific, so a convention whose C#, TypeScript and
+Python syntax differ needs one rule id per language with an identical message.
+That is why 12 conventions produce 28 ids. **The cap is on conventions, and it
+is 12, hard** — new ones get added when a real bug slips through, never
+speculatively.
 
-| Convention | Rule id(s) | TS | C# |
-|---|---|:--:|:--:|
-| **general** | | | |
-| TODO without a tracked issue | `todo-without-issue` | ✅ | ✅ |
-| Empty catch block | `catch-and-swallow-{ts,dotnet}` | ✅ | ✅ |
-| Printf-debugging left behind | `debug-print-left-behind-{ts,dotnet}` | ✅ | ✅ |
-| Blocking on a Task | `sync-over-async` | — | ✅ |
-| **security** | | | |
-| SQL built by concat/interpolation | `sql-string-concat-{ts,dotnet}` | ✅ | ✅ |
-| Shell command from interpolation | `command-injection-{ts,dotnet}` | ✅ | ✅ |
-| MD5/SHA1/DES/RC4, any case, all DES variants | `weak-crypto` | ✅ | ✅ |
-| Secret-named var assigned a literal | `hardcoded-secret-{ts,dotnet}` | ✅ | ✅ |
-| **conventions** (mine) | | | |
-| Ambient clock instead of injected | `no-ambient-clock` | ✅ | ✅ |
-| Mutation without an authz gate | `mutation-requires-authz-{ts,dotnet}` | ✅ | ✅ |
-| 403 for an invisible resource | `no-permission-denied-for-invisible-resource-{ts,dotnet}` | ✅ | ✅ |
-| double/float for money | `no-float-for-money` | — | ✅ |
+The **Py** column is not a Semgrep column. Ruff already covers half of these
+conventions outright, and a Semgrep rule for something Layer 1 already catches
+is a second finding on one line, not more coverage — so where Ruff has it, the
+cell names the Ruff rule and there is no Semgrep id.
 
-`no-ambient-clock` and `weak-crypto` are single rule ids covering both languages
-— that is the concept §10 criterion (*the same rule fires in a TS and a C#
-sample*) and it is asserted by the samples below.
+| Convention | Rule id(s) | TS | C# | Py |
+|---|---|:--:|:--:|:--|
+| **general** | | | | |
+| TODO without a tracked issue | `todo-without-issue` | ✅ | ✅ | ✅ |
+| Empty catch block | `catch-and-swallow-{ts,dotnet}` | ✅ | ✅ | ruff `SIM105` |
+| Printf-debugging left behind | `debug-print-left-behind-{ts,dotnet}` | ✅ | ✅ | ruff `T201` |
+| Blocking on a Task | `sync-over-async` | — | ✅ | ruff `ASYNC251` |
+| **security** | | | | |
+| SQL built by concat/interpolation | `sql-string-concat-{ts,dotnet}`, `sql-string-concat-builder-{ts,dotnet}` | ✅ | ✅ | ruff `S608` |
+| Shell command from interpolation | `command-injection-{ts,dotnet}`, `command-injection-indirect-{ts,dotnet}` | ✅ | ✅ | ruff `S602` |
+| MD5/SHA1/DES/RC4, any case, all DES variants | `weak-crypto` | ✅ | ✅ | ruff `S324` |
+| Secret-named var assigned a literal | `hardcoded-secret-{ts,dotnet,python}` | ✅ | ✅ | ✅ |
+| **conventions** (mine) | | | | |
+| Ambient clock instead of injected | `no-ambient-clock`, `no-ambient-clock-python` | ✅ | ✅ | ✅ |
+| Mutation without an authz gate | `mutation-requires-authz-{ts,dotnet,python}` | ✅ | ✅ | ✅ |
+| 403 for an invisible resource | `no-permission-denied-for-invisible-resource-{ts,dotnet,python}` | ✅ | ✅ | ✅ |
+| double/float for money | `no-float-for-money`, `no-float-for-money-python` | — | ✅ | ✅ |
+
+`no-ambient-clock` and `weak-crypto` are single rule ids covering TypeScript and
+C# together — that is the concept §10 criterion (*the same rule fires in a TS
+and a C# sample*) and it is asserted by the samples below. Python does not join
+them in one id: every pattern in a rule must parse in every language it
+declares, and `DateTime.UtcNow` is not Python.
+
+**`hardcoded-secret-python` is the one Python rule that overlaps Ruff on
+purpose.** S105 covers most of the convention, with one measured hole —
+`CONNECTION_STRING = "postgres://admin:pw@host"` — which is exactly the shape
+the TS and C# value guard was built to keep firing. It carries a **fourth** value
+guard the other two do not: measured over 4,133 files of Django, Celery,
+SQLAlchemy, Flask and httpx, prose in a secret-named constant was the largest
+false-positive class the first three guards left, and a credential does not
+contain a space.
+
+Layer 2's Python coverage arrived late (issue #21) — Python shipped as a full
+Layer 1 language while `semgrep --config semgrep` on a Python tree reported
+`Ran 19 rules on 0 files`. Nothing but a `paths.include` list was excluding it.
 
 **A ✅ means every shape the rule advertises, and that is now measured.** These
 rules match raw source text in places, so quote style is not interchangeable:
@@ -577,6 +598,28 @@ double-quoted and single-quoted forms, `sql-string-concat-ts` covers Prisma's
 `CommandText` as well as `new SqlCommand`. Each of those branches has its own
 fixture, so one going quiet shows up as a named missing finding rather than as a
 total that still looks about right.
+
+**Two conventions carry a second rule id for the same bug one step away from the
+sink** (issue #20). The sink-anchored rules require the concatenation to sit
+syntactically inside the query or exec call, so binding it to a local variable
+one line up silenced all of them. The two halves close it differently, and the
+difference is the point:
+
+- **SQL** drops the sink and matches the *string* — a literal carrying a SQL
+  keyword, concatenated or interpolated, wherever it is built. That reaches a
+  helper function as well as a local.
+- **Commands** cannot do that: `"ls -la " + dir` and `"Hello " + name` are the
+  same shape, so a sink-free command rule is a rule against string concatenation
+  and gets switched off. It uses Semgrep's taint mode instead, keeping the sink.
+
+Which leaves one measured gap, stated rather than papered over: **Semgrep OSS
+taint is intraprocedural.** It crosses a local variable and not a function call,
+so `exec(buildCommand(dir))` is still silent. Interprocedural taint is a Semgrep
+Pro feature, and the one free tool in the eval that reached it —
+CodeQL — cannot run against a private repo at all
+([`EVAL-vs-oss-tools.md`](docs/EVAL-vs-oss-tools.md) §0). The gap has a fixture
+of its own in `samples/semgrep/`, kept silent on purpose, so the day something
+free does reach it the manifest is where that shows up.
 
 **Division of labour with Gitleaks:** Gitleaks catches secrets whose *shape* is a
 known token (AWS keys, GitHub PATs, JWTs). `hardcoded-secret-*` catches the
@@ -692,7 +735,7 @@ fix the config, never silence the fixture.
 ./scripts/scan.sh
 ```
 
-Expect exit `1` with **60 Semgrep findings across all 19 rule ids**, and Gitleaks
+Expect exit `1` with **100 Semgrep findings across all 28 rule ids**, and Gitleaks
 plus OSV-Scanner clean.
 
 `samples/semgrep/` sits deliberately **outside** the `samples/typescript` and
@@ -726,9 +769,11 @@ exemption with no *positive* fixture can stop matching without anything going
 red. Both directions are in `samples/expected/semgrep.json`, per rule and line.
 
 The secret rule's exemptions are themselves gated: `connectionString =
-'postgres://admin:…@db.internal/prod'` **must** fire in both languages, proving
-the URL exemption is credential-aware rather than a blanket hole. That pair —
-one exemption, one must-fire counterexample — is what makes the guard safe.
+'postgres://admin:…@db.internal/prod'` **must** fire in all three languages,
+proving the URL exemption is credential-aware rather than a blanket hole. That
+pair — one exemption, one must-fire counterexample — is what makes the guard
+safe. On the Python side it is also the one shape Ruff's `S105` misses, which is
+why that rule exists next to a Layer 1 that already covers most of it.
 
 **On the planted secrets:** `samples/semgrep/` contains fake credentials as bait,
 which Gitleaks flags on sight. `.gitleaks.toml` allowlists that one path.

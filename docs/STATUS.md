@@ -108,7 +108,7 @@ samples/expected/         the manifests: rule id + file + line per tool, so a
                           regression names the rule that stopped firing
 ```
 
-**Rule budget: 12 conventions, 19 rule ids — the cap is fully spent.** A 13th
+**Rule budget: 12 conventions, 28 rule ids — the cap is fully spent.** A 13th
 convention requires removing one or an explicit decision to raise the cap. The
 id count is higher than the convention count because Semgrep patterns are
 language-specific; splitting a convention per language is not new scope.
@@ -132,7 +132,7 @@ mypy --config-file configs/python/mypy.ini samples/python/src
 ruff check samples/python-clean          # expect exit 0, ZERO findings
 mypy --config-file configs/python/mypy.ini samples/python-clean/src
                                          # expect exit 0, ZERO findings
-./scripts/scan.sh                        # expect exit 1, 60 semgrep findings / 19 rule ids
+./scripts/scan.sh                        # expect exit 1, 100 semgrep findings / 28 rule ids
 
 python3 scripts/coverage.py --report samples/coverage/lcov.info \
         --floor-file /tmp/f.json         # expect coverage=65.00

@@ -68,3 +68,61 @@ rules:
       - pattern-not-inside: console.info(...)
       - pattern-not-inside: console.warn(...)
       - pattern-not-inside: console.error(...)
+
+  # Python, added for issue #21. A SECOND rule id rather than a third entry in
+  # the `languages` list above, because every pattern in a rule must parse in
+  # every language it declares and `DateTime.UtcNow` / `new Date()` do not parse
+  # as Python. The id above remains the cross-language proof rule for TS and C#
+  # (docs/CONCEPT.md §10); this one carries the same message.
+  - id: no-ambient-clock-python
+    message: >-
+      Reading the ambient clock directly makes this code untestable — you cannot
+      write a test for "expires tomorrow" without sleeping. Inject a clock (a
+      `now()` port, or pass the instant in) and read the time from it.
+    severity: ERROR
+    languages: [python]
+    paths:
+      exclude:
+        - "*_test.py"
+        - "test_*.py"
+        - "**/tests/**"
+        - "**/conftest.py"
+        # Same generic shapes as the rule above, and the same warning: this list
+        # must not become a junk drawer of consumer module names. A one-off site
+        # takes an inline `# nosemgrep: no-ambient-clock-python — <why>`.
+        - "*seed*.py"
+        - "**/dev/**"
+        - "conf.py"
+    patterns:
+      # THE RECEIVER IS A BOUND NAME PLUS A REGEX, not a literal `datetime.`.
+      # The first draft used `pattern: datetime.now(...)` on the assumption that
+      # semgrep matches a dotted suffix, so it would also cover
+      # `datetime.datetime.now()`. It does not — and `import datetime` then
+      # `datetime.datetime.now()` is the spelling most Python code uses, so the
+      # rule would have shipped covering the less common half. Caught because
+      # the fixture used the qualified form; that is the whole argument for
+      # baiting an assumption rather than a branch.
+      #
+      # Both spellings of the import are covered by the same regex:
+      # `from datetime import datetime` gives `datetime.now()`, plain
+      # `import datetime` gives `datetime.datetime.now()`. An aliased import
+      # (`import datetime as dt`) is NOT reachable and is not worth a guessed
+      # list of alias names.
+      - pattern-either:
+          - patterns:
+              - pattern-either:
+                  - pattern: $M.now(...)
+                  - pattern: $M.utcnow()
+                  - pattern: $M.today()
+              - metavariable-regex:
+                  metavariable: $M
+                  regex: '^(datetime\.)?(datetime|date)$'
+          - pattern: time.time()
+      # Stamping a timestamp into a log line is not untestable business logic —
+      # the same carve-out the TS and C# rule makes, in Python's logging idiom.
+      - pattern-not-inside: $LOG.debug(...)
+      - pattern-not-inside: $LOG.info(...)
+      - pattern-not-inside: $LOG.warning(...)
+      - pattern-not-inside: $LOG.error(...)
+      - pattern-not-inside: $LOG.exception(...)
+      - pattern-not-inside: $LOG.critical(...)
