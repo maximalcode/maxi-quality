@@ -87,3 +87,21 @@ export function firstUpper(names: string[]): string | undefined {
   const first = names[0];
   return first?.toUpperCase();
 }
+
+// --- 7. `?:` and `| undefined` together, which is NOT redundant -------------
+// This shape is the negative control for `sonarjs/no-redundant-optional`, which
+// is switched off in the baseline because it is wrong here rather than merely
+// noisy. Under `exactOptionalPropertyTypes: true` — which
+// configs/typescript/tsconfig.strict.json sets — `retries?: number` and
+// `retries?: number | undefined` mean different things, and only the second
+// accepts an explicit `undefined`. The rule asks you to delete the union;
+// doing so makes tsc reject the assignment below with TS2375.
+//
+// If anyone re-enables that rule, this file stops being clean and CI says so.
+export interface RetryPolicy {
+  retries?: number | undefined;
+}
+
+export function noRetries(): RetryPolicy {
+  return { retries: undefined };
+}

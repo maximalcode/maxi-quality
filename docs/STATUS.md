@@ -3,7 +3,7 @@
 Handover doc. Read [`CONCEPT.md`](CONCEPT.md) for *what this is*; read this for
 *what actually exists, what is proven, and what to do next.*
 
-**Last updated:** 2026-08-02 · **Branches:** `develop` (default, where work
+**Last updated:** 2026-08-03 · **Branches:** `develop` (default, where work
 lands) → `main` (release) · **Tags:** `v1` (moving, follows `main`) · `v1.0.x`
 (immutable — the newest is on
 [Releases](https://github.com/maximalcode/maxi-quality/releases))
@@ -69,6 +69,7 @@ must pass.
 configs/editorconfig                    shared .editorconfig (all languages)
 configs/typescript/eslint.config.mjs    strict-type-checked + stylistic + SonarJS recommended, exported flat config
 configs/typescript/tsconfig.strict.json extends-able strict compiler options
+configs/typescript/expected-rules.json  the ENABLED ESLint rule set, 1342 bindings across 4 probes
 configs/typescript/tsconfig.snapshot.json the options it RESOLVES to — the gate on a silently deleted flag
 configs/dotnet/Directory.Build.props    AnalysisLevel, TreatWarningsAsErrors, Sonar + Roslynator
 configs/dotnet/msbuild.snapshot.json    the properties it RESOLVES to, in both the default and CI+lock-file shapes
@@ -108,6 +109,8 @@ samples/dotnet-clean/     negative control — must BUILD 0 errors / 0 warnings
 samples/python/           Layer 1 Python sample — ruff 14 errors, mypy 11 errors
 samples/python-clean/     negative control — must PASS ruff AND mypy, zero findings
 samples/semgrep/          Layer 2 sample — outside both projects on purpose
+samples/guards/           the fetch-and-execute shapes ci.yml's supply-chain guard
+                          must catch, and the verified downloads it must not (#3)
 samples/coverage/         coverage fixtures, hand-checked: 65.00 / 75.00 / 40.00 /
                           66.67 %, and 71.67 % when the first two are summed
 samples/sbom/             CycloneDX fixture — all three licence spellings
@@ -128,6 +131,12 @@ language-specific; splitting a convention per language is not new scope.
 npm install
 npm run verify:ts                        # expect exit 1, 14 errors
 npm run verify:ts:clean                  # expect exit 0, ZERO findings
+npm run verify:ts:types                  # expect exit 2, 12 tsc diagnostics
+npm run verify:ts:types:clean            # expect exit 0, ZERO diagnostics
+node scripts/snapshot-eslint-rules.mjs --check
+node scripts/snapshot-tsconfig.mjs --check
+./scripts/snapshot-msbuild-props.sh --check
+python3 scripts/snapshot-python-settings.py --check
 cd samples/dotnet && dotnet build        # expect exit 1, 23 errors, 0 warnings
 cd ../dotnet-tests && dotnet build       # expect exit 1, 3 errors, 0 warnings
 cd ../dotnet-clean && dotnet build       # expect exit 0, 0 errors, 0 warnings
@@ -199,6 +208,8 @@ Gitleaks v8.30.1 and OSV-Scanner v2 via Docker — nothing was installed globall
 | **A rule's message can lie about its own escape hatch** | `catch-and-swallow` told you to explain the silence in a comment; comments are not AST nodes, so a comment-only block was still `{ }` and still matched. Following the instruction verbatim did not clear the finding. Fixed 2026-07-31 with a `pattern-not-regex` that re-reads the source text. **On real code this rule was 4/4 false positives in TypeScript** (Consumer A). If a rule documents an escape hatch, test the escape hatch — the pattern proves the rule fires, never that it can be satisfied. **It then recurred on 2026-08-02**: the regex walks from the exception parens straight to the brace, so a C# exception filter (`catch (T e) when (…)`) stepped over it and a documented-and-intentional filtered catch could not be cleared either. The deeper lesson is the shape, not the syntax — a lexical negation bolted onto an AST rule can silently miss every catch-clause form nobody thought to plant, and each miss costs a consumer a false positive first. |
 | **A config block can ship switched OFF, not merely unbaited** | Found 2026-08-03 building the #8 fixtures. The three `dotnet_naming_rule` blocks were described as "inert — no sample violates them". The real cause was one level down: `dotnet_naming_rule.<rule>.severity` drives the IDE experience, while the BUILD reads the diagnostic's own severity — and `dotnet_diagnostic.IDE1006.severity` was never set. A probe with an un-prefixed interface, a snake_case class and a PascalCase private field built **clean**. Two of the three were masked by analyzers that happen to overlap (CA1715, CA1707/S101), so the gap only surfaced on the third, where a private field named `Count` was caught by nothing at all. One line fixed all three. **The lesson is the diagnosis, not the line: "no sample violates it" and "it does not work" look identical from outside, and only a planted violation tells them apart.** |
 | **`IDE0035` is not emitted at build** | Measured on .NET SDK 10, same session: real unreachable code produces `CS0162` and no `IDE0035` at all, so that severity escalation is redundant rather than load-bearing. Kept — one SDK on one runner is thin evidence for deleting a consumer-visible severity — but explicitly NOT covered, and `samples/dotnet/Escalations.cs` says so where someone would otherwise assume it is. |
+| **A linter and a compiler in the same baseline can contradict each other** | Found 2026-08-03 in the real-code noise run for #11. `sonarjs/no-redundant-optional` fires on `retries?: number \| undefined` and asks for the union to be deleted. `configs/typescript/tsconfig.strict.json` sets `exactOptionalPropertyTypes`, under which the two spellings mean different things — so following the linter makes `tsc` reject the code with TS2375. Verified both ways round. **It was also the highest-volume rule in the run at 144 of 520 findings, which is the part worth remembering: the thing a new plugin says most often is the thing most worth reading.** The rule is off and `samples/typescript-clean` carries the shape, so re-enabling it makes the clean fixture dirty rather than shipping. |
+| **A `-clean` fixture cannot estimate noise** | Same run. `samples/typescript-clean` is 89 lines of deliberately simple code — enough to disqualify an over-strict config, not enough to say what 217 new rules do to a codebase somebody already wrote. Measured against 44,089 lines of real TypeScript, SonarJS `recommended` produced **11.8 findings per KLOC**; two rules were 52% of it and neither found a bug. A plugin adopted on catch-rate alone would have shipped that. The `-clean` fixtures answer "is it over-strict?", never "is it worth it?" — those need different corpora, and `docs/EVAL-vs-oss-tools.md` §2i is the second one. |
 | **A compiler-flag fixture can fail on the wrong flag** | Found 2026-08-03 building `samples/typescript-strict` for #7. `function classify(n: number): string { if (n > 0) return 'positive'; }` looks like the obvious bait for `noImplicitReturns`, and it does fail — with TS2366 from `strictNullChecks`. Delete `noImplicitReturns` and CI stays red, so the flag reads as covered and is not. Widening the return type to `string \| undefined` satisfies `strictNullChecks` and leaves TS7030 holding the error alone. **The general shape: a fixture proves *an* error, never *which setting caused it*.** Every flag→error mapping in that directory is now verified by ablation — switch the one flag off, confirm that specific error is the one that disappears — and the manifest pins the TS code rather than just the count. |
 | **`--isolatedModules false` changes nothing** | Measured on tsc 6.0.3 in `samples/typescript-strict`: `verbatimModuleSyntax` subsumes it, and TS1205's own message names `verbatimModuleSyntax`. Three more flags are unbaitable for their own measured reasons — `esModuleInterop: false` is refused outright (TS5107, deprecated ahead of TS 7), `forceConsistentCasingInFileNames` needs a case-insensitive filesystem, and the emit trio is invisible under `--noEmit`. Hence `configs/typescript/tsconfig.snapshot.json`: what `tsc --showConfig` **resolves**, not what the JSON file says, so it also pins the options tsc implies (`moduleDetection: force`, `preserveConstEnums`). |
 | **`pattern-not-regex` must be nested under `patterns:`** | Placed at rule level next to a top-level `pattern-either`, Semgrep **silently ignores it** — no error, no warning, the rule just behaves as if it were absent. Verified the hard way: identical output before and after adding it. It only takes effect inside a `patterns:` block alongside the `pattern-either`. |
@@ -323,10 +334,17 @@ before anything was written, and the measurement changed what got built.
 repo's own planted samples: 22 rules loaded (2 multilang + 20 TS, **zero C#**),
 ~100% of lines parsed, **0 findings**, on files carrying planted SQL injection
 and command injection. Our 12 hand-written conventions found 28 on those same
-files at the time of that scan (60 today — the ruleset gained fixtures and
+files at the time of that scan (100 today — the ruleset gained fixtures and
 branches since, which is why this number is left as measured rather than
 refreshed). Same result as `docs/EVAL-vs-sonarqube.md`. Adding scanners would
 have made the gate slower and no better.
+
+> **Read "zero C#" narrowly.** That observation is about the pack scanned here,
+> `p/security-audit`. It is not true of the free registry as a whole:
+> `p/owasp-top-ten` runs 27 C# rules and `p/csharp` is a 27-rule C# pack
+> (`EVAL-vs-oss-tools.md` §2d, 2026-08-02). The conclusion is unchanged —
+> `p/owasp-top-ten` still found 3 of 103 — but the reason as originally written
+> was wider than the measurement supported.
 
 **Enforcement is the weak part, and it is not a tooling problem.** Branch
 protection on a private repo owned by a personal account needs GitHub Pro:
