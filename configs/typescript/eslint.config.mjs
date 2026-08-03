@@ -106,6 +106,36 @@ export default tseslint.config(
       // it is read is a different defect from a variable nobody uses, and it is
       // one the baseline had no rule for.
       'sonarjs/no-unused-vars': 'off',
+
+      // --- Two more off, from the real-code noise run -----------------------
+      // 44,089 lines of zod, got and zustand: 520 findings, 11.8 per KLOC.
+      // Six rules were 86% of it. These two are 52% of it between them, and
+      // neither finds a bug (docs/EVAL-vs-oss-tools.md §2e).
+      //
+      // `no-redundant-optional` IS NOT NOISE — IT IS WRONG HERE, and it was the
+      // single highest-volume rule at 144 findings. It asks you to delete the
+      // `| undefined` from `retries?: number | undefined`. Our own
+      // tsconfig.strict.json sets `exactOptionalPropertyTypes: true`, under
+      // which those two spellings mean different things, and following the
+      // advice makes tsc reject the code with TS2375. Verified both ways round.
+      // Two halves of this baseline cannot contradict each other; the compiler
+      // wins, and samples/typescript-clean now carries the shape so a future
+      // re-enable fails CI instead of shipping.
+      'sonarjs/no-redundant-optional': 'off',
+      // 125 findings, all of the form "use '\d' instead of '[0-9]'". A syntax
+      // preference with no defect behind it, and 24% of everything the plugin
+      // said about real code. This is the same argument that declined
+      // eslint-plugin-unicorn — a preset whose dominant output is restyling
+      // working code is how a gate gets switched off. `slow-regex` and
+      // `regex-complexity`, which find actual ReDoS, stay on.
+      'sonarjs/concise-regex': 'off',
+      //
+      // `cognitive-complexity` STAYS ON despite being third at 100 findings.
+      // Sampled, it is real signal — "reduce Cognitive Complexity from 33 to
+      // the 15 allowed" on functions that genuinely are that tangled. It is
+      // also the rule SonarJS is best known for, and switching it off would
+      // leave the plugin doing very little. Adoption on an existing codebase
+      // is what `scan.sh --changed-only` is for (README §8).
     },
   },
 
