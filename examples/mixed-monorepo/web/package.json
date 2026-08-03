@@ -1,0 +1,6 @@
+{
+  "name": "example-web",
+  "private": true,
+  "type": "module",
+  "scripts": { "lint": "eslint src --max-warnings 0" }
+}

@@ -2001,3 +2001,108 @@ jobs:
             echo '::error::the resolved policy drifted from its snapshot'
             exit 1; }
           echo 'OK: resolved policy matches samples/policy/expected/resolved.txt'
+
+  # examples/ is documentation that executes. A worked example that would not
+  # actually work is worse than no example — the reader trusts it more than the
+  # prose, and finds out in their own CI. So each one is asserted here:
+  # detected as the language it claims, clean under Layer 2, and — where it
+  # carries a policy file — the policy has to genuinely resolve.
+  #
+  # Note what this does NOT do: build or lint the examples. `adopt` already
+  # proves end-to-end that a repo adopted by the script behaves exactly like the
+  # hand-configured sample, in both directions. Repeating that per example would
+  # assert the same thing five more times and slowly.
+  examples:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install semgrep and PyYAML
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          pipx install semgrep==1.172.0
+          python3 -c 'import yaml' 2>/dev/null \
+            || python3 -m pip install --quiet --break-system-packages pyyaml
+          python3 -c 'import yaml'
+
+      - name: Every example is detected as the language it claims
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          expect() {
+            dir="examples/$1"; shift
+            out=$(./scripts/adopt.sh "$dir" --dry-run 2>&1)
+            for lang in "$@"; do
+              grep -qF "detected: $lang" <<<"$out" || {
+                echo "::error::$dir was not detected as $lang"
+                echo "$out"; exit 1; }
+            done
+            echo "  OK  $dir → $*"
+          }
+          expect typescript-npm  'TypeScript'
+          expect dotnet          'C#/.NET'
+          expect python-uv       'Python'
+          expect mixed-monorepo  'TypeScript' 'C#/.NET'
+          expect legacy-ratchet  'TypeScript'
+
+      - name: Every example scans CLEAN
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # An example carrying a violation teaches the violation. The scan runs
+          # per example so a failure names which one, and with each example's
+          # OWN policy file in effect — the mixed-monorepo one disables a rule,
+          # and a run that ignored it would be testing a different repo than the
+          # one the reader copies.
+          fail=0
+          for d in examples/*/; do
+            [[ -f "$d/README.md" ]] || continue
+            rc=0
+            out=$(./scripts/scan.sh "$d" --skip gitleaks --skip osv 2>&1) || rc=$?
+            if [[ "$rc" -ne 0 ]]; then
+              echo "::error::$d does not scan clean (exit $rc)"
+              echo "$out" | tail -40
+              fail=1
+            else
+              echo "  OK  $d clean"
+            fi
+          done
+          [[ "$fail" -eq 0 ]]
+
+      - name: Every documented policy file actually resolves
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # The failure this catches: a policy snippet in the docs that would be
+          # rejected by scripts/policy.py. Unknown keys are hard errors, so a
+          # stale example is a consumer whose first run after copying it exits 3.
+          n=0
+          for f in examples/*/.maxi-quality.yml; do
+            d=$(dirname "$f")
+            python3 scripts/policy.py resolve --target "$d" --baseline . \
+              --baseline-path . >/dev/null || {
+                echo "::error::$f does not resolve"; exit 1; }
+            echo "  OK  $f resolves"
+            n=$((n + 1))
+          done
+          # A loop over zero files passes trivially. There must BE examples with
+          # policy files, or this step is asserting nothing at all.
+          [[ "$n" -ge 2 ]] || {
+            echo "::error::expected at least 2 examples carrying a policy file, found $n"
+            exit 1; }
+
+      - name: Every example workflow pins this repo, and the ratchet keeps its ratchet
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for f in examples/*/.github/workflows/quality.yml; do
+            python3 -c "import sys, yaml; yaml.safe_load(open(sys.argv[1]))" "$f"
+            grep -qF 'maximalcode/maxi-quality/.github/workflows/quality.yml@' "$f" || {
+              echo "::error::$f does not call this repo's reusable workflow"; exit 1; }
+            echo "  OK  $f"
+          done
+          # The one example whose entire reason for existing is that line.
+          grep -qF 'changed-only:' examples/legacy-ratchet/.github/workflows/quality.yml || {
+            echo '::error::legacy-ratchet lost its changed-only — it is the whole point of that example'
+            exit 1; }
+          echo 'OK: every example workflow is valid and pinned'

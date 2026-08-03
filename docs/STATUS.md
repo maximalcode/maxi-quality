@@ -100,6 +100,13 @@ scripts/snapshot-msbuild-props.sh  ...for dotnet msbuild -getProperty
 scripts/snapshot-python-settings.py ...for ruff --show-settings and mypy's own resolver
 .gitleaks.toml            allowlists the deliberately-planted sample secrets
 
+docs/ADOPTION.md       how a project takes this on, per language
+docs/REFERENCE.md      every input, flag, exit code and rule id
+examples/              five copyable consumer repos — ts-npm, dotnet, python-uv,
+                       mixed-monorepo, legacy-ratchet. NOT fixtures: CI asserts
+                       each scans clean, is detected as the language it claims,
+                       and that any policy file in it actually resolves
+
 actions/layer2/        the Layer 2 gate — how the rules reach a consumer
 actions/report-issue/  upserts the standing report issue; outputs its number
 actions/coverage/      the coverage ratchet

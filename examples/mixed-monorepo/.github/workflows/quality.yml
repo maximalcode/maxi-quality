@@ -1,0 +1,9 @@
+name: quality
+on: [push, pull_request]
+jobs:
+  quality:
+    uses: maximalcode/maxi-quality/.github/workflows/quality.yml@v1
+    with:
+      # Detection would find both anyway. Naming them is how you keep a new
+      # language appearing in the tree from silently widening the gate.
+      languages: 'ts,dotnet'
