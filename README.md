@@ -262,11 +262,45 @@ it. No `.csproj` changes.
 IDE), nullable reference types on, plus `SonarAnalyzer.CSharp` and
 `Roslynator.Analyzers` as `PrivateAssets=all` analyzer-only references.
 
-**Two things to know:**
+**Three things to know:**
 - Analyzer versions are pinned, not floating. With `TreatWarningsAsErrors`, an
   analyzer upgrade that adds rules is a breaking change — bump it deliberately.
 - If the repo already has a `Directory.Build.props`, merge the properties in
   rather than overwriting, or `<Import Project="..."/>` this one at the top.
+- **Without a `packages.lock.json`, the Layer 2 dependency scan sees only your
+  direct dependencies.** This is the one adopt-time decision the baseline
+  deliberately leaves to you, so it is spelled out below rather than buried.
+
+#### `packages.lock.json` — the .NET dependency-scanning trade-off
+
+A `.csproj` pinned to three known-vulnerable NuGet packages, scanned twice
+(measured 2026-08-02, OSV-Scanner 2.4.0 — [`docs/EVAL-vs-oss-tools.md`](docs/EVAL-vs-oss-tools.md) §2f):
+
+| NuGet manifest | Findings |
+|---|--:|
+| `PackageReference` only, **no lock file** | 4 |
+| the same project with `packages.lock.json` | **7** |
+
+Without a lock file, OSV-Scanner reads the `.csproj`/`Directory.Build.props`
+and resolves **direct dependencies only**. With one, it resolves the full
+transitive graph. All three findings it gains are transitive — and transitive
+is where dependency vulnerabilities usually live.
+
+```bash
+dotnet restore --use-lock-file   # then commit packages.lock.json
+```
+
+**`adopt.sh` will not do this for you, on purpose.** A lock file is a
+commitment, not a setting: it has to be regenerated on every dependency change,
+and `RestoreLockedMode` in `Directory.Build.props` — conditional on the file
+existing, so a repo that never opted in is never broken — turns a stale one into
+a hard CI build failure. That is a policy for the consuming repo to accept, the
+same call the [licence gate](#sbom-and-licence-compliance) makes for the same
+reason.
+
+What is *not* left to you is knowing about it. The default posture is not "no
+lock file yet"; it is a dependency gate that cannot see past your direct
+dependencies, and until now that difference was invisible.
 
 ---
 
@@ -373,7 +407,10 @@ Three tools, one gate:
 
 1. **Semgrep** with this repo's `semgrep/` rules — the selfmade part.
 2. **Gitleaks** — secrets in the working tree and history.
-3. **OSV-Scanner** — known-vulnerable dependencies via lockfiles.
+3. **OSV-Scanner** — known-vulnerable dependencies via lockfiles. On .NET,
+   "lockfiles" is load-bearing: without a `packages.lock.json` it resolves
+   direct dependencies only — see
+   [the .NET trade-off](#packageslockjson--the-net-dependency-scanning-trade-off).
 
 `scan.sh` resolves each tool as **native binary → `uvx`/`docker` fallback →
 skipped with a loud warning**. Nothing is ever silently not-run; the summary
