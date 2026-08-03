@@ -1,0 +1,65 @@
+{
+  "tool": "tsc",
+  "findings": [
+    {
+      "rule": "TS2375",
+      "file": "samples/typescript-strict/src/exact-optional-property-types.ts",
+      "line": 11
+    },
+    {
+      "rule": "TS2835",
+      "file": "samples/typescript-strict/src/module-nodenext.ts",
+      "line": 9
+    },
+    {
+      "rule": "TS7029",
+      "file": "samples/typescript-strict/src/no-fallthrough-cases-in-switch.ts",
+      "line": 14
+    },
+    {
+      "rule": "TS4114",
+      "file": "samples/typescript-strict/src/no-implicit-override.ts",
+      "line": 14
+    },
+    {
+      "rule": "TS7030",
+      "file": "samples/typescript-strict/src/no-implicit-returns.ts",
+      "line": 10
+    },
+    {
+      "rule": "TS4111",
+      "file": "samples/typescript-strict/src/no-property-access-from-index-signature.ts",
+      "line": 13
+    },
+    {
+      "rule": "TS2322",
+      "file": "samples/typescript-strict/src/no-unchecked-indexed-access.ts",
+      "line": 9
+    },
+    {
+      "rule": "TS2322",
+      "file": "samples/typescript-strict/src/strict.ts",
+      "line": 11
+    },
+    {
+      "rule": "TS7006",
+      "file": "samples/typescript-strict/src/strict.ts",
+      "line": 14
+    },
+    {
+      "rule": "TS18046",
+      "file": "samples/typescript-strict/src/use-unknown-in-catch-variables.ts",
+      "line": 12
+    },
+    {
+      "rule": "TS1205",
+      "file": "samples/typescript-strict/src/verbatim-module-syntax-reexport.ts",
+      "line": 10
+    },
+    {
+      "rule": "TS1484",
+      "file": "samples/typescript-strict/src/verbatim-module-syntax.ts",
+      "line": 8
+    }
+  ]
+}

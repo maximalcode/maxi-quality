@@ -1,0 +1,13 @@
+{
+  // Extends the shared base and adds NOTHING that changes strictness — the
+  // point of this project is that every error below comes from
+  // configs/typescript/tsconfig.strict.json and from nowhere else.
+  "extends": "../../configs/typescript/tsconfig.strict.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["src"]
+}

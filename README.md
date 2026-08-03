@@ -679,6 +679,33 @@ Expect **8 errors** and a non-zero exit: floating promise, explicit `any`, unsaf
 assignment, unsafe return, unsafe member access, `==`, unused variable, non-null
 assertion.
 
+That is ESLint. The **compiler** is a separate gate with a separate fixture:
+
+```bash
+npm run verify:ts:types
+node scripts/snapshot-tsconfig.mjs --check
+```
+
+Expect **12 diagnostics** and a non-zero exit from the first, and a clean
+22-option snapshot from the second. `tsconfig.strict.json` ships to every
+consumer and until issue #7 `tsc` was run by **nothing** — 13 of its 14
+hand-written flags could each have been deleted with every job still green.
+
+`samples/typescript-strict/` closes that the way `samples/typescript` closes it
+for ESLint: one file per flag, named after the flag, pinned by rule/file/line in
+`samples/expected/tsc.json`. Each mapping was checked by **ablation** — turning
+that one flag off and confirming that specific error is the one that disappears.
+Worth the trouble: `noImplicitReturns` was first baited with a fixture that
+actually failed on `strictNullChecks`, so deleting the flag would have left CI
+red and looking fine.
+
+Four flags no fixture can reach — `isolatedModules`, `esModuleInterop`,
+`forceConsistentCasingInFileNames` and the emit trio — are covered by
+`configs/typescript/tsconfig.snapshot.json`, which asserts what `tsc --showConfig`
+resolves rather than what the JSON file says. The reasoning, and the measured
+reason each one is unbaitable, is in
+[`samples/typescript-strict/README.md`](samples/typescript-strict/README.md).
+
 ```bash
 cd samples/dotnet && dotnet build
 ```
@@ -749,6 +776,7 @@ other's findings kept the total looking plausible.
 
 ```bash
 npm run verify:ts:clean
+npm run verify:ts:types:clean
 cd samples/dotnet-clean && dotnet build
 ruff check samples/python-clean
 mypy --config-file configs/python/mypy.ini samples/python-clean/src

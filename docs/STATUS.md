@@ -69,6 +69,7 @@ must pass.
 configs/editorconfig                    shared .editorconfig (all languages)
 configs/typescript/eslint.config.mjs    strict-type-checked + stylistic, exported flat config
 configs/typescript/tsconfig.strict.json extends-able strict compiler options
+configs/typescript/tsconfig.snapshot.json the options it RESOLVES to — the gate on a silently deleted flag
 configs/dotnet/Directory.Build.props    AnalysisLevel, TreatWarningsAsErrors, Sonar + Roslynator
 configs/dotnet/dotnet.editorconfig      C# severities + minimal style
 configs/python/ruff.toml                13 rule families, line-length 100, extend-able
@@ -95,6 +96,7 @@ actions/coverage/      the coverage ratchet
 
 samples/typescript/       Layer 1 TS sample — `npm run lint` must fail
 samples/typescript-clean/ negative control — must PASS with zero findings
+samples/typescript-strict/ compiler sample — `tsc` must fail with 12 diagnostics (#7)
 samples/dotnet/           Layer 1 C# sample — `dotnet build` must fail
 samples/dotnet-tests/     Layer 1 C# *Tests* sample — proves the #25 relaxation
 samples/dotnet-clean/     negative control — must BUILD 0 errors / 0 warnings
@@ -190,6 +192,8 @@ Gitleaks v8.30.1 and OSV-Scanner v2 via Docker — nothing was installed globall
 | **`scan.sh` targets bash 3.2** | macOS ships 3.2.57, where `"${arr[@]}"` on an empty array is fatal under `set -u`. Uses `${arr[@]+"${arr[@]}"}`. |
 | **Cross-language Semgrep rules** | A rule listing two languages needs every pattern to parse in *both*. 5 patterns were rejected for this. Where syntax differs, split into `-ts` / `-dotnet` ids with an identical message. |
 | **A rule's message can lie about its own escape hatch** | `catch-and-swallow` told you to explain the silence in a comment; comments are not AST nodes, so a comment-only block was still `{ }` and still matched. Following the instruction verbatim did not clear the finding. Fixed 2026-07-31 with a `pattern-not-regex` that re-reads the source text. **On real code this rule was 4/4 false positives in TypeScript** (Consumer A). If a rule documents an escape hatch, test the escape hatch — the pattern proves the rule fires, never that it can be satisfied. **It then recurred on 2026-08-02**: the regex walks from the exception parens straight to the brace, so a C# exception filter (`catch (T e) when (…)`) stepped over it and a documented-and-intentional filtered catch could not be cleared either. The deeper lesson is the shape, not the syntax — a lexical negation bolted onto an AST rule can silently miss every catch-clause form nobody thought to plant, and each miss costs a consumer a false positive first. |
+| **A compiler-flag fixture can fail on the wrong flag** | Found 2026-08-03 building `samples/typescript-strict` for #7. `function classify(n: number): string { if (n > 0) return 'positive'; }` looks like the obvious bait for `noImplicitReturns`, and it does fail — with TS2366 from `strictNullChecks`. Delete `noImplicitReturns` and CI stays red, so the flag reads as covered and is not. Widening the return type to `string \| undefined` satisfies `strictNullChecks` and leaves TS7030 holding the error alone. **The general shape: a fixture proves *an* error, never *which setting caused it*.** Every flag→error mapping in that directory is now verified by ablation — switch the one flag off, confirm that specific error is the one that disappears — and the manifest pins the TS code rather than just the count. |
+| **`--isolatedModules false` changes nothing** | Measured on tsc 6.0.3 in `samples/typescript-strict`: `verbatimModuleSyntax` subsumes it, and TS1205's own message names `verbatimModuleSyntax`. Three more flags are unbaitable for their own measured reasons — `esModuleInterop: false` is refused outright (TS5107, deprecated ahead of TS 7), `forceConsistentCasingInFileNames` needs a case-insensitive filesystem, and the emit trio is invisible under `--noEmit`. Hence `configs/typescript/tsconfig.snapshot.json`: what `tsc --showConfig` **resolves**, not what the JSON file says, so it also pins the options tsc implies (`moduleDetection: force`, `preserveConstEnums`). |
 | **`pattern-not-regex` must be nested under `patterns:`** | Placed at rule level next to a top-level `pattern-either`, Semgrep **silently ignores it** — no error, no warning, the rule just behaves as if it were absent. Verified the hard way: identical output before and after adding it. It only takes effect inside a `patterns:` block alongside the `pattern-either`. |
 | **Analyzer versions pinned, not floating** | With `TreatWarningsAsErrors`, an analyzer upgrade that adds rules is a breaking change. Bump deliberately — the policy and its mechanism are §6 (#13). |
 | **Semgrep is pinned twice** | `actions/layer2/action.yml` (what consumers get) and `ci.yml`'s `layer2-counts` (what validates the 60/19 assertion). They must match or CI is testing a tool nobody runs. `scripts/check-pins.sh --offline` guards it on every PR. |
