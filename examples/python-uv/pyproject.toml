@@ -1,0 +1,7 @@
+[project]
+name = "example-python-uv"
+version = "0.0.0"
+requires-python = ">=3.12"
+
+[dependency-groups]
+dev = ["ruff>=0.14", "mypy>=1.18"]

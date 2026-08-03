@@ -14,7 +14,7 @@
 #   --dry-run         Print every action, write nothing. Do this first.
 #   --force           Overwrite files that already exist. Off by default —
 #                     a repo with its own Directory.Build.props must be merged
-#                     by hand, not clobbered (README §3).
+#                     by hand, not clobbered (docs/ADOPTION.md §3).
 #   --ref REF         Tag/branch consumers pin in the workflow. Default: v1.
 #   --no-workflow     Skip scaffolding .github/workflows/quality.yml.
 #   -h, --help        This text.
@@ -190,7 +190,7 @@ if [ "$HAS_DOTNET" -eq 1 ]; then
     warn "Do one of these instead:"
     warn "  a) re-run adopt.sh against that directory, or"
     warn "  b) merge configs/dotnet/Directory.Build.props into the existing file,"
-    warn "     or add <Import Project=\"...\"/> at its top (README §3)."
+    warn "     or add <Import Project=\"...\"/> at its top (docs/ADOPTION.md §3)."
     printf '\n'
     SKIP_DOTNET_PROPS=1
   else
@@ -213,7 +213,7 @@ if [ "$HAS_TS" -eq 1 ]; then
   copy_file "$BASELINE/configs/typescript/tsconfig.strict.json" "$TARGET/tsconfig.base.json"
   write_new "$TARGET/eslint.config.mjs" \
 "// Consumes the maxi-quality baseline. Add project-specific overrides below the
-// spread — see README §2. Regenerate eslint.base.mjs with scripts/adopt.sh.
+// spread — see docs/ADOPTION.md §2. Regenerate eslint.base.mjs with scripts/adopt.sh.
 import base from './eslint.base.mjs';
 
 export default [

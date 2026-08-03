@@ -135,7 +135,7 @@ export default tseslint.config(
       // the 15 allowed" on functions that genuinely are that tangled. It is
       // also the rule SonarJS is best known for, and switching it off would
       // leave the plugin doing very little. Adoption on an existing codebase
-      // is what `scan.sh --changed-only` is for (README §8).
+      // is what `scan.sh --changed-only` is for (docs/ADOPTION.md §6).
     },
   },
 

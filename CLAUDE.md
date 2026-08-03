@@ -201,7 +201,7 @@ per-language id is not new scope; inventing a new convention is.
   moves `v1` on a green push to it, so a merge to `main` is not a checkpoint —
   it ships to every consumer pinning `@v1`. Promoting `develop` to `main` is
   the user's decision, not yours; do not open or merge that PR unasked. Both
-  branches carry the same 19 required checks, admins included.
+  branches carry the same 20 required checks, admins included.
 - **Tags gate the consumers.** Projects pin the baseline by tag (`@v1`), so an
   updated ruleset never silently breaks an old project. Do not tag until the
   step that the tag represents is actually verified working. The immutable

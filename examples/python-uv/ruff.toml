@@ -1,0 +1,6 @@
+# THE EXTEND- PREFIXES ARE LOAD-BEARING. Ruff's plain `select` and
+# `per-file-ignores` REPLACE what the base defines rather than merging.
+extend = "./ruff.base.toml"
+
+[lint.extend-per-file-ignores]
+# e.g. "scripts/**" = ["T20"]

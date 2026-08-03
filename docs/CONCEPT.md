@@ -4,6 +4,7 @@
 > not built until a project needs it. Current state and every measurement:
 > [STATUS.md](STATUS.md)
 > **Repo:** `maximalcode/maxi-quality` — public (CLAUDE.md §2)
+> **Adopting:** [ADOPTION.md](ADOPTION.md) · **Looking something up:** [REFERENCE.md](REFERENCE.md)
 > **Identity:** all commits as `maximalcode` (see §2)
 > **`#NN`:** provenance from the private pre-publication tracker. Not this
 > repo's issue numbers, which start fresh at #1.
@@ -104,10 +105,17 @@ projects live under one directory.
 
 ```
 maxi-quality/
-├── README.md                     # what this is + per-language adoption guide
+├── README.md                     # what this is, what it costs, is it real
 ├── CLAUDE.md                     # identity rail + repo conventions
-├── docs/                         # CONCEPT (design), STATUS (state + gotchas),
-│                                 #   EVAL-vs-sonarqube (measured comparison)
+├── .maxi-quality.yml             # this repo's own policy — it is a consumer of
+│                                 #   itself, and this keeps samples/policy out
+│                                 #   of its rule manifest
+├── docs/                         # ADOPTION (how), REFERENCE (every input and
+│                                 #   rule id), CONCEPT (design, this file),
+│                                 #   STATUS (state + gotchas), EVAL-* (measured
+│                                 #   comparisons)
+├── examples/                     # copyable consumer repos, one per shape;
+│                                 #   CI asserts each scans clean and resolves
 ├── configs/
 │   ├── editorconfig              # shared .editorconfig (all languages)
 │   ├── typescript/
@@ -143,6 +151,7 @@ maxi-quality/
     ├── adopt.sh                  # bootstrap a repo: detect languages, copy stubs
     ├── check-pins.sh             # bump policy: pin consistency + upstream drift
     ├── coverage.py               # coverage ratchet (§12) — lcov + Cobertura
+    ├── policy.py                 # resolve a consumer's .maxi-quality.yml (§13)
     ├── quality-report.py         # renders the standing report body (§11)
     └── scan.sh                   # run full Layer 2 locally (semgrep+gitleaks+osv)
 ```
@@ -305,3 +314,41 @@ question: *did this change make it worse?*
 - A broken coverage run, a missing report and an unparseable floor are all
   **errors**, never passes. Each one otherwise turns the ratchet permanently
   green, which is the shape of every gate bug this repo has actually hit.
+
+---
+
+## 13. The policy file — configurable, but not negotiable
+
+Layer 2 shipped as take-it-or-leave-it. The design intent was that one identical
+umbrella covers every repo regardless of stack (§5), and that is still right —
+but it left a consumer exactly two ways to say *"that rule does not apply to
+us"*: a per-finding `nosemgrep` comment, and deleting the workflow file. The
+second one is what actually happens, and a deleted gate is worse than a
+configurable one.
+
+So `.maxi-quality.yml` in the **consumer** selects rule groups, disables a rule,
+downgrades one to a warning, excludes paths, and points at the consumer's own
+rules. It is optional; with no policy file nothing changes.
+
+The constraints are the design, not the schema:
+
+- **Unknown keys, rule ids and group names are hard errors.** Every silent-knob
+  bug this repo has shipped had one shape — Ruff's bare `select` replacing what
+  it inherits, `pattern-not-regex` ignored a level too high,
+  `dotnet_diagnostic.IDE1006.severity` never set — and all three looked identical
+  to a working config from outside. A policy that cannot be applied stops the run
+  rather than applying half of itself.
+- **The mechanism is verified, not trusted.** `--exclude-rule` and `--exclude`
+  both fail silently when given a form semgrep does not recognise, so the
+  resolver asserts *after* the scan that disabled rules really are absent and
+  excluded paths really are unreported. A knob that did not take is a failure,
+  not a partial policy.
+- **The resolved policy is snapshotted**, not the file. Same division of labour
+  as `configs/*/…snapshot.json`: what it says has been wrong before, what it
+  resolves to is the thing worth asserting.
+- **Secrets and vulnerable dependencies are not configurable.** Gitleaks and
+  OSV-Scanner have no `disable`, and there is no key that makes the gate
+  advisory. `--no-fail` exists for the standing report (§11) and only for that.
+
+What this does *not* relax: the ruleset is still capped at 12 conventions, and a
+consumer narrowing what applies to them is not the same as the baseline growing.
