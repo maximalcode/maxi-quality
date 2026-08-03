@@ -1,0 +1,2 @@
+rules:
+  groups: []                      # and no extends — this would run no rules

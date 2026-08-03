@@ -30,6 +30,7 @@
 #   python   ruff.base.toml                <- configs/python/ruff.toml
 #   python   mypy.ini                      <- configs/python/mypy.ini
 #   python   ruff.toml                     (1-line extend stub, only if absent)
+#   always   .maxi-quality.yml             (commented starter, only if absent)
 #   any      .github/workflows/quality.yml (unless --no-workflow)
 #
 # The TS pair is a copy for the same reason Directory.Build.props is: a private
@@ -249,6 +250,40 @@ extend = \"./ruff.base.toml\"
 # extend-select = [\"PL\"]   # add a family — NOT \`select\`, which replaces
 "
 fi
+
+# --- policy ------------------------------------------------------------------
+# Written entirely commented out, so adopting changes nothing about what the
+# gate does. The file exists to be DISCOVERABLE: the alternative to a legitimate
+# way of saying "that rule does not apply to us" is a deleted workflow file, and
+# a consumer who does not know the knob exists reaches for the second one.
+write_new "$TARGET/.maxi-quality.yml" \
+"# maxi-quality policy for this repo. Everything below is commented out, so as
+# written this file changes nothing — uncomment what you need.
+#
+# Unknown keys, unknown rule ids and unknown group names are HARD ERRORS, not
+# warnings. That is deliberate: a typo that silently does nothing is the failure
+# mode this file exists to prevent.
+#
+# rules:
+#   groups: [general, security, conventions]   # omit one to stop running it
+#   disable:                                   # the rule does not apply here
+#     - no-float-for-money
+#   warn:                                      # reported, never fails the build
+#     - todo-without-issue
+#
+# paths:
+#   exclude:
+#     - legacy                                 # NOT 'legacy/**' — semgrep's
+#                                              # --exclude matches path
+#                                              # components and would silently
+#                                              # ignore the glob form.
+#
+# extends: .maxi-quality/rules                 # your own semgrep rules, run
+#                                              # alongside the baseline's
+#
+# Gitleaks and OSV-Scanner are deliberately not configurable here: a leaked
+# credential and a known CVE are not matters of local policy.
+"
 
 # --- CI ----------------------------------------------------------------------
 if [ "$NO_WORKFLOW" -eq 0 ]; then

@@ -110,6 +110,7 @@ capped at **12 conventions**, and the cap is the feature.
 | Samples proving all three fail | ✅ `samples/` |
 | Semgrep ruleset (Layer 2) | ✅ `semgrep/` — 12 conventions, TypeScript + C# + Python |
 | `scan.sh` (Semgrep + Gitleaks + OSV) | ✅ `scripts/scan.sh` |
+| Per-repo policy | ✅ [`.maxi-quality.yml`](#configuring-it--maxi-qualityyml) — rule groups, `disable`, `warn`, path excludes, your own rules. Unknown keys are hard errors |
 | Reusable CI workflow, `@v1` tag | ✅ `.github/workflows/quality.yml` + `actions/layer2/` |
 | Java | ⬜ deliberately not built until a real project needs it |
 | SonarQube CE dashboard | ❌ **dropped.** Measured in [`EVAL-vs-sonarqube.md`](docs/EVAL-vs-sonarqube.md) and lost: 1 of 8 planted TS bugs out of the box, no rule id for `no-floating-promises` or the `no-unsafe-*` family, custom C#/TS rules unavailable in every edition. The C# value is already banked in-build via `SonarAnalyzer.CSharp`. |
@@ -472,6 +473,58 @@ policy:
 Your own workspace packages resolve to `UNKNOWN` and will trip any allowlist —
 add `UNKNOWN`, or exclude them in an `osv-scanner.toml`. The inventory in the
 standing report shows you the real set before you commit to one.
+
+---
+
+## Configuring it — `.maxi-quality.yml`
+
+Layer 2 used to be take-it-or-leave-it: the only ways to say *"that rule does not
+apply to us"* were a per-finding `nosemgrep` comment and deleting the workflow
+file. The second one is what actually happens, and a deleted gate is worse than a
+configurable one.
+
+Drop a `.maxi-quality.yml` at the root of your repo. It is optional — without
+one, nothing changes and nothing new is installed.
+
+```yaml
+rules:
+  groups: [general, security, conventions]   # omit one to stop running it
+  disable: [no-float-for-money]              # does not apply to this repo
+  warn:    [todo-without-issue]              # reported, never fails the build
+paths:
+  exclude: [legacy]                          # out of scope
+extends: .maxi-quality/rules                 # your own rules, same gate
+```
+
+| Key | Effect |
+|---|---|
+| `rules.groups` | which of `semgrep/general`, `semgrep/security`, `semgrep/conventions` run. Default: all three |
+| `rules.disable` | the rule never runs and never reports |
+| `rules.warn` | findings are printed with file and line, and do **not** fail the build |
+| `paths.exclude` | paths semgrep skips entirely |
+| `extends` | a directory of your own Semgrep rules, run alongside the baseline's |
+
+**Unknown keys, unknown rule ids and unknown group names are hard errors.** So is
+listing a rule in both `disable` and `warn`, and pointing `extends` at a
+directory that is not there. That is the whole design: every silent-knob bug this
+repo has shipped looked identical to a working config from the outside, so a
+policy that cannot be applied stops the run instead of applying half of itself.
+
+**Two things that are deliberately not configurable.** Gitleaks and OSV-Scanner
+have no `disable` — a leaked credential and a known CVE are not matters of local
+policy. Neither is there a key that makes the gate advisory; `--no-fail` already
+exists for the standing report and its own documentation says why it must never
+be set on a gate.
+
+**One gotcha, measured rather than guessed.** Write `legacy`, not `legacy/**`.
+Semgrep's `--exclude` matches path components and silently ignores the glob form,
+so `legacy/**` would exclude nothing and say nothing about it. The policy file
+rejects that spelling outright and tells you what to write instead.
+
+`adopt.sh` writes a fully commented starter file, so the knob is discoverable
+before somebody needs it. This repo uses one on itself —
+[`.maxi-quality.yml`](.maxi-quality.yml) — to keep the policy fixtures out of its
+own rule manifest.
 
 ---
 
@@ -969,14 +1022,14 @@ not a checkpoint — it is a release to everyone who pinned `@v1`.
 | Branch | What it is |
 |---|---|
 | `develop` | **The default branch, and where every PR goes.** Full CI, protected, no direct pushes. Merged work sits here until it is released. |
-| `main` | **The release branch.** A green push to it moves `v1`, automatically, via [`release-tag.yml`](.github/workflows/release-tag.yml). Same protection, same 18 required checks. |
+| `main` | **The release branch.** A green push to it moves `v1`, automatically, via [`release-tag.yml`](.github/workflows/release-tag.yml). Same protection, same 19 required checks. |
 
 **Contributing, concretely:**
 
 1. Branch off `develop`.
 2. Open a PR **against `develop`** — it is the default base, so `gh pr create`
    and the web UI already point there.
-3. All 18 CI jobs must pass. They are required checks and admins are not exempt;
+3. All 19 CI jobs must pass. They are required checks and admins are not exempt;
    the branch must also be up to date before it merges.
 4. Releasing is a separate, deliberate PR from `develop` to `main`. That is not
    a contributor step — it is where the maintainer decides a version.

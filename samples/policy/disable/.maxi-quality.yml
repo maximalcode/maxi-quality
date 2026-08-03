@@ -1,0 +1,4 @@
+# A repo that genuinely has no injected clock to reach for.
+rules:
+  disable:
+    - no-ambient-clock

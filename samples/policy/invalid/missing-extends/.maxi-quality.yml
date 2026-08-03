@@ -1,0 +1,1 @@
+extends: .maxi-quality/rules      # the directory does not exist
