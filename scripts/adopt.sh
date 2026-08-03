@@ -279,10 +279,16 @@ fi
 
 if [ "$HAS_DOTNET" -eq 1 ]; then
   printf '  C#/.NET\n'
-  printf '    1. Nothing. MSBuild picks up Directory.Build.props for every project\n'
-  printf '       beneath it — no .csproj changes.\n'
+  printf '    1. No .csproj changes — MSBuild picks up Directory.Build.props for\n'
+  printf '       every project beneath it.\n'
   printf '    2. First build will be noisy on an existing codebase. scripts/scan.sh\n'
   printf '       --changed-only is the new-code-only ratchet if you need it.\n'
+  printf '    3. DECIDE on packages.lock.json. Without one the dependency scan sees\n'
+  printf '       your DIRECT dependencies only — measured 4 findings vs 7 on the\n'
+  printf '       same project (README, .NET trade-off). dotnet restore\n'
+  printf '       --use-lock-file opts in; RestoreLockedMode then fails CI on a\n'
+  printf '       stale one, which is the commitment. This script will not make\n'
+  printf '       that call for you.\n'
 fi
 
 if [ "$HAS_PYTHON" -eq 1 ]; then
