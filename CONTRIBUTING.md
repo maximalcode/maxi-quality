@@ -43,6 +43,25 @@ is not hypothetical: `catch-and-swallow` told people to explain the silence in a
 comment, comments are not AST nodes, and following the instruction verbatim did
 not clear the finding — 4 out of 4 real-world hits were false positives.
 
+**A fixture cannot prove a configuration**, only the part of it the fixture
+happens to reach, so two snapshots assert the configs directly and both must be
+regenerated deliberately when a tool is bumped:
+
+```bash
+node scripts/snapshot-eslint-rules.mjs --check   # the enabled ESLint rule set
+node scripts/snapshot-tsconfig.mjs --check       # the resolved compiler options
+```
+
+They exist because the gap was measured, not imagined: 94% of the ESLint
+baseline could be deleted with every finding assertion green, and every flag in
+`tsconfig.strict.json` could be deleted with no job running `tsc` at all.
+
+**When you add a compiler flag, ablate its fixture.** Turn that one flag off and
+confirm your new error is the one that disappears. An error attributed to the
+wrong flag leaves CI red for a reason that survives deleting the flag you meant
+to test — which has already happened once, and is written up in
+[`samples/typescript-strict/README.md`](samples/typescript-strict/README.md).
+
 ## Rule 3 — PRs go to `develop`, never to `main`
 
 `main` is not a checkpoint, it is a **release**. The moving `v1` tag follows it

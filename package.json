@@ -14,11 +14,14 @@
   ],
   "workspaces": [
     "samples/typescript",
-    "samples/typescript-clean"
+    "samples/typescript-clean",
+    "samples/typescript-strict"
   ],
   "scripts": {
     "verify:ts": "npm run lint --workspace @maximalcode/sample-typescript",
-    "verify:ts:clean": "npm run lint --workspace @maximalcode/sample-typescript-clean"
+    "verify:ts:clean": "npm run lint --workspace @maximalcode/sample-typescript-clean",
+    "verify:ts:types": "npm run typecheck --workspace @maximalcode/sample-typescript-strict",
+    "verify:ts:types:clean": "npm run typecheck --workspace @maximalcode/sample-typescript-clean"
   },
   "peerDependencies": {
     "@eslint/js": ">=9",

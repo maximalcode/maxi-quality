@@ -106,6 +106,59 @@ jobs:
           (cd samples/typescript-clean && ../../node_modules/.bin/eslint src -f json) > /tmp/eslint-clean.json || true
           python3 scripts/check-expected.py --tool eslint \
             --input /tmp/eslint-clean.json --expected samples/expected/eslint-clean.json
+      # --- tsconfig.strict.json, issue #7 -----------------------------------
+      # Everything above tests ESLint. tsc was run by NOTHING, so 13 of the 14
+      # hand-written compiler flags had no test and any of them could be deleted
+      # with every job green. Same two-part shape as the ESLint half: assert the
+      # resolved CONFIGURATION, then assert that it produces errors.
+      - name: The resolved TypeScript compiler options must not change silently
+        shell: bash
+        run: node scripts/snapshot-tsconfig.mjs --check
+      - name: Strict TS sample must FAIL with exactly the expected diagnostics
+        shell: bash
+        run: |
+          set -uo pipefail
+          # The gate a consumer actually gets: a non-zero tsc.
+          rc=0; out=$(npm run verify:ts:types 2>&1) || rc=$?
+          echo "$out"
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/typescript-strict type-checked — tsconfig.strict.json regressed'
+            exit 1
+          fi
+          # Then WHICH diagnostics. `-p <dir>` from the repo root rather than a
+          # cd, because tsc prints paths relative to the CWD and the manifest
+          # holds repo-relative ones.
+          ./node_modules/.bin/tsc --noEmit -p samples/typescript-strict > /tmp/tsc.txt 2>&1 || true
+          python3 scripts/check-expected.py --tool tsc \
+            --input /tmp/tsc.txt --expected samples/expected/tsc.json
+      - name: Clean TS sample must TYPE-CHECK with zero diagnostics
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; out=$(npm run verify:ts:types:clean 2>&1) || rc=$?
+          echo "$out"
+          if [[ $rc -ne 0 ]]; then
+            echo '::error::samples/typescript-clean failed to type-check — the compiler baseline is over-strict. Fix the config, do not add ts-expect-error to the fixture.'
+            exit 1
+          fi
+          ./node_modules/.bin/tsc --noEmit -p samples/typescript-clean > /tmp/tsc-clean.txt 2>&1 || true
+          python3 scripts/check-expected.py --tool tsc \
+            --input /tmp/tsc-clean.txt --expected samples/expected/tsc-clean.json
+      # declaration/declarationMap/sourceMap are the three flags no --noEmit run
+      # can see. They are worth asserting because a consumer publishing a library
+      # loses its .d.ts silently: nothing fails, the package just ships untyped.
+      - name: The emit flags must actually emit
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm -rf /tmp/ts-emit
+          ./node_modules/.bin/tsc -p samples/typescript-clean --noEmit false --outDir /tmp/ts-emit
+          for f in clean.d.ts clean.d.ts.map clean.js.map; do
+            [[ -f /tmp/ts-emit/$f ]] || {
+              echo "::error::$f was not emitted — declaration/declarationMap/sourceMap regressed in tsconfig.strict.json"
+              exit 1
+            }
+          done
 
   layer1-dotnet:
     runs-on: ubuntu-latest

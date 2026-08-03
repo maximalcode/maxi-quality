@@ -51,6 +51,13 @@ DOTNET_RE = re.compile(
     r"(?P<file>[^\s(]+\.cs)\((?P<line>\d+),\d+\): error (?P<rule>[A-Za-z]+\d+)"
 )
 
+# tsc has no JSON diagnostic output either. Anchored at the start of a line
+# because tsc indents the explanatory continuation lines of a nested type error
+# ("Types of property 'retries' are incompatible.") and those are not findings.
+TSC_RE = re.compile(
+    r"^(?P<file>\S+?\.[cm]?tsx?)\((?P<line>\d+),\d+\): error (?P<rule>TS\d+)", re.M
+)
+
 
 class ParseError(Exception):
     pass
@@ -119,12 +126,23 @@ def parse_dotnet(text: str) -> list[dict]:
     return out
 
 
+def parse_tsc(text: str) -> list[dict]:
+    """tsc prints paths relative to the CWD, so run it as `tsc -p <dir>` from the
+    repo root rather than cd-ing in — same reason the dotnet job does not use
+    `working-directory:`."""
+    return [
+        {"rule": m["rule"], "file": _rel(m["file"]), "line": int(m["line"])}
+        for m in TSC_RE.finditer(text)
+    ]
+
+
 PARSERS = {
     "semgrep": parse_semgrep,
     "eslint": parse_eslint,
     "ruff": parse_ruff,
     "mypy": parse_mypy,
     "dotnet": parse_dotnet,
+    "tsc": parse_tsc,
 }
 
 
