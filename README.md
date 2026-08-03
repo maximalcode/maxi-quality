@@ -764,7 +764,7 @@ ruff check --output-format=concise samples/python
 mypy --config-file configs/python/mypy.ini samples/python/src
 ```
 
-Expect **14 Ruff errors** and **5 mypy errors**, both non-zero exit. The Ruff
+Expect **14 Ruff errors** and **11 mypy errors**, both non-zero exit. The Ruff
 fixture plants at least one finding per selected family — CI asserts family
 coverage separately from the total, because a total alone would still read as 14
 if half the ruleset were switched off and something else fired twice:
@@ -778,6 +778,24 @@ if half the ruleset were switched off and something else fired twice:
 | `B` | mutable default arg | `T20` | stray `print()` |
 | `C4` | unnecessary generator | `RUF` | un-stored `create_task` |
 | `UP` | deprecated `typing.List` | | |
+
+The mypy half is split across two files, and the split is the point. `strict =
+True` is an **alias**, not a setting: one line in `mypy.ini` that expands to
+fourteen booleans. Every finding in `bad_types.py` comes from base type checking
+or from `warn_unreachable`, which the config sets explicitly — so `strict` could
+be downgraded to a hand-picked list and the fixture would stay green.
+`bad_strict.py` baits the expansion itself:
+
+| Sub-flag of `strict` | Planted | Code |
+|---|---|---|
+| `warn_return_any` | `Any` laundered into a declared `int` | `no-any-return` |
+| `disallow_any_generics` | a bare `list` annotation | `type-arg` |
+| `strict_equality` | `str == int`, a comparison that cannot succeed | `comparison-overlap` |
+| `disallow_untyped_calls` | typed code calling an unannotated helper | `no-untyped-call` |
+
+`configs/python/settings.snapshot.json` proves the alias **expands**;
+`bad_strict.py` proves the expansion **does something**. Same division of labour
+as `tsconfig.snapshot.json` and `samples/typescript-strict/`.
 
 The mypy five are split into their own fixture on purpose: ruff and mypy find
 disjoint bugs, and a shared file would let one tool's config break while the

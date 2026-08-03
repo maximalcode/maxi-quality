@@ -274,6 +274,13 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r samples/python/requirements-dev.txt
+      # #8 — the Python twin of the tsconfig, ESLint and MSBuild snapshots.
+      # `ignore = []` is this config's most load-bearing empty value and no
+      # fixture can see it; mypy's `strict` is an ALIAS whose expansion no
+      # finding proves. Both are asserted here, from each tool's own resolver.
+      - name: The resolved ruff and mypy settings must not change silently
+        shell: bash
+        run: python3 scripts/snapshot-python-settings.py --check
       - name: Ruff sample must fail with exactly 14 errors
         shell: bash
         run: |
@@ -306,7 +313,7 @@ jobs:
             exit 1
           fi
           echo 'OK: all 13 rule families represented in the fixture'
-      - name: Mypy sample must fail with exactly 5 errors
+      - name: Mypy sample must fail with exactly 11 errors
         shell: bash
         run: |
           set -uo pipefail

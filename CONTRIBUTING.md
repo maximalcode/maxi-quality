@@ -44,17 +44,27 @@ comment, comments are not AST nodes, and following the instruction verbatim did
 not clear the finding — 4 out of 4 real-world hits were false positives.
 
 **A fixture cannot prove a configuration**, only the part of it the fixture
-happens to reach, so two snapshots assert the configs directly and both must be
-regenerated deliberately when a tool is bumped:
+happens to reach, so every config also has a snapshot of what it *resolves to*.
+All four must be regenerated deliberately when a tool is bumped:
 
 ```bash
-node scripts/snapshot-eslint-rules.mjs --check   # the enabled ESLint rule set
-node scripts/snapshot-tsconfig.mjs --check       # the resolved compiler options
+node scripts/snapshot-eslint-rules.mjs --check     # the enabled ESLint rule set
+node scripts/snapshot-tsconfig.mjs --check         # tsc --showConfig
+./scripts/snapshot-msbuild-props.sh --check        # dotnet msbuild -getProperty
+python3 scripts/snapshot-python-settings.py --check # ruff + mypy's own resolvers
 ```
 
-They exist because the gap was measured, not imagined: 94% of the ESLint
-baseline could be deleted with every finding assertion green, and every flag in
-`tsconfig.strict.json` could be deleted with no job running `tsc` at all.
+Each asks the **tool's own resolver**, never the config file — the file says
+what we wrote, the resolver says what survived `extends`, conditions, defaults
+and alias expansion. For mypy that gap is the whole point: `strict = True` is
+one line in the ini and fourteen booleans in the resolver.
+
+They exist because the gap was measured, not imagined. 94% of the ESLint
+baseline could be deleted with every finding assertion green. Every flag in
+`tsconfig.strict.json` could be deleted with no job running `tsc` at all. And
+the three `dotnet_naming_rule` blocks shipped enforcing nothing, because the
+severity that governs the build was never set — a config can be **switched
+off**, not merely unbaited, and those two look identical from outside.
 
 **When you add a compiler flag, ablate its fixture.** Turn that one flag off and
 confirm your new error is the one that disappears. An error attributed to the

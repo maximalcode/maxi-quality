@@ -75,6 +75,7 @@ configs/dotnet/msbuild.snapshot.json    the properties it RESOLVES to, in both t
 configs/dotnet/dotnet.editorconfig      C# severities + minimal style
 configs/python/ruff.toml                13 rule families, line-length 100, extend-able
 configs/python/mypy.ini                 mypy strict + warn_unreachable (COPY — mypy has no extend)
+configs/python/settings.snapshot.json   what ruff and mypy RESOLVE to — 344 rules, and `strict` expanded
 
 semgrep/general/       todo-without-issue, catch-and-swallow, debug-print, sync-over-async
 semgrep/security/      sql-string-concat, command-injection, weak-crypto, hardcoded-secret
@@ -89,6 +90,9 @@ scripts/coverage.py       coverage ratchet: lcov + Cobertura vs a committed floo
 scripts/check-expected.py diffs a tool's JSON output against a committed manifest
 scripts/snapshot-eslint-rules.mjs  serialises the ENABLED rule set, so deleting a
                           rule no fixture triggers still fails CI
+scripts/snapshot-tsconfig.mjs      the same idea for tsc --showConfig
+scripts/snapshot-msbuild-props.sh  ...for dotnet msbuild -getProperty
+scripts/snapshot-python-settings.py ...for ruff --show-settings and mypy's own resolver
 .gitleaks.toml            allowlists the deliberately-planted sample secrets
 
 actions/layer2/        the Layer 2 gate — how the rules reach a consumer
@@ -101,7 +105,7 @@ samples/typescript-strict/ compiler sample — `tsc` must fail with 12 diagnosti
 samples/dotnet/           Layer 1 C# sample — `dotnet build` must fail
 samples/dotnet-tests/     Layer 1 C# *Tests* sample — proves the #25 relaxation
 samples/dotnet-clean/     negative control — must BUILD 0 errors / 0 warnings
-samples/python/           Layer 1 Python sample — ruff 14 errors, mypy 5 errors
+samples/python/           Layer 1 Python sample — ruff 14 errors, mypy 11 errors
 samples/python-clean/     negative control — must PASS ruff AND mypy, zero findings
 samples/semgrep/          Layer 2 sample — outside both projects on purpose
 samples/coverage/         coverage fixtures, hand-checked: 65.00 / 75.00 / 40.00 /
@@ -131,7 +135,7 @@ cd ../..
 pip install -r samples/python/requirements-dev.txt
 ruff check samples/python                # expect exit 1, 14 errors
 mypy --config-file configs/python/mypy.ini samples/python/src
-                                         # expect exit 1, 5 errors
+                                         # expect exit 1, 11 errors
 ruff check samples/python-clean          # expect exit 0, ZERO findings
 mypy --config-file configs/python/mypy.ini samples/python-clean/src
                                          # expect exit 0, ZERO findings
