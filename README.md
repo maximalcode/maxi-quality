@@ -159,7 +159,7 @@ that hard-codes a version goes stale on the next release by construction, and a
 
 CI proves this end-to-end in both directions: a repo adopted by the script
 builds the clean fixture at 0 errors/0 warnings **and** rejects the bad fixture
-with exactly the same 13 errors as the hand-configured sample. An adoption that
+with exactly the same 23 errors as the hand-configured sample. An adoption that
 produced a gate which didn't gate would be worse than none, because it would
 look green.
 
@@ -710,7 +710,7 @@ reason each one is unbaitable, is in
 cd samples/dotnet && dotnet build
 ```
 
-Expect **13 errors, 0 warnings** and a non-zero exit, covering all five planted
+Expect **23 errors, 0 warnings** and a non-zero exit, covering all nine planted
 classes:
 
 | Planted bug | Caught by |
@@ -720,6 +720,17 @@ classes:
 | un-disposed `IDisposable` | `S2930` |
 | unreachable code | `CS0162` |
 | unused local | `CS0219`, `IDE0059`, `S1481` |
+| interface without the `I` prefix | `IDE1006`, `S101` |
+| type not PascalCase | `IDE1006`, `S101` |
+| private field without `_camelCase` | `IDE1006` — **and nothing else** |
+| unnecessary using · unread member · unused parameter · `null` into a non-nullable | `IDE0005`, `IDE0052`, `IDE0060`, `CS8625`, `CA1805` |
+
+The last four rows are new in #8, and the third of them is the one worth
+reading. The three `dotnet_naming_rule` blocks shipped enforcing **nothing** —
+not for want of a fixture, but because `dotnet_diagnostic.IDE1006.severity` was
+never set, so the build never reported them. Two of the three were masked by
+analyzers that happen to overlap; the private-field convention was caught by no
+layer at all. Measured, then fixed with one line.
 
 Note the `IDisposable` leak is caught by Sonar's `S2930`, not Roslyn's `CA2000`
 — `CA2000` is not enabled at `latest-recommended`. The coverage is there; it just

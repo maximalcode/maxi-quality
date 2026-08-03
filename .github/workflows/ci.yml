@@ -167,6 +167,15 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           dotnet-version: '10.0.x'
+      # #8 — the .NET twin of the tsconfig and ESLint snapshots. The finding
+      # manifest cannot see a property that bakes no diagnostic out:
+      # TreatWarningsAsErrors and WarningLevel change other diagnostics' SEVERITY
+      # rather than the set of them, and RestoreLockedMode is conditional on a
+      # lock file that samples/dotnet does not have. Deleting any of those left
+      # every job green.
+      - name: The resolved MSBuild properties must not change silently
+        shell: bash
+        run: ./scripts/snapshot-msbuild-props.sh --check
       # NOT `working-directory:` — the manifests hold repo-relative paths, so
       # check-expected.py has to run from the repo root.
       - name: Sample must fail with exactly the expected diagnostics
@@ -1082,7 +1091,13 @@ jobs:
         run: |
           set -Eeuo pipefail
           mkdir -p /tmp/consumer-bad
-          cp samples/dotnet/Program.cs /tmp/consumer-bad/
+          # ALL the fixture sources, not just Program.cs. The claim below is
+          # "the adopted repo reproduces the sample exactly", and with #8 the
+          # sample grew two files — including the naming bait, which is the one
+          # that proves `dotnet_diagnostic.IDE1006.severity` survives adoption
+          # rather than only working in-tree. Copying one file made the claim
+          # true of that file and not of the sample.
+          cp samples/dotnet/*.cs /tmp/consumer-bad/
           cat > /tmp/consumer-bad/Consumer.csproj <<'CSPROJ'
           <Project Sdk="Microsoft.NET.Sdk">
             <PropertyGroup>
@@ -1097,9 +1112,9 @@ jobs:
           rc=0; out=$(dotnet build --nologo --no-incremental 2>&1) || rc=$?
           echo "$out"
           [[ $rc -ne 0 ]] || { echo '::error::adopted repo did NOT gate on the bad fixture'; exit 1; }
-          grep -qE '^ +13 Error\(s\)$' <<<"$out" || {
-            echo '::error::adopted repo gave a different count than samples/dotnet (13)'; exit 1; }
-          echo 'OK: adopted repo reproduces the sample exactly — 13 errors'
+          grep -qE '^ +23 Error\(s\)$' <<<"$out" || {
+            echo '::error::adopted repo gave a different count than samples/dotnet (23)'; exit 1; }
+          echo 'OK: adopted repo reproduces the sample exactly — 23 errors'
       - name: Refuses to write a Directory.Build.props MSBuild would ignore
         shell: bash
         run: |
