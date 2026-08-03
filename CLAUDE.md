@@ -99,11 +99,34 @@ Keep the numbers — measured evidence is the point of `docs/STATUS.md` and it
 identifies nobody once the names are gone.
 
 **Public-only tooling is now permitted, but only after it is measured.** Free
-CodeQL and SonarCloud become available; that is not a reason to adopt either. The
-track record is unambiguous — the free Semgrep registry found **0 of 28** planted
-findings and ships no C# rules; SonarQube found **1 of 8**
-(`docs/EVAL-vs-sonarqube.md`). Anything new gets run against `samples/` and reported
-with numbers before it is wired in.
+CodeQL and SonarCloud become available; that is not a reason to adopt either.
+Anything new gets run against `samples/` and reported with numbers before it is
+wired in.
+
+The track record says the rule works, and it works **in both directions** — do
+not read it as "nothing ever passes", which would just be reflexive rejection
+wearing the costume of rigour:
+
+- `p/security-audit` found **0 of the 28** findings our own conventions produced
+  on the same files (`docs/STATUS.md` §7, 2026-08-01), and **0 of 103** on the
+  bigger corpus a year's worth of fixtures later
+  (`docs/EVAL-vs-oss-tools.md` §2d).
+- SonarQube found **1 of 8** (`docs/EVAL-vs-sonarqube.md`).
+- CodeQL scored well and is still declined — it cannot run on a private repo at
+  any free tier, so it could gate this repo and never a consumer
+  (`EVAL-vs-oss-tools.md` §2h, issue #23). That asymmetry decides more of this
+  than detection scores do.
+- **`eslint-plugin-sonarjs` was measured and ADOPTED** (#11) — five bug classes
+  typescript-eslint has no rule for, zero findings on the clean fixtures. Nine
+  of ten candidates were declined; one was not.
+
+**One correction to a claim this file used to make.** It said the free Semgrep
+registry "ships no C# rules". That is true of **`p/security-audit` specifically**
+— scanning a tree with three C# files, its language table shows no `csharp` row
+at all — and false of the registry as a whole: `p/owasp-top-ten` runs 27 C#
+rules and `p/csharp` is a 27-rule C# pack (`EVAL-vs-oss-tools.md` §2d). Neither
+changes the verdict, and both are worth stating correctly, because a wrong
+reason for a right decision is how the decision gets overturned later.
 
 **Free/OSS only still holds.** Public makes branch protection free, which is the
 one thing that was genuinely blocked on spend. It does not relax §5.
