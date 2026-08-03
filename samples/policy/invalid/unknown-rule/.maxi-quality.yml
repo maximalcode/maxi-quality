@@ -1,0 +1,3 @@
+rules:
+  disable:
+    - no-ambient-clocks     # trailing s — matches no rule

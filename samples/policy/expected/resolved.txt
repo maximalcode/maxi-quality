@@ -1,0 +1,216 @@
+=== disable
+{
+  "disable": [
+    "no-ambient-clock"
+  ],
+  "exclude": [],
+  "exclude_rule_args": [
+    "BASELINE.semgrep.conventions.no-ambient-clock"
+  ],
+  "extends": null,
+  "gate_rules": [
+    "catch-and-swallow-dotnet",
+    "catch-and-swallow-ts",
+    "command-injection-dotnet",
+    "command-injection-indirect-dotnet",
+    "command-injection-indirect-ts",
+    "command-injection-ts",
+    "debug-print-left-behind-dotnet",
+    "debug-print-left-behind-ts",
+    "hardcoded-secret-dotnet",
+    "hardcoded-secret-python",
+    "hardcoded-secret-ts",
+    "mutation-requires-authz-dotnet",
+    "mutation-requires-authz-python",
+    "mutation-requires-authz-ts",
+    "no-ambient-clock-python",
+    "no-float-for-money",
+    "no-float-for-money-python",
+    "no-permission-denied-for-invisible-resource-dotnet",
+    "no-permission-denied-for-invisible-resource-python",
+    "no-permission-denied-for-invisible-resource-ts",
+    "sql-string-concat-builder-dotnet",
+    "sql-string-concat-builder-ts",
+    "sql-string-concat-dotnet",
+    "sql-string-concat-ts",
+    "sync-over-async",
+    "todo-without-issue",
+    "weak-crypto"
+  ],
+  "groups": [
+    "general",
+    "security",
+    "conventions"
+  ],
+  "policy_file": ".maxi-quality.yml",
+  "warn": [],
+  "warn_rules": []
+}
+=== exclude
+{
+  "disable": [],
+  "exclude": [
+    "legacy/"
+  ],
+  "exclude_rule_args": [],
+  "extends": null,
+  "gate_rules": [
+    "catch-and-swallow-dotnet",
+    "catch-and-swallow-ts",
+    "command-injection-dotnet",
+    "command-injection-indirect-dotnet",
+    "command-injection-indirect-ts",
+    "command-injection-ts",
+    "debug-print-left-behind-dotnet",
+    "debug-print-left-behind-ts",
+    "hardcoded-secret-dotnet",
+    "hardcoded-secret-python",
+    "hardcoded-secret-ts",
+    "mutation-requires-authz-dotnet",
+    "mutation-requires-authz-python",
+    "mutation-requires-authz-ts",
+    "no-ambient-clock",
+    "no-ambient-clock-python",
+    "no-float-for-money",
+    "no-float-for-money-python",
+    "no-permission-denied-for-invisible-resource-dotnet",
+    "no-permission-denied-for-invisible-resource-python",
+    "no-permission-denied-for-invisible-resource-ts",
+    "sql-string-concat-builder-dotnet",
+    "sql-string-concat-builder-ts",
+    "sql-string-concat-dotnet",
+    "sql-string-concat-ts",
+    "sync-over-async",
+    "todo-without-issue",
+    "weak-crypto"
+  ],
+  "groups": [
+    "general",
+    "security",
+    "conventions"
+  ],
+  "policy_file": ".maxi-quality.yml",
+  "warn": [],
+  "warn_rules": []
+}
+=== extends
+{
+  "disable": [],
+  "exclude": [],
+  "exclude_rule_args": [],
+  "extends": ".maxi-quality/rules",
+  "gate_rules": [
+    "catch-and-swallow-dotnet",
+    "catch-and-swallow-ts",
+    "command-injection-dotnet",
+    "command-injection-indirect-dotnet",
+    "command-injection-indirect-ts",
+    "command-injection-ts",
+    "debug-print-left-behind-dotnet",
+    "debug-print-left-behind-ts",
+    "hardcoded-secret-dotnet",
+    "hardcoded-secret-python",
+    "hardcoded-secret-ts",
+    "local-no-direct-process-env",
+    "mutation-requires-authz-dotnet",
+    "mutation-requires-authz-python",
+    "mutation-requires-authz-ts",
+    "no-ambient-clock",
+    "no-ambient-clock-python",
+    "no-float-for-money",
+    "no-float-for-money-python",
+    "no-permission-denied-for-invisible-resource-dotnet",
+    "no-permission-denied-for-invisible-resource-python",
+    "no-permission-denied-for-invisible-resource-ts",
+    "sql-string-concat-builder-dotnet",
+    "sql-string-concat-builder-ts",
+    "sql-string-concat-dotnet",
+    "sql-string-concat-ts",
+    "sync-over-async",
+    "todo-without-issue",
+    "weak-crypto"
+  ],
+  "groups": [
+    "general",
+    "security",
+    "conventions"
+  ],
+  "policy_file": ".maxi-quality.yml",
+  "warn": [],
+  "warn_rules": []
+}
+=== groups
+{
+  "disable": [],
+  "exclude": [],
+  "exclude_rule_args": [],
+  "extends": null,
+  "gate_rules": [
+    "command-injection-dotnet",
+    "command-injection-indirect-dotnet",
+    "command-injection-indirect-ts",
+    "command-injection-ts",
+    "hardcoded-secret-dotnet",
+    "hardcoded-secret-python",
+    "hardcoded-secret-ts",
+    "sql-string-concat-builder-dotnet",
+    "sql-string-concat-builder-ts",
+    "sql-string-concat-dotnet",
+    "sql-string-concat-ts",
+    "weak-crypto"
+  ],
+  "groups": [
+    "security"
+  ],
+  "policy_file": ".maxi-quality.yml",
+  "warn": [],
+  "warn_rules": []
+}
+=== warn
+{
+  "disable": [],
+  "exclude": [],
+  "exclude_rule_args": [],
+  "extends": null,
+  "gate_rules": [
+    "catch-and-swallow-dotnet",
+    "catch-and-swallow-ts",
+    "command-injection-dotnet",
+    "command-injection-indirect-dotnet",
+    "command-injection-indirect-ts",
+    "command-injection-ts",
+    "debug-print-left-behind-dotnet",
+    "debug-print-left-behind-ts",
+    "hardcoded-secret-dotnet",
+    "hardcoded-secret-python",
+    "hardcoded-secret-ts",
+    "mutation-requires-authz-dotnet",
+    "mutation-requires-authz-python",
+    "mutation-requires-authz-ts",
+    "no-ambient-clock",
+    "no-ambient-clock-python",
+    "no-float-for-money",
+    "no-float-for-money-python",
+    "no-permission-denied-for-invisible-resource-dotnet",
+    "no-permission-denied-for-invisible-resource-python",
+    "no-permission-denied-for-invisible-resource-ts",
+    "sql-string-concat-builder-dotnet",
+    "sql-string-concat-builder-ts",
+    "sql-string-concat-dotnet",
+    "sql-string-concat-ts",
+    "sync-over-async",
+    "weak-crypto"
+  ],
+  "groups": [
+    "general",
+    "security",
+    "conventions"
+  ],
+  "policy_file": ".maxi-quality.yml",
+  "warn": [
+    "todo-without-issue"
+  ],
+  "warn_rules": [
+    "todo-without-issue"
+  ]
+}

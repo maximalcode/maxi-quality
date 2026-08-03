@@ -1,0 +1,7 @@
+paths:
+  exclude:
+    - 'legacy/'
+
+# The trailing slash is fine; a '**' suffix is NOT — semgrep's --exclude matches
+# path components, so 'legacy/**' silently excludes nothing. policy.py rejects
+# that form outright, and samples/policy/invalid/glob-exclude/ pins the message.

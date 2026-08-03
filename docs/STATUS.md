@@ -85,6 +85,10 @@ semgrep/conventions/   no-ambient-clock, mutation-requires-authz,
 
 scripts/adopt.sh          adopt into a consumer: detect languages, drop the copies
 scripts/scan.sh           Layer 2 runner: semgrep + gitleaks + osv (+ SBOM, licences)
+scripts/policy.py         resolves a consumer's .maxi-quality.yml, emits semgrep
+                          args, and classifies findings into gating vs warn-only
+.maxi-quality.yml         this repo's own policy — keeps samples/policy out of
+                          its rule manifest (it is a consumer of itself)
 scripts/check-pins.sh     bump policy (#13): pin consistency + upstream drift
 scripts/quality-report.py renders the standing-report issue body (no network)
 scripts/coverage.py       coverage ratchet: lcov + Cobertura vs a committed floor
@@ -114,6 +118,13 @@ samples/guards/           the fetch-and-execute shapes ci.yml's supply-chain gua
 samples/coverage/         coverage fixtures, hand-checked: 65.00 / 75.00 / 40.00 /
                           66.67 %, and 71.67 % when the first two are summed
 samples/sbom/             CycloneDX fixture — all three licence spellings
+samples/policy/           the policy file's own suite: one fixture per knob
+                          (disable, warn, exclude, extends, groups), each
+                          asserted with its policy AND with it ablated away, plus
+                          eight invalid policies that must every one be fatal
+samples/policy/expected/  the resolved-policy snapshot — what a policy RESOLVES
+                          to, with a placeholder baseline path so it encodes
+                          nobody's home directory
 samples/expected/         the manifests: rule id + file + line per tool, so a
                           regression names the rule that stopped firing
 ```
@@ -149,6 +160,15 @@ ruff check samples/python-clean          # expect exit 0, ZERO findings
 mypy --config-file configs/python/mypy.ini samples/python-clean/src
                                          # expect exit 0, ZERO findings
 ./scripts/scan.sh                        # expect exit 1, 100 semgrep findings / 28 rule ids
+
+# the policy file, both directions (samples/policy/)
+./scripts/scan.sh samples/policy/warn --skip gitleaks --skip osv
+                                         # expect exit 0 — warn-only, not gating
+./scripts/scan.sh samples/policy/disable --skip gitleaks --skip osv
+                                         # expect exit 1, gate=1: the disabled
+                                         # rule silent, the control still firing
+python3 scripts/policy.py resolve --target samples/policy/invalid/unknown-key \
+        --baseline . --baseline-path .   # expect exit 3, naming the bad key
 
 python3 scripts/coverage.py --report samples/coverage/lcov.info \
         --floor-file /tmp/f.json         # expect coverage=65.00
@@ -235,6 +255,10 @@ Gitleaks v8.30.1 and OSV-Scanner v2 via Docker — nothing was installed globall
 | **The interpolation guard cannot exempt comments** | The fetch-and-execute guard skips comment lines so this repo can document what it bans. The interpolation guard must NOT: substitution happens before bash sees the text, so a value containing a newline escapes a shell comment into executable code. The literal expression syntax is therefore simply never written inside a `run:` body here — actionlint also tries to parse it. |
 | **`workflow_run` + `branches:` is not an origin check** | `branches:` filters the triggering run's HEAD BRANCH NAME, and for a fork PR that name is the branch inside the FORK — so anyone who forks and commits on their own `main` matches `branches: [main]`. The job then runs in THIS repo with THIS repo's permissions. `release-tag.yml` had `contents: write` and gated only on `conclusion == 'success'`, which made the `v1` tag hijackable by any fork PR that passed CI — and CI passes for any change that leaves `samples/` alone. Found in the pre-publication security review, 2026-08-01, before the repo went public and made it reachable by anyone. The real gate is `workflow_run.event == 'push'`. |
 | **The SHA-pin guard did not cover pipes** | It matches `uses:` lines. `curl … \| sh` is not a `uses:` line, so `quality.yml` shipped an unpinned installer — fetched over a moving URL, piped into a shell, running in EVERY consumer's CI with THEIR token — while `workflow-lint` reported "every third-party action is pinned". The lesson is not "add the missing regex", it is that a guard which passes while its own violation sits in the same file gets cited as evidence. There is now a second check for fetch-and-execute, and it skips comment lines so this file can document the pattern it bans. |
+| **`--exclude-rule` needs the FULL prefixed id, and the prefix encodes the config path** | Measured 2026-08-03 on semgrep 1.172.0, building the policy file. `--exclude-rule weak-crypto` excludes **nothing** and exits 0 without a word; `--exclude-rule semgrep.security.weak-crypto` works. The prefix is derived from `--config` exactly as written, so the same rule is `semgrep.security.weak-crypto` from the repo root, `baseline.semgrep.security.weak-crypto` under docker, and `Users.<you>.dev.maxi-quality.semgrep.security.weak-crypto` from an absolute path. `scan.sh` passes a different config path on its native and docker branches, so an exclusion computed for one is silently inert on the other — the same divergence that made `--changed-only` a no-op gate. `policy.py` computes the prefix **and** `classify` then asserts no disabled rule survived into the results, so a mangling change fails loudly instead of quietly un-disabling somebody's policy. |
+| **`--exclude` matches path components, not globs** | Same session. `--exclude 'legacy/**'` — the spelling every other tool accepts, and the first thing anyone writes — matches nothing and reports nothing. `legacy`, `legacy/` and `samples/policy` all work; `./legacy` and `*/legacy/*` do not. `policy.py` rejects any pattern containing `**` and names the working form, and `classify` separately fails if a finding is reported under a path the policy said to exclude. |
+| **A `.semgrepignore` REPLACES semgrep's defaults** | Measured while looking for somewhere to put the policy fixtures. A `.semgrepignore` listing one directory caused `node_modules/` to start being scanned — the built-in ignore list is not merged with yours, it is superseded. This repo has a `node_modules/` full of TypeScript, so that would have been a very loud accident. The fixtures are excluded through this repo's own `.maxi-quality.yml` instead, which is one mechanism rather than two and dogfoods the feature. |
+| **An exclusion fixture can be inert because the tool already ignores that path** | The `paths.exclude` fixture first excluded a directory called `vendor/`. It passed. It also passed with the policy deleted — semgrep skips `vendor/` by default, so the fixture proved nothing at all, exactly like the `noImplicitReturns` fixture that really failed on `strictNullChecks`. Renamed to `legacy/`, and every policy fixture is now asserted **twice**: once with its policy and once with the policy moved out of the way. The ablation is the assertion; the passing run on its own never was one. |
 | **Two tags, on purpose** | `v1` is a *moving* pointer to the newest `v1.x` (the `actions/checkout@v4` convention) — that is how consumers pick up fixes without editing a workflow file, so moving it forward requires a force-push and that is expected, not an accident. It follows `main` automatically via `release-tag.yml`, which is why a merge to `main` is a release and contributions go to `develop` instead. The `v1.0.x` tags are immutable, for pinning something that can never shift; they are cut by hand, one per release worth naming, and each gets a GitHub Release carrying the notes. **Never attach a Release to `v1`** — it is force-pushed, so the notes would come to describe a different commit than the one they were written for. |
 
 ---

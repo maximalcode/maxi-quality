@@ -126,6 +126,20 @@ runs:
         OSV_SHA256: ${{ inputs.osv-scanner-sha256 }}
       run: |
         set -Eeuo pipefail
+        echo "::group::Install PyYAML"
+        # scripts/policy.py reads the consumer's .maxi-quality.yml with it.
+        # Installed unconditionally rather than only when a policy file exists:
+        # the conditional would be exercised by some consumers and not others,
+        # and the one that skipped it would find out at the point where the
+        # policy silently could not be read. PyYAML is already present on the
+        # standard runner images; PEP 668 marks the system environment as
+        # externally managed, hence the third fallback.
+        python3 -c 'import yaml' 2>/dev/null \
+          || python3 -m pip install --quiet pyyaml 2>/dev/null \
+          || python3 -m pip install --quiet --break-system-packages pyyaml
+        python3 -c 'import yaml'
+        echo "::endgroup::"
+
         echo "::group::Install semgrep $SEMGREP_VERSION"
         # pipx resolves from PyPI, where a version binds to immutable artifacts,
         # so the version IS the pin here. The two GitHub release downloads below

@@ -1,0 +1,24 @@
+# maxi-quality's own policy — this repo is a consumer of itself.
+#
+# It exists for one reason, and it is the same reason samples/semgrep/ sits
+# outside the TypeScript and .NET projects (docs/STATUS.md §4): a fixture for
+# one subsystem must not shift another subsystem's expected counts.
+#
+# samples/policy/ holds deliberately-violating code whose purpose is to prove
+# THIS FILE's mechanism works — a disabled rule that must go quiet, a warn rule
+# that must stop gating, an excluded path, a consumer's own rule. Scanned as
+# part of the repo they would land in samples/expected/semgrep.json and couple
+# the rule manifest to the policy fixtures, so that editing one would mean
+# regenerating the other.
+#
+# Excluded here rather than in a .semgrepignore, because a custom .semgrepignore
+# REPLACES semgrep's built-in defaults rather than adding to them — measured
+# 2026-08-03: with a .semgrepignore listing one directory, node_modules/ started
+# being scanned. This repo has a node_modules/ full of TypeScript.
+#
+# Note the pattern has no `**`. semgrep's --exclude matches path components and
+# silently ignores a `samples/policy/**`; scripts/policy.py rejects that form
+# outright so nobody rediscovers it the hard way.
+paths:
+  exclude:
+    - samples/policy

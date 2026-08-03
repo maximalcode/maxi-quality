@@ -84,12 +84,28 @@ UV_PIN="$(pin_of uv-version '      ' "$QUALITY")"
 [ -n "$OSV_PIN" ] || die "could not read osv-scanner-version from $ACTION"
 [ -n "$UV_PIN" ] || die "could not read uv-version from $QUALITY"
 
-CI_SEMGREP="$(grep -oE 'semgrep==[0-9.]+' "$CI" | head -1 | cut -d= -f3)"
-[ -n "$CI_SEMGREP" ] || die "could not read semgrep== pin from $CI"
+# EVERY semgrep== pin in ci.yml, not just the first one.
+#
+# `head -1` was enough while layer2-counts was the only job installing semgrep
+# directly. It is not a property worth depending on: a second job pinning a
+# different version would sit under a guard reporting "pins agree", which is
+# the exact failure this script exists to prevent — a guard that passes while
+# its own violation is in the file it just read.
+CI_SEMGREP_ALL="$(grep -oE 'semgrep==[0-9.]+' "$CI" | cut -d= -f3 | sort -u)"
+[ -n "$CI_SEMGREP_ALL" ] || die "could not read any semgrep== pin from $CI"
+CI_SEMGREP="$(printf '%s\n' "$CI_SEMGREP_ALL" | head -1)"
+CI_SEMGREP_COUNT="$(printf '%s\n' "$CI_SEMGREP_ALL" | grep -c .)"
+if [ "$CI_SEMGREP_COUNT" -ne 1 ]; then
+  printf '\033[31mFAIL\033[0m — ci.yml pins more than one semgrep version:\n'
+  printf '%s\n' "$CI_SEMGREP_ALL" | sed 's/^/  /'
+  printf '\nEvery job that installs semgrep must install the same one, or the\n'
+  printf 'jobs are asserting against different tools.\n'
+  exit 2
+fi
 
 bold "── pinned ──"
 info "semgrep       $SEMGREP_PIN   (action.yml)"
-info "semgrep       $CI_SEMGREP   (ci.yml layer2-counts)"
+info "semgrep       $CI_SEMGREP   (ci.yml, $(grep -cE 'semgrep==[0-9.]+' "$CI") job(s))"
 info "gitleaks      $GITLEAKS_PIN"
 info "osv-scanner   $OSV_PIN"
 info "uv            $UV_PIN   (quality.yml)"

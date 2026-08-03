@@ -872,7 +872,18 @@ jobs:
           # outside the scanned repo — and the only one with a trailing
           # entrypoint after the image name.
           need '/baseline:ro'
-          need 'returntocorp/semgrep:latest semgrep --config /baseline/semgrep /repo'
+          # One --config per selected rule group, emitted by scripts/policy.py.
+          # The group list is what a .maxi-quality.yml narrows; this fixture has
+          # no policy file, so all three must be present.
+          need 'returntocorp/semgrep:latest semgrep --config /baseline/semgrep/general'
+          need '--config /baseline/semgrep/security'
+          need '--config /baseline/semgrep/conventions'
+          # The results are ALWAYS written as JSON and the verdict comes from
+          # them, so the docker branch has to stage the file inside the mount
+          # and move it back. Before this, --json-out under docker wrote to a
+          # path inside the container and the file never appeared on the host —
+          # so the standing report parsed nothing and looked fine doing it.
+          need '--json-output=/repo/.maxi-quality-semgrep.json'
           # -w /repo is what made the docker path correct while native was not.
           need '-w /repo ghcr.io/gitleaks/gitleaks:latest git /repo'
           need 'ghcr.io/google/osv-scanner:latest scan source --recursive /repo'
@@ -1817,7 +1828,21 @@ jobs:
         run: |
           set -Eeuo pipefail
           pipx install semgrep==1.172.0
-          semgrep --config semgrep --json --metrics=off --disable-version-check \
+
+          # This job invokes semgrep DIRECTLY rather than through scan.sh, so it
+          # has to resolve the same policy scan.sh would — otherwise the two
+          # disagree about what is in scope and this job asserts a finding set
+          # nobody actually runs. That is the "semgrep is pinned twice" problem
+          # in a different costume, and the fix is the same: one source of
+          # truth. Here it is the repo's own .maxi-quality.yml, which excludes
+          # samples/policy so the policy fixtures cannot shift this manifest.
+          python3 scripts/policy.py resolve --target . --baseline . \
+            --baseline-path . --out /tmp/policy.json
+          ARGS=()
+          while IFS= read -r line; do ARGS+=("$line"); done < <(
+            python3 scripts/policy.py args --resolved /tmp/policy.json \
+              --baseline-path . --target-path .)
+          semgrep "${ARGS[@]}" --json --metrics=off --disable-version-check \
             > /tmp/results.json || true
 
           # The set assertion. This is what a bare total could not do: a rule
@@ -1842,3 +1867,137 @@ jobs:
             echo "::error::$defined rule ids defined but only $fired fire — a rule has no fixture"
             exit 1; }
           echo "OK: expected findings match, all $defined defined rule ids fire"
+
+  # The policy file's own test suite. Every knob is asserted in BOTH directions:
+  # the fixture with its policy, and the same fixture with the policy removed.
+  #
+  # The second half is the one that matters and it is not theoretical. The
+  # `exclude` fixture originally excluded a directory called `vendor/`, which
+  # semgrep skips by default anyway — so it passed while proving nothing, and
+  # only ablation showed the finding count was 1 either way. Same trap as
+  # docs/STATUS.md §4's `noImplicitReturns` fixture that actually failed on
+  # `strictNullChecks`: a fixture proves *an* outcome, never *which setting
+  # caused it*.
+  policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install semgrep and PyYAML
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          pipx install semgrep==1.172.0
+          python3 -c 'import yaml' 2>/dev/null \
+            || python3 -m pip install --quiet --break-system-packages pyyaml
+          python3 -c 'import yaml'
+
+      - name: Every invalid policy is rejected, and none of them is a warning
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          fail=0
+          for d in samples/policy/invalid/*/; do
+            rc=0
+            out=$(python3 scripts/policy.py resolve --target "$d" \
+                    --baseline . --baseline-path . 2>&1) || rc=$?
+            if [[ "$rc" -ne 3 ]]; then
+              echo "::error::$d was accepted (exit $rc) — an invalid policy must be fatal"
+              fail=1
+              continue
+            fi
+            # An error that does not name the offending key is a bad error.
+            grep -qi 'error:' <<<"$out" || {
+              echo "::error::$d failed without an 'error:' message"; fail=1; }
+            printf '  rejected  %-18s %s\n' "$(basename "$d")" "$(head -1 <<<"$out" | cut -c1-96)"
+          done
+          [[ "$fail" -eq 0 ]]
+          echo 'OK: every invalid policy is a hard error'
+
+      - name: Each knob works — and removing it brings the finding back
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          # gate count for a fixture, with its policy in place or ablated away
+          gate() {
+            ./scripts/scan.sh "samples/policy/$1" --skip gitleaks --skip osv 2>&1 \
+              | sed -n 's/^semgrep_gate=//p' | tail -1
+          }
+          warns() {
+            ./scripts/scan.sh "samples/policy/$1" --skip gitleaks --skip osv 2>&1 \
+              | sed -n 's/^semgrep_warn=//p' | tail -1
+          }
+          rules() {
+            ./scripts/scan.sh "samples/policy/$1" --skip gitleaks --skip osv 2>&1 \
+              | grep -oE '❯+❱ [A-Za-z0-9_.-]+' | sed 's/.*\.//' | sort -u | tr '\n' ' '
+          }
+          ablate()  { mv "samples/policy/$1/.maxi-quality.yml" "$RUNNER_TEMP/$1.yml"; }
+          restore() { mv "$RUNNER_TEMP/$1.yml" "samples/policy/$1/.maxi-quality.yml"; }
+          eq() {
+            [[ "$2" == "$3" ]] || { echo "::error::$1: expected '$3', got '$2'"; exit 1; }
+            echo "  OK  $1 = $2"
+          }
+
+          # --- disable: the named rule goes quiet, the control still fires ----
+          eq 'disable/gate'          "$(gate disable)"  '1'
+          eq 'disable/rules'         "$(rules disable)" 'todo-without-issue '
+          ablate disable
+          eq 'disable/ablated-gate'  "$(gate disable)"  '2'
+          eq 'disable/ablated-rules' "$(rules disable)" 'no-ambient-clock todo-without-issue '
+          restore disable
+
+          # --- warn: reported, counted separately, and NOT gating -------------
+          eq 'warn/gate'             "$(gate warn)"     '0'
+          eq 'warn/warn'             "$(warns warn)"    '1'
+          rc=0
+          ./scripts/scan.sh samples/policy/warn --skip gitleaks --skip osv >/dev/null 2>&1 || rc=$?
+          eq 'warn/exit'             "$rc"              '0'
+          ablate warn
+          eq 'warn/ablated-gate'     "$(gate warn)"     '1'
+          restore warn
+
+          # --- exclude: the path is out of scope, everything else is not ------
+          eq 'exclude/gate'          "$(gate exclude)"  '1'
+          ablate exclude
+          eq 'exclude/ablated-gate'  "$(gate exclude)"  '2'
+          restore exclude
+
+          # --- extends: the consumer's own rule runs alongside the baseline ---
+          eq 'extends/gate'          "$(gate extends)"  '1'
+          eq 'extends/rules'         "$(rules extends)" 'local-no-direct-process-env '
+          ablate extends
+          eq 'extends/ablated-gate'  "$(gate extends)"  '0'
+          restore extends
+
+          # --- groups: an unselected group stops applying ---------------------
+          eq 'groups/gate'           "$(gate groups)"   '1'
+          eq 'groups/rules'          "$(rules groups)"  'weak-crypto '
+          ablate groups
+          eq 'groups/ablated-gate'   "$(gate groups)"   '2'
+          restore groups
+
+          echo 'OK: every policy knob is load-bearing in both directions'
+
+      - name: The resolved policy matches its snapshot
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # What the policy RESOLVES to, not what the file says — the same
+          # division of labour as configs/*/…snapshot.json. A rule deleted from
+          # semgrep/ changes gate_rules here even if no fixture triggered it.
+          # --baseline-path is a fixed placeholder so the snapshot does not
+          # encode whoever ran it last: the check_id prefix is derived from that
+          # path, so a real one would bake in a home directory.
+          {
+            for d in samples/policy/*/; do
+              n=$(basename "$d")
+              case "$n" in invalid|expected) continue ;; esac
+              echo "=== $n"
+              python3 scripts/policy.py resolve --target "$d" --baseline . \
+                --baseline-path BASELINE --explain
+            done
+          } > "$RUNNER_TEMP/resolved.txt"
+          diff -u samples/policy/expected/resolved.txt "$RUNNER_TEMP/resolved.txt" || {
+            echo '::error::the resolved policy drifted from its snapshot'
+            exit 1; }
+          echo 'OK: resolved policy matches samples/policy/expected/resolved.txt'

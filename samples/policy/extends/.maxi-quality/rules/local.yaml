@@ -1,0 +1,8 @@
+rules:
+  - id: local-no-direct-process-env
+    message: >-
+      Read configuration through the config module, not process.env directly.
+      A consumer-local convention, enforced by the same gate as the baseline's.
+    severity: ERROR
+    languages: [typescript]
+    pattern: process.env.$KEY
