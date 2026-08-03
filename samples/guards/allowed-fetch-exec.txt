@@ -1,0 +1,9 @@
+# Negative controls: lines the guard must NOT flag.
+#
+# Downloading is fine — this repo does it four times, each pinned and verified
+# with sha256sum. A guard that cannot tell a checksum-verified download from a
+# curl-pipe-sh is a guard somebody switches off, and then the real one lands.
+curl -sSfL -o /tmp/actionlint.tgz "https://example.test/a.tgz"
+echo "sha256  /tmp/actionlint.tgz" | sha256sum -c -
+sh -c "echo hello"
+tar -xzf /tmp/actionlint.tgz -C /tmp actionlint

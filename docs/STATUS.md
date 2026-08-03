@@ -67,13 +67,15 @@ must pass.
 
 ```
 configs/editorconfig                    shared .editorconfig (all languages)
-configs/typescript/eslint.config.mjs    strict-type-checked + stylistic, exported flat config
+configs/typescript/eslint.config.mjs    strict-type-checked + stylistic + SonarJS recommended, exported flat config
 configs/typescript/tsconfig.strict.json extends-able strict compiler options
 configs/typescript/tsconfig.snapshot.json the options it RESOLVES to — the gate on a silently deleted flag
 configs/dotnet/Directory.Build.props    AnalysisLevel, TreatWarningsAsErrors, Sonar + Roslynator
+configs/dotnet/msbuild.snapshot.json    the properties it RESOLVES to, in both the default and CI+lock-file shapes
 configs/dotnet/dotnet.editorconfig      C# severities + minimal style
 configs/python/ruff.toml                13 rule families, line-length 100, extend-able
 configs/python/mypy.ini                 mypy strict + warn_unreachable (COPY — mypy has no extend)
+configs/python/settings.snapshot.json   what ruff and mypy RESOLVE to — 344 rules, and `strict` expanded
 
 semgrep/general/       todo-without-issue, catch-and-swallow, debug-print, sync-over-async
 semgrep/security/      sql-string-concat, command-injection, weak-crypto, hardcoded-secret
@@ -88,19 +90,22 @@ scripts/coverage.py       coverage ratchet: lcov + Cobertura vs a committed floo
 scripts/check-expected.py diffs a tool's JSON output against a committed manifest
 scripts/snapshot-eslint-rules.mjs  serialises the ENABLED rule set, so deleting a
                           rule no fixture triggers still fails CI
+scripts/snapshot-tsconfig.mjs      the same idea for tsc --showConfig
+scripts/snapshot-msbuild-props.sh  ...for dotnet msbuild -getProperty
+scripts/snapshot-python-settings.py ...for ruff --show-settings and mypy's own resolver
 .gitleaks.toml            allowlists the deliberately-planted sample secrets
 
 actions/layer2/        the Layer 2 gate — how the rules reach a consumer
 actions/report-issue/  upserts the standing report issue; outputs its number
 actions/coverage/      the coverage ratchet
 
-samples/typescript/       Layer 1 TS sample — `npm run lint` must fail
+samples/typescript/       Layer 1 TS sample — `npm run lint` must fail (14 findings)
 samples/typescript-clean/ negative control — must PASS with zero findings
 samples/typescript-strict/ compiler sample — `tsc` must fail with 12 diagnostics (#7)
 samples/dotnet/           Layer 1 C# sample — `dotnet build` must fail
 samples/dotnet-tests/     Layer 1 C# *Tests* sample — proves the #25 relaxation
 samples/dotnet-clean/     negative control — must BUILD 0 errors / 0 warnings
-samples/python/           Layer 1 Python sample — ruff 14 errors, mypy 5 errors
+samples/python/           Layer 1 Python sample — ruff 14 errors, mypy 11 errors
 samples/python-clean/     negative control — must PASS ruff AND mypy, zero findings
 samples/semgrep/          Layer 2 sample — outside both projects on purpose
 samples/coverage/         coverage fixtures, hand-checked: 65.00 / 75.00 / 40.00 /
@@ -121,16 +126,16 @@ language-specific; splitting a convention per language is not new scope.
 
 ```bash
 npm install
-npm run verify:ts                        # expect exit 1, 8 errors
+npm run verify:ts                        # expect exit 1, 14 errors
 npm run verify:ts:clean                  # expect exit 0, ZERO findings
-cd samples/dotnet && dotnet build        # expect exit 1, 13 errors, 0 warnings
+cd samples/dotnet && dotnet build        # expect exit 1, 23 errors, 0 warnings
 cd ../dotnet-tests && dotnet build       # expect exit 1, 3 errors, 0 warnings
 cd ../dotnet-clean && dotnet build       # expect exit 0, 0 errors, 0 warnings
 cd ../..
 pip install -r samples/python/requirements-dev.txt
 ruff check samples/python                # expect exit 1, 14 errors
 mypy --config-file configs/python/mypy.ini samples/python/src
-                                         # expect exit 1, 5 errors
+                                         # expect exit 1, 11 errors
 ruff check samples/python-clean          # expect exit 0, ZERO findings
 mypy --config-file configs/python/mypy.ini samples/python-clean/src
                                          # expect exit 0, ZERO findings
@@ -192,6 +197,8 @@ Gitleaks v8.30.1 and OSV-Scanner v2 via Docker — nothing was installed globall
 | **`scan.sh` targets bash 3.2** | macOS ships 3.2.57, where `"${arr[@]}"` on an empty array is fatal under `set -u`. Uses `${arr[@]+"${arr[@]}"}`. |
 | **Cross-language Semgrep rules** | A rule listing two languages needs every pattern to parse in *both*. 5 patterns were rejected for this. Where syntax differs, split into `-ts` / `-dotnet` ids with an identical message. |
 | **A rule's message can lie about its own escape hatch** | `catch-and-swallow` told you to explain the silence in a comment; comments are not AST nodes, so a comment-only block was still `{ }` and still matched. Following the instruction verbatim did not clear the finding. Fixed 2026-07-31 with a `pattern-not-regex` that re-reads the source text. **On real code this rule was 4/4 false positives in TypeScript** (Consumer A). If a rule documents an escape hatch, test the escape hatch — the pattern proves the rule fires, never that it can be satisfied. **It then recurred on 2026-08-02**: the regex walks from the exception parens straight to the brace, so a C# exception filter (`catch (T e) when (…)`) stepped over it and a documented-and-intentional filtered catch could not be cleared either. The deeper lesson is the shape, not the syntax — a lexical negation bolted onto an AST rule can silently miss every catch-clause form nobody thought to plant, and each miss costs a consumer a false positive first. |
+| **A config block can ship switched OFF, not merely unbaited** | Found 2026-08-03 building the #8 fixtures. The three `dotnet_naming_rule` blocks were described as "inert — no sample violates them". The real cause was one level down: `dotnet_naming_rule.<rule>.severity` drives the IDE experience, while the BUILD reads the diagnostic's own severity — and `dotnet_diagnostic.IDE1006.severity` was never set. A probe with an un-prefixed interface, a snake_case class and a PascalCase private field built **clean**. Two of the three were masked by analyzers that happen to overlap (CA1715, CA1707/S101), so the gap only surfaced on the third, where a private field named `Count` was caught by nothing at all. One line fixed all three. **The lesson is the diagnosis, not the line: "no sample violates it" and "it does not work" look identical from outside, and only a planted violation tells them apart.** |
+| **`IDE0035` is not emitted at build** | Measured on .NET SDK 10, same session: real unreachable code produces `CS0162` and no `IDE0035` at all, so that severity escalation is redundant rather than load-bearing. Kept — one SDK on one runner is thin evidence for deleting a consumer-visible severity — but explicitly NOT covered, and `samples/dotnet/Escalations.cs` says so where someone would otherwise assume it is. |
 | **A compiler-flag fixture can fail on the wrong flag** | Found 2026-08-03 building `samples/typescript-strict` for #7. `function classify(n: number): string { if (n > 0) return 'positive'; }` looks like the obvious bait for `noImplicitReturns`, and it does fail — with TS2366 from `strictNullChecks`. Delete `noImplicitReturns` and CI stays red, so the flag reads as covered and is not. Widening the return type to `string \| undefined` satisfies `strictNullChecks` and leaves TS7030 holding the error alone. **The general shape: a fixture proves *an* error, never *which setting caused it*.** Every flag→error mapping in that directory is now verified by ablation — switch the one flag off, confirm that specific error is the one that disappears — and the manifest pins the TS code rather than just the count. |
 | **`--isolatedModules false` changes nothing** | Measured on tsc 6.0.3 in `samples/typescript-strict`: `verbatimModuleSyntax` subsumes it, and TS1205's own message names `verbatimModuleSyntax`. Three more flags are unbaitable for their own measured reasons — `esModuleInterop: false` is refused outright (TS5107, deprecated ahead of TS 7), `forceConsistentCasingInFileNames` needs a case-insensitive filesystem, and the emit trio is invisible under `--noEmit`. Hence `configs/typescript/tsconfig.snapshot.json`: what `tsc --showConfig` **resolves**, not what the JSON file says, so it also pins the options tsc implies (`moduleDetection: force`, `preserveConstEnums`). |
 | **`pattern-not-regex` must be nested under `patterns:`** | Placed at rule level next to a top-level `pattern-either`, Semgrep **silently ignores it** — no error, no warning, the rule just behaves as if it were absent. Verified the hard way: identical output before and after adding it. It only takes effect inside a `patterns:` block alongside the `pattern-either`. |

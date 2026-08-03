@@ -23,6 +23,7 @@
 //   }];
 
 import eslint from '@eslint/js';
+import sonarjs from 'eslint-plugin-sonarjs';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
@@ -37,6 +38,22 @@ export default tseslint.config(
   tseslint.configs.strictTypeChecked,
   // Consistency layer. Cheap to satisfy, keeps diffs boring.
   tseslint.configs.stylisticTypeChecked,
+
+  // Sonar's engine as a plain ESLint plugin — the symmetry the C# side already
+  // has through SonarAnalyzer.CSharp, with no server, database or dashboard.
+  // Adopted on measurement, not reputation (docs/EVAL-vs-oss-tools.md §2b, #11):
+  // it contributes FIVE bug classes typescript-eslint has no counterpart for —
+  // both if/else branches identical, two functions with identical bodies, a
+  // collection read but never filled, a catastrophic-backtracking regex, and
+  // `eval` on a non-literal. Each is baited in samples/typescript/src/sonarjs.ts.
+  //
+  // `recommended` (217 of 279 rules), NOT all 279. Measured: all-279 puts two
+  // findings on samples/typescript-clean — `file-header` and
+  // `arrow-function-convention`, both rules that need options nobody supplied —
+  // and this repo's own rule is that a config which flags the clean fixture has
+  // regressed. All-279 would have raised Layer 2 TS coverage from 4/30 to 10/30,
+  // so it is a real trade and it is refused on the clean-fixture rule.
+  sonarjs.configs.recommended,
 
   {
     languageOptions: {
@@ -72,6 +89,23 @@ export default tseslint.config(
       // console.* is for CLIs, not for libraries; warn so local debugging
       // isn't blocked but CI (--max-warnings 0) still catches leftovers.
       'no-console': 'warn',
+
+      // --- The two SonarJS rules that are switched off, both on measurement --
+      // `todo-tag` fires on `TODO(#412)`, which Layer 2's todo-without-issue
+      // DELIBERATELY exempts — a tracked TODO is a decision somebody can find
+      // again. Two layers disagreeing about one line is worse than either
+      // verdict alone; the same reasoning is already written into
+      // debug-print-left-behind-ts.
+      'sonarjs/todo-tag': 'off',
+      // An exact duplicate of @typescript-eslint/no-unused-vars, which is
+      // configured above with options this one does not have. Measured: on
+      // bad.ts:48 the combined config reported ONE unused variable THREE times
+      // (that rule, this one, and sonarjs/no-dead-store).
+      //
+      // `no-dead-store` STAYS ON — a value assigned and then overwritten before
+      // it is read is a different defect from a variable nobody uses, and it is
+      // one the baseline had no rule for.
+      'sonarjs/no-unused-vars': 'off',
     },
   },
 

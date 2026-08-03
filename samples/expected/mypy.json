@@ -2,6 +2,36 @@
   "tool": "mypy",
   "findings": [
     {
+      "rule": "no-any-return",
+      "file": "samples/python/src/bad_strict.py",
+      "line": 30
+    },
+    {
+      "rule": "type-arg",
+      "file": "samples/python/src/bad_strict.py",
+      "line": 33
+    },
+    {
+      "rule": "comparison-overlap",
+      "file": "samples/python/src/bad_strict.py",
+      "line": 43
+    },
+    {
+      "rule": "no-untyped-def",
+      "file": "samples/python/src/bad_strict.py",
+      "line": 46
+    },
+    {
+      "rule": "no-any-return",
+      "file": "samples/python/src/bad_strict.py",
+      "line": 53
+    },
+    {
+      "rule": "no-untyped-call",
+      "file": "samples/python/src/bad_strict.py",
+      "line": 53
+    },
+    {
       "rule": "no-untyped-def",
       "file": "samples/python/src/bad_types.py",
       "line": 15

@@ -113,7 +113,7 @@ capped at **12 conventions**, and the cap is the feature.
 | Reusable CI workflow, `@v1` tag | ✅ `.github/workflows/quality.yml` + `actions/layer2/` |
 | Java | ⬜ deliberately not built until a real project needs it |
 | SonarQube CE dashboard | ❌ **dropped.** Measured in [`EVAL-vs-sonarqube.md`](docs/EVAL-vs-sonarqube.md) and lost: 1 of 8 planted TS bugs out of the box, no rule id for `no-floating-promises` or the `no-unsafe-*` family, custom C#/TS rules unavailable in every edition. The C# value is already banked in-build via `SonarAnalyzer.CSharp`. |
-| The rest of the free field | 🔍 **measured, nothing adopted.** [`EVAL-vs-oss-tools.md`](docs/EVAL-vs-oss-tools.md) scores SonarJS, Unicorn, `eslint-plugin-security`, Semgrep's registry packs, Bandit, Trivy, Grype, TruffleHog and CodeQL against the 103 planted findings in `samples/`. The rule that decides most of it: a tool that is free only *because* a repo is public can gate this repo and never a consumer. |
+| The rest of the free field | 🔍 **measured; one adopted of ten.** [`EVAL-vs-oss-tools.md`](docs/EVAL-vs-oss-tools.md) scores SonarJS, Unicorn, `eslint-plugin-security`, Semgrep's registry packs, Bandit, Trivy, Grype, TruffleHog and CodeQL against the 103 planted findings in `samples/`. Only `eslint-plugin-sonarjs` cleared every bar and it is now in the TypeScript config — zero findings on the clean fixtures, five bug classes the baseline had no rule for. The rule that decides most of the rest: a tool that is free only *because* a repo is public can gate this repo and never a consumer. |
 
 The acceptance test that gated the first tag: a scratch consumer repo,
 onboarded from this README alone, went red in CI on a planted floating
@@ -159,7 +159,7 @@ that hard-codes a version goes stale on the next release by construction, and a
 
 CI proves this end-to-end in both directions: a repo adopted by the script
 builds the clean fixture at 0 errors/0 warnings **and** rejects the bad fixture
-with exactly the same 13 errors as the hand-configured sample. An adoption that
+with exactly the same 23 errors as the hand-configured sample. An adoption that
 produced a gate which didn't gate would be worse than none, because it would
 look green.
 
@@ -203,8 +203,14 @@ against those three, not an automatic one.
 Install the toolchain (peer dependencies — they live in *your* project):
 
 ```bash
-npm i -D eslint @eslint/js typescript-eslint typescript @types/node
+npm i -D eslint @eslint/js typescript-eslint typescript @types/node eslint-plugin-sonarjs
 ```
+
+`eslint-plugin-sonarjs` is the newest of these and the one worth a sentence.
+It is **LGPL-3.0-only** — fine as a dev dependency, since a linter is not linked
+into what you ship, but check it against your own policy rather than mine. It
+also declares `typescript: ">=5 <6.1.0"` as a hard **dependency** rather than a
+peer, so it will conflict the day you move to TypeScript 6.1.
 
 Your entire `eslint.config.mjs`:
 
@@ -236,7 +242,11 @@ Then gate it — `--max-warnings 0` is what makes the `no-console` warning count
 **What you get:** `typescript-eslint` `strict-type-checked` +
 `stylistic-type-checked` (type-aware, so it catches floating promises and `any`
 leaks that a syntax-only linter cannot), plus `eqeqeq`, strict `no-unused-vars`
-with a `_` escape hatch, and `ban-ts-comment` requiring a written reason.
+with a `_` escape hatch, and `ban-ts-comment` requiring a written reason —
+and SonarJS's `recommended` set on top, for five bug classes typescript-eslint
+has no rule for at all: both `if`/`else` branches identical, two functions with
+identical bodies, a collection read but never filled, a
+catastrophic-backtracking regex, and `eval` on a non-literal.
 
 **Two things to know:**
 - Type-aware linting needs every linted file covered by a `tsconfig.json`.
@@ -675,9 +685,23 @@ npm install
 npm run verify:ts
 ```
 
-Expect **8 errors** and a non-zero exit: floating promise, explicit `any`, unsafe
-assignment, unsafe return, unsafe member access, `==`, unused variable, non-null
-assertion.
+Expect **14 errors** and a non-zero exit. Nine from `bad.ts` — floating promise,
+explicit `any`, unsafe assignment, unsafe return, unsafe member access, `==`,
+unused variable, dead store, non-null assertion — and five from `sonarjs.ts`,
+which baits the classes SonarJS adds and typescript-eslint has no rule for:
+
+| Planted bug | Rule |
+|---|---|
+| both `if`/`else` branches identical | `sonarjs/no-all-duplicated-branches` |
+| two functions with identical bodies | `sonarjs/no-identical-functions` |
+| a collection read but never filled | `sonarjs/no-empty-collection` |
+| catastrophic-backtracking regex (ReDoS) | `sonarjs/slow-regex` |
+| `eval` on a non-literal | `sonarjs/code-eval` |
+
+SonarJS scored **1 of 8** against `bad.ts` when it was evaluated, which on our
+own fixtures makes it look worthless — our fixtures bait our rules, so that
+scoreboard under-counts by construction. The table above is the reverse probe,
+and it is what earned the plugin its place (`docs/EVAL-vs-oss-tools.md` §2b).
 
 That is ESLint. The **compiler** is a separate gate with a separate fixture:
 
@@ -710,7 +734,7 @@ reason each one is unbaitable, is in
 cd samples/dotnet && dotnet build
 ```
 
-Expect **13 errors, 0 warnings** and a non-zero exit, covering all five planted
+Expect **23 errors, 0 warnings** and a non-zero exit, covering all nine planted
 classes:
 
 | Planted bug | Caught by |
@@ -720,6 +744,17 @@ classes:
 | un-disposed `IDisposable` | `S2930` |
 | unreachable code | `CS0162` |
 | unused local | `CS0219`, `IDE0059`, `S1481` |
+| interface without the `I` prefix | `IDE1006`, `S101` |
+| type not PascalCase | `IDE1006`, `S101` |
+| private field without `_camelCase` | `IDE1006` — **and nothing else** |
+| unnecessary using · unread member · unused parameter · `null` into a non-nullable | `IDE0005`, `IDE0052`, `IDE0060`, `CS8625`, `CA1805` |
+
+The last four rows are new in #8, and the third of them is the one worth
+reading. The three `dotnet_naming_rule` blocks shipped enforcing **nothing** —
+not for want of a fixture, but because `dotnet_diagnostic.IDE1006.severity` was
+never set, so the build never reported them. Two of the three were masked by
+analyzers that happen to overlap; the private-field convention was caught by no
+layer at all. Measured, then fixed with one line.
 
 Note the `IDisposable` leak is caught by Sonar's `S2930`, not Roslyn's `CA2000`
 — `CA2000` is not enabled at `latest-recommended`. The coverage is there; it just
@@ -753,7 +788,7 @@ ruff check --output-format=concise samples/python
 mypy --config-file configs/python/mypy.ini samples/python/src
 ```
 
-Expect **14 Ruff errors** and **5 mypy errors**, both non-zero exit. The Ruff
+Expect **14 Ruff errors** and **11 mypy errors**, both non-zero exit. The Ruff
 fixture plants at least one finding per selected family — CI asserts family
 coverage separately from the total, because a total alone would still read as 14
 if half the ruleset were switched off and something else fired twice:
@@ -767,6 +802,24 @@ if half the ruleset were switched off and something else fired twice:
 | `B` | mutable default arg | `T20` | stray `print()` |
 | `C4` | unnecessary generator | `RUF` | un-stored `create_task` |
 | `UP` | deprecated `typing.List` | | |
+
+The mypy half is split across two files, and the split is the point. `strict =
+True` is an **alias**, not a setting: one line in `mypy.ini` that expands to
+fourteen booleans. Every finding in `bad_types.py` comes from base type checking
+or from `warn_unreachable`, which the config sets explicitly — so `strict` could
+be downgraded to a hand-picked list and the fixture would stay green.
+`bad_strict.py` baits the expansion itself:
+
+| Sub-flag of `strict` | Planted | Code |
+|---|---|---|
+| `warn_return_any` | `Any` laundered into a declared `int` | `no-any-return` |
+| `disallow_any_generics` | a bare `list` annotation | `type-arg` |
+| `strict_equality` | `str == int`, a comparison that cannot succeed | `comparison-overlap` |
+| `disallow_untyped_calls` | typed code calling an unannotated helper | `no-untyped-call` |
+
+`configs/python/settings.snapshot.json` proves the alias **expands**;
+`bad_strict.py` proves the expansion **does something**. Same division of labour
+as `tsconfig.snapshot.json` and `samples/typescript-strict/`.
 
 The mypy five are split into their own fixture on purpose: ruff and mypy find
 disjoint bugs, and a shared file would let one tool's config break while the

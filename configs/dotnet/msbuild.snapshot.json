@@ -1,0 +1,28 @@
+{
+  "default": {
+    "AnalysisLevel": "latest-recommended",
+    "AnalysisMode": "",
+    "Deterministic": "true",
+    "EnforceCodeStyleInBuild": "true",
+    "GenerateDocumentationFile": "true",
+    "ImplicitUsings": "enable",
+    "LangVersion": "latest",
+    "Nullable": "enable",
+    "RestoreLockedMode": "",
+    "TreatWarningsAsErrors": "true",
+    "WarningLevel": "9999"
+  },
+  "ci_with_lock_file": {
+    "AnalysisLevel": "latest-recommended",
+    "AnalysisMode": "",
+    "Deterministic": "true",
+    "EnforceCodeStyleInBuild": "true",
+    "GenerateDocumentationFile": "true",
+    "ImplicitUsings": "enable",
+    "LangVersion": "latest",
+    "Nullable": "enable",
+    "RestoreLockedMode": "true",
+    "TreatWarningsAsErrors": "true",
+    "WarningLevel": "9999"
+  }
+}

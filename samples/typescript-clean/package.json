@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Deliberately CLEAN TypeScript. `npm run lint` MUST pass with zero findings — that is the test.",
+  "description": "Deliberately CLEAN TypeScript. `npm run lint` MUST pass with zero findings \u2014 that is the test.",
   "scripts": {
     "lint": "eslint src --max-warnings 0",
     "typecheck": "tsc --noEmit"
@@ -12,6 +12,7 @@
     "@eslint/js": "^10.0.1",
     "@types/node": "^24.10.1",
     "eslint": "^10.8.0",
+    "eslint-plugin-sonarjs": "^4.2.0",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.65.0"
   }
