@@ -1256,20 +1256,48 @@ jobs:
       #
       # Downloading is fine. Downloading and EXECUTING without a pin and a
       # checksum is not.
+      # SCOPE AND SHAPES BOTH WIDENED FOR #3. Two measured holes:
+      #
+      # 1. `scripts/` was never scanned. actions/layer2/action.yml executes
+      #    scripts/scan.sh, so those 895 lines run in every consumer's CI with
+      #    their token — the same reason quality.yml is in scope, and the one
+      #    directory this guard could not see.
+      # 2. The pattern matched PIPES ONLY. Measured against eleven planted
+      #    shapes, five were invisible: `curl -o F && sh F`, the `;` variant,
+      #    the `sudo` variant, `eval "$(curl ...)"`, and download-then-chmod+x.
+      #    That is not a hypothetical class — the digest-verification work
+      #    landed precisely because the pipe guard could not see
+      #    `curl -o ... && sudo install`.
+      #
+      # The `source <(curl ...)` form the issue also listed was already caught:
+      # the `<(` alternation does not care which command consumes it. Verified
+      # rather than assumed, and left alone.
       - name: No unpinned remote code execution
         shell: bash
         run: |
           set -Eeuo pipefail
-          # curl|sh, wget|bash, and the bash <(curl ...) process-substitution
-          # form, which reads differently but does exactly the same thing.
+          # Alternations, in order: curl|sh · <(curl) process substitution ·
+          # eval of a command substitution · fetch-then-run on one line, with
+          # `&&` or `;`, optionally under sudo · fetch-then-chmod +x, which
+          # executes a path rather than a shell and so names no interpreter.
           #
+          # `[^;&]*` between the fetch and the run keeps each alternation inside
+          # ONE command, so an unrelated `sh` later on the line is not a hit.
+          PATTERN='(curl|wget)[^|]*\|[[:space:]]*(sudo[[:space:]]+)?(ba)?sh'
+          PATTERN+='|<\([[:space:]]*(curl|wget)'
+          PATTERN+='|eval[^;]*(curl|wget)'
+          PATTERN+='|(curl|wget)[^;&]*(&&|;)[[:space:]]*(sudo[[:space:]]+)?(ba)?sh([[:space:]]|$)'
+          PATTERN+='|(curl|wget)[^;&]*(&&|;)[^;&]*chmod[[:space:]]+[^;&]*\+x'
+          # Built from what exists, so adding .github/actions/ later is covered
+          # without editing this line, and a missing directory is not a fatal
+          # grep rather than a silently skipped scope.
+          SCAN=(.github/workflows actions scripts)
+          [[ -d .github/actions ]] && SCAN+=(.github/actions)
           # The second grep drops COMMENT lines. Both YAML and shell comments
           # start with #, and this file documents the very patterns it bans —
           # without this, the guard fails on its own rationale, and the fix
           # someone reaches for is deleting the explanation.
-          bad=$(grep -rnE \
-                  '(curl|wget)[^|]*\|[[:space:]]*(sudo[[:space:]]+)?(ba)?sh|<\([[:space:]]*(curl|wget)' \
-                  .github/workflows/ actions/ \
+          bad=$(grep -rnE "$PATTERN" "${SCAN[@]}" \
                 | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)
           if [[ -n "$bad" ]]; then
             echo '::error::remote code is fetched and executed without a version pin and a checksum:'
@@ -1277,7 +1305,43 @@ jobs:
             echo 'Use a SHA-pinned action, or download a pinned release and verify it with sha256sum -c.'
             exit 1
           fi
-          echo 'OK: no unpinned remote code execution in any workflow or action'
+          echo "OK: no unpinned remote code execution in ${SCAN[*]}"
+
+          # THE GUARD IS ITSELF GUARDED, in this step rather than a separate one
+          # so the pattern under test IS the pattern above and cannot drift from
+          # a copy. A widened regex that quietly matches nothing reads exactly
+          # like a clean tree, which is the failure this repo keeps meeting: a
+          # check that is satisfied while the thing it guards against is present.
+          #
+          # The corpus lives in samples/guards/ rather than inline here, because
+          # inline the shapes were real hits in a scanned file and the guard
+          # failed on its own test data. See the header of that file.
+          fails=0
+          caught=0
+          missed=0
+          while IFS= read -r shape; do
+            [[ -z "$shape" || "$shape" == \#* ]] && continue
+            if printf '%s\n' "$shape" | grep -qE "$PATTERN"; then
+              caught=$((caught + 1))
+            else
+              echo "::error::the guard no longer catches: $shape"
+              fails=1
+            fi
+          done < samples/guards/banned-fetch-exec.txt
+          while IFS= read -r shape; do
+            [[ -z "$shape" || "$shape" == \#* ]] && continue
+            if printf '%s\n' "$shape" | grep -qE "$PATTERN"; then
+              echo "::error::the guard now false-positives on: $shape"
+              fails=1
+            else
+              missed=$((missed + 1))
+            fi
+          done < samples/guards/allowed-fetch-exec.txt
+          # An empty corpus passes both loops without asserting anything.
+          [[ $caught -gt 0 && $missed -gt 0 ]] || {
+            echo '::error::the guard corpus is empty — this self-test stopped testing'; exit 1; }
+          [[ $fails -eq 0 ]] || exit 1
+          echo "OK: the guard catches all $caught banned shapes and none of the $missed controls"
 
       # Composite actions reach the baseline's scripts through
       # ${GITHUB_ACTION_PATH}/../../scripts/... — that is the whole reason they
@@ -1292,18 +1356,26 @@ jobs:
           set -Eeuo pipefail
           missing=0
           checked=0
+          # BRACES ARE NOW OPTIONAL (#3). The pattern matched `${GITHUB_ACTION_PATH}`
+          # only, so the equally valid `$GITHUB_ACTION_PATH/../../scripts/x.sh`
+          # was invisible — and an unresolvable one of those breaks a consumer at
+          # runtime exactly the same way. Nothing in the tree uses the unbraced
+          # form today; the guard should not depend on that staying true.
+          ACTION_DIRS=(actions)
+          [[ -d .github/actions ]] && ACTION_DIRS+=(.github/actions)
           while IFS=: read -r file ref; do
             # ${GITHUB_ACTION_PATH} is the directory holding that action.yml, so
             # resolve each reference relative to ITS OWN action — not to some
             # other one that happens to sit at the same depth.
-            rel="${ref#*GITHUB_ACTION_PATH\}}"
+            rel="${ref#*GITHUB_ACTION_PATH}"
+            rel="${rel#\}}"
             path="${file%/*}/${rel#/}"
             checked=$((checked + 1))
             if [[ ! -e "$path" ]]; then
-              echo "::error file=$file::unresolvable reference \${GITHUB_ACTION_PATH}$rel (looked for $path)"
+              echo "::error file=$file::unresolvable reference \$GITHUB_ACTION_PATH$rel (looked for $path)"
               missing=1
             fi
-          done < <(grep -roE '\$\{GITHUB_ACTION_PATH\}[^"'"'"' ]*' actions/ | sort -u)
+          done < <(grep -roE '\$\{?GITHUB_ACTION_PATH\}?[^"'"'"' ]*' "${ACTION_DIRS[@]}" | sort -u)
           [[ "$checked" -gt 0 ]] || {
             echo '::error::found no GITHUB_ACTION_PATH references at all — this guard stopped guarding'
             exit 1; }
@@ -1368,8 +1440,25 @@ jobs:
                   # A `uses:` job (reusable-workflow call) has no steps.
                   yield from (job or {}).get('steps', []) or []
 
-          targets = sorted(pathlib.Path('actions').glob('*/action.yml')) \
-                  + sorted(pathlib.Path('.github/workflows').glob('*.yml'))
+          # GLOBS WIDENED FOR #3. `*/action.yml` missed three real shapes: a
+          # `.yaml` extension, an action nested deeper than one directory, and
+          # anything under .github/actions/. Each would have been a file this
+          # guard reported clean because it never opened it — the same failure
+          # the header above describes, one directory over.
+          def discover():
+              seen = set()
+              for root in ('actions', '.github/actions'):
+                  base = pathlib.Path(root)
+                  if not base.is_dir():
+                      continue
+                  for pat in ('**/action.yml', '**/action.yaml'):
+                      seen.update(base.glob(pat))
+              wf = pathlib.Path('.github/workflows')
+              for pat in ('*.yml', '*.yaml'):
+                  seen.update(wf.glob(pat))
+              return sorted(seen)
+
+          targets = discover()
           for p in targets:
               doc = yaml.safe_load(p.read_text())
               for i, step in enumerate(steps_of(doc)):
@@ -1402,6 +1491,25 @@ jobs:
           # the runner, and the GHA_EXPR placeholder is assigned by definition.
           shellcheck -s bash -e SC2154 /tmp/blocks/*.sh
           echo 'OK: every workflow and composite-action shell block is shellcheck-clean and passes inputs via env:'
+
+      # The step above lints shell EMBEDDED in YAML. The 895 lines in scripts/
+      # were linted by nothing at all — and scripts/scan.sh is not incidental
+      # tooling, it is what actions/layer2 executes in every consumer's CI.
+      #
+      # This is a ratchet, not a cleanup: measured before adding, all three
+      # scripts are already clean at default severity, so the check costs
+      # nothing today and is only ever paid by a regression.
+      - name: Every shipped script must be shellcheck-clean
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          shopt -s nullglob
+          files=(scripts/*.sh)
+          # A glob that stops matching is silence, and silence reads as success.
+          [[ ${#files[@]} -gt 0 ]] || {
+            echo '::error::found no scripts/*.sh — this guard stopped guarding'; exit 1; }
+          shellcheck -s bash "${files[@]}"
+          echo "OK: ${#files[@]} shipped scripts are shellcheck-clean"
 
   layer2:
     runs-on: ubuntu-latest
