@@ -269,7 +269,10 @@ bold "── next steps ──"
 
 if [ "$HAS_TS" -eq 1 ]; then
   printf '  TypeScript\n'
-  printf '    1. npm i -D eslint @eslint/js typescript-eslint typescript @types/node\n'
+  printf '    1. npm i -D eslint @eslint/js typescript-eslint typescript @types/node \\\n'
+  printf '            eslint-plugin-sonarjs\n'
+  printf '       sonarjs is LGPL-3.0-only and pins typescript >=5 <6.1.0 as a hard\n'
+  printf '       dependency, not a peer. Both are fine today; both are yours to check.\n'
   printf '    2. tsconfig.json: { "extends": "./tsconfig.base.json", ... }\n'
   printf '    3. package.json scripts.lint: "eslint src --max-warnings 0"\n'
   printf '       --max-warnings 0 is load-bearing; without it no-console is toothless.\n'

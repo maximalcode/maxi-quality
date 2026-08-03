@@ -113,7 +113,7 @@ capped at **12 conventions**, and the cap is the feature.
 | Reusable CI workflow, `@v1` tag | ✅ `.github/workflows/quality.yml` + `actions/layer2/` |
 | Java | ⬜ deliberately not built until a real project needs it |
 | SonarQube CE dashboard | ❌ **dropped.** Measured in [`EVAL-vs-sonarqube.md`](docs/EVAL-vs-sonarqube.md) and lost: 1 of 8 planted TS bugs out of the box, no rule id for `no-floating-promises` or the `no-unsafe-*` family, custom C#/TS rules unavailable in every edition. The C# value is already banked in-build via `SonarAnalyzer.CSharp`. |
-| The rest of the free field | 🔍 **measured, nothing adopted.** [`EVAL-vs-oss-tools.md`](docs/EVAL-vs-oss-tools.md) scores SonarJS, Unicorn, `eslint-plugin-security`, Semgrep's registry packs, Bandit, Trivy, Grype, TruffleHog and CodeQL against the 103 planted findings in `samples/`. The rule that decides most of it: a tool that is free only *because* a repo is public can gate this repo and never a consumer. |
+| The rest of the free field | 🔍 **measured; one adopted of ten.** [`EVAL-vs-oss-tools.md`](docs/EVAL-vs-oss-tools.md) scores SonarJS, Unicorn, `eslint-plugin-security`, Semgrep's registry packs, Bandit, Trivy, Grype, TruffleHog and CodeQL against the 103 planted findings in `samples/`. Only `eslint-plugin-sonarjs` cleared every bar and it is now in the TypeScript config — zero findings on the clean fixtures, five bug classes the baseline had no rule for. The rule that decides most of the rest: a tool that is free only *because* a repo is public can gate this repo and never a consumer. |
 
 The acceptance test that gated the first tag: a scratch consumer repo,
 onboarded from this README alone, went red in CI on a planted floating
@@ -203,8 +203,14 @@ against those three, not an automatic one.
 Install the toolchain (peer dependencies — they live in *your* project):
 
 ```bash
-npm i -D eslint @eslint/js typescript-eslint typescript @types/node
+npm i -D eslint @eslint/js typescript-eslint typescript @types/node eslint-plugin-sonarjs
 ```
+
+`eslint-plugin-sonarjs` is the newest of these and the one worth a sentence.
+It is **LGPL-3.0-only** — fine as a dev dependency, since a linter is not linked
+into what you ship, but check it against your own policy rather than mine. It
+also declares `typescript: ">=5 <6.1.0"` as a hard **dependency** rather than a
+peer, so it will conflict the day you move to TypeScript 6.1.
 
 Your entire `eslint.config.mjs`:
 
@@ -236,7 +242,11 @@ Then gate it — `--max-warnings 0` is what makes the `no-console` warning count
 **What you get:** `typescript-eslint` `strict-type-checked` +
 `stylistic-type-checked` (type-aware, so it catches floating promises and `any`
 leaks that a syntax-only linter cannot), plus `eqeqeq`, strict `no-unused-vars`
-with a `_` escape hatch, and `ban-ts-comment` requiring a written reason.
+with a `_` escape hatch, and `ban-ts-comment` requiring a written reason —
+and SonarJS's `recommended` set on top, for five bug classes typescript-eslint
+has no rule for at all: both `if`/`else` branches identical, two functions with
+identical bodies, a collection read but never filled, a
+catastrophic-backtracking regex, and `eval` on a non-literal.
 
 **Two things to know:**
 - Type-aware linting needs every linted file covered by a `tsconfig.json`.
@@ -675,9 +685,23 @@ npm install
 npm run verify:ts
 ```
 
-Expect **8 errors** and a non-zero exit: floating promise, explicit `any`, unsafe
-assignment, unsafe return, unsafe member access, `==`, unused variable, non-null
-assertion.
+Expect **14 errors** and a non-zero exit. Nine from `bad.ts` — floating promise,
+explicit `any`, unsafe assignment, unsafe return, unsafe member access, `==`,
+unused variable, dead store, non-null assertion — and five from `sonarjs.ts`,
+which baits the classes SonarJS adds and typescript-eslint has no rule for:
+
+| Planted bug | Rule |
+|---|---|
+| both `if`/`else` branches identical | `sonarjs/no-all-duplicated-branches` |
+| two functions with identical bodies | `sonarjs/no-identical-functions` |
+| a collection read but never filled | `sonarjs/no-empty-collection` |
+| catastrophic-backtracking regex (ReDoS) | `sonarjs/slow-regex` |
+| `eval` on a non-literal | `sonarjs/code-eval` |
+
+SonarJS scored **1 of 8** against `bad.ts` when it was evaluated, which on our
+own fixtures makes it look worthless — our fixtures bait our rules, so that
+scoreboard under-counts by construction. The table above is the reverse probe,
+and it is what earned the plugin its place (`docs/EVAL-vs-oss-tools.md` §2b).
 
 That is ESLint. The **compiler** is a separate gate with a separate fixture:
 

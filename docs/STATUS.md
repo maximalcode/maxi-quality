@@ -67,7 +67,7 @@ must pass.
 
 ```
 configs/editorconfig                    shared .editorconfig (all languages)
-configs/typescript/eslint.config.mjs    strict-type-checked + stylistic, exported flat config
+configs/typescript/eslint.config.mjs    strict-type-checked + stylistic + SonarJS recommended, exported flat config
 configs/typescript/tsconfig.strict.json extends-able strict compiler options
 configs/typescript/tsconfig.snapshot.json the options it RESOLVES to — the gate on a silently deleted flag
 configs/dotnet/Directory.Build.props    AnalysisLevel, TreatWarningsAsErrors, Sonar + Roslynator
@@ -99,7 +99,7 @@ actions/layer2/        the Layer 2 gate — how the rules reach a consumer
 actions/report-issue/  upserts the standing report issue; outputs its number
 actions/coverage/      the coverage ratchet
 
-samples/typescript/       Layer 1 TS sample — `npm run lint` must fail
+samples/typescript/       Layer 1 TS sample — `npm run lint` must fail (14 findings)
 samples/typescript-clean/ negative control — must PASS with zero findings
 samples/typescript-strict/ compiler sample — `tsc` must fail with 12 diagnostics (#7)
 samples/dotnet/           Layer 1 C# sample — `dotnet build` must fail
@@ -126,7 +126,7 @@ language-specific; splitting a convention per language is not new scope.
 
 ```bash
 npm install
-npm run verify:ts                        # expect exit 1, 8 errors
+npm run verify:ts                        # expect exit 1, 14 errors
 npm run verify:ts:clean                  # expect exit 0, ZERO findings
 cd samples/dotnet && dotnet build        # expect exit 1, 23 errors, 0 warnings
 cd ../dotnet-tests && dotnet build       # expect exit 1, 3 errors, 0 warnings

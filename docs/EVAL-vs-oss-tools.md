@@ -442,6 +442,11 @@ that no free tool can close for a private repo.
 > **`eslint-plugin-sonarjs@4.2.0` at `recommended`, with `sonarjs/todo-tag` and
 > `sonarjs/no-unused-vars` turned off.**
 
+**Landed 2026-08-03, exactly as written above** — see `configs/typescript/eslint.config.mjs`
+and the five-class fixture in `samples/typescript/src/sonarjs.ts`. The clean
+fixture still reports zero. Everything below is the measurement as taken; it is
+not rewritten to match the outcome.
+
 It is the only candidate that clears every bar: it works for a private consumer
 (it is an npm package), it scores **0 findings on the clean fixtures**, and the
 probe in §2b shows it contributes **five genuine bug classes** the baseline has

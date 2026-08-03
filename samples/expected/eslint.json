@@ -37,9 +37,39 @@
       "line": 48
     },
     {
+      "rule": "sonarjs/no-dead-store",
+      "file": "samples/typescript/src/bad.ts",
+      "line": 48
+    },
+    {
       "rule": "@typescript-eslint/no-non-null-assertion",
       "file": "samples/typescript/src/bad.ts",
       "line": 60
+    },
+    {
+      "rule": "sonarjs/no-all-duplicated-branches",
+      "file": "samples/typescript/src/sonarjs.ts",
+      "line": 30
+    },
+    {
+      "rule": "sonarjs/no-identical-functions",
+      "file": "samples/typescript/src/sonarjs.ts",
+      "line": 49
+    },
+    {
+      "rule": "sonarjs/no-empty-collection",
+      "file": "samples/typescript/src/sonarjs.ts",
+      "line": 62
+    },
+    {
+      "rule": "sonarjs/slow-regex",
+      "file": "samples/typescript/src/sonarjs.ts",
+      "line": 69
+    },
+    {
+      "rule": "sonarjs/code-eval",
+      "file": "samples/typescript/src/sonarjs.ts",
+      "line": 76
     }
   ]
 }
