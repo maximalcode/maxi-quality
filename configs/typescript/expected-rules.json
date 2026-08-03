@@ -614,9 +614,6 @@
     "sonarjs/comma-or-logical-or-case": [
       "error"
     ],
-    "sonarjs/concise-regex": [
-      "error"
-    ],
     "sonarjs/constructor-for-side-effects": [
       "error"
     ],
@@ -975,9 +972,6 @@
       "error"
     ],
     "sonarjs/no-redundant-jump": [
-      "error"
-    ],
-    "sonarjs/no-redundant-optional": [
       "error"
     ],
     "sonarjs/no-referrer-policy": [
@@ -1815,9 +1809,6 @@
     "sonarjs/comma-or-logical-or-case": [
       "error"
     ],
-    "sonarjs/concise-regex": [
-      "error"
-    ],
     "sonarjs/constructor-for-side-effects": [
       "error"
     ],
@@ -2176,9 +2167,6 @@
       "error"
     ],
     "sonarjs/no-redundant-jump": [
-      "error"
-    ],
-    "sonarjs/no-redundant-optional": [
       "error"
     ],
     "sonarjs/no-referrer-policy": [
@@ -2899,9 +2887,6 @@
     "sonarjs/comma-or-logical-or-case": [
       "error"
     ],
-    "sonarjs/concise-regex": [
-      "error"
-    ],
     "sonarjs/constructor-for-side-effects": [
       "error"
     ],
@@ -3260,9 +3245,6 @@
       "error"
     ],
     "sonarjs/no-redundant-jump": [
-      "error"
-    ],
-    "sonarjs/no-redundant-optional": [
       "error"
     ],
     "sonarjs/no-referrer-policy": [
@@ -3987,9 +3969,6 @@
     "sonarjs/comma-or-logical-or-case": [
       "error"
     ],
-    "sonarjs/concise-regex": [
-      "error"
-    ],
     "sonarjs/constructor-for-side-effects": [
       "error"
     ],
@@ -4348,9 +4327,6 @@
       "error"
     ],
     "sonarjs/no-redundant-jump": [
-      "error"
-    ],
-    "sonarjs/no-redundant-optional": [
       "error"
     ],
     "sonarjs/no-referrer-policy": [

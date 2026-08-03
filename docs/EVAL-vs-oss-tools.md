@@ -271,6 +271,9 @@ TypeScript. This is the rule's documented behaviour, not a defect in it: it
 flags every computed member access. On a codebase with any table-driven code it
 is a permanent 10-findings-per-file tax with a zero true-positive rate.
 
+> SonarJS was not in this section when it was written; it was measured against
+> real code on adoption, in §2i below.
+
 ### 2d. Semgrep's own OSS registry packs
 
 Run anonymously via `uvx semgrep`, against the full bad corpus (8 files) and
@@ -435,6 +438,69 @@ that no free tool can close for a private repo.
 
 ---
 
+### 2i. SonarJS on real code — the noise run the `-clean` fixtures cannot do
+
+Added 2026-08-03, when the plugin was actually adopted (#11). Placed here rather
+than next to §2c so the existing section letters, which other documents link to,
+keep pointing at what they always did.
+
+§2c measured Unicorn and `security` against one real file and never gave SonarJS
+the same treatment. `samples/typescript-clean` is 89 lines of deliberately
+simple code — enough to disqualify an over-strict config, not enough to see what
+217 rules at `error` do to a codebase somebody has already written.
+
+Corpus: `zod`, `got` and `zustand` at their default branches, source only, no
+tests or `.d.ts`. SonarJS alone, not type-aware, with `todo-tag` and
+`no-unused-vars` off as the baseline has them.
+
+| Repo | Lines | Findings | Per KLOC |
+|---|--:|--:|--:|
+| `zustand` | 1,450 | 14 | 9.7 |
+| `got` | 11,220 | 39 | 3.5 |
+| `zod` | 31,419 | 467 | 14.9 |
+| **total** | **44,089** | **520** | **11.8** |
+
+25 of the 217 enabled rules fired at all, and six were 86% of the output:
+
+| Rule | Findings | Share | Verdict |
+|---|--:|--:|---|
+| `no-redundant-optional` | 144 | 27.7% | **off — wrong, not merely noisy** |
+| `concise-regex` | 125 | 24.0% | **off** — every one is "use `\d` instead of `[0-9]`" |
+| `cognitive-complexity` | 100 | 19.2% | **kept** — sampled, real: "reduce from 33 to the 15 allowed" |
+| `public-static-readonly` | 35 | 6.7% | kept |
+| `no-nested-conditional` | 22 | 4.2% | kept |
+| `regex-complexity` | 20 | 3.8% | kept — this is the ReDoS one |
+
+**The finding that matters: `no-redundant-optional` contradicts our own
+tsconfig.** It fires on `retries?: number | undefined` and asks you to delete the
+union. `configs/typescript/tsconfig.strict.json` sets
+`exactOptionalPropertyTypes: true`, under which those two spellings mean
+different things — so applying the rule's advice makes `tsc` reject the code:
+
+```
+opt.ts(8,14): error TS2375: Type '{ retries: undefined; }' is not assignable to
+type 'Config' with 'exactOptionalPropertyTypes: true'.
+```
+
+Verified both ways round: as written it compiles, after the fix it does not. Two
+halves of one baseline cannot contradict each other, so the rule is off and
+`samples/typescript-clean` now carries the shape — re-enabling it makes the
+clean fixture dirty and fails CI.
+
+Turning those two off takes real-code output from **11.8 to 5.7 findings per
+KLOC, a 52% reduction**, and costs none of the five bug classes in §2b that
+justified adopting the plugin.
+
+**A caveat on the corpus, because it changes how the number should be read.**
+Three OSS libraries are not a consumer's application, and `zod` alone is 71% of
+the lines and 90% of the findings — it is a type-system library, so it is
+unusually dense in exactly the constructs the top rules look at. Treat 11.8 as
+an upper bound rather than a typical figure. What does *not* depend on the
+corpus is the `exactOptionalPropertyTypes` conflict: that is a property of the
+two configs and would hold on an empty repository.
+
+---
+
 ## 3. Verdict
 
 ### 3a. Adopt: one plugin, conditionally
@@ -442,10 +508,18 @@ that no free tool can close for a private repo.
 > **`eslint-plugin-sonarjs@4.2.0` at `recommended`, with `sonarjs/todo-tag` and
 > `sonarjs/no-unused-vars` turned off.**
 
-**Landed 2026-08-03, exactly as written above** — see `configs/typescript/eslint.config.mjs`
-and the five-class fixture in `samples/typescript/src/sonarjs.ts`. The clean
-fixture still reports zero. Everything below is the measurement as taken; it is
-not rewritten to match the outcome.
+**Landed 2026-08-03** — see `configs/typescript/eslint.config.mjs` and the
+five-class fixture in `samples/typescript/src/sonarjs.ts`. The clean fixture
+still reports zero. Everything below is the measurement as taken; it is not
+rewritten to match the outcome.
+
+**With two more rules off than this verdict called for.** Adoption triggered the
+real-code noise run in §2i, which the `-clean` fixtures are too small to
+substitute for, and it found `sonarjs/no-redundant-optional` asking for a change
+that our own `exactOptionalPropertyTypes` makes uncompilable. That rule and
+`concise-regex` are off; between them they were 52% of everything the plugin
+said about 44,089 lines of real TypeScript. The verdict above is left as
+written — it was right about adopting, and incomplete about the conditions.
 
 It is the only candidate that clears every bar: it works for a private consumer
 (it is an npm package), it scores **0 findings on the clean fixtures**, and the

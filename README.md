@@ -703,6 +703,14 @@ own fixtures makes it look worthless — our fixtures bait our rules, so that
 scoreboard under-counts by construction. The table above is the reverse probe,
 and it is what earned the plugin its place (`docs/EVAL-vs-oss-tools.md` §2b).
 
+Four of its rules are switched off, each for a measured reason (§2i). One is
+worth knowing about if you write TypeScript here: `sonarjs/no-redundant-optional`
+asks you to delete the `| undefined` from `retries?: number | undefined`, and
+under the `exactOptionalPropertyTypes` this baseline also ships, doing so makes
+`tsc` reject the code. A linter that contradicts the compiler shipped in the
+same baseline is not a trade-off, it is a bug, so the rule is off and
+`samples/typescript-clean` carries the shape to keep it off.
+
 That is ESLint. The **compiler** is a separate gate with a separate fixture:
 
 ```bash
