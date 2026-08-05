@@ -2389,15 +2389,55 @@ jobs:
           # scans the working tree sees clean code and waves through the very
           # commit it exists to stop. This is the single most common way a
           # pre-commit hook is quietly wrong.
-          printf "export const t = 'ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8';\n" > "$R/src/leak.ts"
+          #
+          # The variable is named `apiToken` on purpose. hardcoded-secret-ts
+          # matches on the NAME (`metavariable-regex` over password|token|…),
+          # so a fixture called `t` trips gitleaks and NOT semgrep — which is
+          # how the first version of this test passed on a laptop with gitleaks
+          # installed and failed on a runner that only has semgrep. A fixture
+          # whose verdict depends on which tool happens to be present is not a
+          # test of the hook.
+          printf "export const apiToken = 'ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8';\n" \
+            > "$R/src/leak.ts"
           git -C "$R" add src/leak.ts
           echo 'export const clean = 1;' > "$R/src/leak.ts"
-          rc=0; git -C "$R" commit -qm leak >/dev/null 2>&1 || rc=$?
+          rc=0
+          out=$(git -C "$R" commit -qm leak 2>&1) || rc=$?
+          echo "$out"
           [[ "$rc" -ne 0 ]] || {
             echo '::error::a STAGED secret was committed — the hook is scanning the working tree instead of the index'
             exit 1; }
           [[ "$(git -C "$R" rev-parse HEAD)" == "$BASE" ]] || {
             echo '::error::the commit landed anyway'; exit 1; }
+
+          # WHICH HALF BLOCKED IT, not just that something did. A bare "the
+          # commit failed" would stay green if the Semgrep pass silently
+          # stopped running and gitleaks alone carried it — the same
+          # passes-without-checking shape this whole job exists to catch.
+          grep -q 'Semgrep findings in the staged changes' <<<"$out" || {
+            echo '::error::the commit was blocked, but NOT by the Semgrep pass — it is not running against the staged content'
+            exit 1; }
+          # And the gitleaks half, in whichever state this machine is in. The
+          # skip path is asserted too: failing soft on a missing tool is
+          # deliberate, but it has to be VISIBLE or the hook is quietly doing
+          # half its job.
+          if command -v gitleaks >/dev/null 2>&1; then
+            grep -q 'gitleaks found a secret' <<<"$out" || {
+              echo '::error::gitleaks is installed but did not flag a staged credential'
+              exit 1; }
+          else
+            grep -q 'gitleaks not installed' <<<"$out" || {
+              echo '::error::gitleaks is absent and the hook said nothing about it — a skipped check must never be silent'
+              exit 1; }
+            # SAID OUT LOUD, because this is the branch CI actually takes: this
+            # job installs semgrep and not gitleaks, so the hook's `gitleaks
+            # git --staged` invocation is exercised on a laptop and NOT here.
+            # Installing gitleaks would mean a third place pinning its version
+            # and sha256, which is the problem #43 just finished removing for
+            # semgrep. What IS covered on a runner: gitleaks itself, through
+            # actions/layer2 in the layer2 job.
+            echo 'NOTE: gitleaks absent here — the hook fell through to Semgrep, and the fall-through was visible. The gitleaks invocation itself is only exercised where gitleaks is installed.'
+          fi
 
           # BYPASSABLE. This is a feature, not a hole: a hook that cannot be
           # skipped gets uninstalled the first time somebody needs to commit a
