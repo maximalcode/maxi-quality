@@ -217,6 +217,59 @@ jobs:
             echo '::error::samples/format/needs-width-100.ts is clean under Prettier defaults too — its long line no longer exceeds 80 chars, so it separates nothing'
             exit 1; }
           echo 'OK: the misformatted fixture fails and the width ablation separates 100 from 80'
+      # --- knip, issue #51 --------------------------------------------------
+      # Dead files, unused exports/types and unused/unlisted dependencies —
+      # the slop classes that survived #39's measurement (6 of 6 planted
+      # findings, 0 of 6 negative controls flagged, and 19× quieter than a
+      # lint recommended-set on real code). Same two-part shape as every other
+      # gate: the bad fixture must FAIL with exactly the manifest, the clean
+      # one must PASS with zero findings.
+      #
+      # knip runs from inside the fixture and prints paths relative to it, so
+      # samples/expected/knip*.json are fixture-relative where the other
+      # manifests are repo-relative — scripts/check-expected.py says so too.
+      - name: Knip fixture must fail with exactly the expected findings
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; (cd samples/knip && ../../node_modules/.bin/knip --reporter json) > /tmp/knip.json || rc=$?
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/knip passed knip — the dead-code/dependency detection regressed'
+            exit 1
+          fi
+          python3 scripts/check-expected.py --tool knip \
+            --input /tmp/knip.json --expected samples/expected/knip.json
+      - name: Clean knip sample must PASS with zero findings
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; (cd samples/knip-clean && ../../node_modules/.bin/knip --reporter json) > /tmp/knip-clean.json || rc=$?
+          if [[ $rc -ne 0 ]]; then
+            cat /tmp/knip-clean.json
+            echo '::error::samples/knip-clean was flagged — the gate is over-strict. Fix the config, do not add ignores to the fixture.'
+            exit 1
+          fi
+          python3 scripts/check-expected.py --tool knip \
+            --input /tmp/knip-clean.json --expected samples/expected/knip-clean.json
+      # The ablation, same argument as the Prettier --no-config step above:
+      # "the clean fixture passes" and "the clean fixture passes BECAUSE OF
+      # its knip.json" are different claims. The fixture's entry point is
+      # deliberately not one knip would find on its own (src/clean.ts), which
+      # is what #39 measured on every real consumer: a zero-config run on a
+      # non-default layout reports the layout, not defects. Config aside, the
+      # verdict must flip.
+      - name: ...and its knip.json is what makes it pass, not knip's defaults
+        shell: bash
+        run: |
+          set -uo pipefail
+          mv samples/knip-clean/knip.json /tmp/knip-config-aside.json
+          rc=0; (cd samples/knip-clean && ../../node_modules/.bin/knip --reporter json) >/dev/null 2>&1 || rc=$?
+          mv /tmp/knip-config-aside.json samples/knip-clean/knip.json
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/knip-clean passes without its knip.json — the entry declaration is proving nothing. Either knip defaults grew to cover src/clean.ts or the fixture layout drifted to a default one.'
+            exit 1
+          fi
+          echo 'OK: the shipped knip.json changes the verdict'
 
   layer1-dotnet:
     runs-on: ubuntu-latest

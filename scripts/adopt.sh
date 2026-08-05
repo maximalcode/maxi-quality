@@ -229,6 +229,28 @@ export default [
   { languageOptions: { parserOptions: { tsconfigRootDir: import.meta.dirname } } },
 ];
 "
+  # knip (#51) — dead files, unused exports and unused/unlisted dependencies.
+  # The stub is a real file rather than documentation because both of its keys
+  # were measured conditions in #39, not defaults anyone would guess:
+  #   - entry: a zero-config knip run on a non-default layout reports the
+  #     layout, not defects. The entry points are the consumer's to declare.
+  #   - ignoreDependencies: the baseline arrives by relative import (the copy
+  #     above), so knip never sees eslint.base.mjs's three plugins resolved as
+  #     a package's dependencies and reports them unused. Baked in here;
+  #     revisit if the baseline ever publishes to npm.
+  # knip parses knip.json as JSONC, so the stub documents itself.
+  write_new "$TARGET/knip.json" \
+"// maxi-quality knip stub (#51). DECLARE YOUR REAL ENTRY POINTS — knip's
+// verdicts are only as good as this list, and a wrong one reports your layout
+// rather than your defects.
+{
+  \"entry\": [\"src/index.ts\"],
+  \"project\": [\"src/**/*.ts\"],
+  // eslint.base.mjs imports these three; without a package boundary knip
+  // cannot see that, and reports all three as unused. Measured, not assumed.
+  \"ignoreDependencies\": [\"@eslint/js\", \"typescript-eslint\", \"eslint-plugin-sonarjs\"]
+}
+"
 fi
 
 # --- Python ------------------------------------------------------------------
@@ -382,6 +404,13 @@ if [ "$HAS_TS" -eq 1 ]; then
   printf '       Then run prettier --write ONCE, alone, and put that commit in\n'
   printf '       .git-blame-ignore-revs. No eslint-config-prettier needed —\n'
   printf '       typescript-eslint has shipped no formatting rules since v6.\n'
+  printf '    6. OPTIONAL — knip (npm i -D knip, pin >=6.31.0; 6.31.0 fixed a\n'
+  printf '       signature-only-type false positive that 5.64.3 shipped). A\n'
+  printf '       knip.json stub was written; declare your real entry points in\n'
+  printf '       it. In PUBLISHED LIBRARY packages gate dependencies, unlisted\n'
+  printf '       imports and unused files only — an export no in-repo code\n'
+  printf '       references is indistinguishable from public API there (19 of\n'
+  printf '       26 real-code findings in the #39 eval sat in that class).\n'
 fi
 
 if [ "$HAS_DOTNET" -eq 1 ]; then

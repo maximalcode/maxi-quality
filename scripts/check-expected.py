@@ -114,6 +114,29 @@ def parse_mypy(text: str) -> list[dict]:
     return out
 
 
+def parse_knip(text: str) -> list[dict]:
+    """knip --reporter json. One entry per issue *type* per file; the type name
+    (files, exports, types, dependencies, unlisted, ...) is the rule id, so a
+    manifest diff says WHICH kind of detection was lost, not just where.
+
+    knip prints paths relative to its own working directory, and CI runs it
+    from inside the fixture — so these manifests are fixture-relative where
+    every other manifest is repo-relative. Whole-file findings (`files`) have
+    no line; 0 marks them, deliberately outside any real file's range."""
+    out = []
+    for issue in json.loads(text).get("issues", []):
+        for rule, entries in issue.items():
+            if rule == "file" or not isinstance(entries, list):
+                continue
+            for entry in entries:
+                # `duplicates` nests one level deeper: a list of clone groups.
+                for e in entry if isinstance(entry, list) else [entry]:
+                    out.append(
+                        {"rule": rule, "file": _rel(issue["file"]), "line": e.get("line") or 0}
+                    )
+    return out
+
+
 def parse_dotnet(text: str) -> list[dict]:
     seen = set()
     out = []
@@ -143,6 +166,7 @@ PARSERS = {
     "mypy": parse_mypy,
     "dotnet": parse_dotnet,
     "tsc": parse_tsc,
+    "knip": parse_knip,
 }
 
 
