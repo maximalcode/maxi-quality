@@ -1,0 +1,14 @@
+# Deliberately CLEAN dependency manifest: everything declared is imported and
+# everything imported is declared. `deptry` MUST pass with zero findings —
+# that is the test.
+#
+# samples/python-clean cannot play this role: deptry refuses to run at all
+# without a manifest, and that fixture deliberately has none (it proves the
+# lint baseline, not the dependency gate).
+[project]
+name = "sample-deptry-clean"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = [
+    "click>=8.1",
+]

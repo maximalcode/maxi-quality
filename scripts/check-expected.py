@@ -137,6 +137,20 @@ def parse_knip(text: str) -> list[dict]:
     return out
 
 
+def parse_deptry(text: str) -> list[dict]:
+    """deptry --json-output. DEP002 (declared but unused) points at
+    pyproject.toml with a null line — 0 in the manifest, same convention as
+    knip's whole-file findings."""
+    return [
+        {
+            "rule": r["error"]["code"],
+            "file": _rel(r["location"]["file"]),
+            "line": r["location"]["line"] or 0,
+        }
+        for r in json.loads(text)
+    ]
+
+
 def parse_dotnet(text: str) -> list[dict]:
     seen = set()
     out = []
@@ -167,6 +181,7 @@ PARSERS = {
     "dotnet": parse_dotnet,
     "tsc": parse_tsc,
     "knip": parse_knip,
+    "deptry": parse_deptry,
 }
 
 

@@ -444,7 +444,14 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.12'
-      - run: pip install -r samples/python/requirements-dev.txt
+      # requirements-dev.txt is the lint toolchain (+ deptry, #52).
+      # samples/deptry/requirements.txt is the deptry fixture's metadata: it
+      # installs beautifulsoup4 so deptry can map the `bs4` import back to the
+      # declared package — the import-name ≠ package-name control only means
+      # something when the package metadata is actually visible.
+      - run: |
+          pip install -r samples/python/requirements-dev.txt
+          pip install -r samples/deptry/requirements.txt
       # #8 — the Python twin of the tsconfig, ESLint and MSBuild snapshots.
       # `ignore = []` is this config's most load-bearing empty value and no
       # fixture can see it; mypy's `strict` is an ALIAS whose expansion no
@@ -556,6 +563,45 @@ jobs:
             echo '::error::samples/format/needs_width_100.py is clean at ruff defaults too — its long line no longer exceeds 88 chars, so it separates nothing'
             exit 1; }
           echo 'OK: the misformatted fixture fails and the width ablation separates 100 from 88'
+      # --- deptry, issue #52 ------------------------------------------------
+      # Unused (DEP002) and undeclared (DEP001) Python dependencies, measured
+      # in #39: 2 of 2 planted findings, 0 false positives including the
+      # import-name ≠ package-name trap.
+      #
+      # It lives HERE, beside the Layer 1 Python steps, and deliberately NOT
+      # in the scan.sh / Layer 2 umbrella — that is the integration decision
+      # #52 asked for. deptry is per-language and per-package by design:
+      # measured at a consumer's workspace root it reported 125 findings, 118
+      # of them one first-party artifact; on a member package, 3. A gate that
+      # ships 94% noise on day one gets deleted, which is worse than no gate.
+      # Layer 2 runs once per repo from the root; this tool must never do that.
+      - name: Deptry fixture must fail with exactly the expected findings
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; (cd samples/deptry && deptry src --json-output /tmp/deptry.json) >/tmp/deptry.log 2>&1 || rc=$?
+          cat /tmp/deptry.log
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/deptry passed deptry — the dependency detection regressed'
+            exit 1
+          fi
+          python3 scripts/check-expected.py --tool deptry \
+            --input /tmp/deptry.json --expected samples/expected/deptry.json
+      # The clean half needs its own pyproject.toml: deptry refuses to run at
+      # all without a dependency manifest (measured — samples/python-clean
+      # deliberately has none, so it cannot play this role).
+      - name: Clean deptry sample must PASS with zero findings
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; (cd samples/deptry-clean && deptry src --json-output /tmp/deptry-clean.json) >/tmp/deptry-clean.log 2>&1 || rc=$?
+          cat /tmp/deptry-clean.log
+          if [[ $rc -ne 0 ]]; then
+            echo '::error::samples/deptry-clean was flagged — the gate is over-strict. Fix the invocation, do not add per-rule ignores to the fixture.'
+            exit 1
+          fi
+          python3 scripts/check-expected.py --tool deptry \
+            --input /tmp/deptry-clean.json --expected samples/expected/deptry-clean.json
 
   # The ratchet (`--changed-only`) had NO test, and shipped broken: semgrep's
   # --baseline-commit resolves the ref against the git repo of its WORKING
