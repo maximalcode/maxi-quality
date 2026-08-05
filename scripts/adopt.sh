@@ -411,6 +411,18 @@ if [ "$HAS_TS" -eq 1 ]; then
   printf '       imports and unused files only — an export no in-repo code\n'
   printf '       references is indistinguishable from public API there (19 of\n'
   printf '       26 real-code findings in the #39 eval sat in that class).\n'
+  printf '    7. Fixing what knip finds: DELETION IS THE FIX, and knip can do\n'
+  printf '       it — npx knip --fix removes unused exports and dependencies;\n'
+  printf '       add --allow-remove-files to also delete dead files. Same rule\n'
+  printf '       as the formatter: run it ONCE, alone, at adoption, and READ\n'
+  printf '       the diff before committing. The false-positive class is code\n'
+  printf '       reached outside the module graph — codegen plugins invoked by\n'
+  printf '       non-npm tools, reflection — and a wrong deletion merges an\n'
+  printf '       outage. Put real ones in knip.json ignoreDependencies, where\n'
+  printf '       they are scoped and greppable. Never wire --fix into CI: the\n'
+  printf '       gate detects, a human deletes. The measured backlog is small\n'
+  printf '       (6 true positives across two real monorepos in #39), so one\n'
+  printf '       cleanup commit clears it and CI holds it at zero after that.\n'
 fi
 
 if [ "$HAS_DOTNET" -eq 1 ]; then
@@ -450,6 +462,15 @@ if [ "$HAS_PYTHON" -eq 1 ]; then
   printf '       Note line-length = 100 drives the FORMATTER as well as E501, so\n'
   printf '       overriding it moves both. One reformat commit, alone, in\n'
   printf '       .git-blame-ignore-revs.\n'
+  printf '    5. OPTIONAL — deptry (unused/undeclared dependencies): add it as\n'
+  printf '       a dev dependency and run it PER PACKAGE, never at a workspace\n'
+  printf '       root — measured there: 125 findings, 118 of them one\n'
+  printf '       first-party artifact; 3 on the member package. Run it inside\n'
+  printf '       the project env (uv run deptry src) so import-name mapping\n'
+  printf '       works — isolated, it false-positives on every package whose\n'
+  printf '       import name differs (beautifulsoup4/bs4). Fixes are one-line\n'
+  printf '       pyproject.toml edits — make them BY HAND in one cleanup\n'
+  printf '       commit; there is no auto-fix and none is needed.\n'
 fi
 
 if [ "$NEEDS_MERGE" -eq 1 ]; then
