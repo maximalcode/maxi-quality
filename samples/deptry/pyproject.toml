@@ -15,7 +15,7 @@ name = "sample-deptry"
 version = "0.0.0"
 requires-python = ">=3.12"
 dependencies = [
-    "requests>=2.31",
+    "requests>=2.34.2",
     "click>=8.1",
     "beautifulsoup4>=4.12",
 ]
