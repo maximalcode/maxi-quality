@@ -25,6 +25,16 @@
 #                          comma-separated SPDX allowlist. Off by default: a
 #                          license policy is a per-repo decision, and a default
 #                          allowlist would either gate nothing or gate wrongly.
+#   --annotate             Emit GitHub workflow commands so Semgrep findings
+#                          render on the pull-request diff instead of only in
+#                          the job log. Additive: it cannot change the exit
+#                          code. No effect outside GitHub Actions.
+#   --max-annotations N    Cap the annotations (default 50). The omitted count
+#                          is always reported — GitHub drops them past a limit
+#                          it does not document, and a silent truncation reads
+#                          as "that was all of them".
+#   --annotate-prefix P    Prepended to annotated paths. Needed when the target
+#                          is a subdirectory of the workspace.
 #   --no-fail              Report everything, always exit 0. Use for the
 #                          adoption week on an existing repo, then drop it.
 #   --require-tools        Exit non-zero if any tool is unavailable, instead of
@@ -68,6 +78,9 @@ TARGET=""
 CHANGED_ONLY=0
 BASE_REF="origin/main"
 NO_FAIL=0
+ANNOTATE=0
+MAX_ANNOTATIONS=50
+ANNOTATE_PREFIX=""
 JSON_OUT=""
 SBOM_OUT=""
 LICENSES=""
@@ -94,6 +107,14 @@ while [[ $# -gt 0 ]]; do
     --licenses)
       [[ $# -gt 1 ]] || die "--licenses needs an SPDX allowlist, e.g. MIT,Apache-2.0"
       LICENSES="$2"; shift ;;
+    --annotate)      ANNOTATE=1 ;;
+    --max-annotations)
+      [[ $# -gt 1 ]] || die "--max-annotations needs a number"
+      [[ "$2" =~ ^[0-9]+$ ]] || die "--max-annotations expects a non-negative integer, got '$2'"
+      MAX_ANNOTATIONS="$2"; shift ;;
+    --annotate-prefix)
+      [[ $# -gt 1 ]] || die "--annotate-prefix needs a path prefix"
+      ANNOTATE_PREFIX="$2"; shift ;;
     --no-fail)       NO_FAIL=1 ;;
     --require-tools) REQUIRE_TOOLS=1 ;;
     --skip)
@@ -106,7 +127,9 @@ while [[ $# -gt 0 ]]; do
       esac
       shift
       ;;
-    -h|--help) sed -n '2,39p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    # The header above IS the help text, not a hand-maintained copy of it. The
+    # range runs to the exit-code block; keep it in step when the header grows.
+    -h|--help) sed -n '2,54p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) die "unknown option '$1'" ;;
     *)
       [[ -z "$TARGET" ]] || die "TARGET_REPO given twice ('$TARGET' and '$1')"
@@ -366,9 +389,18 @@ _semgrep_exec() {
   # JSON is how the docker and native paths came to disagree about
   # --changed-only: two computations of the same thing, one of them wrong.
   # Under `set -o pipefail` the pipeline reports python's exit code, not tee's.
+  local -a cls_extra=()
+  if (( ANNOTATE )); then
+    cls_extra+=(--annotate --max-annotations "$MAX_ANNOTATIONS")
+    if [[ -n "$ANNOTATE_PREFIX" ]]; then
+      cls_extra+=(--annotate-prefix "$ANNOTATE_PREFIX")
+    fi
+  fi
+
   local crc=0 classify_out="$WORKDIR/classify.out"
   python3 "$BASELINE/scripts/policy.py" classify \
-    --resolved "$POLICY_JSON" --results "$json_host" | tee "$classify_out" || crc=$?
+    --resolved "$POLICY_JSON" --results "$json_host" \
+    ${cls_extra[@]+"${cls_extra[@]}"} | tee "$classify_out" || crc=$?
 
   # Files semgrep could not parse. NOT a finding and NOT a failure (#43) — but
   # it belongs on the summary line, because a scan that skipped nine files is

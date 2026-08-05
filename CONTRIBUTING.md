@@ -178,6 +178,20 @@ Four flags no fixture can reach — `isolatedModules`, `esModuleInterop`,
 `configs/typescript/tsconfig.snapshot.json`, which asserts what `tsc --showConfig`
 **resolves** rather than what the JSON file says.
 
+### The pre-commit hook
+
+`hooks/pre-commit` is the one script here most likely to run on a laptop rather
+than a runner, and **macOS still ships bash 3.2.57 as `/bin/bash`**. It was
+written with `mapfile` and aborted every commit with `command not found` until
+that was caught — by running it, not by reading it. CI greps the file for bash 4
+constructs, with comments stripped, because the hook documents the bug by name
+and an unstripped guard fails on its own explanation.
+
+Test it the way it runs: install it into a scratch repo with `adopt.sh --hooks`
+and drive real `git commit` calls. Calling the script directly misses both of
+its interesting failure modes — git supplies its own environment, and the thing
+being scanned is the **index**, not the working tree.
+
 ### The formatters
 
 ```bash

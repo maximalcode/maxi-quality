@@ -96,6 +96,14 @@ jobs:
           # that produced one on every PR would just be slower.
           sbom-out: ${{ runner.temp }}/sbom.cdx.json
           no-fail: 'true'
+          # NO ANNOTATIONS on the report. They exist to put a finding next to
+          # the line a REVIEWER is reading, and this run has no pull request —
+          # it is a scheduled full scan of a backlog that is expected to be
+          # non-empty. Annotating it would attach the entire backlog to
+          # whatever commit happened to be at HEAD, every week, which is how
+          # annotations stop meaning anything. The standing issue is where this
+          # run's output belongs.
+          annotate: 'false'
 
       - name: Write the standing issue
         id: write
