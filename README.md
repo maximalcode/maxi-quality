@@ -93,9 +93,12 @@ time.
 | TypeScript — ESLint + tsconfig | ✅ `configs/typescript/` |
 | C#/.NET — Roslyn + Sonar + Roslynator | ✅ `configs/dotnet/` |
 | Python — Ruff + mypy strict | ✅ `configs/python/` — 13 rule families |
+| Formatting — Prettier / `ruff format` / `dotnet format whitespace` | ✅ gated in CI ([#42](https://github.com/maximalcode/maxi-quality/issues/42)). Adopting cost zero reformatted files here; each config has an ablation fixture in `samples/format/` that is correct under our settings and wrong under the tool's defaults |
 | Samples proving all three fail | ✅ `samples/` |
 | Semgrep ruleset (Layer 2) | ✅ `semgrep/` — 12 conventions, 28 rule ids |
 | `scan.sh` (Semgrep + Gitleaks + OSV) | ✅ `scripts/scan.sh` |
+| Findings on the PR diff | ✅ on by default ([#40](https://github.com/maximalcode/maxi-quality/issues/40)) — gating findings as `::error`, policy-downgraded ones as `::warning`. Additive: CI asserts a suppressed or malformed annotation cannot change the exit code. SARIF is out for the same reason CodeQL is |
+| Opt-in pre-commit hook | ✅ `adopt.sh --hooks` — gitleaks on the staged diff (~50 ms), Semgrep on the staged **content**, not the working tree. Never installed unasked, never blocks on its own problems, `--no-verify` always works |
 | Per-repo policy | ✅ `.maxi-quality.yml` — rule groups, `disable`, `warn`, path excludes, your own rules. Unknown keys are hard errors |
 | Reusable CI workflow, `@v1` tag | ✅ `.github/workflows/quality.yml` + `actions/layer2/` |
 | Coverage ratchet, SBOM, licence gate | ✅ `actions/coverage/`, both from OSV-Scanner |

@@ -54,6 +54,22 @@ inputs:
       must not fail a run just because a backlog exists. Never set this on a
       gate — a gate that cannot fail is not a gate.
     default: 'false'
+  annotate:
+    description: >-
+      'true' (the default) renders Semgrep findings as annotations on the pull
+      request diff instead of leaving them only in the job log. Purely
+      additive — annotations are emitted after the verdict is decided and
+      cannot change it. SARIF upload would be the better mechanism and is out
+      for the same reason CodeQL is: it needs Advanced Security on a private
+      repo, and every consumer of this baseline is private.
+    default: 'true'
+  max-annotations:
+    description: >-
+      Cap on annotations per run. GitHub silently drops them past a limit it
+      does not document, and a legacy repo adopted WITHOUT changed-only can
+      produce hundreds — so the cap is explicit and the omitted count is always
+      stated. A silent truncation reads as "that was all of them".
+    default: '50'
   semgrep-version:
     description: 'Pinned Semgrep version.'
     default: '1.172.0'
@@ -174,6 +190,9 @@ runs:
         LICENSES: ${{ inputs.licenses }}
         NO_FAIL: ${{ inputs.no-fail }}
         CHANGED_ONLY: ${{ inputs.changed-only }}
+        ANNOTATE: ${{ inputs.annotate }}
+        MAX_ANNOTATIONS: ${{ inputs.max-annotations }}
+        WORKSPACE: ${{ github.workspace }}
       run: |
         set -Eeuo pipefail
         ARGS=(--require-tools)
@@ -188,6 +207,18 @@ runs:
         fi
         if [[ "$NO_FAIL" == "true" ]]; then
           ARGS+=(--no-fail)
+        fi
+        if [[ "$ANNOTATE" == "true" ]]; then
+          ARGS+=(--annotate --max-annotations "$MAX_ANNOTATIONS")
+          # Semgrep reports paths relative to the directory it scanned; GitHub
+          # resolves annotation paths against the WORKSPACE. Those are the same
+          # thing only when target is the workspace root, which is the default
+          # but not the rule — a monorepo pointing this at services/api would
+          # otherwise annotate `src/x.ts` and land on the wrong file, or on no
+          # file at all. Computed here because only the action knows both.
+          if [[ "$TARGET" != "$WORKSPACE" && "$TARGET" == "$WORKSPACE"/* ]]; then
+            ARGS+=(--annotate-prefix "${TARGET#"$WORKSPACE"/}/")
+          fi
         fi
         if [[ -n "$CHANGED_ONLY" ]]; then
           # A shallow checkout has no base ref to diff against. Fetching the

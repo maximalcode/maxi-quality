@@ -25,6 +25,8 @@ jobs:
 | `uv-version` | `0.12.1` | Pinned uv for lockfile-based Python projects. Exposed so a consumer can hold or advance it without waiting on this repo — but it has a **pin** as a default, never `latest` |
 | `changed-only` | *(empty)* | Base ref for new-code-only Layer 2. Empty = full scan |
 | `licenses` | *(empty)* | Comma-separated SPDX allowlist. Anything outside it fails. **No default allowlist**, deliberately |
+| `annotate` | `true` | Render Semgrep findings on the pull-request diff, not only in the job log. Additive — emitted after the verdict, cannot change it |
+| `max-annotations` | `50` | Cap per run. GitHub drops them past an undocumented limit; the omitted count is always stated |
 
 Detection **fails loud rather than skipping**: a `package.json` with no lockfile
 at or above it, or a `.csproj` no solution references, stops the run. Both used
@@ -48,6 +50,8 @@ Used directly when you want the umbrella without the language jobs.
 | `sbom-out` | *(empty)* | Write a CycloneDX 1.6 SBOM here |
 | `licenses` | *(empty)* | SPDX allowlist; **fails** the scan on a violation |
 | `no-fail` | `false` | Report everything, exit 0. For the standing **report**. Never set it on a gate — a gate that cannot fail is not a gate |
+| `annotate` | `true` | Findings on the PR diff. `quality-report.yml` sets it `false`: that run has no pull request, and annotating a weekly full scan would attach the whole backlog to whatever commit is at HEAD |
+| `max-annotations` | `50` | Cap per run, omitted count always stated |
 | `semgrep-version` | `1.172.0` | |
 | `gitleaks-version` | `8.30.1` | |
 | `osv-scanner-version` | `v2.4.0` | |
@@ -72,6 +76,9 @@ an empty output renders as a blank cell in the report, which reads as *clean*.
 | `--sbom FILE` | CycloneDX 1.6 SBOM. Never gates |
 | `--licenses LIST` | Fail on any dependency outside this SPDX allowlist |
 | `--no-fail` | Report everything, always exit 0 |
+| `--annotate` | Emit GitHub workflow commands so findings render on the PR diff. Additive; cannot change the exit code |
+| `--max-annotations N` | Cap the annotations (default 50). The omitted count is always reported |
+| `--annotate-prefix P` | Prepended to annotated paths, for a target below the workspace root |
 | `--require-tools` | Exit non-zero if a tool is unavailable instead of warning. Use in CI |
 | `--skip TOOL` | Skip `semgrep`, `gitleaks` or `osv`. Repeatable |
 
@@ -85,6 +92,14 @@ an empty output renders as a blank cell in the report, which reads as *clean*.
 Each tool resolves as **native binary → `uvx`/`docker` → skipped with a loud
 warning**. Nothing is ever silently not-run; the summary names every tool and its
 verdict.
+
+**The `uvx` and `docker` fallbacks are pinned to the same Semgrep the CI action
+installs**, and `check-pins.sh` asserts all three sites agree. They were not
+pinned at all before #43 — a bare `uvx semgrep` and `returntocorp/semgrep:latest`
+— which is why a parse failure could be irreproducible between two local runs
+minutes apart. A **native** `semgrep` already on `PATH` is whatever the machine
+has and cannot be pinned from here; the scan warns when its version differs from
+the baseline's.
 
 ---
 
@@ -157,11 +172,45 @@ exists for the standing report, and only for that.
 |---|---|
 | `resolve --target T --baseline B [--baseline-path P] [--explain] [--out F]` | Validate and write the resolved policy. `--explain` adds the effective gate/warn rule id sets — the snapshot form |
 | `args --resolved F --baseline-path P --target-path P` | Print the semgrep arguments, one per line |
-| `classify --resolved F --results F` | Split findings into gating and warn-only; exit 1 if anything gates |
+| `classify --resolved F --results F [--annotate] [--max-annotations N] [--annotate-prefix P]` | Split findings into gating and warn-only; exit 1 if anything gates. `--annotate` additionally prints GitHub workflow commands — after the verdict is decided, from the same classification, so it cannot reach the exit code |
 
 Exit codes: `0` clean/valid · `1` gate findings · `2` a mechanism failed
-(unreadable results, non-empty semgrep `.errors`, an exclusion that did not take)
-· `3` usage or policy error.
+(unreadable results, a semgrep error that is not a per-file parse failure, every
+file unparseable, an exclusion that did not take) · `3` usage or policy error.
+
+### Files Semgrep cannot parse
+
+A parse failure is **a coverage gap, not a scan failure** (#43). The two used to
+be the same thing, and a codebase using C# 12 primary constructors —
+`public sealed class Thing(Dep dep)`, which Semgrep's C# parser rejects — turned
+a clean scan into a red gate:
+
+```
+Ran 22 rules on 29 files: 0 findings.
+error: semgrep reported 6 error(s); refusing to treat the result as a finding set
+```
+
+Red on green code, for a reason no consumer can fix. And the worse half had no
+output at all: **a file that does not parse has no rule run against it**, so
+those files were contributing 0 to every number while looking like a failure
+rather than a hole.
+
+Now they are listed by name, counted as `semgrep_unparsed=N`, carried onto the
+scan summary line (`semgrep  clean (3 file(s) UNPARSED)`) and given their own
+section in the standing report — and they do not gate.
+
+Two guards stop that becoming the silent pass it would otherwise be:
+
+- **The recognised list is an allowlist.** `PartialParsing`, `SyntaxError`,
+  `LexicalError`, `Timeout`, `OutOfMemory` and the interfile variants are
+  per-file. Anything else — a rule that would not load, an unknown language, a
+  failure type a future Semgrep invents — is still exit 2.
+- **If every file Semgrep looked at failed to parse, the run exits 2.**
+  `results: []` then means "nobody looked", which is precisely the shape that
+  must never read as clean.
+
+Measured 2026-08-05: semgrep `1.172.0` is the newest release on PyPI and
+`1.145.0` behaves identically, so upgrading is not an available fix.
 
 ---
 

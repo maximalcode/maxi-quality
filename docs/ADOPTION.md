@@ -66,6 +66,10 @@ UTF-8, LF, final newline, trimmed trailing whitespace, 2-space default with
 4-space for C#/Java/Python. For a C# repo, append the C# layer as well — see
 below.
 
+This file is not decoration: for C# it is what `dotnet format whitespace`
+actually reads, so it is the formatting policy rather than a hint to editors
+(§3a).
+
 ---
 
 ## 2. TypeScript — Layer 1
@@ -142,6 +146,48 @@ regex, and `eval` on a non-literal.
 - `typescript-eslint` 8.x supports `typescript >=4.8.4 <6.1.0`. TypeScript 7 is
   outside that range today; this repo pins `~6.0.3`.
 
+### 2a. Formatting — Prettier
+
+Optional, and separate from the lint gate on purpose: a formatter finds no bugs.
+What it removes is a category of review comment and the layout drift that makes
+a real diff hard to read.
+
+```bash
+npm i -D prettier
+cp "$BASELINE"/configs/typescript/prettier.config.mjs <repo>/prettier.config.mjs
+```
+
+```json
+{ "scripts": { "format": "prettier --write .", "verify:format": "prettier --check ." } }
+```
+
+Two settings in that file are not Prettier defaults, and both exist to stop the
+baseline contradicting itself:
+
+- **`printWidth: 100`** — Prettier defaults to 80, while `configs/editorconfig`
+  ships `max_line_length = 100` and `configs/python/ruff.toml` ships
+  `line-length = 100`. The default would have meant two line lengths in one
+  baseline and a formatter fighting the `.editorconfig` next to it.
+- **`singleQuote: true`** — matches what TypeScript code here already looks
+  like. Prettier's default is double, which would have rewritten every file for
+  nothing. Python deliberately keeps double quotes; each language gets its own
+  community default.
+
+Everything else in the file is a Prettier default written out explicitly, so a
+major bump that changes one arrives as a reviewable one-line diff instead of
+unexplained churn in your repo.
+
+**On an existing codebase, run `prettier --write` once, in its own commit, and
+add that commit to `.git-blame-ignore-revs`.** A formatting commit mixed into a
+behavioural one is unreviewable, and blame that points at it is worse than no
+blame. There is no `--changed-only` equivalent here — unlike Layer 2, a
+formatter has nothing to grandfather.
+
+There is no ESLint/Prettier conflict to configure away: `typescript-eslint` has
+shipped no formatting rules since v6, and measured on this repo's fixtures
+Prettier and the lint config disagree about nothing. `eslint-config-prettier` is
+not needed and is not installed.
+
 ---
 
 ## 3. C# / .NET — Layer 1
@@ -203,6 +249,26 @@ What is *not* left to you is knowing about it. The default posture is not "no lo
 file yet"; it is a dependency gate that cannot see past your direct dependencies,
 and until now that difference was invisible.
 
+### 3a. Formatting — `dotnet format whitespace`
+
+No new config: the `.editorconfig` from §1 is the policy. Gate it with
+
+```bash
+dotnet format whitespace --verify-no-changes
+```
+
+**Use the `whitespace` subcommand, not bare `dotnet format`.** Measured
+2026-08-05 on SDK 10.0.301: the bare form also runs Code Style analysis and
+every analyzer reference — 622 of them on a four-file sample — and re-reports
+S101, IDE0005, IDE0052, IDE0060 and CS8625 under the formatter's exit code.
+Those are the *build* gate's diagnostics; `Directory.Build.props` already fails
+the build on them. Running both means one red check standing for two unrelated
+problems, and a formatter that takes as long as a full analysis run.
+
+On a large solution, scope it: `dotnet format whitespace <project> --include
+<paths>` takes an explicit file list, which is what makes it usable from a
+pre-commit hook.
+
 ---
 
 ## 4. Python — Layer 1
@@ -249,6 +315,24 @@ sections for untyped third-party imports directly to it.
 at the call site and applies to production code as readily as to the one place
 that needed it.
 
+### 4a. Formatting — `ruff format`
+
+Already configured by the file you copied above; it just needs running.
+
+```bash
+ruff format .                     # fix
+ruff format --check .             # gate
+```
+
+Everything in `[format]` is a ruff default, stated explicitly so a major bump
+that changes one is a visible diff rather than churn. The setting that actually
+differs is `line-length = 100` from the `[lint]` section — **the formatter reads
+it too**, so the same number that decides `E501` also decides where ruff wraps.
+Override it in your own `ruff.toml` and you move both at once.
+
+Same advice as Prettier on an existing codebase: one `ruff format` commit on its
+own, added to `.git-blame-ignore-revs`.
+
 ---
 
 ## 5. CI — Layer 2, and the whole point
@@ -286,6 +370,86 @@ to grant.
 > was the one real adoption limit, and going public removed it.
 
 Every input is listed in [`REFERENCE.md`](REFERENCE.md).
+
+---
+
+## 5a. Faster feedback — annotations and the pre-commit hook
+
+Neither of these detects anything new. They change **when** and **where** a
+finding reaches a human, which is most of what makes a gate usable (#40).
+
+### Findings on the pull-request diff
+
+On by default. Semgrep findings render as annotations on the changed lines
+instead of living only in the job log, where a reviewer has to open the log,
+read a `file:line` and then go find it. Gating findings become `::error`
+annotations; rules your policy downgraded with `warn` become `::warning`, so
+the diff never shows red for something the gate deliberately let through.
+
+```yaml
+jobs:
+  quality:
+    uses: maximalcode/maxi-quality/.github/workflows/quality.yml@v1
+    with:
+      annotate: 'false'       # if your review workflow does not want them
+      max-annotations: '50'   # the default
+```
+
+**Annotations are additive and cannot change the verdict.** They are emitted
+after the gate has been decided, from the same classification the exit code
+comes from. CI asserts that directly: with `--max-annotations 0`, a repo with
+findings still exits 1, and a deliberately malformed result set still produces
+the right gate count.
+
+**The cap is real and the omitted count is always stated.** GitHub drops
+annotations past a limit it does not document, and a legacy repo adopted
+without the ratchet can produce hundreds. A silent truncation would read as
+"that was all of them".
+
+SARIF upload would be the better mechanism and is out for the same reason
+CodeQL is: it needs Advanced Security on a private repo
+([`EVAL-vs-oss-tools.md`](EVAL-vs-oss-tools.md) §0).
+
+### The pre-commit hook — opt-in
+
+```bash
+"$BASELINE"/scripts/adopt.sh <repo> --hooks
+```
+
+**Never installed without that flag.** A hook that appears in someone's repo
+unasked is the kind of thing people rip out along with everything near it.
+
+It runs Gitleaks on the staged diff (~50 ms, measured) and Semgrep on the
+staged content. The credential is the reason it exists: one caught in CI is
+eight minutes and a force-push later than the same credential caught at `git
+commit`, and by then it is in the remote history and has to be treated as
+compromised no matter what you do next.
+
+Three properties worth knowing, because each is the difference between a hook
+people keep and one they delete:
+
+- **It scans the index, not the working tree.** `git commit` commits the index,
+  so a working-tree scan both misses findings you *are* committing and reports
+  ones you are not. The hook materialises the staged blobs before scanning. CI
+  asserts both directions: a staged secret blocks even when the file on disk is
+  clean, and an unstaged secret does not block.
+- **It never blocks on its own problems.** Missing tool, missing baseline,
+  Semgrep that will not start — each warns and lets the commit through. CI is
+  the gate; a hook that fails closed on its own plumbing just teaches people to
+  pass `--no-verify` reflexively.
+- **It is bypassable, and says so on every failure.**
+
+```bash
+git commit --no-verify                        # skip it once
+export MAXI_QUALITY_HOOK_SKIP_SEMGREP=1       # keep the fast half only
+export MAXI_QUALITY_BASELINE=/path/to/checkout  # if the baseline moved
+```
+
+The baseline path is baked in at install time, so it works for a colleague who
+has never heard of this repo; `MAXI_QUALITY_BASELINE` overrides it at run time
+if the checkout moves. If `core.hooksPath` is set, the hook installs there
+instead of `.git/hooks` — writing to a directory git does not read would look
+installed and do nothing.
 
 ---
 

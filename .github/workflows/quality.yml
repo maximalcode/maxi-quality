@@ -71,6 +71,22 @@ on:
           The full inventory is in the standing report either way.
         type: string
         default: ''
+      annotate:
+        description: >-
+          Render Semgrep findings as annotations on the pull-request diff, not
+          only in the job log. On by default and purely additive — annotations
+          are emitted after the verdict and cannot change it. Set 'false' if
+          your review workflow does not want them.
+        type: string
+        default: 'true'
+      max-annotations:
+        description: >-
+          Cap on annotations per run (default 50). GitHub drops them past a
+          limit it does not document, and a legacy repo adopted without
+          changed-only can produce hundreds. The omitted count is always
+          reported — a silent truncation reads as "that was all of them".
+        type: string
+        default: '50'
     outputs:
       # Exposed so a caller can assert that detection actually FIRED (#38).
       # Without this a consumer's run is green in two very different cases: the
@@ -453,3 +469,5 @@ jobs:
         with:
           changed-only: ${{ inputs.changed-only }}
           licenses: ${{ inputs.licenses }}
+          annotate: ${{ inputs.annotate }}
+          max-annotations: ${{ inputs.max-annotations }}

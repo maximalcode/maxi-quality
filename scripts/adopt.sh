@@ -17,6 +17,11 @@
 #                     by hand, not clobbered (docs/ADOPTION.md §3).
 #   --ref REF         Tag/branch consumers pin in the workflow. Default: v1.
 #   --no-workflow     Skip scaffolding .github/workflows/quality.yml.
+#   --hooks           ALSO install the opt-in pre-commit hook (gitleaks on the
+#                     staged diff, Semgrep on the staged content). Never
+#                     installed without this flag: a hook that appears in
+#                     someone's repo unasked gets ripped out along with
+#                     everything near it. Bypass with `git commit --no-verify`.
 #   -h, --help        This text.
 #
 # What gets written, per detected language:
@@ -32,6 +37,7 @@
 #   python   ruff.toml                     (1-line extend stub, only if absent)
 #   always   .maxi-quality.yml             (commented starter, only if absent)
 #   any      .github/workflows/quality.yml (unless --no-workflow)
+#   --hooks  .git/hooks/pre-commit         <- hooks/pre-commit (only with --hooks)
 #
 # The TS pair is a copy for the same reason Directory.Build.props is: a private
 # git devDep cannot npm-install in a consumer's CI.
@@ -48,6 +54,7 @@ DRY_RUN=0
 FORCE=0
 REF="v1"
 NO_WORKFLOW=0
+HOOKS=0
 
 die() { printf '\033[31merror:\033[0m %s\n' "$1" >&2; exit 3; }
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }
@@ -56,13 +63,14 @@ info() { printf '\033[36m›\033[0m %s\n' "$1"; }
 skip() { printf '\033[33mskip\033[0m %s\n' "$1"; }
 wrote() { printf '\033[32mwrite\033[0m %s\n' "$1"; }
 
-usage() { sed -n '3,38p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
+usage() { sed -n '3,44p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
     --force) FORCE=1; shift ;;
     --no-workflow) NO_WORKFLOW=1; shift ;;
+    --hooks) HOOKS=1; shift ;;
     --ref)
       [ $# -ge 2 ] || die "--ref needs a value"
       REF="$2"; shift 2 ;;
@@ -298,9 +306,62 @@ jobs:
 "
 fi
 
+# --- the pre-commit hook, only on --hooks ------------------------------------
+#
+# ONLY on --hooks, and that is the whole design (#40). A hook installed by
+# default is a hook somebody deletes in a hurry, taking the rest of the adoption
+# with it. Everything below fails soft for the same reason: this is a
+# convenience, and CI is the gate.
+if [ "$HOOKS" -eq 1 ]; then
+  GITDIR="$(git -C "$TARGET" rev-parse --git-dir 2>/dev/null || true)"
+  if [ -z "$GITDIR" ]; then
+    warn "--hooks: $TARGET is not a git repository; no hook installed"
+  else
+    case "$GITDIR" in /*) ;; *) GITDIR="$TARGET/$GITDIR" ;; esac
+    # A repo with core.hooksPath set does not read .git/hooks at all. Writing
+    # there anyway would install a hook that never runs — which is worse than
+    # not installing one, because it looks done.
+    HOOKSPATH="$(git -C "$TARGET" config --get core.hooksPath 2>/dev/null || true)"
+    if [ -n "$HOOKSPATH" ]; then
+      case "$HOOKSPATH" in /*) HOOKDIR="$HOOKSPATH" ;; *) HOOKDIR="$TARGET/$HOOKSPATH" ;; esac
+      info "core.hooksPath is set to '$HOOKSPATH'; installing there instead of .git/hooks"
+    else
+      HOOKDIR="$GITDIR/hooks"
+    fi
+
+    HOOK="$HOOKDIR/pre-commit"
+    if [ -e "$HOOK" ] && [ "$FORCE" -eq 0 ]; then
+      skip "$HOOK (already exists — merge by hand or re-run with --force)"
+      NEEDS_MERGE=1
+    elif [ "$DRY_RUN" -eq 1 ]; then
+      wrote "$HOOK (dry run)"
+    else
+      mkdir -p "$HOOKDIR"
+      # The baseline path is baked in at install time so the hook works for
+      # someone who has never heard of it, and MAXI_QUALITY_BASELINE still wins
+      # at run time so a team can relocate the checkout without reinstalling.
+      # `|` as the sed delimiter: the path contains slashes.
+      sed "s|@BASELINE@|$BASELINE|" "$BASELINE/hooks/pre-commit" > "$HOOK"
+      chmod +x "$HOOK"
+      wrote "$HOOK"
+    fi
+  fi
+fi
+
 # --- what the human still has to do ------------------------------------------
 printf '\n'
 bold "── next steps ──"
+
+if [ "$HOOKS" -eq 1 ]; then
+  printf '  Pre-commit hook\n'
+  printf '    Installed. It runs gitleaks on the staged diff (~50ms) and Semgrep\n'
+  printf '    on the staged CONTENT — not the working tree, because "git commit"\n'
+  printf '    commits the index and those differ.\n'
+  printf '    Bypass one commit:  git commit --no-verify\n'
+  printf '    Drop the slow half: export MAXI_QUALITY_HOOK_SKIP_SEMGREP=1\n'
+  printf '    It never blocks on its OWN problems — a missing tool warns and\n'
+  printf '    lets the commit through. CI is the gate.\n'
+fi
 
 if [ "$HAS_TS" -eq 1 ]; then
   printf '  TypeScript\n'
@@ -313,6 +374,14 @@ if [ "$HAS_TS" -eq 1 ]; then
   printf '       --max-warnings 0 is load-bearing; without it no-console is toothless.\n'
   printf '    4. typescript-eslint 8.x needs typescript >=4.8.4 <6.1.0 — TS 7 is refused\n'
   printf '       outright, not warned about (STATUS §4).\n'
+  printf '    5. OPTIONAL — the formatter. Not copied in, because adopting it on an\n'
+  printf '       existing repo reformats every file and that is your commit to make,\n'
+  printf '       not this script'"'"'s:\n'
+  printf '         npm i -D prettier\n'
+  printf '         cp %s/configs/typescript/prettier.config.mjs ./prettier.config.mjs\n' "$BASELINE"
+  printf '       Then run prettier --write ONCE, alone, and put that commit in\n'
+  printf '       .git-blame-ignore-revs. No eslint-config-prettier needed —\n'
+  printf '       typescript-eslint has shipped no formatting rules since v6.\n'
 fi
 
 if [ "$HAS_DOTNET" -eq 1 ]; then
@@ -327,6 +396,12 @@ if [ "$HAS_DOTNET" -eq 1 ]; then
   printf '       --use-lock-file opts in; RestoreLockedMode then fails CI on a\n'
   printf '       stale one, which is the commitment. This script will not make\n'
   printf '       that call for you.\n'
+  printf '    4. OPTIONAL — the formatter needs no extra config; the .editorconfig\n'
+  printf '       copied above IS the policy. Gate it with:\n'
+  printf '         dotnet format whitespace --verify-no-changes\n'
+  printf '       The WHITESPACE subcommand, not bare "dotnet format" — the bare form\n'
+  printf '       also runs every analyzer and re-reports the build gate'"'"'s own\n'
+  printf '       diagnostics under the formatter'"'"'s exit code.\n'
 fi
 
 if [ "$HAS_PYTHON" -eq 1 ]; then
@@ -339,6 +414,13 @@ if [ "$HAS_PYTHON" -eq 1 ]; then
   printf '    3. An existing codebase will be noisy on first run. Move real\n'
   printf '       exemptions into ruff.toml per-file-ignores rather than widening\n'
   printf '       the global ignore list — scoped and greppable beats invisible.\n'
+  printf '    4. OPTIONAL — the formatter is already configured by the ruff.base.toml\n'
+  printf '       copied above; it just needs running:\n'
+  printf '         ruff format .           # fix\n'
+  printf '         ruff format --check .   # gate\n'
+  printf '       Note line-length = 100 drives the FORMATTER as well as E501, so\n'
+  printf '       overriding it moves both. One reformat commit, alone, in\n'
+  printf '       .git-blame-ignore-revs.\n'
 fi
 
 if [ "$NEEDS_MERGE" -eq 1 ]; then

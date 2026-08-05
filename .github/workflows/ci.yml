@@ -159,6 +159,64 @@ jobs:
               exit 1
             }
           done
+      # --- the formatter, issue #42 -----------------------------------------
+      # docs/CONCEPT.md §4 has claimed since the first commit that formatting is
+      # "autofixed, never argued about". For TypeScript that was a claim with
+      # nothing behind it — no config, no tool, no check — which is the same
+      # shape as every other bug this repo has shipped.
+      - name: Everything Prettier owns must already be formatted
+        shell: bash
+        run: npm run verify:format
+      # THE ONE THAT MATTERS, and it is the ablation the step above cannot do.
+      # "The tree is formatted" and "the tree is formatted BY OUR CONFIG" are
+      # different claims, and only the second is worth a config file. Measured
+      # 2026-08-05, prettier 3.9.6: with `--no-config`, 21 files fail — Prettier
+      # defaults to printWidth 80 (we ship 100, matching configs/editorconfig
+      # and ruff.toml) and to double quotes (we ship single). Delete
+      # configs/typescript/prettier.config.mjs and the step above stays green.
+      - name: ...and formatted by OUR config, not Prettier's defaults
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          ./node_modules/.bin/prettier --no-config \
+            --check "**/*.{ts,mts,cts,js,mjs,cjs}" >/dev/null 2>&1 || rc=$?
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::the tree is formatted identically with and without configs/typescript/prettier.config.mjs — that config is now proving nothing. Either printWidth/singleQuote were reverted to Prettier defaults, or the settings that differ no longer appear in any checked file.'
+            exit 1
+          fi
+          echo 'OK: the shipped Prettier config changes the verdict'
+      # --ignore-path /dev/null on purpose: .prettierignore lists samples/format
+      # so that `npm run format` cannot quietly repair the fixtures, and this is
+      # the one place that has to look past it.
+      - name: The misformatted TS fixture must be REJECTED
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          ./node_modules/.bin/prettier --config configs/typescript/prettier.config.mjs \
+            --ignore-path /dev/null --check samples/format/bad-format.ts >/dev/null 2>&1 || rc=$?
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/format/bad-format.ts passed prettier --check. Either the fixture was formatted (do not do that — fix the config instead) or the gate stopped reading it.'
+            exit 1
+          fi
+          # And the width ablation from the other side: this file is Prettier-
+          # clean at printWidth 100 and dirty at Prettier's default 80. Both
+          # halves are asserted, because "fails with defaults" alone is also
+          # what a plain syntax error looks like.
+          rc=0
+          ./node_modules/.bin/prettier --config configs/typescript/prettier.config.mjs \
+            --ignore-path /dev/null --check samples/format/needs-width-100.ts >/dev/null 2>&1 || rc=$?
+          [[ $rc -eq 0 ]] || {
+            echo '::error::samples/format/needs-width-100.ts is not clean under our config — printWidth regressed, or the fixture line drifted outside 81-100 chars'
+            exit 1; }
+          rc=0
+          ./node_modules/.bin/prettier --no-config \
+            --ignore-path /dev/null --check samples/format/needs-width-100.ts >/dev/null 2>&1 || rc=$?
+          [[ $rc -ne 0 ]] || {
+            echo '::error::samples/format/needs-width-100.ts is clean under Prettier defaults too — its long line no longer exceeds 80 chars, so it separates nothing'
+            exit 1; }
+          echo 'OK: the misformatted fixture fails and the width ablation separates 100 from 80'
 
   layer1-dotnet:
     runs-on: ubuntu-latest
@@ -216,6 +274,66 @@ jobs:
           fi
           printf '%s' "$out" | python3 scripts/check-expected.py --tool dotnet \
             --input - --expected samples/expected/dotnet-clean.json
+      # --- the formatter, issue #42 -----------------------------------------
+      #
+      # `dotnet format whitespace`, NOT bare `dotnet format`. MEASURED
+      # 2026-08-05, SDK 10.0.301: the bare form also runs Code Style analysis
+      # and 622 analyzer references, so against samples/dotnet it reports S101,
+      # IDE0005, IDE0052, IDE0060 and CS8625 — the BUILD gate's findings wearing
+      # the formatter's exit code. One red check would then mean two unrelated
+      # things, and the build step above already owns those diagnostics. The
+      # `whitespace` subcommand is layout only.
+      - name: C# samples must already be whitespace-formatted
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for d in samples/dotnet samples/dotnet-clean samples/dotnet-tests; do
+            dotnet format whitespace "$d" --verify-no-changes --verbosity quiet
+          done
+      # THE ABLATION, and this one is not decoration: for C# almost everything
+      # in configs/editorconfig agrees with the tool's own defaults, so a
+      # fixture that merely fails proves the formatter ran and nothing about
+      # WHICH config it ran with. `insert_final_newline = true` is the setting
+      # that genuinely differs, so the fixture is a file with no trailing
+      # newline and it is checked TWICE — once with the shipped .editorconfig
+      # staged beside it, once with none. The two verdicts must disagree.
+      #
+      # Measured 2026-08-05: without the config, exit 0. With it,
+      # `FINALNEWLINE: Fix final newline. Insert '\n'`.
+      - name: The shipped .editorconfig must be what decides the C# verdict
+        shell: bash
+        run: |
+          set -uo pipefail
+          stage() {
+            rm -rf "$1"; mkdir -p "$1"
+            cp samples/format/MissingFinalNewline.cs "$1/"
+          }
+          # Guard the fixture before either run. If an editor or a
+          # .gitattributes ever appends the newline, both runs go green and the
+          # ablation silently stops testing anything — which is the exact
+          # failure mode this whole job exists to catch.
+          if [[ -z "$(tail -c 1 samples/format/MissingFinalNewline.cs)" ]]; then
+            echo '::error::samples/format/MissingFinalNewline.cs now ENDS with a newline, so it no longer separates the shipped .editorconfig from the tool defaults. Strip the trailing newline (printf, not an editor) to restore the fixture.'
+            exit 1
+          fi
+
+          stage /tmp/fmt-bare
+          rc=0
+          dotnet format whitespace /tmp/fmt-bare --folder --verify-no-changes \
+            --verbosity quiet >/dev/null 2>&1 || rc=$?
+          [[ $rc -eq 0 ]] || {
+            echo "::error::the fixture failed dotnet format whitespace with NO .editorconfig (exit $rc) — it is misformatted in some way other than the missing final newline, so the ablation no longer isolates insert_final_newline"
+            exit 1; }
+
+          stage /tmp/fmt-config
+          cp configs/editorconfig /tmp/fmt-config/.editorconfig
+          rc=0
+          dotnet format whitespace /tmp/fmt-config --folder --verify-no-changes \
+            --verbosity quiet >/dev/null 2>&1 || rc=$?
+          [[ $rc -ne 0 ]] || {
+            echo '::error::the fixture PASSED with configs/editorconfig staged beside it — insert_final_newline is no longer being enforced, so the C# format gate is running on tool defaults and configs/editorconfig gates nothing'
+            exit 1; }
+          echo 'OK: configs/editorconfig changes the verdict — the C# format gate is driven by the shipped config'
 
   # #25 — the test-project relaxation, asserted from BOTH sides. A one-sided
   # check would pass just as happily if the waiver swallowed everything.
@@ -346,6 +464,45 @@ jobs:
             exit 1
           fi
           echo 'OK: clean Python sample passes ruff and mypy with zero findings'
+      # --- the formatter, issue #42 -----------------------------------------
+      # configs/python/ruff.toml has had a [format] section since it was written
+      # and NOTHING RAN IT. Present, plausible, gating nothing — the same shape
+      # as dotnet_diagnostic.IDE1006.severity never being set (docs/STATUS.md §4).
+      - name: Python sources must already be ruff-formatted
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ruff format --check --config configs/python/ruff.toml \
+            samples/python samples/python-clean
+      - name: The misformatted Python fixture must be REJECTED
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          ruff format --check --config configs/python/ruff.toml \
+            samples/format/bad_format.py >/dev/null 2>&1 || rc=$?
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/format/bad_format.py passed ruff format --check. Either the fixture was formatted (do not do that) or the gate stopped reading it.'
+            exit 1
+          fi
+          # The ablation. Everything in [format] is a ruff DEFAULT, so that
+          # section on its own is unfalsifiable — delete it and nothing moves.
+          # `line-length = 100` is the setting that is not a default (ruff ships
+          # 88) and it drives the formatter as well as E501, so it is the one
+          # with a fixture: clean at 100, rewrapped at 88. --isolated ignores
+          # every config file, which is the only way to get ruff's true defaults.
+          rc=0
+          ruff format --check --config configs/python/ruff.toml \
+            samples/format/needs_width_100.py >/dev/null 2>&1 || rc=$?
+          [[ $rc -eq 0 ]] || {
+            echo '::error::samples/format/needs_width_100.py is not clean under our config — line-length regressed, or the fixture line drifted outside 89-100 chars'
+            exit 1; }
+          rc=0
+          ruff format --check --isolated samples/format/needs_width_100.py >/dev/null 2>&1 || rc=$?
+          [[ $rc -ne 0 ]] || {
+            echo '::error::samples/format/needs_width_100.py is clean at ruff defaults too — its long line no longer exceeds 88 chars, so it separates nothing'
+            exit 1; }
+          echo 'OK: the misformatted fixture fails and the width ablation separates 100 from 88'
 
   # The ratchet (`--changed-only`) had NO test, and shipped broken: semgrep's
   # --baseline-commit resolves the ref against the git repo of its WORKING
@@ -872,10 +1029,22 @@ jobs:
           # outside the scanned repo — and the only one with a trailing
           # entrypoint after the image name.
           need '/baseline:ro'
+          # THE DOCKER TAG IS READ FROM scan.sh, NOT WRITTEN OUT HERE.
+          #
+          # It used to be the literal `returntocorp/semgrep:latest`, and this
+          # assertion is what caught the pin change in #43 — correctly, but by
+          # failing on the fix rather than on a regression. A hardcoded copy of
+          # a version string in the test for the version string is the same
+          # two-sources-of-truth bug the pin itself has (STATUS §4); reading it
+          # back means a future bump touches one place and this still asserts
+          # that docker gets the pinned tag rather than :latest.
+          PIN=$(sed -n 's/^SEMGREP_PIN="\([0-9.]*\)".*/\1/p' scripts/scan.sh | head -1)
+          [[ -n "$PIN" ]] || { echo '::error::could not read SEMGREP_PIN from scripts/scan.sh'; exit 1; }
+          [[ "$PIN" != "latest" ]] || { echo '::error::scan.sh is back on an unpinned docker tag'; exit 1; }
           # One --config per selected rule group, emitted by scripts/policy.py.
           # The group list is what a .maxi-quality.yml narrows; this fixture has
           # no policy file, so all three must be present.
-          need 'returntocorp/semgrep:latest semgrep --config /baseline/semgrep/general'
+          need "returntocorp/semgrep:$PIN semgrep --config /baseline/semgrep/general"
           need '--config /baseline/semgrep/security'
           need '--config /baseline/semgrep/conventions'
           # The results are ALWAYS written as JSON and the verdict comes from
@@ -2001,6 +2170,317 @@ jobs:
             echo '::error::the resolved policy drifted from its snapshot'
             exit 1; }
           echo 'OK: resolved policy matches samples/policy/expected/resolved.txt'
+
+      # --- #43: a file semgrep cannot read vs a scan that failed -------------
+      #
+      # These were the same thing — any non-empty `.errors` exited 2 — and a
+      # real C# codebase using C# 12 primary constructors turned a clean scan
+      # into a red gate. Both halves are asserted, because the fix is wrong in
+      # a different way if either one is missing: gate on parse errors and the
+      # check gets ignored; never gate and a repo semgrep cannot read at all
+      # reports clean forever.
+      - name: An unparseable file is a coverage gap, not a scan failure
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          out=$(./scripts/scan.sh samples/parse-errors/mixed \
+                  --skip gitleaks --skip osv 2>&1) || rc=$?
+          echo "$out"
+          # exit 1 = the PLANTED FINDING gated. Not exit 2, which is what the
+          # unparseable file next to it used to produce.
+          [[ "$rc" -eq 1 ]] || {
+            echo "::error::expected exit 1 (the planted finding), got $rc"; exit 1; }
+          # The control. Without a real finding here, "clean, 1 unparsed" cannot
+          # be told apart from "semgrep fell over and reported nothing".
+          eq() { [[ "$2" == "$3" ]] || {
+            echo "::error::$1: expected '$3', got '$2'"; exit 1; }; echo "  OK  $1 = $2"; }
+          eq gate     "$(sed -n 's/^semgrep_gate=//p' <<<"$out" | tail -1)" 1
+          eq unparsed "$(sed -n 's/^semgrep_unparsed=//p' <<<"$out" | tail -1)" 1
+          # Counting it is not enough — the file has to be NAMED, or the
+          # coverage hole is still invisible to whoever reads the log.
+          grep -q 'unparsed .*PrimaryConstructor\.cs' <<<"$out" || {
+            echo '::error::the unparsed file was counted but never named'; exit 1; }
+          grep -q 'file(s) UNPARSED' <<<"$out" || {
+            echo '::error::the summary line does not carry the unparsed count'; exit 1; }
+          echo 'OK: findings still gate; the coverage gap is named but does not gate'
+
+      - name: ...but a tree semgrep cannot parse AT ALL is a failed scan
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          out=$(./scripts/scan.sh samples/parse-errors/total \
+                  --skip gitleaks --skip osv 2>&1) || rc=$?
+          echo "$out"
+          [[ "$rc" -ne 0 ]] || {
+            echo '::error::a tree where NOTHING parsed reported success — "0 findings because nobody looked" must never read as clean'
+            exit 1; }
+          grep -q 'ERROR (policy exit 2)' <<<"$out" || {
+            echo '::error::expected the semgrep summary line to be ERROR (policy exit 2)'
+            exit 1; }
+          grep -q 'failed to parse, so no rule ran' <<<"$out" || {
+            echo '::error::the failure did not say WHY — it must name the cause, not just exit'
+            exit 1; }
+          echo 'OK: nothing-parsed is still a hard failure'
+
+      # THE ALLOWLIST HAS TO BE AN ALLOWLIST. If the split ever became a
+      # denylist — "everything is per-file except these" — a semgrep release
+      # inventing a new failure mode would silently stop gating. Fed an error
+      # type that is not on the list, classify must still exit 2.
+      - name: An unrecognised semgrep error type is still fatal
+        shell: bash
+        run: |
+          set -uo pipefail
+          python3 scripts/policy.py resolve --target . --baseline . \
+            --baseline-path . --out "$RUNNER_TEMP/p.json"
+          cat > "$RUNNER_TEMP/invented.json" <<'JSON'
+          {"results": [],
+           "errors": [{"type": "SomeFutureSemgrepFailure",
+                       "message": "invented for this test",
+                       "path": "a.cs"}],
+           "paths": {"scanned": ["a.cs"]}}
+          JSON
+          rc=0
+          out=$(python3 scripts/policy.py classify --resolved "$RUNNER_TEMP/p.json" \
+                  --results "$RUNNER_TEMP/invented.json" 2>&1) || rc=$?
+          echo "$out"
+          [[ "$rc" -eq 2 ]] || {
+            echo "::error::an unknown error type exited $rc, not 2 — the parse-error split has become a denylist and a future semgrep failure would stop gating"
+            exit 1; }
+          echo 'OK: unknown error types are still fatal'
+
+      # The standing report shares the split, by importing it rather than
+      # reimplementing it. Before #43 one unparseable file rendered the whole
+      # report as ERRORED and wrote ERRORED into the permanent history table.
+      - name: The standing report shows the gap instead of blanking
+        shell: bash
+        run: |
+          set -uo pipefail
+          ./scripts/scan.sh samples/parse-errors/mixed --skip gitleaks --skip osv \
+            --json-out "$RUNNER_TEMP/pe.json" >/dev/null 2>&1 || true
+          rc=0
+          out=$(python3 scripts/quality-report.py --json "$RUNNER_TEMP/pe.json" \
+                  --date 2026-01-01 --target demo/repo \
+                  --gitleaks clean --osv clean) || rc=$?
+          echo "$out"
+          [[ "$rc" -eq 0 ]] || {
+            echo "::error::the report exited $rc — an unparseable file is still being treated as an outage"
+            exit 1; }
+          grep -q 'debug-print-left-behind-dotnet' <<<"$out" || {
+            echo '::error::the findings breakdown is missing — the report blanked'; exit 1; }
+          grep -q '### Not scanned' <<<"$out" || {
+            echo '::error::the report does not mention the unparsed file at all, which is the other way to get this wrong'
+            exit 1; }
+          grep -q 'ERRORED' <<<"$out" && {
+            echo '::error::the run was recorded as ERRORED in the history table'; exit 1; }
+          echo 'OK: the report renders findings AND names the coverage gap'
+
+      # --- #40: annotations render findings, they do not decide anything -----
+      #
+      # THE ASSERTION THAT MATTERS IS THE NEGATIVE ONE. An annotation layer that
+      # can influence the exit code is a gate with a second, undocumented way to
+      # go green. Everything below is arranged so that a rendering bug can only
+      # produce a worse-looking run, never a passing one.
+      - name: Annotations render on the diff, gating ones as errors
+        shell: bash
+        run: |
+          set -uo pipefail
+          out=$(./scripts/scan.sh samples/policy/warn --skip gitleaks --skip osv \
+                  --annotate 2>&1) || true
+          echo "$out"
+          # A warn-only rule must annotate as ::warning, not ::error — the
+          # policy's downgrade has to survive into the rendering, or the diff
+          # shows a red mark for something the gate deliberately let through.
+          grep -qE '^::warning file=.*title=todo-without-issue::' <<<"$out" || {
+            echo '::error::the warn-only finding did not annotate as ::warning'
+            exit 1; }
+          grep -qE '^::error ' <<<"$out" && {
+            echo '::error::a warn-only fixture emitted an ::error annotation'
+            exit 1; }
+          # And the gating direction, on a fixture that actually gates.
+          out=$(./scripts/scan.sh samples/policy/disable --skip gitleaks --skip osv \
+                  --annotate 2>&1) || true
+          grep -qE '^::error file=.*line=[0-9]+.*title=' <<<"$out" || {
+            echo '::error::a gating finding did not annotate as ::error with a file and line'
+            exit 1; }
+          echo 'OK: gating findings annotate as errors, warn-only as warnings'
+
+      - name: A broken annotation path cannot make a failing scan pass
+        shell: bash
+        run: |
+          set -uo pipefail
+          # 1. The cap set to zero — the most direct form of "the renderer
+          #    produced nothing". The verdict must be identical.
+          rc_plain=0
+          ./scripts/scan.sh samples/policy/disable --skip gitleaks --skip osv \
+            >/dev/null 2>&1 || rc_plain=$?
+          rc_zero=0
+          out=$(./scripts/scan.sh samples/policy/disable --skip gitleaks --skip osv \
+                  --annotate --max-annotations 0 2>&1) || rc_zero=$?
+          echo "$out"
+          [[ "$rc_plain" -eq 1 && "$rc_zero" -eq 1 ]] || {
+            echo "::error::exit code changed with annotations: plain=$rc_plain annotated-cap-0=$rc_zero"
+            exit 1; }
+          grep -q 'suppressed' <<<"$out" || {
+            echo '::error::annotations were suppressed silently — the count must be stated'
+            exit 1; }
+
+          # 2. MALFORMED FINDINGS. A result with no path, no start and no extra
+          #    is what a semgrep output-format change looks like from here. The
+          #    annotator must degrade, not raise — a traceback would take the
+          #    verdict down with it.
+          python3 scripts/policy.py resolve --target . --baseline . \
+            --baseline-path . --out "$RUNNER_TEMP/p.json"
+          cat > "$RUNNER_TEMP/malformed.json" <<'JSON'
+          {"results": [{"check_id": "semgrep.general.no-ambient-clock"},
+                       {"check_id": "x.weak-crypto", "path": "a.ts", "start": "nonsense"}],
+           "errors": [], "paths": {"scanned": ["a.ts"]}}
+          JSON
+          rc=0
+          out=$(python3 scripts/policy.py classify --resolved "$RUNNER_TEMP/p.json" \
+                  --results "$RUNNER_TEMP/malformed.json" --annotate 2>&1) || rc=$?
+          echo "$out"
+          [[ "$rc" -eq 1 ]] || {
+            echo "::error::malformed findings changed the verdict (exit $rc, expected 1) — the annotator is not isolated from it"
+            exit 1; }
+          grep -q 'semgrep_gate=2' <<<"$out" || {
+            echo '::error::the gate count did not survive the malformed results'
+            exit 1; }
+          echo 'OK: annotations are additive — cap, suppression and malformed input all leave the verdict alone'
+
+      # --- #40: the opt-in pre-commit hook -----------------------------------
+      #
+      # Driven through a real `git commit` in a scratch repo rather than by
+      # calling the script. A hook has two failure modes a direct invocation
+      # cannot see: git runs it with its own environment, and the thing it is
+      # supposed to scan is the INDEX, not the working tree.
+      - name: The pre-commit hook is opt-in, blocks staged secrets, and is bypassable
+        shell: bash
+        run: |
+          set -uo pipefail
+          R="$RUNNER_TEMP/hookrepo"; rm -rf "$R"; mkdir -p "$R/src"
+          git -C "$R" init -q .
+          git -C "$R" config user.name t
+          git -C "$R" config user.email t@example.invalid
+          echo '{}' > "$R/package.json"; echo '{}' > "$R/package-lock.json"
+
+          # OPT-IN: adoption without --hooks must install nothing. A hook that
+          # arrives unasked is one people delete along with everything near it.
+          ./scripts/adopt.sh "$R" --no-workflow >/dev/null 2>&1
+          [[ ! -e "$R/.git/hooks/pre-commit" ]] || {
+            echo '::error::adopt.sh installed a pre-commit hook WITHOUT --hooks'
+            exit 1; }
+
+          ./scripts/adopt.sh "$R" --no-workflow --hooks >/dev/null 2>&1
+          [[ -x "$R/.git/hooks/pre-commit" ]] || {
+            echo '::error::--hooks did not install an executable pre-commit hook'; exit 1; }
+
+          echo 'export const ok = 1;' > "$R/src/ok.ts"
+          git -C "$R" add -A
+          rc=0; git -C "$R" commit -qm base >/dev/null 2>&1 || rc=$?
+          [[ "$rc" -eq 0 ]] || {
+            echo "::error::the hook blocked a clean commit (exit $rc)"
+            git -C "$R" commit -m base 2>&1 | tail -20; exit 1; }
+          BASE=$(git -C "$R" rev-parse HEAD)
+
+          # THE INDEX, NOT THE WORKING TREE. The secret is staged and then
+          # overwritten on disk. `git commit` commits the index, so a hook that
+          # scans the working tree sees clean code and waves through the very
+          # commit it exists to stop. This is the single most common way a
+          # pre-commit hook is quietly wrong.
+          #
+          # The variable is named `apiToken` on purpose. hardcoded-secret-ts
+          # matches on the NAME (`metavariable-regex` over password|token|…),
+          # so a fixture called `t` trips gitleaks and NOT semgrep — which is
+          # how the first version of this test passed on a laptop with gitleaks
+          # installed and failed on a runner that only has semgrep. A fixture
+          # whose verdict depends on which tool happens to be present is not a
+          # test of the hook.
+          printf "export const apiToken = 'ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8';\n" \
+            > "$R/src/leak.ts"
+          git -C "$R" add src/leak.ts
+          echo 'export const clean = 1;' > "$R/src/leak.ts"
+          rc=0
+          out=$(git -C "$R" commit -qm leak 2>&1) || rc=$?
+          echo "$out"
+          [[ "$rc" -ne 0 ]] || {
+            echo '::error::a STAGED secret was committed — the hook is scanning the working tree instead of the index'
+            exit 1; }
+          [[ "$(git -C "$R" rev-parse HEAD)" == "$BASE" ]] || {
+            echo '::error::the commit landed anyway'; exit 1; }
+
+          # WHICH HALF BLOCKED IT, not just that something did. A bare "the
+          # commit failed" would stay green if the Semgrep pass silently
+          # stopped running and gitleaks alone carried it — the same
+          # passes-without-checking shape this whole job exists to catch.
+          grep -q 'Semgrep findings in the staged changes' <<<"$out" || {
+            echo '::error::the commit was blocked, but NOT by the Semgrep pass — it is not running against the staged content'
+            exit 1; }
+          # And the gitleaks half, in whichever state this machine is in. The
+          # skip path is asserted too: failing soft on a missing tool is
+          # deliberate, but it has to be VISIBLE or the hook is quietly doing
+          # half its job.
+          if command -v gitleaks >/dev/null 2>&1; then
+            grep -q 'gitleaks found a secret' <<<"$out" || {
+              echo '::error::gitleaks is installed but did not flag a staged credential'
+              exit 1; }
+          else
+            grep -q 'gitleaks not installed' <<<"$out" || {
+              echo '::error::gitleaks is absent and the hook said nothing about it — a skipped check must never be silent'
+              exit 1; }
+            # SAID OUT LOUD, because this is the branch CI actually takes: this
+            # job installs semgrep and not gitleaks, so the hook's `gitleaks
+            # git --staged` invocation is exercised on a laptop and NOT here.
+            # Installing gitleaks would mean a third place pinning its version
+            # and sha256, which is the problem #43 just finished removing for
+            # semgrep. What IS covered on a runner: gitleaks itself, through
+            # actions/layer2 in the layer2 job.
+            echo 'NOTE: gitleaks absent here — the hook fell through to Semgrep, and the fall-through was visible. The gitleaks invocation itself is only exercised where gitleaks is installed.'
+          fi
+
+          # BYPASSABLE. This is a feature, not a hole: a hook that cannot be
+          # skipped gets uninstalled the first time somebody needs to commit a
+          # WIP, and then it catches nothing at all.
+          rc=0; git -C "$R" commit -qm leak --no-verify >/dev/null 2>&1 || rc=$?
+          [[ "$rc" -eq 0 ]] || {
+            echo '::error::--no-verify did not bypass the hook'; exit 1; }
+
+          # AND THE OTHER DIRECTION: a secret that is only in the working tree
+          # is not being committed, so it must not block. A hook that fires on
+          # unstaged edits is one people disable.
+          git -C "$R" reset -q --hard "$BASE"
+          printf "export const t = 'ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8';\n" > "$R/src/leak.ts"
+          echo 'export const other = 2;' > "$R/src/other.ts"
+          git -C "$R" add src/other.ts
+          rc=0; git -C "$R" commit -qm other >/dev/null 2>&1 || rc=$?
+          [[ "$rc" -eq 0 ]] || {
+            echo '::error::an UNSTAGED secret blocked the commit — the hook is scanning the working tree'
+            exit 1; }
+          echo 'OK: opt-in, index-scoped in both directions, and bypassable'
+
+      # A hook is the one script in this repo most likely to run on a
+      # developer's Mac, where /bin/bash is still 3.2.57. It shipped with
+      # `mapfile` — a bash 4 builtin — and aborted every commit with "command
+      # not found" until this was caught by running it rather than reading it.
+      - name: The hook must run under bash 3.2
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # COMMENTS ARE STRIPPED FIRST. The hook documents the bug it shipped
+          # with, by name — so a guard reading the raw file fails on the
+          # explanation of why the guard exists. Exactly the shape the
+          # fetch-and-execute guard already had to be taught (STATUS §4).
+          sed 's/[[:space:]]*#.*$//' hooks/pre-commit > "$RUNNER_TEMP/hook.stripped"
+          # `mapfile`/`readarray`, associative arrays and `${var^^}` are the
+          # bash 4 constructs that would silently reintroduce this.
+          if grep -nE '\b(mapfile|readarray)\b|declare -A|\$\{[A-Za-z_]+\^\^' \
+               "$RUNNER_TEMP/hook.stripped"; then
+            echo '::error::hooks/pre-commit uses a bash 4 construct; macOS ships bash 3.2.57'
+            exit 1
+          fi
+          bash -n hooks/pre-commit
+          echo 'OK: no bash 4 constructs in the hook'
 
   # examples/ is documentation that executes. A worked example that would not
   # actually work is worse than no example — the reader trusts it more than the

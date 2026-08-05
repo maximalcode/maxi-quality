@@ -178,6 +178,61 @@ Four flags no fixture can reach — `isolatedModules`, `esModuleInterop`,
 `configs/typescript/tsconfig.snapshot.json`, which asserts what `tsc --showConfig`
 **resolves** rather than what the JSON file says.
 
+### The pre-commit hook
+
+`hooks/pre-commit` is the one script here most likely to run on a laptop rather
+than a runner, and **macOS still ships bash 3.2.57 as `/bin/bash`**. It was
+written with `mapfile` and aborted every commit with `command not found` until
+that was caught — by running it, not by reading it. CI greps the file for bash 4
+constructs, with comments stripped, because the hook documents the bug by name
+and an unstripped guard fails on its own explanation.
+
+Test it the way it runs: install it into a scratch repo with `adopt.sh --hooks`
+and drive real `git commit` calls. Calling the script directly misses both of
+its interesting failure modes — git supplies its own environment, and the thing
+being scanned is the **index**, not the working tree.
+
+### The formatters
+
+```bash
+npm run verify:format      # Prettier, expect ZERO reformatted
+ruff format --check --config configs/python/ruff.toml samples/python samples/python-clean
+dotnet format whitespace samples/dotnet-clean --verify-no-changes
+```
+
+`samples/format/` is their fixture directory, and it is worth reading before
+adding to it because a format fixture fails the usual test for a good one.
+
+**A misformatted file proves a formatter ran. It does not prove which config it
+ran with** — the tool's own defaults reject mangled code just as readily, so
+`bad-format.ts` and `bad_format.py` stay red even if the config beside them is
+deleted. That is the same trap as `samples/policy/`'s original `exclude`
+fixture, which excluded a directory semgrep skips by default and so passed while
+asserting nothing.
+
+So each format config also gets an **ablation** fixture — a file that is correct
+under our settings and wrong under the tool's defaults, checked both ways round
+with the two verdicts required to differ:
+
+| Fixture | Green under | Red under |
+|---|---|---|
+| `needs-width-100.ts` | `printWidth: 100` | Prettier's default 80 |
+| `needs_width_100.py` | `line-length = 100` | ruff's default 88 (`--isolated`) |
+| `MissingFinalNewline.cs` | no `.editorconfig` | `insert_final_newline` from `configs/editorconfig` |
+
+The C# one is the clearest case for why this is necessary: for C# almost
+everything in `configs/editorconfig` agrees with `dotnet format`'s own defaults,
+so without an ablation the whole file could be emptied and the gate would stay
+green.
+
+Two mechanical things that will trip you up:
+
+- `samples/format/` is in `.prettierignore` so `npm run format` cannot repair
+  the fixtures. The gate steps pass `--ignore-path /dev/null` to look past it.
+- `MissingFinalNewline.cs` is stored **without** a trailing newline. Most editors
+  add one on save, so CI checks for that explicitly before running the ablation
+  — write it with `printf`, not by hand.
+
 ### C# / .NET
 
 ```bash

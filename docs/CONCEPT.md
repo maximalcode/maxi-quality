@@ -120,6 +120,8 @@ maxi-quality/
 │   ├── editorconfig              # shared .editorconfig (all languages)
 │   ├── typescript/
 │   │   ├── eslint.config.mjs     # typescript-eslint strict-type-checked base
+│   │   ├── prettier.config.mjs   # the formatter (§4a) — printWidth 100 to match
+│   │   │                         #   editorconfig, single quotes to match the tree
 │   │   └── tsconfig.strict.json  # "extends"-able strict compiler options
 │   ├── dotnet/
 │   │   ├── Directory.Build.props # AnalysisLevel, WarningsAsErrors, analyzers
@@ -146,7 +148,10 @@ maxi-quality/
 │       ├── quality.yml           # REUSABLE gate (on: workflow_call)
 │       └── quality-report.yml    # REUSABLE standing report (§11)
 ├── samples/                      # intentionally-bad code per language;
-│                                 #   doubles as the baseline's own test suite
+│                                 #   doubles as the baseline's own test suite.
+│                                 #   format/, semgrep/ and policy/ are kept
+│                                 #   apart so one subsystem's fixtures cannot
+│                                 #   move another's expected counts
 └── scripts/
     ├── adopt.sh                  # bootstrap a repo: detect languages, copy stubs
     ├── check-pins.sh             # bump policy: pin consistency + upstream drift
@@ -162,14 +167,45 @@ maxi-quality/
 
 | Language | Tooling | How a project consumes it |
 |---|---|---|
-| **TypeScript** | typescript-eslint `strict-type-checked` (+ `stylistic`), or Biome for small tools | `eslint.base.mjs` + `tsconfig.base.json` are copied in at adopt time, like the .NET props — a git devDep cannot npm-install in a consumer's CI. The project's own `eslint.config.mjs` stays ~3 lines |
+| **TypeScript** | typescript-eslint `strict-type-checked` (+ `stylistic`) + `eslint-plugin-sonarjs`; Prettier for layout (§4a) | `eslint.base.mjs` + `tsconfig.base.json` are copied in at adopt time, like the .NET props — a git devDep cannot npm-install in a consumer's CI. The project's own `eslint.config.mjs` stays ~3 lines |
 | **C#/.NET** | built-in Roslyn `latest-recommended`, `SonarAnalyzer.CSharp`, `Roslynator.Analyzers`, `TreatWarningsAsErrors` | copy `Directory.Build.props` — .NET has no remote-extends; this is the one accepted copy (small, rarely changes) |
 | **Java** — *not built* | Error Prone (+ NullAway), SpotBugs; Checkstyle only for style | **Nothing exists in `configs/java/` and nothing will until a real project needs it** (§9). This row is the plan, not a shipped config. |
 | **Python** | Ruff, 13 families (`E W F I B C4 UP N SIM ASYNC S T20 RUF`) + mypy `strict` | `ruff.toml` supports `extend = <path>` — but use the `extend-` forms of `select`/`per-file-ignores`, the bare ones REPLACE. mypy has no extend: `mypy.ini` is a copy |
 
 **Principle:** compiler-adjacent analyzers do the bug-finding; style stays
-minimal. Formatting is Prettier/Biome / `dotnet format` / google-java-format /
-Ruff-format — autofixed, never argued about.
+minimal. Formatting is autofixed, never argued about.
+
+### 4a. Formatting
+
+This section used to promise "Prettier/Biome / `dotnet format` /
+google-java-format / Ruff-format" and the tree shipped one of the four, gating
+nothing (#42). What ships now:
+
+| Language | Formatter | Config | Gated by |
+|---|---|---|---|
+| **TypeScript** | Prettier | `configs/typescript/prettier.config.mjs` | `npm run verify:format` |
+| **Python** | `ruff format` | the `[format]` section of `configs/python/ruff.toml` | `ruff format --check` |
+| **C#/.NET** | `dotnet format whitespace` | `configs/editorconfig` | `dotnet format whitespace --verify-no-changes` |
+| **Java** | — | — | nothing, and nothing until a real project needs it (§9) |
+
+Three things this table is careful about, each of which was measured rather
+than assumed:
+
+- **`dotnet format whitespace`, not bare `dotnet format`.** The bare form runs
+  Code Style analysis and every analyzer reference — 622 of them on a sample
+  project — so it re-reports the build gate's own diagnostics under the
+  formatter's exit code. Two unrelated failures behind one red check.
+- **Biome is not a second option.** Offering two formatters for one language
+  means two possible layouts for the same file, which is the argument the
+  section claims to end. Prettier, because every file already conformed to it.
+- **Java is out of the table, not pending in it.** Same rule as the Layer 1 row
+  above: no consuming project, no config.
+
+Adopting cost nothing here — measured 2026-08-05, all three formatters
+reformat **zero** files in this repo, so the gate started green and only ever
+fires on future drift. Each config is proven by a fixture in `samples/format/`
+that is correct under *our* settings and wrong under the *tool's defaults*, so
+deleting a config turns a check red instead of leaving it quietly true.
 
 ---
 

@@ -34,9 +34,32 @@ THE THREE THINGS THIS FILE REFUSES TO DO QUIETLY
    disabled rule survived into the results. If the mangling ever changes, that
    assertion fails loudly instead of quietly un-disabling somebody's policy.
 
-3. **Let a parse failure read as "clean".** An unreadable policy, an unparseable
-   result set, or a semgrep run whose `.errors` is non-empty are all failures.
-   Never a pass. That is the shape of every gate bug this repo has actually hit.
+3. **Let a broken mechanism read as "clean".** An unreadable policy, an
+   unparseable result set, or a semgrep run that FAILED are all failures. Never
+   a pass. That is the shape of every gate bug this repo has actually hit.
+
+   With one distinction, added in #43 and worth stating precisely, because
+   getting it wrong in either direction is a real bug:
+
+   **A file semgrep cannot parse is a coverage gap, not a scan failure.**
+   Both used to be `.errors`, and both exited 2. Measured: a real C# codebase
+   using C# 12 primary constructors turned a clean scan into a red gate —
+   `Ran 22 rules on 29 files: 0 findings`, then `refusing to treat the result
+   as a finding set`. There is nothing the consumer can do about semgrep's
+   parser, so the gate was red on green code, which is how a gate gets ignored.
+
+   The *worse* half is the one that had no output at all: a file that does not
+   parse has no rules run against it. It was being reported as a failure, which
+   at least made noise — but never as what it is, which is a hole in coverage
+   with a name and a count. So parse failures are now split out, listed by file
+   and counted (`semgrep_unparsed=N`), and they do not gate.
+
+   Two guards keep that from becoming the silent-pass this file exists to
+   prevent. Every error type NOT on the per-file list below is still fatal, so
+   an unrecognised failure is never quietly downgraded. And if EVERY file
+   semgrep looked at failed to parse, the run proved nothing and exits 2 —
+   "0 findings because nothing was scanned" is precisely the shape that must
+   not read as clean.
 
 WHAT IS DELIBERATELY NOT CONFIGURABLE
 
@@ -70,6 +93,41 @@ RULES_KEYS = {"groups", "disable", "warn"}
 PATHS_KEYS = {"exclude"}
 
 SUPPORTED_VERSION = 1
+
+# --- semgrep error types that mean "this ONE FILE was not scanned" -------------
+#
+# As opposed to "the scan did not happen", which is everything else and stays
+# fatal. The split is an ALLOWLIST on purpose: a type that is not named here —
+# a rule that would not load, an unknown language, a missing plugin — keeps the
+# old exit-2 behaviour, so a semgrep release that invents a new failure mode
+# cannot quietly become a warning.
+#
+# `type` is a tagged union in semgrep's JSON and its shape varies: a bare string
+# for some, a `[tag, payload]` list for others. PartialParsing is the list form
+# and carries the offending spans. error_type() below normalises both.
+#
+# Measured 2026-08-05, semgrep 1.172.0 — which is the newest release on PyPI, so
+# "upgrade semgrep" is not an available fix for the C# 12 case that prompted
+# this (#43). 1.145.0 fails identically.
+PER_FILE_ERROR_TYPES = frozenset(
+    {
+        "PartialParsing",
+        "SyntaxError",
+        "LexicalError",
+        "Timeout",
+        "OutOfMemory",
+        "TimeoutDuringInterfile",
+        "OutOfMemoryDuringInterfile",
+    }
+)
+
+
+def error_type(err: dict) -> str:
+    """The tag of a semgrep error, whichever of the two shapes it arrived in."""
+    raw = err.get("type")
+    if isinstance(raw, list):
+        return str(raw[0]) if raw else "?"
+    return str(raw)
 
 
 class PolicyError(Exception):
@@ -402,7 +460,107 @@ def path_is_excluded(path: str, patterns: list) -> bool:
     return False
 
 
-def classify(resolved: dict, results_path: str) -> int:
+# --- GitHub PR-diff annotations (#40) -----------------------------------------
+#
+# Every finding lives in job log output today. A reviewer sees a red check,
+# opens the log, and reads a file:line they then have to go find. GitHub renders
+# `::error file=…,line=…::message` directly onto the pull-request diff, and that
+# is free on every plan — unlike SARIF upload, which needs Advanced Security on
+# a private repo and is out for exactly the reason CodeQL is
+# (docs/EVAL-vs-oss-tools.md §0).
+#
+# THIS IS A RENDERER, NEVER A VERDICT. It runs inside classify() so it reads the
+# same gate/warn split the exit code comes from — a second traversal of
+# `results` could disagree, and two computations of one thing is how the docker
+# and native semgrep paths came to differ about --changed-only. It is called
+# after the classification and before the return, and it cannot change either.
+#
+# GitHub silently drops annotations past a per-run limit it does not document,
+# so there is an explicit cap here. A silent truncation reads as "that was all
+# of them", which is the same failure shape as every gate bug in this repo, so
+# the omitted count is always stated.
+DEFAULT_MAX_ANNOTATIONS = 50
+
+
+def _gha_escape(text: str) -> str:
+    """Escape a workflow-command DATA value.
+
+    Order matters: `%` first, or the escapes introduced below get re-escaped.
+    A raw newline would end the command early and drop the rest of the message
+    on the floor as if it were a log line.
+    """
+    return (
+        str(text).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    )
+
+
+def _gha_escape_prop(text: str) -> str:
+    """Escape a workflow-command PROPERTY value (file=…, title=…).
+
+    Properties additionally need `:` and `,` escaped, since those are the
+    delimiters. A rule id never contains them; a file path on a weird branch
+    could, and a title carrying a message would.
+    """
+    return _gha_escape(text).replace(":", "%3A").replace(",", "%2C")
+
+
+def emit_annotations(gate_raw: list, warn_raw: list, max_n: int, prefix: str = "") -> None:
+    """Print one workflow command per finding, gating ones as errors.
+
+    Deliberately defensive about the shape of each result. An annotation is
+    cosmetic; a malformed finding must degrade to a less precise annotation, and
+    never to an exception that would take the verdict down with it.
+    """
+    if max_n <= 0:
+        total = len(gate_raw) + len(warn_raw)
+        if total:
+            print(f"  ({total} annotation(s) suppressed — the cap is 0)")
+        return
+
+    # Gating findings first: if anything is going to be cut, cut the warnings.
+    ordered = [("error", r) for r in gate_raw] + [("warning", r) for r in warn_raw]
+    shown, omitted = ordered[:max_n], len(ordered) - max_n
+
+    for level, r in shown:
+        try:
+            rid = bare_id(r.get("check_id", "")) or "semgrep"
+            path = r.get("path", "")
+            start = r.get("start") if isinstance(r.get("start"), dict) else {}
+            end = r.get("end") if isinstance(r.get("end"), dict) else {}
+            extra = r.get("extra") if isinstance(r.get("extra"), dict) else {}
+            message = extra.get("message") or rid
+            props = [f"file={_gha_escape_prop(prefix + path)}"] if path else []
+            if isinstance(start.get("line"), int):
+                props.append(f"line={start['line']}")
+                if isinstance(end.get("line"), int) and end["line"] >= start["line"]:
+                    props.append(f"endLine={end['line']}")
+            if isinstance(start.get("col"), int):
+                props.append(f"col={start['col']}")
+            props.append(f"title={_gha_escape_prop(rid)}")
+            print(f"::{level} {','.join(props)}::{_gha_escape(message)}")
+        except Exception as exc:  # noqa: BLE001 — see the docstring
+            # Named, not swallowed. A silently missing annotation is the thing
+            # this is supposed to fix.
+            print(f"  (could not annotate one finding: {exc})", file=sys.stderr)
+
+    if omitted > 0:
+        # Said out loud on BOTH streams: stdout for the log, and a notice so it
+        # is visible in the run summary next to the annotations it is about.
+        print(
+            f"::notice::{omitted} further Semgrep finding(s) are not annotated "
+            f"(cap: {max_n}). The job log has all of them; the gate counted all "
+            "of them."
+        )
+        print(f"  ({omitted} finding(s) beyond the annotation cap of {max_n})")
+
+
+def classify(
+    resolved: dict,
+    results_path: str,
+    annotate: bool = False,
+    max_annotations: int = DEFAULT_MAX_ANNOTATIONS,
+    annotate_prefix: str = "",
+) -> int:
     try:
         with open(results_path, encoding="utf-8") as fh:
             data = json.load(fh)
@@ -412,31 +570,93 @@ def classify(resolved: dict, results_path: str) -> int:
         print(f"error: cannot read semgrep results from {results_path}: {exc}", file=sys.stderr)
         return 2
 
-    if data.get("errors"):
-        first = data["errors"][0]
+    # --- errors: split "this file was not scanned" from "the scan failed" -----
+    unparsed, fatal = [], []
+    for err in data.get("errors", []):
+        (unparsed if error_type(err) in PER_FILE_ERROR_TYPES else fatal).append(err)
+
+    if fatal:
+        first = fatal[0]
         print(
-            f"error: semgrep reported {len(data['errors'])} error(s); refusing to "
-            f"treat the result as a finding set: {first.get('message', '?')}",
+            f"error: semgrep reported {len(fatal)} error(s) that are not per-file "
+            f"parse failures; refusing to treat the result as a finding set: "
+            f"[{error_type(first)}] {first.get('message', '?')}",
             file=sys.stderr,
         )
         return 2
 
+    # The files semgrep could not read. Deduplicated: PartialParsing is emitted
+    # once per unparseable construct, so one file with three of them is three
+    # errors and still one coverage hole.
+    unparsed_files = sorted({e.get("path", "?") for e in unparsed})
+    if unparsed_files:
+        scanned = data.get("paths", {}).get("scanned", [])
+        # NOTHING WAS SCANNED. `paths.scanned` is what semgrep looked at, not
+        # what it managed to parse, so a tree it cannot read at all comes back
+        # as "0 findings" with a full scanned list — the exact shape that must
+        # never read as clean. One file readable is enough to call the run real;
+        # zero is not.
+        if scanned and len(unparsed_files) >= len(scanned):
+            print(
+                f"error: all {len(scanned)} file(s) semgrep looked at failed to "
+                "parse, so no rule ran against anything. That is a failed scan, "
+                "not a clean one.",
+                file=sys.stderr,
+            )
+            for path in unparsed_files:
+                print(f"  unparsed  {path}", file=sys.stderr)
+            return 2
+
+        # Not a gate. There is nothing a consumer can do about semgrep's parser,
+        # and failing here is what trains people to ignore the check. But the
+        # coverage loss gets a name, a count and a line each — invisible is the
+        # thing it must not be.
+        print("── Coverage ──")
+        print(
+            f"  {len(unparsed_files)} file(s) semgrep could not parse — "
+            "NO RULE RAN AGAINST THEM:"
+        )
+        by_file: dict[str, str] = {}
+        for err in unparsed:
+            by_file.setdefault(err.get("path", "?"), error_type(err))
+        for path in unparsed_files:
+            print(f"  unparsed  {by_file.get(path, '?'):<16} {path}")
+        if scanned:
+            covered = len(scanned) - len(unparsed_files)
+            print(f"  ({covered} of {len(scanned)} scanned file(s) actually parsed)")
+        print("  This is a coverage gap, not a finding. It does not fail the gate.")
+        print()
+
     disabled = set(resolved["disable"])
     warned = set(resolved["warn"])
 
+    # The raw result alongside the (rid, path, line) tuple, so the annotator can
+    # reach the message and column without walking `results` a second time and
+    # risking a different answer about what gates.
+    gate_raw, warn_raw = [], []
     gate, warn_hits, leaked, unexcluded = [], [], [], []
     for r in data.get("results", []):
         rid = bare_id(r.get("check_id", ""))
         path = r.get("path", "?")
-        entry = (rid, path, r.get("start", {}).get("line", 0))
+        # `isinstance`, not `r.get("start", {}).get(...)`. semgrep's schema is
+        # not a contract this repo controls, and a result whose `start` is not a
+        # dict used to raise AttributeError straight out of here — an unhandled
+        # traceback whose exit code happened to be 1, so the gate's verdict was
+        # right by accident rather than by design. A finding this file cannot
+        # fully read still COUNTS; only its line number is unknown.
+        start = r.get("start")
+        line = start.get("line", 0) if isinstance(start, dict) else 0
+        entry = (rid, path, line)
         if resolved["exclude"] and path_is_excluded(path, resolved["exclude"]):
             unexcluded.append(entry)
         elif rid in disabled:
             leaked.append(entry)
         elif rid in warned:
             warn_hits.append(entry)
+            warn_raw.append(r)
         else:
             gate.append(entry)
+            gate_raw.append(r)
 
     if unexcluded:
         # Same class as the disabled-rule leak below: the knob was set and did
@@ -496,8 +716,19 @@ def classify(resolved: dict, results_path: str) -> int:
         print(f"  ({len(warn_hits)} warn-only finding(s) — not gating)")
         print()
 
+    # AFTER the classification, BEFORE the return. The verdict on the next line
+    # is computed from `gate` and nothing here can reach it — which is the
+    # property the annotation cap is tested against: `--annotate
+    # --max-annotations 0` on a repo with findings still exits 1.
+    if annotate:
+        emit_annotations(gate_raw, warn_raw, max_annotations, annotate_prefix)
+
     print(f"semgrep_gate={len(gate)}")
     print(f"semgrep_warn={len(warn_hits)}")
+    # Machine-readable alongside the other two, so the standing report and
+    # scan.sh's summary read the same number the gate did rather than
+    # re-deriving it from the pretty output.
+    print(f"semgrep_unparsed={len(unparsed_files)}")
     return 1 if gate else 0
 
 
@@ -531,6 +762,27 @@ def main() -> int:
     p_cls = sub.add_parser("classify", help="split results into gating and warn-only")
     p_cls.add_argument("--resolved", required=True)
     p_cls.add_argument("--results", required=True, help="semgrep --json-output file")
+    p_cls.add_argument(
+        "--annotate",
+        action="store_true",
+        help="also emit GitHub workflow commands so findings render on the PR "
+        "diff. Additive only — it cannot change the exit code.",
+    )
+    p_cls.add_argument(
+        "--max-annotations",
+        type=int,
+        default=DEFAULT_MAX_ANNOTATIONS,
+        help="cap the annotations emitted; the omitted count is always stated. "
+        "GitHub drops them past an undocumented per-run limit, and a silent "
+        "truncation reads as 'that was all of them'.",
+    )
+    p_cls.add_argument(
+        "--annotate-prefix",
+        default="",
+        help="prepended to each annotated path. Needed when the scan target is "
+        "a subdirectory: semgrep reports paths relative to it, GitHub resolves "
+        "them against the workspace root.",
+    )
 
     args = ap.parse_args()
 
@@ -554,7 +806,13 @@ def main() -> int:
                 print(a)
             return 0
 
-        return classify(resolved, args.results)
+        return classify(
+            resolved,
+            args.results,
+            annotate=args.annotate,
+            max_annotations=args.max_annotations,
+            annotate_prefix=args.annotate_prefix,
+        )
 
     except PolicyError as exc:
         print(f"error: {exc}", file=sys.stderr)
