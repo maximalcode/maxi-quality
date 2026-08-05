@@ -1029,10 +1029,22 @@ jobs:
           # outside the scanned repo — and the only one with a trailing
           # entrypoint after the image name.
           need '/baseline:ro'
+          # THE DOCKER TAG IS READ FROM scan.sh, NOT WRITTEN OUT HERE.
+          #
+          # It used to be the literal `returntocorp/semgrep:latest`, and this
+          # assertion is what caught the pin change in #43 — correctly, but by
+          # failing on the fix rather than on a regression. A hardcoded copy of
+          # a version string in the test for the version string is the same
+          # two-sources-of-truth bug the pin itself has (STATUS §4); reading it
+          # back means a future bump touches one place and this still asserts
+          # that docker gets the pinned tag rather than :latest.
+          PIN=$(sed -n 's/^SEMGREP_PIN="\([0-9.]*\)".*/\1/p' scripts/scan.sh | head -1)
+          [[ -n "$PIN" ]] || { echo '::error::could not read SEMGREP_PIN from scripts/scan.sh'; exit 1; }
+          [[ "$PIN" != "latest" ]] || { echo '::error::scan.sh is back on an unpinned docker tag'; exit 1; }
           # One --config per selected rule group, emitted by scripts/policy.py.
           # The group list is what a .maxi-quality.yml narrows; this fixture has
           # no policy file, so all three must be present.
-          need 'returntocorp/semgrep:latest semgrep --config /baseline/semgrep/general'
+          need "returntocorp/semgrep:$PIN semgrep --config /baseline/semgrep/general"
           need '--config /baseline/semgrep/security'
           need '--config /baseline/semgrep/conventions'
           # The results are ALWAYS written as JSON and the verdict comes from
