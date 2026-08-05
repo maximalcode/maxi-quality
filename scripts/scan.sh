@@ -47,6 +47,22 @@ set -Eeuo pipefail
 
 BASELINE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# THE THIRD PLACE SEMGREP IS PINNED, and until #43 it was not pinned at all.
+#
+# actions/layer2/action.yml pins it for consumers and ci.yml pins it for this
+# repo's own manifest job; check-pins.sh has asserted those two agree since #13,
+# because a drift there means CI validates the finding counts against a
+# different semgrep than consumers are handed. The local path had neither: the
+# uvx fallback ran a bare `uvx semgrep` and the docker fallback ran `:latest`.
+#
+# That is not theoretical. It is why the C# 12 parse failure in #43 was
+# irreproducible — "the same file scanned clean earlier in the same session",
+# because two runs minutes apart could resolve two different semgreps. A local
+# scan that disagrees with CI is worse than no local scan; people trust it.
+#
+# check-pins.sh now asserts all THREE agree. Bump them together or it fails.
+SEMGREP_PIN="1.172.0"
+
 # --- argument parsing --------------------------------------------------------
 TARGET=""
 CHANGED_ONLY=0
@@ -215,9 +231,24 @@ POLICY_JSON=""   # set by run_semgrep, read by _semgrep_exec
 run_semgrep() {
   # semgrep is the one tool with a uvx fallback, and the one that needs a second
   # mount: the RULES live in $BASELINE, which is not inside the scanned repo.
-  resolve_tool semgrep semgrep semgrep returntocorp/semgrep:latest semgrep \
+  resolve_tool semgrep semgrep "semgrep==$SEMGREP_PIN" \
+    "returntocorp/semgrep:$SEMGREP_PIN" semgrep \
     "install it (\`brew install semgrep\`), or provide uvx or docker" \
     -v "$BASELINE:/baseline:ro" || return 0
+
+  # The uvx and docker paths are pinned above. A NATIVE binary on PATH is
+  # whatever the machine has, and that cannot be fixed from here — but it can
+  # stop being silent. Warn rather than fail: refusing to run because someone's
+  # brew is one patch ahead would just get the script abandoned.
+  if [[ "${RESOLVED_CMD[0]}" == "semgrep" ]]; then
+    local have_ver
+    have_ver="$(semgrep --version 2>/dev/null | tr -d '[:space:]')"
+    if [[ -n "$have_ver" && "$have_ver" != "$SEMGREP_PIN" ]]; then
+      warn "semgrep $have_ver is on PATH but this baseline is pinned to $SEMGREP_PIN."
+      warn "findings and PARSE ERRORS can both differ between versions — if a result"
+      warn "here disagrees with CI, this is the first thing to check."
+    fi
+  fi
 
   # Native/uvx read the rules from the host path and scan "." — NOT "$TARGET" —
   # because _semgrep_exec runs from inside $TARGET. Docker sees them at the
@@ -330,16 +361,32 @@ _semgrep_exec() {
     cp "$json_host" "$JSON_OUT"
   fi
 
-  local crc=0
+  # classify's stdout is teed rather than left to flow, because the summary
+  # needs one number out of it. Deriving that number a second time from the
+  # JSON is how the docker and native paths came to disagree about
+  # --changed-only: two computations of the same thing, one of them wrong.
+  # Under `set -o pipefail` the pipeline reports python's exit code, not tee's.
+  local crc=0 classify_out="$WORKDIR/classify.out"
   python3 "$BASELINE/scripts/policy.py" classify \
-    --resolved "$POLICY_JSON" --results "$json_host" || crc=$?
+    --resolved "$POLICY_JSON" --results "$json_host" | tee "$classify_out" || crc=$?
+
+  # Files semgrep could not parse. NOT a finding and NOT a failure (#43) — but
+  # it belongs on the summary line, because a scan that skipped nine files is
+  # not the same clean as a scan that read all of them.
+  local unparsed suffix=""
+  unparsed=$(sed -n 's/^semgrep_unparsed=//p' "$classify_out" | tail -1)
+  [[ -n "$unparsed" ]] || unparsed=0
+  if (( unparsed > 0 )); then
+    suffix=" ($unparsed file(s) UNPARSED)"
+  fi
+
   case "$crc" in
-    0) record_status semgrep "clean" ;;
-    1) record_status semgrep "FINDINGS"; FINDINGS=1 ;;
-    # Exit 2 is a broken mechanism: unreadable results, a semgrep whose
-    # `.errors` is non-empty, or a disabled rule that was not actually
-    # disabled. Each one means the verdict is unknown, and an unknown verdict
-    # is a failure here rather than a pass.
+    0) record_status semgrep "clean$suffix" ;;
+    1) record_status semgrep "FINDINGS$suffix"; FINDINGS=1 ;;
+    # Exit 2 is a broken mechanism: unreadable results, a semgrep error that is
+    # not a per-file parse failure, every file unparseable, or a disabled rule
+    # that was not actually disabled. Each one means the verdict is unknown,
+    # and an unknown verdict is a failure here rather than a pass.
     *) record_status semgrep "ERROR (policy exit $crc)"; FINDINGS=1 ;;
   esac
   return 0

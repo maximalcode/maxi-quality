@@ -7,10 +7,15 @@
 # Semgrep, Gitleaks and OSV-Scanner are pinned in actions/layer2/action.yml.
 # This script is the mechanism for those three.
 #
-# It also asserts the thing that actually bites: Semgrep is pinned in TWO
-# places — the action default AND the layer2-counts job in ci.yml. If those
-# drift, CI validates the finding counts against a different Semgrep than
-# consumers are handed, and the samples stop meaning what they claim.
+# It also asserts the thing that actually bites: Semgrep is pinned in THREE
+# places — the action default, the layer2-counts job in ci.yml, and scan.sh's
+# uvx/docker fallbacks. If those drift, CI validates the finding counts against
+# a different Semgrep than consumers are handed, and the samples stop meaning
+# what they claim.
+#
+# scan.sh was the third and it was not pinned at all until #43: `uvx semgrep`
+# and `returntocorp/semgrep:latest`. That is why a C# parse failure could not be
+# reproduced between two runs minutes apart — they were not the same tool.
 #
 # Usage:
 #   scripts/check-pins.sh [options]
@@ -23,7 +28,7 @@
 #
 # Exit codes: 0 consistent (and current, unless --fail-on-drift was not set)
 #             1 drift found and --fail-on-drift was set
-#             2 the two Semgrep pins disagree — always fatal
+#             2 the three Semgrep pins disagree — always fatal
 #             3 usage error
 
 set -Eeuo pipefail
@@ -32,6 +37,7 @@ BASELINE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ACTION="$BASELINE/actions/layer2/action.yml"
 CI="$BASELINE/.github/workflows/ci.yml"
 QUALITY="$BASELINE/.github/workflows/quality.yml"
+SCAN="$BASELINE/scripts/scan.sh"
 
 OFFLINE=0
 FAIL_ON_DRIFT=0
@@ -55,6 +61,7 @@ done
 [ -f "$ACTION" ] || die "not found: $ACTION"
 [ -f "$CI" ] || die "not found: $CI"
 [ -f "$QUALITY" ] || die "not found: $QUALITY"
+[ -f "$SCAN" ] || die "not found: $SCAN"
 
 # --- read the pins -----------------------------------------------------------
 # `default: '1.172.0'` on the line after the input's `default:` key. Read the
@@ -103,9 +110,24 @@ if [ "$CI_SEMGREP_COUNT" -ne 1 ]; then
   exit 2
 fi
 
+# THE THIRD SITE (#43). scripts/scan.sh is what a human runs locally, and until
+# #43 it pinned nothing at all — `uvx semgrep` and `returntocorp/semgrep:latest`.
+# A local scan resolving a different semgrep than CI is how a parse failure came
+# to be irreproducible between two runs minutes apart.
+SCAN_SEMGREP="$(sed -n 's/^SEMGREP_PIN="\([0-9.]*\)".*/\1/p' "$SCAN" | head -1)"
+[ -n "$SCAN_SEMGREP" ] || die "could not read SEMGREP_PIN from $SCAN"
+# The literal has to be USED, not merely assigned. A pin nothing reads is a
+# comment, and this script would happily report three agreeing versions while
+# scan.sh ran `uvx semgrep` unpinned two lines below.
+grep -q 'semgrep==[$]SEMGREP_PIN' "$SCAN" \
+  || die "$SCAN sets SEMGREP_PIN but no longer passes it to uvx — the pin is decorative"
+grep -q 'returntocorp/semgrep:[$]SEMGREP_PIN' "$SCAN" \
+  || die "$SCAN sets SEMGREP_PIN but no longer passes it to docker — the pin is decorative"
+
 bold "── pinned ──"
 info "semgrep       $SEMGREP_PIN   (action.yml)"
 info "semgrep       $CI_SEMGREP   (ci.yml, $(grep -cE 'semgrep==[0-9.]+' "$CI") job(s))"
+info "semgrep       $SCAN_SEMGREP   (scan.sh, uvx + docker fallbacks)"
 info "gitleaks      $GITLEAKS_PIN"
 info "osv-scanner   $OSV_PIN"
 info "uv            $UV_PIN   (quality.yml)"
@@ -115,15 +137,17 @@ printf '\n'
 # This is the one that is always fatal. A mismatch means the counts asserted in
 # CI were produced by a different Semgrep than the one consumers run, so a
 # green build would be telling you nothing about what the action actually does.
-if [ "$SEMGREP_PIN" != "$CI_SEMGREP" ]; then
+if [ "$SEMGREP_PIN" != "$CI_SEMGREP" ] || [ "$SEMGREP_PIN" != "$SCAN_SEMGREP" ]; then
   printf '\033[31mFAIL\033[0m — semgrep pins disagree:\n'
   printf '  actions/layer2/action.yml : %s\n' "$SEMGREP_PIN"
   printf '  .github/workflows/ci.yml  : %s\n' "$CI_SEMGREP"
-  printf '\nCI would assert 60 findings against a Semgrep that consumers never run.\n'
-  printf 'Set both to the same version.\n'
+  printf '  scripts/scan.sh           : %s\n' "$SCAN_SEMGREP"
+  printf '\nCI would assert its finding manifest against a Semgrep that consumers\n'
+  printf 'never run, or a local scan would disagree with the gate it is meant to\n'
+  printf 'predict. Set all three to the same version.\n'
   exit 2
 fi
-info "semgrep pins agree in both files"
+info "semgrep pins agree across all three files"
 
 if [ "$OFFLINE" -eq 1 ]; then
   printf '\n\033[32mPASS\033[0m — pins are internally consistent (--offline; upstream not checked)\n'

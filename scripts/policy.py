@@ -34,9 +34,32 @@ THE THREE THINGS THIS FILE REFUSES TO DO QUIETLY
    disabled rule survived into the results. If the mangling ever changes, that
    assertion fails loudly instead of quietly un-disabling somebody's policy.
 
-3. **Let a parse failure read as "clean".** An unreadable policy, an unparseable
-   result set, or a semgrep run whose `.errors` is non-empty are all failures.
-   Never a pass. That is the shape of every gate bug this repo has actually hit.
+3. **Let a broken mechanism read as "clean".** An unreadable policy, an
+   unparseable result set, or a semgrep run that FAILED are all failures. Never
+   a pass. That is the shape of every gate bug this repo has actually hit.
+
+   With one distinction, added in #43 and worth stating precisely, because
+   getting it wrong in either direction is a real bug:
+
+   **A file semgrep cannot parse is a coverage gap, not a scan failure.**
+   Both used to be `.errors`, and both exited 2. Measured: a real C# codebase
+   using C# 12 primary constructors turned a clean scan into a red gate —
+   `Ran 22 rules on 29 files: 0 findings`, then `refusing to treat the result
+   as a finding set`. There is nothing the consumer can do about semgrep's
+   parser, so the gate was red on green code, which is how a gate gets ignored.
+
+   The *worse* half is the one that had no output at all: a file that does not
+   parse has no rules run against it. It was being reported as a failure, which
+   at least made noise — but never as what it is, which is a hole in coverage
+   with a name and a count. So parse failures are now split out, listed by file
+   and counted (`semgrep_unparsed=N`), and they do not gate.
+
+   Two guards keep that from becoming the silent-pass this file exists to
+   prevent. Every error type NOT on the per-file list below is still fatal, so
+   an unrecognised failure is never quietly downgraded. And if EVERY file
+   semgrep looked at failed to parse, the run proved nothing and exits 2 —
+   "0 findings because nothing was scanned" is precisely the shape that must
+   not read as clean.
 
 WHAT IS DELIBERATELY NOT CONFIGURABLE
 
@@ -70,6 +93,41 @@ RULES_KEYS = {"groups", "disable", "warn"}
 PATHS_KEYS = {"exclude"}
 
 SUPPORTED_VERSION = 1
+
+# --- semgrep error types that mean "this ONE FILE was not scanned" -------------
+#
+# As opposed to "the scan did not happen", which is everything else and stays
+# fatal. The split is an ALLOWLIST on purpose: a type that is not named here —
+# a rule that would not load, an unknown language, a missing plugin — keeps the
+# old exit-2 behaviour, so a semgrep release that invents a new failure mode
+# cannot quietly become a warning.
+#
+# `type` is a tagged union in semgrep's JSON and its shape varies: a bare string
+# for some, a `[tag, payload]` list for others. PartialParsing is the list form
+# and carries the offending spans. error_type() below normalises both.
+#
+# Measured 2026-08-05, semgrep 1.172.0 — which is the newest release on PyPI, so
+# "upgrade semgrep" is not an available fix for the C# 12 case that prompted
+# this (#43). 1.145.0 fails identically.
+PER_FILE_ERROR_TYPES = frozenset(
+    {
+        "PartialParsing",
+        "SyntaxError",
+        "LexicalError",
+        "Timeout",
+        "OutOfMemory",
+        "TimeoutDuringInterfile",
+        "OutOfMemoryDuringInterfile",
+    }
+)
+
+
+def error_type(err: dict) -> str:
+    """The tag of a semgrep error, whichever of the two shapes it arrived in."""
+    raw = err.get("type")
+    if isinstance(raw, list):
+        return str(raw[0]) if raw else "?"
+    return str(raw)
 
 
 class PolicyError(Exception):
@@ -412,14 +470,62 @@ def classify(resolved: dict, results_path: str) -> int:
         print(f"error: cannot read semgrep results from {results_path}: {exc}", file=sys.stderr)
         return 2
 
-    if data.get("errors"):
-        first = data["errors"][0]
+    # --- errors: split "this file was not scanned" from "the scan failed" -----
+    unparsed, fatal = [], []
+    for err in data.get("errors", []):
+        (unparsed if error_type(err) in PER_FILE_ERROR_TYPES else fatal).append(err)
+
+    if fatal:
+        first = fatal[0]
         print(
-            f"error: semgrep reported {len(data['errors'])} error(s); refusing to "
-            f"treat the result as a finding set: {first.get('message', '?')}",
+            f"error: semgrep reported {len(fatal)} error(s) that are not per-file "
+            f"parse failures; refusing to treat the result as a finding set: "
+            f"[{error_type(first)}] {first.get('message', '?')}",
             file=sys.stderr,
         )
         return 2
+
+    # The files semgrep could not read. Deduplicated: PartialParsing is emitted
+    # once per unparseable construct, so one file with three of them is three
+    # errors and still one coverage hole.
+    unparsed_files = sorted({e.get("path", "?") for e in unparsed})
+    if unparsed_files:
+        scanned = data.get("paths", {}).get("scanned", [])
+        # NOTHING WAS SCANNED. `paths.scanned` is what semgrep looked at, not
+        # what it managed to parse, so a tree it cannot read at all comes back
+        # as "0 findings" with a full scanned list — the exact shape that must
+        # never read as clean. One file readable is enough to call the run real;
+        # zero is not.
+        if scanned and len(unparsed_files) >= len(scanned):
+            print(
+                f"error: all {len(scanned)} file(s) semgrep looked at failed to "
+                "parse, so no rule ran against anything. That is a failed scan, "
+                "not a clean one.",
+                file=sys.stderr,
+            )
+            for path in unparsed_files:
+                print(f"  unparsed  {path}", file=sys.stderr)
+            return 2
+
+        # Not a gate. There is nothing a consumer can do about semgrep's parser,
+        # and failing here is what trains people to ignore the check. But the
+        # coverage loss gets a name, a count and a line each — invisible is the
+        # thing it must not be.
+        print("── Coverage ──")
+        print(
+            f"  {len(unparsed_files)} file(s) semgrep could not parse — "
+            "NO RULE RAN AGAINST THEM:"
+        )
+        by_file: dict[str, str] = {}
+        for err in unparsed:
+            by_file.setdefault(err.get("path", "?"), error_type(err))
+        for path in unparsed_files:
+            print(f"  unparsed  {by_file.get(path, '?'):<16} {path}")
+        if scanned:
+            covered = len(scanned) - len(unparsed_files)
+            print(f"  ({covered} of {len(scanned)} scanned file(s) actually parsed)")
+        print("  This is a coverage gap, not a finding. It does not fail the gate.")
+        print()
 
     disabled = set(resolved["disable"])
     warned = set(resolved["warn"])
@@ -498,6 +604,10 @@ def classify(resolved: dict, results_path: str) -> int:
 
     print(f"semgrep_gate={len(gate)}")
     print(f"semgrep_warn={len(warn_hits)}")
+    # Machine-readable alongside the other two, so the standing report and
+    # scan.sh's summary read the same number the gate did rather than
+    # re-deriving it from the pretty output.
+    print(f"semgrep_unparsed={len(unparsed_files)}")
     return 1 if gate else 0
 
 

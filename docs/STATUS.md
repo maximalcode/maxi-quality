@@ -88,9 +88,11 @@ semgrep/conventions/   no-ambient-clock, mutation-requires-authz,
 scripts/adopt.sh          adopt into a consumer: detect languages, drop the copies
 scripts/scan.sh           Layer 2 runner: semgrep + gitleaks + osv (+ SBOM, licences)
 scripts/policy.py         resolves a consumer's .maxi-quality.yml, emits semgrep
-                          args, and classifies findings into gating vs warn-only
-.maxi-quality.yml         this repo's own policy — keeps samples/policy out of
-                          its rule manifest (it is a consumer of itself)
+                          args, classifies findings into gating vs warn-only, and
+                          splits per-file parse failures out of scan failures (#43)
+.maxi-quality.yml         this repo's own policy — keeps samples/policy and
+                          samples/parse-errors out of its rule manifest (it is a
+                          consumer of itself)
 scripts/check-pins.sh     bump policy (#13): pin consistency + upstream drift
 scripts/quality-report.py renders the standing-report issue body (no network)
 scripts/coverage.py       coverage ratchet: lcov + Cobertura vs a committed floor
@@ -121,6 +123,12 @@ samples/dotnet-tests/     Layer 1 C# *Tests* sample — proves the #25 relaxatio
 samples/dotnet-clean/     negative control — must BUILD 0 errors / 0 warnings
 samples/python/           Layer 1 Python sample — ruff 14 errors, mypy 11 errors
 samples/python-clean/     negative control — must PASS ruff AND mypy, zero findings
+samples/parse-errors/     C# semgrep CANNOT PARSE (#43), in two shapes: one
+                          unparseable file beside a parseable one with a real
+                          finding (a coverage gap, not a failure), and the
+                          unparseable file alone (nothing parsed = exit 2).
+                          Excluded from the repo's own scan — check-expected.py
+                          refuses any run with non-empty `.errors`
 samples/format/           the formatter's suite (#42) — two misformatted files and
                           three ABLATIONS, each correct under our settings and wrong
                           under the tool's own defaults, so deleting a format config
@@ -186,6 +194,14 @@ dotnet format whitespace samples/dotnet-clean --verify-no-changes
 ./scripts/scan.sh samples/policy/disable --skip gitleaks --skip osv
                                          # expect exit 1, gate=1: the disabled
                                          # rule silent, the control still firing
+
+# parse errors vs scan failures (samples/parse-errors/, #43)
+./scripts/scan.sh samples/parse-errors/mixed --skip gitleaks --skip osv
+                                         # expect exit 1 — gate=1 from the
+                                         # PARSEABLE file, semgrep_unparsed=1
+./scripts/scan.sh samples/parse-errors/total --skip gitleaks --skip osv
+                                         # expect ERROR (policy exit 2) — every
+                                         # file unparseable is a failed scan
 python3 scripts/policy.py resolve --target samples/policy/invalid/unknown-key \
         --baseline . --baseline-path .   # expect exit 3, naming the bad key
 
@@ -253,7 +269,8 @@ Gitleaks v8.30.1 and OSV-Scanner v2 via Docker — nothing was installed globall
 | **`--isolatedModules false` changes nothing** | Measured on tsc 6.0.3 in `samples/typescript-strict`: `verbatimModuleSyntax` subsumes it, and TS1205's own message names `verbatimModuleSyntax`. Three more flags are unbaitable for their own measured reasons — `esModuleInterop: false` is refused outright (TS5107, deprecated ahead of TS 7), `forceConsistentCasingInFileNames` needs a case-insensitive filesystem, and the emit trio is invisible under `--noEmit`. Hence `configs/typescript/tsconfig.snapshot.json`: what `tsc --showConfig` **resolves**, not what the JSON file says, so it also pins the options tsc implies (`moduleDetection: force`, `preserveConstEnums`). |
 | **`pattern-not-regex` must be nested under `patterns:`** | Placed at rule level next to a top-level `pattern-either`, Semgrep **silently ignores it** — no error, no warning, the rule just behaves as if it were absent. Verified the hard way: identical output before and after adding it. It only takes effect inside a `patterns:` block alongside the `pattern-either`. |
 | **Analyzer versions pinned, not floating** | With `TreatWarningsAsErrors`, an analyzer upgrade that adds rules is a breaking change. Bump deliberately — the policy and its mechanism are §6 (#13). |
-| **Semgrep is pinned twice** | `actions/layer2/action.yml` (what consumers get) and `ci.yml`'s `layer2-counts` (what validates the 60/19 assertion). They must match or CI is testing a tool nobody runs. `scripts/check-pins.sh --offline` guards it on every PR. |
+| **Semgrep is pinned three times, and the third was not pinned at all** | `actions/layer2/action.yml` (what consumers get) and `ci.yml`'s `layer2-counts` (what validates the manifest) were guarded by `check-pins.sh` from the start. `scripts/scan.sh` — the one a human runs locally — was not: a bare `uvx semgrep` and `returntocorp/semgrep:latest`. That is why a C# parse failure was irreproducible between two runs minutes apart; they were not the same tool. A local scan that disagrees with the gate is worse than no local scan, because people trust it. All three are now asserted, and `check-pins.sh` also asserts the literal is USED rather than merely assigned — a pin nothing reads is a comment. |
+| **A file the scanner cannot parse is not a scan that failed** | Any non-empty semgrep `.errors` exited 2, so a codebase whose house style is C# 12 primary constructors got a red gate over a clean scan: `Ran 22 rules on 29 files: 0 findings`, then `refusing to treat the result as a finding set`. Nothing a consumer can fix, which is how a check gets ignored. **The worse half had no output at all** — an unparsed file has no rule run against it, so it contributes 0 to every number while looking like a failure rather than a hole. Parse failures are now named, counted (`semgrep_unparsed=N`) and non-gating. Two guards keep that from becoming the silent pass: the recognised types are an **allowlist**, so a failure mode a future semgrep invents is still fatal; and if *every* file looked at failed to parse, that is exit 2, because `results: []` then means nobody looked. |
 | **osv-scanner emits empty licences unless you ask** | `--format=cyclonedx-1-6` alone gives every component `"licenses": []` — the key is present and the array empty. Bare `--licenses` (no `=allowlist`) is the report-only mode that actually resolves them, and it exits 0. Without it the standing report renders a tidy table of *N* UNKNOWNs and looks completely fine. Measured: 104 components, 0 with licences vs 102 with. |
 | **osv-scanner needs `--all-packages` for an SBOM** | Otherwise the CycloneDX output holds only the packages in the *results* — 28 instead of 94 on this repo. An inventory that shrinks as things improve is not an inventory. |
 | **osv-scanner will not create its output directory** | It exits **127** with `failed to create output file`, which reads as "the tool is broken" rather than "make the folder". `scan.sh` `mkdir -p`s the parent. |

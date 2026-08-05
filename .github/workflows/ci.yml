@@ -2159,6 +2159,111 @@ jobs:
             exit 1; }
           echo 'OK: resolved policy matches samples/policy/expected/resolved.txt'
 
+      # --- #43: a file semgrep cannot read vs a scan that failed -------------
+      #
+      # These were the same thing — any non-empty `.errors` exited 2 — and a
+      # real C# codebase using C# 12 primary constructors turned a clean scan
+      # into a red gate. Both halves are asserted, because the fix is wrong in
+      # a different way if either one is missing: gate on parse errors and the
+      # check gets ignored; never gate and a repo semgrep cannot read at all
+      # reports clean forever.
+      - name: An unparseable file is a coverage gap, not a scan failure
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          out=$(./scripts/scan.sh samples/parse-errors/mixed \
+                  --skip gitleaks --skip osv 2>&1) || rc=$?
+          echo "$out"
+          # exit 1 = the PLANTED FINDING gated. Not exit 2, which is what the
+          # unparseable file next to it used to produce.
+          [[ "$rc" -eq 1 ]] || {
+            echo "::error::expected exit 1 (the planted finding), got $rc"; exit 1; }
+          # The control. Without a real finding here, "clean, 1 unparsed" cannot
+          # be told apart from "semgrep fell over and reported nothing".
+          eq() { [[ "$2" == "$3" ]] || {
+            echo "::error::$1: expected '$3', got '$2'"; exit 1; }; echo "  OK  $1 = $2"; }
+          eq gate     "$(sed -n 's/^semgrep_gate=//p' <<<"$out" | tail -1)" 1
+          eq unparsed "$(sed -n 's/^semgrep_unparsed=//p' <<<"$out" | tail -1)" 1
+          # Counting it is not enough — the file has to be NAMED, or the
+          # coverage hole is still invisible to whoever reads the log.
+          grep -q 'unparsed .*PrimaryConstructor\.cs' <<<"$out" || {
+            echo '::error::the unparsed file was counted but never named'; exit 1; }
+          grep -q 'file(s) UNPARSED' <<<"$out" || {
+            echo '::error::the summary line does not carry the unparsed count'; exit 1; }
+          echo 'OK: findings still gate; the coverage gap is named but does not gate'
+
+      - name: ...but a tree semgrep cannot parse AT ALL is a failed scan
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          out=$(./scripts/scan.sh samples/parse-errors/total \
+                  --skip gitleaks --skip osv 2>&1) || rc=$?
+          echo "$out"
+          [[ "$rc" -ne 0 ]] || {
+            echo '::error::a tree where NOTHING parsed reported success — "0 findings because nobody looked" must never read as clean'
+            exit 1; }
+          grep -q 'ERROR (policy exit 2)' <<<"$out" || {
+            echo '::error::expected the semgrep summary line to be ERROR (policy exit 2)'
+            exit 1; }
+          grep -q 'failed to parse, so no rule ran' <<<"$out" || {
+            echo '::error::the failure did not say WHY — it must name the cause, not just exit'
+            exit 1; }
+          echo 'OK: nothing-parsed is still a hard failure'
+
+      # THE ALLOWLIST HAS TO BE AN ALLOWLIST. If the split ever became a
+      # denylist — "everything is per-file except these" — a semgrep release
+      # inventing a new failure mode would silently stop gating. Fed an error
+      # type that is not on the list, classify must still exit 2.
+      - name: An unrecognised semgrep error type is still fatal
+        shell: bash
+        run: |
+          set -uo pipefail
+          python3 scripts/policy.py resolve --target . --baseline . \
+            --baseline-path . --out "$RUNNER_TEMP/p.json"
+          cat > "$RUNNER_TEMP/invented.json" <<'JSON'
+          {"results": [],
+           "errors": [{"type": "SomeFutureSemgrepFailure",
+                       "message": "invented for this test",
+                       "path": "a.cs"}],
+           "paths": {"scanned": ["a.cs"]}}
+          JSON
+          rc=0
+          out=$(python3 scripts/policy.py classify --resolved "$RUNNER_TEMP/p.json" \
+                  --results "$RUNNER_TEMP/invented.json" 2>&1) || rc=$?
+          echo "$out"
+          [[ "$rc" -eq 2 ]] || {
+            echo "::error::an unknown error type exited $rc, not 2 — the parse-error split has become a denylist and a future semgrep failure would stop gating"
+            exit 1; }
+          echo 'OK: unknown error types are still fatal'
+
+      # The standing report shares the split, by importing it rather than
+      # reimplementing it. Before #43 one unparseable file rendered the whole
+      # report as ERRORED and wrote ERRORED into the permanent history table.
+      - name: The standing report shows the gap instead of blanking
+        shell: bash
+        run: |
+          set -uo pipefail
+          ./scripts/scan.sh samples/parse-errors/mixed --skip gitleaks --skip osv \
+            --json-out "$RUNNER_TEMP/pe.json" >/dev/null 2>&1 || true
+          rc=0
+          out=$(python3 scripts/quality-report.py --json "$RUNNER_TEMP/pe.json" \
+                  --date 2026-01-01 --target demo/repo \
+                  --gitleaks clean --osv clean) || rc=$?
+          echo "$out"
+          [[ "$rc" -eq 0 ]] || {
+            echo "::error::the report exited $rc — an unparseable file is still being treated as an outage"
+            exit 1; }
+          grep -q 'debug-print-left-behind-dotnet' <<<"$out" || {
+            echo '::error::the findings breakdown is missing — the report blanked'; exit 1; }
+          grep -q '### Not scanned' <<<"$out" || {
+            echo '::error::the report does not mention the unparsed file at all, which is the other way to get this wrong'
+            exit 1; }
+          grep -q 'ERRORED' <<<"$out" && {
+            echo '::error::the run was recorded as ERRORED in the history table'; exit 1; }
+          echo 'OK: the report renders findings AND names the coverage gap'
+
   # examples/ is documentation that executes. A worked example that would not
   # actually work is worse than no example — the reader trusts it more than the
   # prose, and finds out in their own CI. So each one is asserted here:

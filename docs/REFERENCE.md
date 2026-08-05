@@ -86,6 +86,14 @@ Each tool resolves as **native binary → `uvx`/`docker` → skipped with a loud
 warning**. Nothing is ever silently not-run; the summary names every tool and its
 verdict.
 
+**The `uvx` and `docker` fallbacks are pinned to the same Semgrep the CI action
+installs**, and `check-pins.sh` asserts all three sites agree. They were not
+pinned at all before #43 — a bare `uvx semgrep` and `returntocorp/semgrep:latest`
+— which is why a parse failure could be irreproducible between two local runs
+minutes apart. A **native** `semgrep` already on `PATH` is whatever the machine
+has and cannot be pinned from here; the scan warns when its version differs from
+the baseline's.
+
 ---
 
 ## The policy file
@@ -160,8 +168,42 @@ exists for the standing report, and only for that.
 | `classify --resolved F --results F` | Split findings into gating and warn-only; exit 1 if anything gates |
 
 Exit codes: `0` clean/valid · `1` gate findings · `2` a mechanism failed
-(unreadable results, non-empty semgrep `.errors`, an exclusion that did not take)
-· `3` usage or policy error.
+(unreadable results, a semgrep error that is not a per-file parse failure, every
+file unparseable, an exclusion that did not take) · `3` usage or policy error.
+
+### Files Semgrep cannot parse
+
+A parse failure is **a coverage gap, not a scan failure** (#43). The two used to
+be the same thing, and a codebase using C# 12 primary constructors —
+`public sealed class Thing(Dep dep)`, which Semgrep's C# parser rejects — turned
+a clean scan into a red gate:
+
+```
+Ran 22 rules on 29 files: 0 findings.
+error: semgrep reported 6 error(s); refusing to treat the result as a finding set
+```
+
+Red on green code, for a reason no consumer can fix. And the worse half had no
+output at all: **a file that does not parse has no rule run against it**, so
+those files were contributing 0 to every number while looking like a failure
+rather than a hole.
+
+Now they are listed by name, counted as `semgrep_unparsed=N`, carried onto the
+scan summary line (`semgrep  clean (3 file(s) UNPARSED)`) and given their own
+section in the standing report — and they do not gate.
+
+Two guards stop that becoming the silent pass it would otherwise be:
+
+- **The recognised list is an allowlist.** `PartialParsing`, `SyntaxError`,
+  `LexicalError`, `Timeout`, `OutOfMemory` and the interfile variants are
+  per-file. Anything else — a rule that would not load, an unknown language, a
+  failure type a future Semgrep invents — is still exit 2.
+- **If every file Semgrep looked at failed to parse, the run exits 2.**
+  `results: []` then means "nobody looked", which is precisely the shape that
+  must never read as clean.
+
+Measured 2026-08-05: semgrep `1.172.0` is the newest release on PyPI and
+`1.145.0` behaves identically, so upgrading is not an available fix.
 
 ---
 
