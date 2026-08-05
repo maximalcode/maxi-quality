@@ -1,0 +1,40 @@
+{
+  "tool": "knip",
+  "findings": [
+    {
+      "rule": "dependencies",
+      "file": "package.json",
+      "line": 9
+    },
+    {
+      "rule": "exports",
+      "file": "src/barrel/impl.ts",
+      "line": 5
+    },
+    {
+      "rule": "exports",
+      "file": "src/barrel/index.ts",
+      "line": 1
+    },
+    {
+      "rule": "unlisted",
+      "file": "src/index.ts",
+      "line": 2
+    },
+    {
+      "rule": "files",
+      "file": "src/orphan.ts",
+      "line": 0
+    },
+    {
+      "rule": "types",
+      "file": "src/util.ts",
+      "line": 6
+    },
+    {
+      "rule": "exports",
+      "file": "src/util.ts",
+      "line": 14
+    }
+  ]
+}

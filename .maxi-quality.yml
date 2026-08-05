@@ -29,3 +29,12 @@ paths:
   exclude:
     - samples/policy
     - samples/parse-errors
+    # The slop fixtures (#51, #52) prove knip and deptry, not Semgrep. Scanned
+    # as part of the repo they would couple two subsystems' manifests the same
+    # way samples/policy would — and samples/knip's bait (dead files, an
+    # unused-dependency package.json) is exactly the kind of tree other
+    # scanners misread.
+    - samples/knip
+    - samples/knip-clean
+    - samples/deptry
+    - samples/deptry-clean

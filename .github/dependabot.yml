@@ -92,8 +92,14 @@ updates:
   # ruff ships new rules in PATCH releases — 0.x has no stable-API promise — so
   # a bump here is more likely to move counts than the npm or nuget groups are.
   # That is working as intended: the count mismatch is the notification.
+  # samples/deptry/requirements.txt is fixture METADATA, not a toolchain: it
+  # pins the packages whose installed metadata the deptry fixture reads (the
+  # bs4 import-name mapping). Covered here for the same reason the linters
+  # are — an unwatched pin is a pin that rots.
   - package-ecosystem: pip
-    directory: /samples/python
+    directories:
+      - /samples/python
+      - /samples/deptry
     schedule:
       interval: monthly
     open-pull-requests-limit: 3
@@ -102,6 +108,7 @@ updates:
         patterns:
           - ruff
           - mypy
+          - deptry
 
   # --- Actions used by this repo's own workflows ------------------------------
   - package-ecosystem: github-actions
