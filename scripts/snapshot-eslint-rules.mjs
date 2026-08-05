@@ -91,7 +91,9 @@ for (const probe of PROBES) {
     if (severityName(severity) === 'off') continue;
     rules[id] = [severityName(severity), ...options];
   }
-  snapshot[probe] = Object.fromEntries(Object.entries(rules).sort(([a], [b]) => a.localeCompare(b)));
+  snapshot[probe] = Object.fromEntries(
+    Object.entries(rules).sort(([a], [b]) => a.localeCompare(b)),
+  );
 }
 
 const serialised = `${JSON.stringify(snapshot, null, 2)}\n`;
@@ -124,7 +126,9 @@ for (const probe of PROBES) {
     if (e === a) continue;
     drifted = true;
     if (e && !a) {
-      process.stderr.write(`::error::${probe}: rule '${id}' is no longer enabled — a check was REMOVED (was ${e})\n`);
+      process.stderr.write(
+        `::error::${probe}: rule '${id}' is no longer enabled — a check was REMOVED (was ${e})\n`,
+      );
     } else if (!e && a) {
       process.stderr.write(`  ADDED    ${probe}: ${id} = ${a}\n`);
     } else {
@@ -137,7 +141,9 @@ const total = PROBES.reduce((n, p) => n + Object.keys(snapshot[p]).length, 0);
 process.stdout.write(`eslint_enabled_rules=${total}\n`);
 
 if (!drifted) {
-  process.stderr.write(`OK: enabled rule set matches ${SNAPSHOT} (${total} rule bindings across ${PROBES.length} probes)\n`);
+  process.stderr.write(
+    `OK: enabled rule set matches ${SNAPSHOT} (${total} rule bindings across ${PROBES.length} probes)\n`,
+  );
   process.exit(0);
 }
 

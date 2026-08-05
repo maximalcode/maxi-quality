@@ -69,6 +69,8 @@ must pass.
 configs/editorconfig                    shared .editorconfig (all languages)
 configs/typescript/eslint.config.mjs    strict-type-checked + stylistic + SonarJS recommended, exported flat config
 configs/typescript/tsconfig.strict.json extends-able strict compiler options
+configs/typescript/prettier.config.mjs  the formatter — printWidth 100 + single quotes are the two
+                                        non-defaults; the rest are Prettier defaults stated on purpose
 configs/typescript/expected-rules.json  the ENABLED ESLint rule set, 1342 bindings across 4 probes
 configs/typescript/tsconfig.snapshot.json the options it RESOLVES to — the gate on a silently deleted flag
 configs/dotnet/Directory.Build.props    AnalysisLevel, TreatWarningsAsErrors, Sonar + Roslynator
@@ -119,6 +121,10 @@ samples/dotnet-tests/     Layer 1 C# *Tests* sample — proves the #25 relaxatio
 samples/dotnet-clean/     negative control — must BUILD 0 errors / 0 warnings
 samples/python/           Layer 1 Python sample — ruff 14 errors, mypy 11 errors
 samples/python-clean/     negative control — must PASS ruff AND mypy, zero findings
+samples/format/           the formatter's suite (#42) — two misformatted files and
+                          three ABLATIONS, each correct under our settings and wrong
+                          under the tool's own defaults, so deleting a format config
+                          turns a check red instead of leaving it quietly true
 samples/semgrep/          Layer 2 sample — outside both projects on purpose
 samples/guards/           the fetch-and-execute shapes ci.yml's supply-chain guard
                           must catch, and the verified downloads it must not (#3)
@@ -151,6 +157,7 @@ npm run verify:ts                        # expect exit 1, 14 errors
 npm run verify:ts:clean                  # expect exit 0, ZERO findings
 npm run verify:ts:types                  # expect exit 2, 12 tsc diagnostics
 npm run verify:ts:types:clean            # expect exit 0, ZERO diagnostics
+npm run verify:format                    # expect exit 0, everything formatted
 node scripts/snapshot-eslint-rules.mjs --check
 node scripts/snapshot-tsconfig.mjs --check
 ./scripts/snapshot-msbuild-props.sh --check
@@ -166,6 +173,11 @@ mypy --config-file configs/python/mypy.ini samples/python/src
 ruff check samples/python-clean          # expect exit 0, ZERO findings
 mypy --config-file configs/python/mypy.ini samples/python-clean/src
                                          # expect exit 0, ZERO findings
+ruff format --check --config configs/python/ruff.toml samples/python samples/python-clean
+                                         # expect exit 0, 4 files already formatted
+dotnet format whitespace samples/dotnet-clean --verify-no-changes
+                                         # expect exit 0 — WHITESPACE, not bare
+                                         # `dotnet format`, which re-runs 622 analyzers
 ./scripts/scan.sh                        # expect exit 1, 100 semgrep findings / 28 rule ids
 
 # the policy file, both directions (samples/policy/)

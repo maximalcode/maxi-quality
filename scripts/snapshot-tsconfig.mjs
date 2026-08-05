@@ -85,7 +85,9 @@ function resolveOptions() {
     // `files` is the probe path in a temp directory: machine-specific, and not
     // part of what the baseline promises.
     const { compilerOptions } = JSON.parse(out);
-    return Object.fromEntries(Object.entries(compilerOptions).sort(([a], [b]) => a.localeCompare(b)));
+    return Object.fromEntries(
+      Object.entries(compilerOptions).sort(([a], [b]) => a.localeCompare(b)),
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

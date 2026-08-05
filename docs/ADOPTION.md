@@ -66,6 +66,10 @@ UTF-8, LF, final newline, trimmed trailing whitespace, 2-space default with
 4-space for C#/Java/Python. For a C# repo, append the C# layer as well — see
 below.
 
+This file is not decoration: for C# it is what `dotnet format whitespace`
+actually reads, so it is the formatting policy rather than a hint to editors
+(§3a).
+
 ---
 
 ## 2. TypeScript — Layer 1
@@ -142,6 +146,48 @@ regex, and `eval` on a non-literal.
 - `typescript-eslint` 8.x supports `typescript >=4.8.4 <6.1.0`. TypeScript 7 is
   outside that range today; this repo pins `~6.0.3`.
 
+### 2a. Formatting — Prettier
+
+Optional, and separate from the lint gate on purpose: a formatter finds no bugs.
+What it removes is a category of review comment and the layout drift that makes
+a real diff hard to read.
+
+```bash
+npm i -D prettier
+cp "$BASELINE"/configs/typescript/prettier.config.mjs <repo>/prettier.config.mjs
+```
+
+```json
+{ "scripts": { "format": "prettier --write .", "verify:format": "prettier --check ." } }
+```
+
+Two settings in that file are not Prettier defaults, and both exist to stop the
+baseline contradicting itself:
+
+- **`printWidth: 100`** — Prettier defaults to 80, while `configs/editorconfig`
+  ships `max_line_length = 100` and `configs/python/ruff.toml` ships
+  `line-length = 100`. The default would have meant two line lengths in one
+  baseline and a formatter fighting the `.editorconfig` next to it.
+- **`singleQuote: true`** — matches what TypeScript code here already looks
+  like. Prettier's default is double, which would have rewritten every file for
+  nothing. Python deliberately keeps double quotes; each language gets its own
+  community default.
+
+Everything else in the file is a Prettier default written out explicitly, so a
+major bump that changes one arrives as a reviewable one-line diff instead of
+unexplained churn in your repo.
+
+**On an existing codebase, run `prettier --write` once, in its own commit, and
+add that commit to `.git-blame-ignore-revs`.** A formatting commit mixed into a
+behavioural one is unreviewable, and blame that points at it is worse than no
+blame. There is no `--changed-only` equivalent here — unlike Layer 2, a
+formatter has nothing to grandfather.
+
+There is no ESLint/Prettier conflict to configure away: `typescript-eslint` has
+shipped no formatting rules since v6, and measured on this repo's fixtures
+Prettier and the lint config disagree about nothing. `eslint-config-prettier` is
+not needed and is not installed.
+
 ---
 
 ## 3. C# / .NET — Layer 1
@@ -203,6 +249,26 @@ What is *not* left to you is knowing about it. The default posture is not "no lo
 file yet"; it is a dependency gate that cannot see past your direct dependencies,
 and until now that difference was invisible.
 
+### 3a. Formatting — `dotnet format whitespace`
+
+No new config: the `.editorconfig` from §1 is the policy. Gate it with
+
+```bash
+dotnet format whitespace --verify-no-changes
+```
+
+**Use the `whitespace` subcommand, not bare `dotnet format`.** Measured
+2026-08-05 on SDK 10.0.301: the bare form also runs Code Style analysis and
+every analyzer reference — 622 of them on a four-file sample — and re-reports
+S101, IDE0005, IDE0052, IDE0060 and CS8625 under the formatter's exit code.
+Those are the *build* gate's diagnostics; `Directory.Build.props` already fails
+the build on them. Running both means one red check standing for two unrelated
+problems, and a formatter that takes as long as a full analysis run.
+
+On a large solution, scope it: `dotnet format whitespace <project> --include
+<paths>` takes an explicit file list, which is what makes it usable from a
+pre-commit hook.
+
 ---
 
 ## 4. Python — Layer 1
@@ -248,6 +314,24 @@ sections for untyped third-party imports directly to it.
 `per-file-ignores` where it is scoped and greppable; a global ignore is invisible
 at the call site and applies to production code as readily as to the one place
 that needed it.
+
+### 4a. Formatting — `ruff format`
+
+Already configured by the file you copied above; it just needs running.
+
+```bash
+ruff format .                     # fix
+ruff format --check .             # gate
+```
+
+Everything in `[format]` is a ruff default, stated explicitly so a major bump
+that changes one is a visible diff rather than churn. The setting that actually
+differs is `line-length = 100` from the `[lint]` section — **the formatter reads
+it too**, so the same number that decides `E501` also decides where ruff wraps.
+Override it in your own `ruff.toml` and you move both at once.
+
+Same advice as Prettier on an existing codebase: one `ruff format` commit on its
+own, added to `.git-blame-ignore-revs`.
 
 ---
 

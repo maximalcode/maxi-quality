@@ -68,6 +68,27 @@ ignore = []
 # Scripts and dev tooling print to a terminal; that is their interface.
 "**/scripts/**" = ["T20"]
 
+# --- the formatter ------------------------------------------------------------
+#
+# ENFORCED as of #42. This section existed before anything ran it, which is the
+# same shape as every other bug this repo has shipped: a config that is present,
+# looks configured, and gates nothing. `ruff format --check` is now a CI step and
+# `samples/format/` is its fixture.
+#
+# Both values below are ruff's own defaults, and they are written out anyway for
+# the reason configs/typescript/prettier.config.mjs states at length: an unstated
+# default changes under you in a major bump and arrives as unexplained churn in
+# somebody's diff. Stated, the same bump is a one-line diff here that a human
+# has to justify.
+#
+# `line-length = 100` above is the setting that is NOT a default (ruff's is 88),
+# and it drives the formatter as well as E501 — so it is the one with an
+# ablation fixture: samples/format/needs_width_100.py is correctly formatted at
+# 100 and gets rewrapped at 88.
+#
+# Note quote-style deliberately differs from the TypeScript baseline, which uses
+# single quotes. Each language keeps its own community default; a cross-language
+# quote consistency would be a preference nobody asked for, imposed twice.
 [format]
 quote-style = "double"
 indent-style = "space"

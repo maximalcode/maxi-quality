@@ -159,6 +159,64 @@ jobs:
               exit 1
             }
           done
+      # --- the formatter, issue #42 -----------------------------------------
+      # docs/CONCEPT.md §4 has claimed since the first commit that formatting is
+      # "autofixed, never argued about". For TypeScript that was a claim with
+      # nothing behind it — no config, no tool, no check — which is the same
+      # shape as every other bug this repo has shipped.
+      - name: Everything Prettier owns must already be formatted
+        shell: bash
+        run: npm run verify:format
+      # THE ONE THAT MATTERS, and it is the ablation the step above cannot do.
+      # "The tree is formatted" and "the tree is formatted BY OUR CONFIG" are
+      # different claims, and only the second is worth a config file. Measured
+      # 2026-08-05, prettier 3.9.6: with `--no-config`, 21 files fail — Prettier
+      # defaults to printWidth 80 (we ship 100, matching configs/editorconfig
+      # and ruff.toml) and to double quotes (we ship single). Delete
+      # configs/typescript/prettier.config.mjs and the step above stays green.
+      - name: ...and formatted by OUR config, not Prettier's defaults
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          ./node_modules/.bin/prettier --no-config \
+            --check "**/*.{ts,mts,cts,js,mjs,cjs}" >/dev/null 2>&1 || rc=$?
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::the tree is formatted identically with and without configs/typescript/prettier.config.mjs — that config is now proving nothing. Either printWidth/singleQuote were reverted to Prettier defaults, or the settings that differ no longer appear in any checked file.'
+            exit 1
+          fi
+          echo 'OK: the shipped Prettier config changes the verdict'
+      # --ignore-path /dev/null on purpose: .prettierignore lists samples/format
+      # so that `npm run format` cannot quietly repair the fixtures, and this is
+      # the one place that has to look past it.
+      - name: The misformatted TS fixture must be REJECTED
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          ./node_modules/.bin/prettier --config configs/typescript/prettier.config.mjs \
+            --ignore-path /dev/null --check samples/format/bad-format.ts >/dev/null 2>&1 || rc=$?
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/format/bad-format.ts passed prettier --check. Either the fixture was formatted (do not do that — fix the config instead) or the gate stopped reading it.'
+            exit 1
+          fi
+          # And the width ablation from the other side: this file is Prettier-
+          # clean at printWidth 100 and dirty at Prettier's default 80. Both
+          # halves are asserted, because "fails with defaults" alone is also
+          # what a plain syntax error looks like.
+          rc=0
+          ./node_modules/.bin/prettier --config configs/typescript/prettier.config.mjs \
+            --ignore-path /dev/null --check samples/format/needs-width-100.ts >/dev/null 2>&1 || rc=$?
+          [[ $rc -eq 0 ]] || {
+            echo '::error::samples/format/needs-width-100.ts is not clean under our config — printWidth regressed, or the fixture line drifted outside 81-100 chars'
+            exit 1; }
+          rc=0
+          ./node_modules/.bin/prettier --no-config \
+            --ignore-path /dev/null --check samples/format/needs-width-100.ts >/dev/null 2>&1 || rc=$?
+          [[ $rc -ne 0 ]] || {
+            echo '::error::samples/format/needs-width-100.ts is clean under Prettier defaults too — its long line no longer exceeds 80 chars, so it separates nothing'
+            exit 1; }
+          echo 'OK: the misformatted fixture fails and the width ablation separates 100 from 80'
 
   layer1-dotnet:
     runs-on: ubuntu-latest
@@ -216,6 +274,66 @@ jobs:
           fi
           printf '%s' "$out" | python3 scripts/check-expected.py --tool dotnet \
             --input - --expected samples/expected/dotnet-clean.json
+      # --- the formatter, issue #42 -----------------------------------------
+      #
+      # `dotnet format whitespace`, NOT bare `dotnet format`. MEASURED
+      # 2026-08-05, SDK 10.0.301: the bare form also runs Code Style analysis
+      # and 622 analyzer references, so against samples/dotnet it reports S101,
+      # IDE0005, IDE0052, IDE0060 and CS8625 — the BUILD gate's findings wearing
+      # the formatter's exit code. One red check would then mean two unrelated
+      # things, and the build step above already owns those diagnostics. The
+      # `whitespace` subcommand is layout only.
+      - name: C# samples must already be whitespace-formatted
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for d in samples/dotnet samples/dotnet-clean samples/dotnet-tests; do
+            dotnet format whitespace "$d" --verify-no-changes --verbosity quiet
+          done
+      # THE ABLATION, and this one is not decoration: for C# almost everything
+      # in configs/editorconfig agrees with the tool's own defaults, so a
+      # fixture that merely fails proves the formatter ran and nothing about
+      # WHICH config it ran with. `insert_final_newline = true` is the setting
+      # that genuinely differs, so the fixture is a file with no trailing
+      # newline and it is checked TWICE — once with the shipped .editorconfig
+      # staged beside it, once with none. The two verdicts must disagree.
+      #
+      # Measured 2026-08-05: without the config, exit 0. With it,
+      # `FINALNEWLINE: Fix final newline. Insert '\n'`.
+      - name: The shipped .editorconfig must be what decides the C# verdict
+        shell: bash
+        run: |
+          set -uo pipefail
+          stage() {
+            rm -rf "$1"; mkdir -p "$1"
+            cp samples/format/MissingFinalNewline.cs "$1/"
+          }
+          # Guard the fixture before either run. If an editor or a
+          # .gitattributes ever appends the newline, both runs go green and the
+          # ablation silently stops testing anything — which is the exact
+          # failure mode this whole job exists to catch.
+          if [[ -z "$(tail -c 1 samples/format/MissingFinalNewline.cs)" ]]; then
+            echo '::error::samples/format/MissingFinalNewline.cs now ENDS with a newline, so it no longer separates the shipped .editorconfig from the tool defaults. Strip the trailing newline (printf, not an editor) to restore the fixture.'
+            exit 1
+          fi
+
+          stage /tmp/fmt-bare
+          rc=0
+          dotnet format whitespace /tmp/fmt-bare --folder --verify-no-changes \
+            --verbosity quiet >/dev/null 2>&1 || rc=$?
+          [[ $rc -eq 0 ]] || {
+            echo "::error::the fixture failed dotnet format whitespace with NO .editorconfig (exit $rc) — it is misformatted in some way other than the missing final newline, so the ablation no longer isolates insert_final_newline"
+            exit 1; }
+
+          stage /tmp/fmt-config
+          cp configs/editorconfig /tmp/fmt-config/.editorconfig
+          rc=0
+          dotnet format whitespace /tmp/fmt-config --folder --verify-no-changes \
+            --verbosity quiet >/dev/null 2>&1 || rc=$?
+          [[ $rc -ne 0 ]] || {
+            echo '::error::the fixture PASSED with configs/editorconfig staged beside it — insert_final_newline is no longer being enforced, so the C# format gate is running on tool defaults and configs/editorconfig gates nothing'
+            exit 1; }
+          echo 'OK: configs/editorconfig changes the verdict — the C# format gate is driven by the shipped config'
 
   # #25 — the test-project relaxation, asserted from BOTH sides. A one-sided
   # check would pass just as happily if the waiver swallowed everything.
@@ -346,6 +464,45 @@ jobs:
             exit 1
           fi
           echo 'OK: clean Python sample passes ruff and mypy with zero findings'
+      # --- the formatter, issue #42 -----------------------------------------
+      # configs/python/ruff.toml has had a [format] section since it was written
+      # and NOTHING RAN IT. Present, plausible, gating nothing — the same shape
+      # as dotnet_diagnostic.IDE1006.severity never being set (docs/STATUS.md §4).
+      - name: Python sources must already be ruff-formatted
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ruff format --check --config configs/python/ruff.toml \
+            samples/python samples/python-clean
+      - name: The misformatted Python fixture must be REJECTED
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          ruff format --check --config configs/python/ruff.toml \
+            samples/format/bad_format.py >/dev/null 2>&1 || rc=$?
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/format/bad_format.py passed ruff format --check. Either the fixture was formatted (do not do that) or the gate stopped reading it.'
+            exit 1
+          fi
+          # The ablation. Everything in [format] is a ruff DEFAULT, so that
+          # section on its own is unfalsifiable — delete it and nothing moves.
+          # `line-length = 100` is the setting that is not a default (ruff ships
+          # 88) and it drives the formatter as well as E501, so it is the one
+          # with a fixture: clean at 100, rewrapped at 88. --isolated ignores
+          # every config file, which is the only way to get ruff's true defaults.
+          rc=0
+          ruff format --check --config configs/python/ruff.toml \
+            samples/format/needs_width_100.py >/dev/null 2>&1 || rc=$?
+          [[ $rc -eq 0 ]] || {
+            echo '::error::samples/format/needs_width_100.py is not clean under our config — line-length regressed, or the fixture line drifted outside 89-100 chars'
+            exit 1; }
+          rc=0
+          ruff format --check --isolated samples/format/needs_width_100.py >/dev/null 2>&1 || rc=$?
+          [[ $rc -ne 0 ]] || {
+            echo '::error::samples/format/needs_width_100.py is clean at ruff defaults too — its long line no longer exceeds 88 chars, so it separates nothing'
+            exit 1; }
+          echo 'OK: the misformatted fixture fails and the width ablation separates 100 from 88'
 
   # The ratchet (`--changed-only`) had NO test, and shipped broken: semgrep's
   # --baseline-commit resolves the ref against the git repo of its WORKING

@@ -93,6 +93,7 @@ time.
 | TypeScript — ESLint + tsconfig | ✅ `configs/typescript/` |
 | C#/.NET — Roslyn + Sonar + Roslynator | ✅ `configs/dotnet/` |
 | Python — Ruff + mypy strict | ✅ `configs/python/` — 13 rule families |
+| Formatting — Prettier / `ruff format` / `dotnet format whitespace` | ✅ gated in CI ([#42](https://github.com/maximalcode/maxi-quality/issues/42)). Adopting cost zero reformatted files here; each config has an ablation fixture in `samples/format/` that is correct under our settings and wrong under the tool's defaults |
 | Samples proving all three fail | ✅ `samples/` |
 | Semgrep ruleset (Layer 2) | ✅ `semgrep/` — 12 conventions, 28 rule ids |
 | `scan.sh` (Semgrep + Gitleaks + OSV) | ✅ `scripts/scan.sh` |

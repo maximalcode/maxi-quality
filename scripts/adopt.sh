@@ -313,6 +313,14 @@ if [ "$HAS_TS" -eq 1 ]; then
   printf '       --max-warnings 0 is load-bearing; without it no-console is toothless.\n'
   printf '    4. typescript-eslint 8.x needs typescript >=4.8.4 <6.1.0 — TS 7 is refused\n'
   printf '       outright, not warned about (STATUS §4).\n'
+  printf '    5. OPTIONAL — the formatter. Not copied in, because adopting it on an\n'
+  printf '       existing repo reformats every file and that is your commit to make,\n'
+  printf '       not this script'"'"'s:\n'
+  printf '         npm i -D prettier\n'
+  printf '         cp %s/configs/typescript/prettier.config.mjs ./prettier.config.mjs\n' "$BASELINE"
+  printf '       Then run prettier --write ONCE, alone, and put that commit in\n'
+  printf '       .git-blame-ignore-revs. No eslint-config-prettier needed —\n'
+  printf '       typescript-eslint has shipped no formatting rules since v6.\n'
 fi
 
 if [ "$HAS_DOTNET" -eq 1 ]; then
@@ -327,6 +335,12 @@ if [ "$HAS_DOTNET" -eq 1 ]; then
   printf '       --use-lock-file opts in; RestoreLockedMode then fails CI on a\n'
   printf '       stale one, which is the commitment. This script will not make\n'
   printf '       that call for you.\n'
+  printf '    4. OPTIONAL — the formatter needs no extra config; the .editorconfig\n'
+  printf '       copied above IS the policy. Gate it with:\n'
+  printf '         dotnet format whitespace --verify-no-changes\n'
+  printf '       The WHITESPACE subcommand, not bare "dotnet format" — the bare form\n'
+  printf '       also runs every analyzer and re-reports the build gate'"'"'s own\n'
+  printf '       diagnostics under the formatter'"'"'s exit code.\n'
 fi
 
 if [ "$HAS_PYTHON" -eq 1 ]; then
@@ -339,6 +353,13 @@ if [ "$HAS_PYTHON" -eq 1 ]; then
   printf '    3. An existing codebase will be noisy on first run. Move real\n'
   printf '       exemptions into ruff.toml per-file-ignores rather than widening\n'
   printf '       the global ignore list — scoped and greppable beats invisible.\n'
+  printf '    4. OPTIONAL — the formatter is already configured by the ruff.base.toml\n'
+  printf '       copied above; it just needs running:\n'
+  printf '         ruff format .           # fix\n'
+  printf '         ruff format --check .   # gate\n'
+  printf '       Note line-length = 100 drives the FORMATTER as well as E501, so\n'
+  printf '       overriding it moves both. One reformat commit, alone, in\n'
+  printf '       .git-blame-ignore-revs.\n'
 fi
 
 if [ "$NEEDS_MERGE" -eq 1 ]; then
