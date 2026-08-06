@@ -414,10 +414,12 @@ jobs:
               exit 1
             }
           done
-          # Side 2: the waived test idioms must stay silent.
-          for id in S1199 CA1822 S2325; do
+          # Side 2: the waived test idioms must stay silent. IDE1006 is in the
+          # list since #56 — tests/FixtureNaming.cs plants an un-prefixed
+          # fixture field under tests/, where the naming diagnostic is now off.
+          for id in S1199 CA1822 S2325 IDE1006; do
             if grep -q "error $id" <<<"$out"; then
-              echo "::error::$id fired in a Tests project — the #25 relaxation regressed"
+              echo "::error::$id fired in a Tests project — the #25/#56 relaxation regressed"
               exit 1
             fi
           done

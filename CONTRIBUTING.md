@@ -263,7 +263,10 @@ correct if it stays narrow: `S1199`, `CA1822` and `S2325` must stay **silent** o
 real test idioms, while `CS0414`, `IDE0051` and `S1144` must still **fire** on an
 unread private fixture. Checking only that it fails would pass just as happily if
 the waiver had swallowed everything. Control run: 6 errors with the waiver
-removed, 3 with it.
+removed, 3 with it. Since #56 the silent side also covers `IDE1006` under a
+`tests/` path — `tests/FixtureNaming.cs` plants the un-prefixed fixture field
+Consumer A measured 333 of, and `samples/dotnet/Naming.cs` stays the positive
+control proving the diagnostic still fires outside test paths.
 
 ### Python
 
