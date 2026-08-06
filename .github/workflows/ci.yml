@@ -2249,6 +2249,31 @@ jobs:
           : > "$F/sln-nested/src/Api/Api.csproj"
           sln "$F/sln-nested/build/Sample.sln" '..\src\Api\Api.csproj'
 
+          # The XML solution format (#56). FORWARD slashes on purpose — that is
+          # what the .slnx tooling writes, and the .sln fixtures above already
+          # prove the backslash path through the shared quoted-csproj
+          # extraction. Consumer A is a real instance of this layout: before
+          # the glob learned *.slnx, detection fell back to loose csprojs.
+          slnx() {
+            local f="$1"; shift
+            { echo '<Solution>'
+              for p in "$@"; do
+                printf '  <Project Path="%s" />\n' "$p"
+              done
+              echo '</Solution>'
+            } > "$f"
+          }
+
+          mkdir -p "$F/slnx-full/src/Api" "$F/slnx-full/src/Data"
+          : > "$F/slnx-full/src/Api/Api.csproj"; : > "$F/slnx-full/src/Data/Data.csproj"
+          slnx "$F/slnx-full/Sample.slnx" 'src/Api/Api.csproj' 'src/Data/Data.csproj'
+
+          # The coverage cross-check must guard a .slnx exactly as it guards a
+          # .sln — an omitted project is never built, never analysed.
+          mkdir -p "$F/slnx-partial/src/Api" "$F/slnx-partial/src/Worker"
+          : > "$F/slnx-partial/src/Api/Api.csproj"; : > "$F/slnx-partial/src/Worker/Worker.csproj"
+          slnx "$F/slnx-partial/Sample.slnx" 'src/Api/Api.csproj'
+
           mkdir -p "$F/no-sln/src/A" "$F/no-sln/src/B"
           : > "$F/no-sln/src/A/A.csproj"; : > "$F/no-sln/src/B/B.csproj"
 
@@ -2291,6 +2316,14 @@ jobs:
           run "$F/sln-nested" auto
           eq 'sln-nested rc' "$rc" 0
           eq 'sln-nested targets' "$(val dotnet_targets)" '["build/Sample.sln"]'
+
+          run "$F/slnx-full" auto
+          eq 'slnx-full rc' "$rc" 0
+          eq 'slnx-full targets' "$(val dotnet_targets)" '["Sample.slnx"]'
+
+          run "$F/slnx-partial" auto
+          eq 'slnx-partial rc' "$rc" 1
+          says 'slnx-partial' 'Worker.csproj'
 
           run "$F/no-sln" auto
           eq 'no-sln rc' "$rc" 0
