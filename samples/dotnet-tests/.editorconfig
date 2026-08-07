@@ -81,6 +81,18 @@ dotnet_diagnostic.CA2007.severity = none
 dotnet_diagnostic.CS1591.severity = none
 # Sonar's "remove commented-out code" is right but too eager on TODO blocks.
 dotnet_diagnostic.S125.severity = suggestion
+# A TODO that points at a tracked issue must not fail the build — same shape as
+# the S125 demotion above. Suggestion keeps it visible in the IDE.
+dotnet_diagnostic.S1135.severity = suggestion
+# Roslynator wants the four-constructor exception boilerplate. Measured on
+# Consumer A (#56): 55 hits, every one a small sealed domain exception whose
+# single constructor is the point. The serialization ctor died with .NET 5.
+dotnet_diagnostic.RCS1194.severity = none
+# LoggerMessage source-gen is hot-path library machinery. For an app whose
+# logging cost is dwarfed by the I/O it logs about, rewriting every log site
+# (38 on Consumer A) is churn, not quality. Opt in per-repo where it matters.
+dotnet_diagnostic.CA1848.severity = none
+dotnet_diagnostic.CA1873.severity = none
 
 # --- Style preferences (autofixable by `dotnet format`) ---------------------
 csharp_style_namespace_declarations = file_scoped:error
@@ -102,8 +114,8 @@ csharp_style_expression_bodied_properties = true:suggestion
 csharp_prefer_simple_using_statement = true:suggestion
 csharp_style_prefer_pattern_matching = true:suggestion
 
-# --- Naming: the three rules that actually get violated ---------------------
-# THIS LINE IS WHAT MAKES THE THREE RULES BELOW DO ANYTHING (#8). Measured
+# --- Naming: the rules that actually get violated ----------------------------
+# THIS LINE IS WHAT MAKES EVERY NAMING RULE BELOW DO ANYTHING (#8). Measured
 # 2026-08-03: without it, every naming violation built cleanly — a probe with an
 # un-prefixed interface, a snake_case class and a PascalCase private field
 # produced ZERO IDE1006. `dotnet_naming_rule.<rule>.severity` governs the IDE
@@ -128,6 +140,25 @@ dotnet_naming_rule.types_are_pascal_case.symbols = type_symbols
 dotnet_naming_rule.types_are_pascal_case.style = pascal
 dotnet_naming_symbols.type_symbols.applicable_kinds = class,struct,enum,delegate
 dotnet_naming_style.pascal.capitalization = pascal_case
+
+# Const and static-readonly private fields are PascalCase by .NET convention,
+# so the underscore rule below must not catch them. Measured on Consumer A
+# (#56): 13 hits in production code, all const/static-readonly, zero genuine.
+# These two rules are BOTH more specific (required_modifiers) and listed first
+# — either property alone makes them win, so the two orderings cannot disagree.
+dotnet_naming_rule.private_const_fields_are_pascal.severity = error
+dotnet_naming_rule.private_const_fields_are_pascal.symbols = private_const_field_symbols
+dotnet_naming_rule.private_const_fields_are_pascal.style = pascal
+dotnet_naming_symbols.private_const_field_symbols.applicable_kinds = field
+dotnet_naming_symbols.private_const_field_symbols.applicable_accessibilities = private
+dotnet_naming_symbols.private_const_field_symbols.required_modifiers = const
+
+dotnet_naming_rule.private_static_readonly_fields_are_pascal.severity = error
+dotnet_naming_rule.private_static_readonly_fields_are_pascal.symbols = private_static_readonly_field_symbols
+dotnet_naming_rule.private_static_readonly_fields_are_pascal.style = pascal
+dotnet_naming_symbols.private_static_readonly_field_symbols.applicable_kinds = field
+dotnet_naming_symbols.private_static_readonly_field_symbols.applicable_accessibilities = private
+dotnet_naming_symbols.private_static_readonly_field_symbols.required_modifiers = static, readonly
 
 dotnet_naming_rule.private_fields_are_camel_underscore.severity = error
 dotnet_naming_rule.private_fields_are_camel_underscore.symbols = private_field_symbols
@@ -166,3 +197,26 @@ dotnet_diagnostic.IDE0035.severity = none   # unreachable code
 dotnet_diagnostic.IDE0059.severity = none   # unnecessary value assignment
 dotnet_diagnostic.IDE0060.severity = none   # unused parameter
 dotnet_diagnostic.IDE0161.severity = none   # file-scoped namespace
+# Not only style ids: these two are PERFORMANCE rules, so the category-Style
+# line above never touched them. Measured on Consumer A (#56): 28× CA1861 +
+# 2× CA1859, every one inside an EF scaffold. A migration's Up() runs once per
+# database, and hand-fixing puts every FUTURE `dotnet ef migrations add` in
+# violation the moment it is generated — the fix would be a standing tax on
+# scaffolded code. CA*/S*/RCS* correctness rules keep running here.
+dotnet_diagnostic.CA1861.severity = none   # constant array as argument
+dotnet_diagnostic.CA1859.severity = none   # prefer concrete types
+
+# --- Test code: naming enforcement fights fixture idiom ----------------------
+# The same category as the test-project NoWarn list in Directory.Build.props,
+# but path-scoped because .editorconfig cannot see the project name. Measured
+# on Consumer A (#56): 333 IDE1006 hits in test fixtures, every one a
+# `private readonly` fixture field without the underscore prefix.
+#
+# The DIAGNOSTIC is disabled, not the naming rules — build enforcement reads
+# IDE1006 itself (see the naming section above, #8), so severity on the rules
+# would change nothing. Cost accepted knowingly: this also stops IDE1006 on
+# type/interface names in tests, where S101 still covers the type cases.
+# The brace form covers both a root-level tests/ folder and a nested one, for
+# the reason documented at the Migrations section.
+[{tests,**/tests}/**.cs]
+dotnet_diagnostic.IDE1006.severity = none

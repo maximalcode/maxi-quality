@@ -16,16 +16,51 @@
  *   3. un-disposed IDisposable        -> `using` declaration
  *   4. unreachable code               -> removed
  *   5. unused local                   -> the value is used
+ *
+ * Since #56 it is also the negative control for three RELAXATIONS, which a
+ * clean fixture is the only way to prove — a relaxation regressing shows up as
+ * this file failing, not as a bad sample passing:
+ *   6. PascalCase private const / static readonly -> silent (narrower naming
+ *      rules; the underscore rule must no longer catch them)
+ *   7. sealed single-ctor domain exception        -> silent (RCS1194 = none)
  */
 
 namespace Maximalcode.Sample.Clean;
 
+// 7. The exception shape Consumer A measured 55 of: sealed, one constructor
+//    that says what it needs, nothing else. RCS1194 wants three more ctors;
+//    the baseline now says no. Public because Sonar's S3871 (rightly) insists
+//    exception types be visible to their catchers.
+public sealed class MissingRoleException : Exception
+{
+    public MissingRoleException(string role)
+        : base($"required role is missing: {role}")
+    {
+    }
+}
+
 internal sealed class UserService
 {
+    // 6. PascalCase by .NET convention for const and static readonly — the
+    //    narrower naming rules added by #56 must leave both alone. Before
+    //    that change, each of these was an IDE1006 error.
+    private const string CachePrefix = "users:";
+
+    private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(5);
+
     // 1. Read by CacheKey below, so it is state rather than dead weight.
-    private readonly string _cacheKey = "users:all";
+    private readonly string _cacheKey = CachePrefix + "all";
 
     public string CacheKey => _cacheKey;
+
+    // 6 (cont.) Both fields are read, so IDE0052/S4487 stay out of the way and
+    // the only rule these could trip is the naming rule under test.
+    public static double CacheSeconds => CacheTtl.TotalSeconds;
+
+    // 7 (cont.) The exception is thrown on a real path, so the type is live
+    //    code rather than fixture furniture.
+    public static string RequireRole(string? role) =>
+        role ?? throw new MissingRoleException("admin");
 
     // 2. Ordinal comparison. Locale can no longer change an authorisation
     //    decision — the Turkish dotless-i problem cannot occur here.

@@ -209,7 +209,17 @@ jobs:
           # silently smaller scan.
           dotnet_targets='[]'
           if want dotnet; then
-            slns=$(find . -name node_modules -prune -o -type f -name '*.sln' -print \
+            # *.slnx too (#56): the XML solution format, first-class since the
+            # .NET 9 tooling. Consumer A has one, and a glob that only knew
+            # *.sln fell back to loose csprojs — builds still happened, but
+            # unordered and paying N restores instead of one. A .slnx lists
+            #   <Project Path="src/Api/Api.csproj" />
+            # so the quoted-csproj extraction below reads BOTH formats: the
+            # quotes around the path are the shared shape, and the separator
+            # normalisation covers a backslash-written Path the same way it
+            # covers .sln's always-backslash entries.
+            slns=$(find . -name node_modules -prune -o -type f \
+                     \( -name '*.sln' -o -name '*.slnx' \) -print \
                    | sed 's|^\./||' | sort)
             csprojs=$(find . -name node_modules -prune -o -type f -name '*.csproj' -print \
                       | sed 's|^\./||' | sort)
