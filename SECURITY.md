@@ -20,6 +20,18 @@ There is deliberately no `.gitleaksignore`. It works by **fingerprint**
 or line shift — a suppression file that silently stops suppressing is worse than
 none. The path allowlist survives both.
 
+## The vulnerable dependency in `samples/rust/` is deliberate
+
+`samples/rust/Cargo.lock` pins `smallvec 1.6.0`, which carries
+**RUSTSEC-2021-0003** (buffer overflow in `insert_many`, fixed in 1.6.1). It is
+bait for the cargo-deny advisories gate, and CI asserts that exact id fires —
+same contract as the fake credentials above. Two things make it safe: the
+dependency sits behind a `cfg(windows)` target gate, so no CI run ever
+downloads or compiles it (the lockfile entry alone is what cargo-deny reads),
+and nothing in this repository executes any code from it. A dependency scanner
+run against a clone **will** report it; that is the intended state, and the
+same advice applies — exclude `samples/`.
+
 ## Reporting a vulnerability
 
 Open a **private security advisory** through the repository's Security tab. That

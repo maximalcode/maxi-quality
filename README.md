@@ -27,7 +27,7 @@ cost wildly different amounts.** Knowing which is which is the whole decision.
 
 | | **Layer 2** — the umbrella | **Layer 1** — the deep pass |
 |---|---|---|
-| What it is | Semgrep with this repo's 12 conventions, Gitleaks, OSV-Scanner | Your compiler and linter turned up: typescript-eslint `strict-type-checked`, Roslyn + SonarAnalyzer + Roslynator with `TreatWarningsAsErrors`, Ruff + mypy `strict` |
+| What it is | Semgrep with this repo's 12 conventions, Gitleaks, OSV-Scanner | Your compiler and linter turned up: typescript-eslint `strict-type-checked`, Roslyn + SonarAnalyzer + Roslynator with `TreatWarningsAsErrors`, Ruff + mypy `strict`, clippy `pedantic` with `-Dwarnings` |
 | Scope | Identical for every repo, any stack | Per language, only the ones you have |
 | Config in your repo | **none** | 2–3 files copied in per language |
 | How it runs | one job, no token, no checkout of this repo | your own build and lint step |
@@ -85,7 +85,7 @@ time.
 
 ---
 
-## Status: TypeScript, C# and Python
+## Status: TypeScript, C#, Python and Rust
 
 | Piece | State |
 |---|---|
@@ -93,6 +93,7 @@ time.
 | TypeScript — ESLint + tsconfig | ✅ `configs/typescript/` |
 | C#/.NET — Roslyn + Sonar + Roslynator | ✅ `configs/dotnet/` |
 | Python — Ruff + mypy strict | ✅ `configs/python/` — 13 rule families |
+| Rust — clippy pedantic + rustfmt + cargo-deny | ✅ `configs/rust/` ([#58](https://github.com/maximalcode/maxi-quality/issues/58)) — clippy is the conventions layer (Semgrep's Rust support is experimental and stays out); `unsafe_code` forbidden; toolchain pinned; Layer 2 needed zero changes |
 | Formatting — Prettier / `ruff format` / `dotnet format whitespace` | ✅ gated in CI ([#42](https://github.com/maximalcode/maxi-quality/issues/42)). Adopting cost zero reformatted files here; each config has an ablation fixture in `samples/format/` that is correct under our settings and wrong under the tool's defaults |
 | Samples proving all three fail | ✅ `samples/` |
 | Semgrep ruleset (Layer 2) | ✅ `semgrep/` — 12 conventions, 28 rule ids |
@@ -138,7 +139,10 @@ these documents. A roadmap in a document is a task list nobody closes.
 > a secret scanner run against this repo **will** report findings, and that is the
 > intended state. Every one is in `samples/`; none was ever valid. Gitleaks needs
 > no action (`.gitleaks.toml` path-allowlists that directory and is loaded
-> automatically); other scanners should exclude `samples/`. Details in
+> automatically); other scanners should exclude `samples/`. The same goes for
+> dependency scanners: `samples/rust/Cargo.lock` deliberately pins a crate with
+> a known RustSec advisory as bait for the cargo-deny gate — target-gated so it
+> is never built, and asserted by id in CI. Details in
 > [`SECURITY.md`](SECURITY.md) and
 > [`samples/semgrep/README.md`](samples/semgrep/README.md).
 

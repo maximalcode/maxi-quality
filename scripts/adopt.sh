@@ -35,18 +35,37 @@
 #   python   ruff.base.toml                <- configs/python/ruff.toml
 #   python   mypy.ini                      <- configs/python/mypy.ini
 #   python   ruff.toml                     (1-line extend stub, only if absent)
+#   rust     rustfmt.toml                  <- configs/rust/rustfmt.toml
+#   rust     deny.toml                     <- configs/rust/deny.toml
+#   rust     Cargo.toml                    += configs/rust/lints.toml ([lints])
 #   always   .maxi-quality.yml             (commented starter, only if absent)
-#   any      .github/workflows/quality.yml (unless --no-workflow)
+#   any      .github/workflows/quality.yml (unless --no-workflow; with a
+#                                           pinned-toolchain rust job when
+#                                           Rust is detected)
 #   --hooks  .git/hooks/pre-commit         <- hooks/pre-commit (only with --hooks)
 #
 # The TS pair is a copy for the same reason Directory.Build.props is: a private
-# git devDep cannot npm-install in a consumer's CI.
+# git devDep cannot npm-install in a consumer's CI. The Rust trio is a copy for
+# a harder reason: Cargo has no remote lint consumption at all — [lints] must
+# live in the consumer's own manifest.
 #
 # Exit codes: 0 adopted (or dry-run) · 1 nothing detected · 3 usage error
 
 set -Eeuo pipefail
 
 BASELINE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# The Rust toolchain and cargo-deny versions stamped into the scaffolded CI.
+# PINNED for the reason STATUS §4 gives: with warnings promoted to errors, an
+# analyzer upgrade that adds lints is a breaking change, so "stable" is not a
+# version. scripts/check-pins.sh asserts these agree with the layer1-rust job
+# in ci.yml — CI must validate the same toolchain consumers are handed.
+RUST_TOOLCHAIN_PIN="1.97.1"
+CARGO_DENY_PIN="0.20.2"
+# From the .sha256 file next to the release artifact — the scaffolded job
+# verifies the download before executing it, so a consumer's CI never runs an
+# unverified binary this script pointed it at. Bump it together with the pin.
+CARGO_DENY_SHA256="9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f"
 
 # --- argument parsing --------------------------------------------------------
 TARGET=""
@@ -63,7 +82,7 @@ info() { printf '\033[36m›\033[0m %s\n' "$1"; }
 skip() { printf '\033[33mskip\033[0m %s\n' "$1"; }
 wrote() { printf '\033[32mwrite\033[0m %s\n' "$1"; }
 
-usage() { sed -n '3,44p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
+usage() { sed -n '3,51p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -102,6 +121,7 @@ detect() {
 HAS_DOTNET=0
 HAS_TS=0
 HAS_PYTHON=0
+HAS_RUST=0
 [ -n "$(detect '*.csproj')" ] && HAS_DOTNET=1
 [ -n "$(detect '*.sln')" ] && HAS_DOTNET=1
 [ -n "$(detect '*.slnx')" ] && HAS_DOTNET=1
@@ -110,6 +130,9 @@ HAS_PYTHON=0
 [ -n "$(detect 'pyproject.toml')" ] && HAS_PYTHON=1
 [ -n "$(detect 'requirements.txt')" ] && HAS_PYTHON=1
 [ -n "$(detect 'uv.lock')" ] && HAS_PYTHON=1
+# One manifest for workspace and single-crate alike — a workspace root and a
+# lone crate both mean "this is a Rust repo".
+[ -n "$(detect 'Cargo.toml')" ] && HAS_RUST=1
 
 bold "── maxi-quality adopt ──"
 info "baseline: $BASELINE"
@@ -117,15 +140,16 @@ info "target:   $TARGET"
 info "ref:      $REF"
 [ "$DRY_RUN" -eq 1 ] && warn "dry run — nothing will be written"
 
-if [ "$HAS_DOTNET" -eq 0 ] && [ "$HAS_TS" -eq 0 ] && [ "$HAS_PYTHON" -eq 0 ]; then
-  warn "no TypeScript, C# or Python project found under $TARGET"
-  warn "scope is TypeScript, C# and Python (CLAUDE.md §4). Nothing to do."
+if [ "$HAS_DOTNET" -eq 0 ] && [ "$HAS_TS" -eq 0 ] && [ "$HAS_PYTHON" -eq 0 ] && [ "$HAS_RUST" -eq 0 ]; then
+  warn "no TypeScript, C#, Python or Rust project found under $TARGET"
+  warn "scope is TypeScript, C#, Python and Rust (CLAUDE.md §4). Nothing to do."
   exit 1
 fi
 
 [ "$HAS_TS" -eq 1 ] && info "detected: TypeScript"
 [ "$HAS_DOTNET" -eq 1 ] && info "detected: C#/.NET"
 [ "$HAS_PYTHON" -eq 1 ] && info "detected: Python"
+[ "$HAS_RUST" -eq 1 ] && info "detected: Rust"
 printf '\n'
 
 # --- file helpers ------------------------------------------------------------
@@ -281,6 +305,60 @@ extend = \"./ruff.base.toml\"
 "
 fi
 
+# --- Rust --------------------------------------------------------------------
+# The C# pattern, not the TS one, and by necessity rather than preference:
+# Cargo cannot consume [lints] from a remote package, rustfmt and cargo-deny
+# have no extend mechanism. Three copies, refreshed by re-running this script.
+#
+# The [lints] block is APPENDED to the consumer's own Cargo.toml — workspace
+# form when the root manifest declares [workspace], single-crate form
+# otherwise. Same discipline as the C# .editorconfig append: marker-guarded so
+# re-running never appends twice, and a manifest that already carries its own
+# [lints] section gets a skip and a warning, never a merge attempt.
+if [ "$HAS_RUST" -eq 1 ]; then
+  MANIFEST="$TARGET/Cargo.toml"
+  if [ ! -f "$MANIFEST" ]; then
+    # Cargo walks UP from a crate to find its workspace; a lints block written
+    # to a directory that has no manifest configures nothing. Same failure
+    # shape as the shadowed Directory.Build.props, so same loudness.
+    printf '\n'
+    warn "Cargo.toml was found below $TARGET but not AT it, so there is no"
+    warn "manifest here to hold the [lints] block. Re-run adopt.sh against the"
+    warn "directory that owns the workspace/crate root."
+    printf '\n'
+    NEEDS_MERGE=1
+  else
+    copy_file "$BASELINE/configs/rust/rustfmt.toml" "$TARGET/rustfmt.toml"
+    copy_file "$BASELINE/configs/rust/deny.toml" "$TARGET/deny.toml"
+
+    RUST_MARKER='maxi-quality — Rust lint baseline'
+    if grep -qF "$RUST_MARKER" "$MANIFEST" 2>/dev/null; then
+      skip "$MANIFEST — already contains the maxi-quality [lints] block"
+    elif grep -qE '^\[(workspace\.)?lints' "$MANIFEST" 2>/dev/null; then
+      skip "$MANIFEST — has its own [lints] section; merge configs/rust/lints.toml by hand"
+      warn "Cargo.toml already defines [lints]. Appending a second table would be"
+      warn "rejected by cargo, so nothing was written — merge configs/rust/lints.toml"
+      warn "into the existing section instead (docs/ADOPTION.md §4b)."
+      NEEDS_MERGE=1
+    else
+      wrote "$MANIFEST (append [lints])"
+      if [ "$DRY_RUN" -eq 0 ]; then
+        {
+          printf '\n'
+          if grep -qE '^\[workspace\]' "$MANIFEST"; then
+            cat "$BASELINE/configs/rust/lints.toml"
+          else
+            sed 's/^\[workspace\.lints/[lints/' "$BASELINE/configs/rust/lints.toml"
+          fi
+        } >> "$MANIFEST"
+        if grep -qE '^\[workspace\.lints' "$MANIFEST"; then
+          info "workspace detected: members opt in with '[lints]' + 'workspace = true'"
+        fi
+      fi
+    fi
+  fi
+fi
+
 # --- policy ------------------------------------------------------------------
 # Written entirely commented out, so adopting changes nothing about what the
 # gate does. The file exists to be DISCOVERABLE: the alternative to a legitimate
@@ -317,8 +395,7 @@ write_new "$TARGET/.maxi-quality.yml" \
 
 # --- CI ----------------------------------------------------------------------
 if [ "$NO_WORKFLOW" -eq 0 ]; then
-  write_new "$TARGET/.github/workflows/quality.yml" \
-"name: quality
+  WORKFLOW_BODY="name: quality
 
 on: [push, pull_request]
 
@@ -326,6 +403,45 @@ jobs:
   quality:
     uses: maximalcode/maxi-quality/.github/workflows/quality.yml@$REF
 "
+  # Rust Layer 1 cannot ride the reusable workflow: the lint config lives in
+  # THIS repo's manifest, and the toolchain that runs it should be this repo's
+  # pinned one, visible in this repo's diff when it bumps. Layer 2 needs no
+  # Rust changes — Gitleaks is language-agnostic and OSV-Scanner reads
+  # Cargo.lock natively — so the reusable call above already covers it.
+  if [ "$HAS_RUST" -eq 1 ]; then
+    WORKFLOW_BODY="$WORKFLOW_BODY
+  # Rust Layer 1 (maxi-quality). Toolchain and cargo-deny are PINNED: with
+  # warnings promoted to errors, an analyzer upgrade that adds lints is a
+  # breaking change — bump both deliberately, never via a floating 'stable'.
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Pinned Rust toolchain
+        run: |
+          rustup toolchain install $RUST_TOOLCHAIN_PIN --profile minimal --component clippy,rustfmt
+          rustup default $RUST_TOOLCHAIN_PIN
+      - name: Pinned cargo-deny (checksum-verified)
+        run: |
+          curl -sSfL -o /tmp/cargo-deny.tgz \\
+            https://github.com/EmbarkStudios/cargo-deny/releases/download/$CARGO_DENY_PIN/cargo-deny-$CARGO_DENY_PIN-x86_64-unknown-linux-musl.tar.gz
+          echo '$CARGO_DENY_SHA256  /tmp/cargo-deny.tgz' | sha256sum -c -
+          tar xzf /tmp/cargo-deny.tgz -C \"\$HOME/.cargo/bin\" --strip-components=1 \\
+            cargo-deny-$CARGO_DENY_PIN-x86_64-unknown-linux-musl/cargo-deny
+      - run: cargo fmt --check
+      # -Dwarnings HERE and not in the manifest: a contributor's local
+      # \`cargo check\` should warn, not wall them. CI is the gate.
+      - name: cargo clippy — all targets, warnings are errors
+        env:
+          RUSTFLAGS: -Dwarnings
+        run: cargo clippy --all-targets --locked
+      # advisories covers what cargo-audit would (RustSec); add 'licenses' to
+      # the list once deny.toml's allowlist holds your policy.
+      - run: cargo deny check advisories bans
+      - run: cargo test --locked
+"
+  fi
+  write_new "$TARGET/.github/workflows/quality.yml" "$WORKFLOW_BODY"
 fi
 
 # --- the pre-commit hook, only on --hooks ------------------------------------
@@ -471,6 +587,33 @@ if [ "$HAS_PYTHON" -eq 1 ]; then
   printf '       import name differs (beautifulsoup4/bs4). Fixes are one-line\n'
   printf '       pyproject.toml edits — make them BY HAND in one cleanup\n'
   printf '       commit; there is no auto-fix and none is needed.\n'
+fi
+
+if [ "$HAS_RUST" -eq 1 ]; then
+  printf '  Rust\n'
+  printf '    1. No new dev dependencies — clippy and rustfmt ship with the\n'
+  printf '       toolchain; cargo-deny is installed by the scaffolded CI job.\n'
+  printf '       Locally: rustup component add clippy rustfmt, and install\n'
+  printf '       cargo-deny %s to match CI.\n' "$CARGO_DENY_PIN"
+  printf '    2. COMMIT Cargo.lock. The CI job runs everything with --locked, so\n'
+  printf '       an uncommitted lockfile fails the very first run — deliberately.\n'
+  printf '       For a binary the lockfile is not optional hygiene: it is what\n'
+  printf '       cargo-deny and Layer 2 OSV-Scanner actually read.\n'
+  printf '    3. Workspace roots got [workspace.lints]; each member crate opts in\n'
+  printf '       with two lines in its own Cargo.toml:  [lints]  workspace = true\n'
+  printf '    4. An existing codebase will be noisy on first run — pedantic is\n'
+  printf '       the strict tier and there is no ratchet for a compiler lint\n'
+  printf '       (README, the ratchet asymmetry). Waive a single site with\n'
+  printf '       #[allow(clippy::...)] and a reason; scoped and greppable beats\n'
+  printf '       a global allow in the manifest.\n'
+  printf '    5. unsafe_code is FORBIDDEN by default. A crate that genuinely\n'
+  printf '       needs FFI lowers it to "deny" in its own manifest and documents\n'
+  printf '       why — that is a policy call this script does not make for you.\n'
+  printf '    6. OPTIONAL — the formatter: cargo fmt once, alone, and put that\n'
+  printf '       commit in .git-blame-ignore-revs. Same rule as Prettier/ruff.\n'
+  printf '    7. OPTIONAL — licences: deny.toml ships an EMPTY allowlist, so the\n'
+  printf '       licenses check is not in the CI gate. Fill the allowlist and add\n'
+  printf '       licenses to the cargo deny check line when you have a policy.\n'
 fi
 
 if [ "$NEEDS_MERGE" -eq 1 ]; then

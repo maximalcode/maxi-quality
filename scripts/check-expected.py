@@ -151,6 +151,42 @@ def parse_deptry(text: str) -> list[dict]:
     ]
 
 
+def parse_clippy(text: str) -> list[dict]:
+    """`cargo clippy --message-format=json` — JSONL, one object per line.
+
+    Like the knip manifests, clippy's are FIXTURE-relative: cargo runs from
+    inside the fixture and prints paths relative to the workspace root.
+
+    Deduplicated like dotnet's, and for the same shape of reason: with
+    `--all-targets` the crate is compiled once as a binary and once as a test
+    harness, and every lint fires in both units. When a forbid-level error
+    stops cargo early, the second unit may be skipped entirely — deduping makes
+    "one unit reported" and "both units reported" the same set, so the
+    manifest cannot flap on build scheduling."""
+    seen = set()
+    out = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        d = json.loads(line)
+        if d.get("reason") != "compiler-message":
+            continue
+        m = d["message"]
+        code = (m.get("code") or {}).get("code")
+        if not code or m.get("level") not in ("warning", "error"):
+            continue
+        primary = [s for s in m.get("spans", []) if s.get("is_primary")]
+        if not primary:
+            continue
+        key = (code, _rel(primary[0]["file_name"]), primary[0]["line_start"])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"rule": key[0], "file": key[1], "line": key[2]})
+    return out
+
+
 def parse_dotnet(text: str) -> list[dict]:
     seen = set()
     out = []
@@ -174,6 +210,7 @@ def parse_tsc(text: str) -> list[dict]:
 
 
 PARSERS = {
+    "clippy": parse_clippy,
     "semgrep": parse_semgrep,
     "eslint": parse_eslint,
     "ruff": parse_ruff,

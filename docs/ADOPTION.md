@@ -11,10 +11,11 @@ git clone https://github.com/maximalcode/maxi-quality.git
 BASELINE="$PWD/maxi-quality"
 ```
 
-> **Sections 2–4 are Layer 1** — one per language, and each is the expensive,
+> **Sections 2–4b are Layer 1** — one per language, and each is the expensive,
 > non-grandfatherable half. **Section 5 is Layer 2**, the one line of YAML. On an
-> existing repo, do section 5 first and come back to 2–4 when you have time
-> budgeted.
+> existing repo, do section 5 first and come back to 2–4b when you have time
+> budgeted. (Rust is 4b rather than 5 so the section numbers that everything
+> else links to did not all shift by one.)
 
 Runnable versions of all of this live in [`../examples/`](../examples/) — copy a
 directory rather than a snippet.
@@ -25,7 +26,7 @@ directory rather than a snippet.
 
 Sections 1–5 are what adoption actually consists of. `adopt.sh` does all of it:
 detects which languages the repo really contains, copies the handful of files
-that .NET and ESLint cannot consume remotely, and scaffolds the CI call.
+that .NET, ESLint and Cargo cannot consume remotely, and scaffolds the CI call.
 
 ```bash
 "$BASELINE"/scripts/adopt.sh <repo> --dry-run   # look first
@@ -332,6 +333,89 @@ Override it in your own `ruff.toml` and you move both at once.
 
 Same advice as Prettier on an existing codebase: one `ruff format` commit on its
 own, added to `.git-blame-ignore-revs`.
+
+---
+
+## 4b. Rust — Layer 1
+
+One structural fact shapes all of this: **Cargo cannot consume lint
+configuration from a remote package.** `[lints]` / `[workspace.lints]` must
+live in the consumer's own `Cargo.toml`, and `rustfmt.toml` / `deny.toml` must
+be files on disk. So Rust follows the C# pattern — adopt-time copies, like
+`Directory.Build.props` — and `adopt.sh` is the honest way in:
+
+```bash
+"$BASELINE"/scripts/adopt.sh <repo>
+cd <repo> && cargo generate-lockfile   # then COMMIT Cargo.lock
+```
+
+That copies `rustfmt.toml` and `deny.toml`, appends the `[lints]` block to
+your manifest (marker-guarded, so re-running never appends twice; a manifest
+that already has its own `[lints]` gets a skip and a warning, never a merge
+attempt), and scaffolds a `rust` CI job beside the reusable workflow call. On
+a workspace root the block arrives as `[workspace.lints]`, and each member
+opts in with two lines in its own manifest:
+
+```toml
+[lints]
+workspace = true
+```
+
+**What you get:** `clippy::all` + `clippy::pedantic` in full — the strictness
+tier that matches `strict-type-checked` and `mypy --strict` — plus a curated
+cherry-pick of nursery and cargo lints (each pick and each disable justified
+by a one-line comment in `configs/rust/lints.toml`), and
+`unsafe_code = "forbid"` as the default posture. Warnings become errors **in
+CI only**, via `RUSTFLAGS=-Dwarnings` in the scaffolded job: a contributor's
+local `cargo check` warns instead of walling them mid-refactor. There is no
+Semgrep here on purpose — its Rust support is experimental, and clippy *is*
+the conventions layer for Rust.
+
+**Four things to know:**
+
+- **The toolchain is pinned, and that is the contract.** With warnings
+  promoted to errors, a clippy upgrade that adds lints is a breaking change
+  (the STATUS §4 argument), so the scaffolded job installs a pinned version,
+  never `stable`. Bump it deliberately, in its own commit.
+- **Commit `Cargo.lock`.** The scaffolded job runs everything `--locked` and
+  fails without one — deliberately. For a binary the lockfile is not hygiene:
+  it is the document cargo-deny and Layer 2's OSV-Scanner actually read.
+- **`unsafe_code` is forbidden, not denied.** `forbid` is what a stray
+  `#[allow(unsafe_code)]` cannot waive. A crate that genuinely needs FFI
+  lowers it to `"deny"` in its own manifest and documents why — the same
+  class of per-repo decision as the C# `packages.lock.json`.
+- **There is no ratchet, same as every Layer 1.** An existing codebase will
+  be noisy on first run. Waive a single site with `#[allow(clippy::...)]`
+  and a written reason — scoped and greppable — rather than a global allow
+  in the manifest.
+
+### Formatting — `cargo fmt`
+
+`rustfmt.toml` is deliberately minimal: rustfmt's defaults are the community's
+defaults, and only stable options are used. The two stated values that matter:
+`max_width = 100` (rustfmt's own default, stated so a major bump cannot move
+it silently — and the one line width the whole baseline agrees on) and
+`newline_style = "Unix"` (**not** the default, which is "whatever the file
+already uses"; the `.editorconfig` mandates LF and the formatter should
+enforce the policy, not defer to the incumbent). Same advice as Prettier and
+ruff on an existing codebase: one `cargo fmt` commit, alone, in
+`.git-blame-ignore-revs`.
+
+### Supply chain — `cargo deny`
+
+One tool, four checks, one supply chain to trust: `advisories` covers what
+cargo-audit would (RustSec — so no second tool), `bans` warns on duplicate
+semver-incompatible versions, and the **licence allowlist ships empty** for
+the same reason the Layer 2 `licenses` input has no default: an allowlist is
+a per-repo policy call, and a default would gate wrongly somewhere on day
+one. The scaffolded job therefore runs `cargo deny check advisories bans`;
+add `licenses` to that line when the allowlist holds your policy.
+
+Layer 2 needs **zero Rust changes** — Gitleaks is language-agnostic and
+OSV-Scanner reads `Cargo.lock` natively. A Rust repo on the reusable workflow
+gets two advisory feeds (OSV aggregates RustSec); the overlap is deliberate,
+because cargo-deny also runs locally with no baseline machinery, which is
+what a first-commit adoption needs.
 
 ---
 
@@ -647,7 +731,10 @@ standing report shows you the real set before you commit to one.
 ## Requirements
 
 Node 24 / npm 11 and .NET SDK 10 were used to verify. Anything reasonably recent
-should work; the TypeScript peer range above is the one real constraint.
+should work; the TypeScript peer range above is the one real constraint. Rust
+needs no extra installs beyond rustup — clippy and rustfmt ship with the
+toolchain, and the scaffolded CI job installs its own pinned cargo-deny
+(install the same version locally to match).
 
 Layer 2 tools are optional locally — `scan.sh` falls back to `uvx` (Semgrep) or
 `docker` (all three) and warns loudly if it cannot run one. To install them

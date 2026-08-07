@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Reusable static-analysis baseline (TypeScript + C#). See docs/CONCEPT.md.",
+  "description": "Reusable static-analysis baseline (TypeScript, C#, Python, Rust). See docs/CONCEPT.md.",
   "license": "MIT",
   "exports": {
     "./configs/typescript/eslint.config.mjs": "./configs/typescript/eslint.config.mjs",
@@ -23,6 +23,8 @@
     "verify:ts:clean": "npm run lint --workspace @maximalcode/sample-typescript-clean",
     "verify:ts:types": "npm run typecheck --workspace @maximalcode/sample-typescript-strict",
     "verify:ts:types:clean": "npm run typecheck --workspace @maximalcode/sample-typescript-clean",
+    "verify:rust": "cd samples/rust && RUSTFLAGS=-Dwarnings cargo clippy --all-targets --locked",
+    "verify:rust:clean": "cd samples/rust-clean && RUSTFLAGS=-Dwarnings cargo clippy --all-targets --locked",
     "verify:format": "prettier --config configs/typescript/prettier.config.mjs --check \"**/*.{ts,mts,cts,js,mjs,cjs}\"",
     "format": "prettier --config configs/typescript/prettier.config.mjs --write \"**/*.{ts,mts,cts,js,mjs,cjs}\""
   },
