@@ -10,7 +10,7 @@ consumed from one repo instead of rebuilt in every project.
 
 **Who this is for:** you maintain more than one repo, and you want
 typescript-eslint `strict-type-checked`, Roslyn analyzers, Ruff + mypy `strict`,
-clippy `pedantic` and secret plus dependency scanning — without designing that
+clippy `pedantic`, plus secret and dependency scanning — without designing that
 stack yourself and re-tuning it in every project. You add one file. The rules
 live here, and they are versioned here.
 
@@ -68,7 +68,7 @@ git clone https://github.com/maximalcode/maxi-quality.git
 
 It never overwrites a file without `--force`, and re-running it is safe.
 
-A new repo gets from `git init` to failing CI on a planted bug in under ten
+A new repo goes from `git init` to failing CI on a planted bug in under ten
 minutes, using only this page. CI here asserts it: a repo adopted by the script
 rejects the bad fixture with exactly the same 23 errors as the hand-configured
 sample. Full walkthrough in [`docs/ADOPTION.md`](docs/ADOPTION.md), copyable
