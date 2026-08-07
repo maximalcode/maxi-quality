@@ -207,8 +207,10 @@ one language at a time, when someone has the week to spend on it.
 > is the intended state, and none of them was ever valid. `samples/rust/Cargo.lock`
 > pins a crate with a known RustSec advisory for the same reason, target-gated so
 > it never builds. Gitleaks needs no action here, since `.gitleaks.toml`
-> allowlists the directory automatically. Point other scanners away from
-> `samples/`. Details in [`SECURITY.md`](SECURITY.md) and
+> allowlists the directory automatically, and GitHub's own secret scanning is
+> told the same thing by
+> [`.github/secret_scanning.yml`](.github/secret_scanning.yml). Point other
+> scanners away from `samples/`. Details in [`SECURITY.md`](SECURITY.md) and
 > [`samples/semgrep/README.md`](samples/semgrep/README.md).
 
 ---

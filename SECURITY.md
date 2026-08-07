@@ -15,6 +15,13 @@ If you scan a clone with Gitleaks, `.gitleaks.toml` in the repo root
 path-allowlists exactly that directory and Gitleaks loads it automatically. For
 other scanners, exclude `samples/` — that is the whole story.
 
+GitHub's own secret scanning is told the same thing by
+[`.github/secret_scanning.yml`](.github/secret_scanning.yml), because one of the
+fakes is deliberately written in GitHub's `ghp_` provider shape. That file
+governs **alerts only**; push protection is a separate setting and still
+evaluates every push, so an edit that moves one of those strings can be blocked
+at push time and has to be allowed explicitly.
+
 There is deliberately no `.gitleaksignore`. It works by **fingerprint**
 (`commit:file:rule:line`), so every entry is invalidated by any history rewrite
 or line shift — a suppression file that silently stops suppressing is worse than
