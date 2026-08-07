@@ -1,7 +1,15 @@
 # Adoption guide
 
-How a project takes on the baseline. Read [`../README.md`](../README.md) first if
-you have not decided whether to — this document assumes you have.
+The long version of the README's quick start. Section 5 is **Layer 2**, the one
+YAML file that every repo starts with. Section 0 is `adopt.sh`, which writes it
+for you. Everything else is the by-hand version and the reasoning behind it.
+
+Where to start:
+
+- **New repo** → §5, then §§1–4b when you want the deep per-language checks.
+- **Existing repo** → §5 with `changed-only`, which grandfathers your backlog.
+  Come back to §§1–4b when you have the time budgeted.
+- **Layer 1 by hand** → §§1–4b, one section per language.
 
 Every command below refers to the baseline as `$BASELINE`, so this is the only
 line that depends on where you put it:
@@ -11,13 +19,11 @@ git clone https://github.com/maximalcode/maxi-quality.git
 BASELINE="$PWD/maxi-quality"
 ```
 
-> **Sections 2–4b are Layer 1** — one per language, and each is the expensive,
-> non-grandfatherable half. **Section 5 is Layer 2**, the one line of YAML. On an
-> existing repo, do section 5 first and come back to 2–4b when you have time
-> budgeted. (Rust is 4b rather than 5 so the section numbers that everything
-> else links to did not all shift by one.)
+> **Sections 2–4b are Layer 1**, one per language, and each is the expensive
+> half that cannot be grandfathered. (Rust is 4b rather than 5 so the section
+> numbers everything else links to did not all shift by one.)
 
-Runnable versions of all of this live in [`../examples/`](../examples/) — copy a
+Runnable versions of all of this live in [`../examples/`](../examples/). Copy a
 directory rather than a snippet.
 
 ---
