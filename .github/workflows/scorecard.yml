@@ -1,0 +1,81 @@
+# maxi-quality — OpenSSF Scorecard (issue #61).
+#
+# WHY THIS EXISTS, when the repo already has 21 CI checks.
+#
+# Everything those checks gate lives in FILES: configs, rules, fixtures,
+# scripts. A repo's supply-chain posture has a second half that lives in repo
+# SETTINGS — token permissions, secret scanning, push protection, branch
+# protection — and nothing in this repo could see it. The gap was found the
+# honest way (#61): the quality baseline was audited against its own first
+# consumer and came out BELOW it, with secret scanning and push protection
+# disabled while the consuming repo had both on.
+#
+# A checklist would have fixed that once. Scorecard fixes it continuously: it
+# scores those settings from outside, weekly, and the badge in README.md is the
+# part that stays honest — a setting silently turned off shows up as a dropped
+# score rather than as nothing at all. That is the regression test for a layer
+# that has no fixtures, which is why #60 proposes it to consumers too.
+#
+# It gates nothing. There is no `pull_request` trigger and no required check:
+# Scorecard reports on things a PR cannot change, and a score that fails a
+# build would be a gate on GitHub's settings API rather than on the diff.
+on:
+  # A branch-protection change is exactly the kind of settings drift this is
+  # here to notice, so re-score immediately rather than waiting for Monday.
+  branch_protection_rule:
+  schedule:
+    - cron: '31 4 * * 1'
+  # DEVELOP, not main. Publishing to the OpenSSF API requires the run to happen
+  # on the repo's DEFAULT branch, and this repo's default is `develop`
+  # (CLAUDE.md §5 — `main` is the release branch that moves the `v1` tag).
+  push:
+    branches: [develop]
+
+name: scorecard
+
+# Read-all at the top, write scoped to the one job that needs it — the same
+# least-privilege shape the repo's default token setting enforces globally.
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      # Upload the SARIF to the security tab, so findings are reviewable in the
+      # same place as everything else rather than only as a number on a badge.
+      security-events: write
+      # OIDC. This is what lets `publish_results` prove to the OpenSSF API that
+      # the score came from this repo's own run — without it, publishing is
+      # unauthenticated and the badge means nothing.
+      id-token: write
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Scorecard reads the repo; it must never hold a credential that
+          # could write to it. Also one of the things Scorecard itself scores.
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Publishes to the public OpenSSF API, which is what makes the README
+          # badge resolve. Deliberate: the score is only load-bearing if it is
+          # visible to someone deciding whether to adopt this baseline.
+          publish_results: true
+
+      - name: Keep the raw SARIF
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scorecard-sarif
+          path: results.sarif
+          retention-days: 5
+
+      - name: Upload to the security tab
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
+        with:
+          sarif_file: results.sarif
