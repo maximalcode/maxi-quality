@@ -81,12 +81,10 @@ repos in [`examples/`](examples/).
 ```mermaid
 flowchart LR
     A["your repo<br/>quality.yml, 6 lines"] --> B["maxi-quality<br/>workflow @v1"]
-    B --> D{"detect<br/>languages"}
-    D --> L1
+    B -->|"detects your<br/>languages"| L1
     B --> L2
 
     subgraph L1["Layer 1 — only the languages you have"]
-        direction TB
         T1["TypeScript<br/>ESLint + tsc"]
         T2["C#<br/>Roslyn + Sonar"]
         T3["Python<br/>Ruff + mypy"]
@@ -94,7 +92,6 @@ flowchart LR
     end
 
     subgraph L2["Layer 2 — every repo, zero config"]
-        direction TB
         S1["Semgrep<br/>12 conventions"]
         S2["Gitleaks<br/>secrets"]
         S3["OSV-Scanner<br/>vulnerable deps"]
