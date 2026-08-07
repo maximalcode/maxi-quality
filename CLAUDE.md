@@ -209,8 +209,10 @@ per-language id is not new scope; inventing a new convention is.
 - **Tags gate the consumers.** Projects pin the baseline by tag (`@v1`), so an
   updated ruleset never silently breaks an old project. Do not tag until the
   step that the tag represents is actually verified working. The immutable
-  `v1.0.x` tags are cut by hand, one per release worth naming; only `v1` moves
-  on its own.
+  `v1.x.y` tags are cut by hand, one per release worth naming; only `v1` moves
+  on its own. A release that adds a language or a workflow input takes a minor
+  bump, not a patch one — `v1.0.x` was the shape of the first four tags, never
+  a ceiling.
 - **`samples/` is the test suite.** Every config in `configs/` must be proven by
   an intentionally-bad sample that fails. If a sample stops failing, the config
   regressed — fix the config, do not weaken the sample.
