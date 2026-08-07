@@ -14,9 +14,14 @@
 #   --dry-run         Print every action, write nothing. Do this first.
 #   --force           Overwrite files that already exist. Off by default —
 #                     a repo with its own Directory.Build.props must be merged
-#                     by hand, not clobbered (README §3).
+#                     by hand, not clobbered (docs/ADOPTION.md §3).
 #   --ref REF         Tag/branch consumers pin in the workflow. Default: v1.
 #   --no-workflow     Skip scaffolding .github/workflows/quality.yml.
+#   --hooks           ALSO install the opt-in pre-commit hook (gitleaks on the
+#                     staged diff, Semgrep on the staged content). Never
+#                     installed without this flag: a hook that appears in
+#                     someone's repo unasked gets ripped out along with
+#                     everything near it. Bypass with `git commit --no-verify`.
 #   -h, --help        This text.
 #
 # What gets written, per detected language:
@@ -30,10 +35,19 @@
 #   python   ruff.base.toml                <- configs/python/ruff.toml
 #   python   mypy.ini                      <- configs/python/mypy.ini
 #   python   ruff.toml                     (1-line extend stub, only if absent)
-#   any      .github/workflows/quality.yml (unless --no-workflow)
+#   rust     rustfmt.toml                  <- configs/rust/rustfmt.toml
+#   rust     deny.toml                     <- configs/rust/deny.toml
+#   rust     Cargo.toml                    += configs/rust/lints.toml ([lints])
+#   always   .maxi-quality.yml             (commented starter, only if absent)
+#   any      .github/workflows/quality.yml (unless --no-workflow; with a
+#                                           pinned-toolchain rust job when
+#                                           Rust is detected)
+#   --hooks  .git/hooks/pre-commit         <- hooks/pre-commit (only with --hooks)
 #
 # The TS pair is a copy for the same reason Directory.Build.props is: a private
-# git devDep cannot npm-install in a consumer's CI.
+# git devDep cannot npm-install in a consumer's CI. The Rust trio is a copy for
+# a harder reason: Cargo has no remote lint consumption at all — [lints] must
+# live in the consumer's own manifest.
 #
 # Exit codes: 0 adopted (or dry-run) · 1 nothing detected · 3 usage error
 
@@ -41,12 +55,25 @@ set -Eeuo pipefail
 
 BASELINE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# The Rust toolchain and cargo-deny versions stamped into the scaffolded CI.
+# PINNED for the reason STATUS §4 gives: with warnings promoted to errors, an
+# analyzer upgrade that adds lints is a breaking change, so "stable" is not a
+# version. scripts/check-pins.sh asserts these agree with the layer1-rust job
+# in ci.yml — CI must validate the same toolchain consumers are handed.
+RUST_TOOLCHAIN_PIN="1.97.1"
+CARGO_DENY_PIN="0.20.2"
+# From the .sha256 file next to the release artifact — the scaffolded job
+# verifies the download before executing it, so a consumer's CI never runs an
+# unverified binary this script pointed it at. Bump it together with the pin.
+CARGO_DENY_SHA256="9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f"
+
 # --- argument parsing --------------------------------------------------------
 TARGET=""
 DRY_RUN=0
 FORCE=0
 REF="v1"
 NO_WORKFLOW=0
+HOOKS=0
 
 die() { printf '\033[31merror:\033[0m %s\n' "$1" >&2; exit 3; }
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }
@@ -55,13 +82,14 @@ info() { printf '\033[36m›\033[0m %s\n' "$1"; }
 skip() { printf '\033[33mskip\033[0m %s\n' "$1"; }
 wrote() { printf '\033[32mwrite\033[0m %s\n' "$1"; }
 
-usage() { sed -n '3,38p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
+usage() { sed -n '3,51p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
     --force) FORCE=1; shift ;;
     --no-workflow) NO_WORKFLOW=1; shift ;;
+    --hooks) HOOKS=1; shift ;;
     --ref)
       [ $# -ge 2 ] || die "--ref needs a value"
       REF="$2"; shift 2 ;;
@@ -93,6 +121,7 @@ detect() {
 HAS_DOTNET=0
 HAS_TS=0
 HAS_PYTHON=0
+HAS_RUST=0
 [ -n "$(detect '*.csproj')" ] && HAS_DOTNET=1
 [ -n "$(detect '*.sln')" ] && HAS_DOTNET=1
 [ -n "$(detect '*.slnx')" ] && HAS_DOTNET=1
@@ -101,6 +130,9 @@ HAS_PYTHON=0
 [ -n "$(detect 'pyproject.toml')" ] && HAS_PYTHON=1
 [ -n "$(detect 'requirements.txt')" ] && HAS_PYTHON=1
 [ -n "$(detect 'uv.lock')" ] && HAS_PYTHON=1
+# One manifest for workspace and single-crate alike — a workspace root and a
+# lone crate both mean "this is a Rust repo".
+[ -n "$(detect 'Cargo.toml')" ] && HAS_RUST=1
 
 bold "── maxi-quality adopt ──"
 info "baseline: $BASELINE"
@@ -108,15 +140,16 @@ info "target:   $TARGET"
 info "ref:      $REF"
 [ "$DRY_RUN" -eq 1 ] && warn "dry run — nothing will be written"
 
-if [ "$HAS_DOTNET" -eq 0 ] && [ "$HAS_TS" -eq 0 ] && [ "$HAS_PYTHON" -eq 0 ]; then
-  warn "no TypeScript, C# or Python project found under $TARGET"
-  warn "scope is TypeScript, C# and Python (CLAUDE.md §4). Nothing to do."
+if [ "$HAS_DOTNET" -eq 0 ] && [ "$HAS_TS" -eq 0 ] && [ "$HAS_PYTHON" -eq 0 ] && [ "$HAS_RUST" -eq 0 ]; then
+  warn "no TypeScript, C#, Python or Rust project found under $TARGET"
+  warn "scope is TypeScript, C#, Python and Rust (CLAUDE.md §4). Nothing to do."
   exit 1
 fi
 
 [ "$HAS_TS" -eq 1 ] && info "detected: TypeScript"
 [ "$HAS_DOTNET" -eq 1 ] && info "detected: C#/.NET"
 [ "$HAS_PYTHON" -eq 1 ] && info "detected: Python"
+[ "$HAS_RUST" -eq 1 ] && info "detected: Rust"
 printf '\n'
 
 # --- file helpers ------------------------------------------------------------
@@ -189,7 +222,7 @@ if [ "$HAS_DOTNET" -eq 1 ]; then
     warn "Do one of these instead:"
     warn "  a) re-run adopt.sh against that directory, or"
     warn "  b) merge configs/dotnet/Directory.Build.props into the existing file,"
-    warn "     or add <Import Project=\"...\"/> at its top (README §3)."
+    warn "     or add <Import Project=\"...\"/> at its top (docs/ADOPTION.md §3)."
     printf '\n'
     SKIP_DOTNET_PROPS=1
   else
@@ -212,13 +245,35 @@ if [ "$HAS_TS" -eq 1 ]; then
   copy_file "$BASELINE/configs/typescript/tsconfig.strict.json" "$TARGET/tsconfig.base.json"
   write_new "$TARGET/eslint.config.mjs" \
 "// Consumes the maxi-quality baseline. Add project-specific overrides below the
-// spread — see README §2. Regenerate eslint.base.mjs with scripts/adopt.sh.
+// spread — see docs/ADOPTION.md §2. Regenerate eslint.base.mjs with scripts/adopt.sh.
 import base from './eslint.base.mjs';
 
 export default [
   ...base,
   { languageOptions: { parserOptions: { tsconfigRootDir: import.meta.dirname } } },
 ];
+"
+  # knip (#51) — dead files, unused exports and unused/unlisted dependencies.
+  # The stub is a real file rather than documentation because both of its keys
+  # were measured conditions in #39, not defaults anyone would guess:
+  #   - entry: a zero-config knip run on a non-default layout reports the
+  #     layout, not defects. The entry points are the consumer's to declare.
+  #   - ignoreDependencies: the baseline arrives by relative import (the copy
+  #     above), so knip never sees eslint.base.mjs's three plugins resolved as
+  #     a package's dependencies and reports them unused. Baked in here;
+  #     revisit if the baseline ever publishes to npm.
+  # knip parses knip.json as JSONC, so the stub documents itself.
+  write_new "$TARGET/knip.json" \
+"// maxi-quality knip stub (#51). DECLARE YOUR REAL ENTRY POINTS — knip's
+// verdicts are only as good as this list, and a wrong one reports your layout
+// rather than your defects.
+{
+  \"entry\": [\"src/index.ts\"],
+  \"project\": [\"src/**/*.ts\"],
+  // eslint.base.mjs imports these three; without a package boundary knip
+  // cannot see that, and reports all three as unused. Measured, not assumed.
+  \"ignoreDependencies\": [\"@eslint/js\", \"typescript-eslint\", \"eslint-plugin-sonarjs\"]
+}
 "
 fi
 
@@ -250,10 +305,101 @@ extend = \"./ruff.base.toml\"
 "
 fi
 
+# --- Rust --------------------------------------------------------------------
+# The C# pattern, not the TS one, and by necessity rather than preference:
+# Cargo cannot consume [lints] from a remote package, rustfmt and cargo-deny
+# have no extend mechanism. Three copies, refreshed by re-running this script.
+#
+# The [lints] block is APPENDED to the consumer's own Cargo.toml — workspace
+# form when the root manifest declares [workspace], single-crate form
+# otherwise. Same discipline as the C# .editorconfig append: marker-guarded so
+# re-running never appends twice, and a manifest that already carries its own
+# [lints] section gets a skip and a warning, never a merge attempt.
+if [ "$HAS_RUST" -eq 1 ]; then
+  MANIFEST="$TARGET/Cargo.toml"
+  if [ ! -f "$MANIFEST" ]; then
+    # Cargo walks UP from a crate to find its workspace; a lints block written
+    # to a directory that has no manifest configures nothing. Same failure
+    # shape as the shadowed Directory.Build.props, so same loudness.
+    printf '\n'
+    warn "Cargo.toml was found below $TARGET but not AT it, so there is no"
+    warn "manifest here to hold the [lints] block. Re-run adopt.sh against the"
+    warn "directory that owns the workspace/crate root."
+    printf '\n'
+    NEEDS_MERGE=1
+  else
+    copy_file "$BASELINE/configs/rust/rustfmt.toml" "$TARGET/rustfmt.toml"
+    copy_file "$BASELINE/configs/rust/deny.toml" "$TARGET/deny.toml"
+
+    RUST_MARKER='maxi-quality — Rust lint baseline'
+    if grep -qF "$RUST_MARKER" "$MANIFEST" 2>/dev/null; then
+      skip "$MANIFEST — already contains the maxi-quality [lints] block"
+    elif grep -qE '^\[(workspace\.)?lints' "$MANIFEST" 2>/dev/null; then
+      skip "$MANIFEST — has its own [lints] section; merge configs/rust/lints.toml by hand"
+      warn "Cargo.toml already defines [lints]. Appending a second table would be"
+      warn "rejected by cargo, so nothing was written — merge configs/rust/lints.toml"
+      warn "into the existing section instead (docs/ADOPTION.md §4b)."
+      NEEDS_MERGE=1
+    else
+      wrote "$MANIFEST (append [lints])"
+      # Decided BEFORE the append: reading the manifest inside a block that
+      # redirects into it is the read-and-write-same-file trap (SC2094).
+      IS_WORKSPACE=0
+      grep -qE '^\[workspace\]' "$MANIFEST" && IS_WORKSPACE=1
+      if [ "$DRY_RUN" -eq 0 ]; then
+        {
+          printf '\n'
+          if [ "$IS_WORKSPACE" -eq 1 ]; then
+            cat "$BASELINE/configs/rust/lints.toml"
+          else
+            sed 's/^\[workspace\.lints/[lints/' "$BASELINE/configs/rust/lints.toml"
+          fi
+        } >> "$MANIFEST"
+      fi
+      if [ "$IS_WORKSPACE" -eq 1 ]; then
+        info "workspace detected: members opt in with '[lints]' + 'workspace = true'"
+      fi
+    fi
+  fi
+fi
+
+# --- policy ------------------------------------------------------------------
+# Written entirely commented out, so adopting changes nothing about what the
+# gate does. The file exists to be DISCOVERABLE: the alternative to a legitimate
+# way of saying "that rule does not apply to us" is a deleted workflow file, and
+# a consumer who does not know the knob exists reaches for the second one.
+write_new "$TARGET/.maxi-quality.yml" \
+"# maxi-quality policy for this repo. Everything below is commented out, so as
+# written this file changes nothing — uncomment what you need.
+#
+# Unknown keys, unknown rule ids and unknown group names are HARD ERRORS, not
+# warnings. That is deliberate: a typo that silently does nothing is the failure
+# mode this file exists to prevent.
+#
+# rules:
+#   groups: [general, security, conventions]   # omit one to stop running it
+#   disable:                                   # the rule does not apply here
+#     - no-float-for-money
+#   warn:                                      # reported, never fails the build
+#     - todo-without-issue
+#
+# paths:
+#   exclude:
+#     - legacy                                 # NOT 'legacy/**' — semgrep's
+#                                              # --exclude matches path
+#                                              # components and would silently
+#                                              # ignore the glob form.
+#
+# extends: .maxi-quality/rules                 # your own semgrep rules, run
+#                                              # alongside the baseline's
+#
+# Gitleaks and OSV-Scanner are deliberately not configurable here: a leaked
+# credential and a known CVE are not matters of local policy.
+"
+
 # --- CI ----------------------------------------------------------------------
 if [ "$NO_WORKFLOW" -eq 0 ]; then
-  write_new "$TARGET/.github/workflows/quality.yml" \
-"name: quality
+  WORKFLOW_BODY="name: quality
 
 on: [push, pull_request]
 
@@ -261,28 +407,162 @@ jobs:
   quality:
     uses: maximalcode/maxi-quality/.github/workflows/quality.yml@$REF
 "
+  # Rust Layer 1 cannot ride the reusable workflow: the lint config lives in
+  # THIS repo's manifest, and the toolchain that runs it should be this repo's
+  # pinned one, visible in this repo's diff when it bumps. Layer 2 needs no
+  # Rust changes — Gitleaks is language-agnostic and OSV-Scanner reads
+  # Cargo.lock natively — so the reusable call above already covers it.
+  if [ "$HAS_RUST" -eq 1 ]; then
+    WORKFLOW_BODY="$WORKFLOW_BODY
+  # Rust Layer 1 (maxi-quality). Toolchain and cargo-deny are PINNED: with
+  # warnings promoted to errors, an analyzer upgrade that adds lints is a
+  # breaking change — bump both deliberately, never via a floating 'stable'.
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Pinned Rust toolchain
+        run: |
+          rustup toolchain install $RUST_TOOLCHAIN_PIN --profile minimal --component clippy,rustfmt
+          rustup default $RUST_TOOLCHAIN_PIN
+      - name: Pinned cargo-deny (checksum-verified)
+        run: |
+          curl -sSfL -o /tmp/cargo-deny.tgz \\
+            https://github.com/EmbarkStudios/cargo-deny/releases/download/$CARGO_DENY_PIN/cargo-deny-$CARGO_DENY_PIN-x86_64-unknown-linux-musl.tar.gz
+          echo '$CARGO_DENY_SHA256  /tmp/cargo-deny.tgz' | sha256sum -c -
+          tar xzf /tmp/cargo-deny.tgz -C \"\$HOME/.cargo/bin\" --strip-components=1 \\
+            cargo-deny-$CARGO_DENY_PIN-x86_64-unknown-linux-musl/cargo-deny
+      - run: cargo fmt --check
+      # -Dwarnings HERE and not in the manifest: a contributor's local
+      # \`cargo check\` should warn, not wall them. CI is the gate.
+      - name: cargo clippy — all targets, warnings are errors
+        env:
+          RUSTFLAGS: -Dwarnings
+        run: cargo clippy --all-targets --locked
+      # advisories covers what cargo-audit would (RustSec); add 'licenses' to
+      # the list once deny.toml's allowlist holds your policy.
+      - run: cargo deny check advisories bans
+      - run: cargo test --locked
+"
+  fi
+  write_new "$TARGET/.github/workflows/quality.yml" "$WORKFLOW_BODY"
+fi
+
+# --- the pre-commit hook, only on --hooks ------------------------------------
+#
+# ONLY on --hooks, and that is the whole design (#40). A hook installed by
+# default is a hook somebody deletes in a hurry, taking the rest of the adoption
+# with it. Everything below fails soft for the same reason: this is a
+# convenience, and CI is the gate.
+if [ "$HOOKS" -eq 1 ]; then
+  GITDIR="$(git -C "$TARGET" rev-parse --git-dir 2>/dev/null || true)"
+  if [ -z "$GITDIR" ]; then
+    warn "--hooks: $TARGET is not a git repository; no hook installed"
+  else
+    case "$GITDIR" in /*) ;; *) GITDIR="$TARGET/$GITDIR" ;; esac
+    # A repo with core.hooksPath set does not read .git/hooks at all. Writing
+    # there anyway would install a hook that never runs — which is worse than
+    # not installing one, because it looks done.
+    HOOKSPATH="$(git -C "$TARGET" config --get core.hooksPath 2>/dev/null || true)"
+    if [ -n "$HOOKSPATH" ]; then
+      case "$HOOKSPATH" in /*) HOOKDIR="$HOOKSPATH" ;; *) HOOKDIR="$TARGET/$HOOKSPATH" ;; esac
+      info "core.hooksPath is set to '$HOOKSPATH'; installing there instead of .git/hooks"
+    else
+      HOOKDIR="$GITDIR/hooks"
+    fi
+
+    HOOK="$HOOKDIR/pre-commit"
+    if [ -e "$HOOK" ] && [ "$FORCE" -eq 0 ]; then
+      skip "$HOOK (already exists — merge by hand or re-run with --force)"
+      NEEDS_MERGE=1
+    elif [ "$DRY_RUN" -eq 1 ]; then
+      wrote "$HOOK (dry run)"
+    else
+      mkdir -p "$HOOKDIR"
+      # The baseline path is baked in at install time so the hook works for
+      # someone who has never heard of it, and MAXI_QUALITY_BASELINE still wins
+      # at run time so a team can relocate the checkout without reinstalling.
+      # `|` as the sed delimiter: the path contains slashes.
+      sed "s|@BASELINE@|$BASELINE|" "$BASELINE/hooks/pre-commit" > "$HOOK"
+      chmod +x "$HOOK"
+      wrote "$HOOK"
+    fi
+  fi
 fi
 
 # --- what the human still has to do ------------------------------------------
 printf '\n'
 bold "── next steps ──"
 
+if [ "$HOOKS" -eq 1 ]; then
+  printf '  Pre-commit hook\n'
+  printf '    Installed. It runs gitleaks on the staged diff (~50ms) and Semgrep\n'
+  printf '    on the staged CONTENT — not the working tree, because "git commit"\n'
+  printf '    commits the index and those differ.\n'
+  printf '    Bypass one commit:  git commit --no-verify\n'
+  printf '    Drop the slow half: export MAXI_QUALITY_HOOK_SKIP_SEMGREP=1\n'
+  printf '    It never blocks on its OWN problems — a missing tool warns and\n'
+  printf '    lets the commit through. CI is the gate.\n'
+fi
+
 if [ "$HAS_TS" -eq 1 ]; then
   printf '  TypeScript\n'
-  printf '    1. npm i -D eslint @eslint/js typescript-eslint typescript @types/node\n'
+  printf '    1. npm i -D eslint @eslint/js typescript-eslint typescript @types/node \\\n'
+  printf '            eslint-plugin-sonarjs\n'
+  printf '       sonarjs is LGPL-3.0-only and pins typescript >=5 <6.1.0 as a hard\n'
+  printf '       dependency, not a peer. Both are fine today; both are yours to check.\n'
   printf '    2. tsconfig.json: { "extends": "./tsconfig.base.json", ... }\n'
   printf '    3. package.json scripts.lint: "eslint src --max-warnings 0"\n'
   printf '       --max-warnings 0 is load-bearing; without it no-console is toothless.\n'
   printf '    4. typescript-eslint 8.x needs typescript >=4.8.4 <6.1.0 — TS 7 is refused\n'
   printf '       outright, not warned about (STATUS §4).\n'
+  printf '    5. OPTIONAL — the formatter. Not copied in, because adopting it on an\n'
+  printf '       existing repo reformats every file and that is your commit to make,\n'
+  printf '       not this script'"'"'s:\n'
+  printf '         npm i -D prettier\n'
+  printf '         cp %s/configs/typescript/prettier.config.mjs ./prettier.config.mjs\n' "$BASELINE"
+  printf '       Then run prettier --write ONCE, alone, and put that commit in\n'
+  printf '       .git-blame-ignore-revs. No eslint-config-prettier needed —\n'
+  printf '       typescript-eslint has shipped no formatting rules since v6.\n'
+  printf '    6. OPTIONAL — knip (npm i -D knip, pin >=6.31.0; 6.31.0 fixed a\n'
+  printf '       signature-only-type false positive that 5.64.3 shipped). A\n'
+  printf '       knip.json stub was written; declare your real entry points in\n'
+  printf '       it. In PUBLISHED LIBRARY packages gate dependencies, unlisted\n'
+  printf '       imports and unused files only — an export no in-repo code\n'
+  printf '       references is indistinguishable from public API there (19 of\n'
+  printf '       26 real-code findings in the #39 eval sat in that class).\n'
+  printf '    7. Fixing what knip finds: DELETION IS THE FIX, and knip can do\n'
+  printf '       it — npx knip --fix removes unused exports and dependencies;\n'
+  printf '       add --allow-remove-files to also delete dead files. Same rule\n'
+  printf '       as the formatter: run it ONCE, alone, at adoption, and READ\n'
+  printf '       the diff before committing. The false-positive class is code\n'
+  printf '       reached outside the module graph — codegen plugins invoked by\n'
+  printf '       non-npm tools, reflection — and a wrong deletion merges an\n'
+  printf '       outage. Put real ones in knip.json ignoreDependencies, where\n'
+  printf '       they are scoped and greppable. Never wire --fix into CI: the\n'
+  printf '       gate detects, a human deletes. The measured backlog is small\n'
+  printf '       (6 true positives across two real monorepos in #39), so one\n'
+  printf '       cleanup commit clears it and CI holds it at zero after that.\n'
 fi
 
 if [ "$HAS_DOTNET" -eq 1 ]; then
   printf '  C#/.NET\n'
-  printf '    1. Nothing. MSBuild picks up Directory.Build.props for every project\n'
-  printf '       beneath it — no .csproj changes.\n'
+  printf '    1. No .csproj changes — MSBuild picks up Directory.Build.props for\n'
+  printf '       every project beneath it.\n'
   printf '    2. First build will be noisy on an existing codebase. scripts/scan.sh\n'
   printf '       --changed-only is the new-code-only ratchet if you need it.\n'
+  printf '    3. DECIDE on packages.lock.json. Without one the dependency scan sees\n'
+  printf '       your DIRECT dependencies only — measured 4 findings vs 7 on the\n'
+  printf '       same project (README, .NET trade-off). dotnet restore\n'
+  printf '       --use-lock-file opts in; RestoreLockedMode then fails CI on a\n'
+  printf '       stale one, which is the commitment. This script will not make\n'
+  printf '       that call for you.\n'
+  printf '    4. OPTIONAL — the formatter needs no extra config; the .editorconfig\n'
+  printf '       copied above IS the policy. Gate it with:\n'
+  printf '         dotnet format whitespace --verify-no-changes\n'
+  printf '       The WHITESPACE subcommand, not bare "dotnet format" — the bare form\n'
+  printf '       also runs every analyzer and re-reports the build gate'"'"'s own\n'
+  printf '       diagnostics under the formatter'"'"'s exit code.\n'
 fi
 
 if [ "$HAS_PYTHON" -eq 1 ]; then
@@ -295,6 +575,49 @@ if [ "$HAS_PYTHON" -eq 1 ]; then
   printf '    3. An existing codebase will be noisy on first run. Move real\n'
   printf '       exemptions into ruff.toml per-file-ignores rather than widening\n'
   printf '       the global ignore list — scoped and greppable beats invisible.\n'
+  printf '    4. OPTIONAL — the formatter is already configured by the ruff.base.toml\n'
+  printf '       copied above; it just needs running:\n'
+  printf '         ruff format .           # fix\n'
+  printf '         ruff format --check .   # gate\n'
+  printf '       Note line-length = 100 drives the FORMATTER as well as E501, so\n'
+  printf '       overriding it moves both. One reformat commit, alone, in\n'
+  printf '       .git-blame-ignore-revs.\n'
+  printf '    5. OPTIONAL — deptry (unused/undeclared dependencies): add it as\n'
+  printf '       a dev dependency and run it PER PACKAGE, never at a workspace\n'
+  printf '       root — measured there: 125 findings, 118 of them one\n'
+  printf '       first-party artifact; 3 on the member package. Run it inside\n'
+  printf '       the project env (uv run deptry src) so import-name mapping\n'
+  printf '       works — isolated, it false-positives on every package whose\n'
+  printf '       import name differs (beautifulsoup4/bs4). Fixes are one-line\n'
+  printf '       pyproject.toml edits — make them BY HAND in one cleanup\n'
+  printf '       commit; there is no auto-fix and none is needed.\n'
+fi
+
+if [ "$HAS_RUST" -eq 1 ]; then
+  printf '  Rust\n'
+  printf '    1. No new dev dependencies — clippy and rustfmt ship with the\n'
+  printf '       toolchain; cargo-deny is installed by the scaffolded CI job.\n'
+  printf '       Locally: rustup component add clippy rustfmt, and install\n'
+  printf '       cargo-deny %s to match CI.\n' "$CARGO_DENY_PIN"
+  printf '    2. COMMIT Cargo.lock. The CI job runs everything with --locked, so\n'
+  printf '       an uncommitted lockfile fails the very first run — deliberately.\n'
+  printf '       For a binary the lockfile is not optional hygiene: it is what\n'
+  printf '       cargo-deny and Layer 2 OSV-Scanner actually read.\n'
+  printf '    3. Workspace roots got [workspace.lints]; each member crate opts in\n'
+  printf '       with two lines in its own Cargo.toml:  [lints]  workspace = true\n'
+  printf '    4. An existing codebase will be noisy on first run — pedantic is\n'
+  printf '       the strict tier and there is no ratchet for a compiler lint\n'
+  printf '       (README, the ratchet asymmetry). Waive a single site with\n'
+  printf '       #[allow(clippy::...)] and a reason; scoped and greppable beats\n'
+  printf '       a global allow in the manifest.\n'
+  printf '    5. unsafe_code is FORBIDDEN by default. A crate that genuinely\n'
+  printf '       needs FFI lowers it to "deny" in its own manifest and documents\n'
+  printf '       why — that is a policy call this script does not make for you.\n'
+  printf '    6. OPTIONAL — the formatter: cargo fmt once, alone, and put that\n'
+  printf '       commit in .git-blame-ignore-revs. Same rule as Prettier/ruff.\n'
+  printf '    7. OPTIONAL — licences: deny.toml ships an EMPTY allowlist, so the\n'
+  printf '       licenses check is not in the CI gate. Fill the allowlist and add\n'
+  printf '       licenses to the cargo deny check line when you have a policy.\n'
 fi
 
 if [ "$NEEDS_MERGE" -eq 1 ]; then

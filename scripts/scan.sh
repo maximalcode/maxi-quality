@@ -25,6 +25,16 @@
 #                          comma-separated SPDX allowlist. Off by default: a
 #                          license policy is a per-repo decision, and a default
 #                          allowlist would either gate nothing or gate wrongly.
+#   --annotate             Emit GitHub workflow commands so Semgrep findings
+#                          render on the pull-request diff instead of only in
+#                          the job log. Additive: it cannot change the exit
+#                          code. No effect outside GitHub Actions.
+#   --max-annotations N    Cap the annotations (default 50). The omitted count
+#                          is always reported — GitHub drops them past a limit
+#                          it does not document, and a silent truncation reads
+#                          as "that was all of them".
+#   --annotate-prefix P    Prepended to annotated paths. Needed when the target
+#                          is a subdirectory of the workspace.
 #   --no-fail              Report everything, always exit 0. Use for the
 #                          adoption week on an existing repo, then drop it.
 #   --require-tools        Exit non-zero if any tool is unavailable, instead of
@@ -35,6 +45,11 @@
 # Each tool is resolved as: native binary → uvx/docker fallback → skipped with a
 # loud warning. Nothing is silently not-run.
 #
+# If TARGET_REPO holds a `.maxi-quality.yml`, it is read first and decides which
+# Semgrep rules run, which are downgraded to warnings, and which paths are out of
+# scope (see README). An unusable policy is fatal — exit 3, never a clean scan.
+# Without one, nothing changes and no YAML parser is needed.
+#
 # Exit codes: 0 clean · 1 findings · 2 a tool was unavailable (--require-tools)
 #             3 usage error
 
@@ -42,11 +57,30 @@ set -Eeuo pipefail
 
 BASELINE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# THE THIRD PLACE SEMGREP IS PINNED, and until #43 it was not pinned at all.
+#
+# actions/layer2/action.yml pins it for consumers and ci.yml pins it for this
+# repo's own manifest job; check-pins.sh has asserted those two agree since #13,
+# because a drift there means CI validates the finding counts against a
+# different semgrep than consumers are handed. The local path had neither: the
+# uvx fallback ran a bare `uvx semgrep` and the docker fallback ran `:latest`.
+#
+# That is not theoretical. It is why the C# 12 parse failure in #43 was
+# irreproducible — "the same file scanned clean earlier in the same session",
+# because two runs minutes apart could resolve two different semgreps. A local
+# scan that disagrees with CI is worse than no local scan; people trust it.
+#
+# check-pins.sh now asserts all THREE agree. Bump them together or it fails.
+SEMGREP_PIN="1.172.0"
+
 # --- argument parsing --------------------------------------------------------
 TARGET=""
 CHANGED_ONLY=0
 BASE_REF="origin/main"
 NO_FAIL=0
+ANNOTATE=0
+MAX_ANNOTATIONS=50
+ANNOTATE_PREFIX=""
 JSON_OUT=""
 SBOM_OUT=""
 LICENSES=""
@@ -73,6 +107,14 @@ while [[ $# -gt 0 ]]; do
     --licenses)
       [[ $# -gt 1 ]] || die "--licenses needs an SPDX allowlist, e.g. MIT,Apache-2.0"
       LICENSES="$2"; shift ;;
+    --annotate)      ANNOTATE=1 ;;
+    --max-annotations)
+      [[ $# -gt 1 ]] || die "--max-annotations needs a number"
+      [[ "$2" =~ ^[0-9]+$ ]] || die "--max-annotations expects a non-negative integer, got '$2'"
+      MAX_ANNOTATIONS="$2"; shift ;;
+    --annotate-prefix)
+      [[ $# -gt 1 ]] || die "--annotate-prefix needs a path prefix"
+      ANNOTATE_PREFIX="$2"; shift ;;
     --no-fail)       NO_FAIL=1 ;;
     --require-tools) REQUIRE_TOOLS=1 ;;
     --skip)
@@ -85,7 +127,9 @@ while [[ $# -gt 0 ]]; do
       esac
       shift
       ;;
-    -h|--help) sed -n '2,39p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    # The header above IS the help text, not a hand-maintained copy of it. The
+    # range runs to the exit-code block; keep it in step when the header grows.
+    -h|--help) sed -n '2,54p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) die "unknown option '$1'" ;;
     *)
       [[ -z "$TARGET" ]] || die "TARGET_REPO given twice ('$TARGET' and '$1')"
@@ -100,6 +144,12 @@ if [[ -z "$TARGET" ]]; then
 fi
 [[ -d "$TARGET" ]] || die "not a directory: $TARGET"
 TARGET="$(cd "$TARGET" && pwd)"
+
+# Scratch space for the resolved policy and semgrep's JSON. Both are internal —
+# --json-out still writes wherever the caller asked, this is just where the run
+# assembles them.
+WORKDIR="$(mktemp -d)"
+trap 'rm -rf "$WORKDIR"' EXIT
 
 # --- output helpers ----------------------------------------------------------
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }
@@ -199,22 +249,63 @@ record_result() {
 }
 
 # --- 1. Semgrep --------------------------------------------------------------
+POLICY_JSON=""   # set by run_semgrep, read by _semgrep_exec
+
 run_semgrep() {
   # semgrep is the one tool with a uvx fallback, and the one that needs a second
   # mount: the RULES live in $BASELINE, which is not inside the scanned repo.
-  resolve_tool semgrep semgrep semgrep returntocorp/semgrep:latest semgrep \
+  resolve_tool semgrep semgrep "semgrep==$SEMGREP_PIN" \
+    "returntocorp/semgrep:$SEMGREP_PIN" semgrep \
     "install it (\`brew install semgrep\`), or provide uvx or docker" \
     -v "$BASELINE:/baseline:ro" || return 0
+
+  # The uvx and docker paths are pinned above. A NATIVE binary on PATH is
+  # whatever the machine has, and that cannot be fixed from here — but it can
+  # stop being silent. Warn rather than fail: refusing to run because someone's
+  # brew is one patch ahead would just get the script abandoned.
+  if [[ "${RESOLVED_CMD[0]}" == "semgrep" ]]; then
+    local have_ver
+    have_ver="$(semgrep --version 2>/dev/null | tr -d '[:space:]')"
+    if [[ -n "$have_ver" && "$have_ver" != "$SEMGREP_PIN" ]]; then
+      warn "semgrep $have_ver is on PATH but this baseline is pinned to $SEMGREP_PIN."
+      warn "findings and PARSE ERRORS can both differ between versions — if a result"
+      warn "here disagrees with CI, this is the first thing to check."
+    fi
+  fi
 
   # Native/uvx read the rules from the host path and scan "." — NOT "$TARGET" —
   # because _semgrep_exec runs from inside $TARGET. Docker sees them at the
   # mount point and scans /repo. This is the one place the two genuinely differ.
-  local config="$BASELINE/semgrep" path="."
+  #
+  # It is also why the policy resolver is told BOTH paths. Semgrep derives a
+  # rule's check_id prefix from the --config path exactly as written, so
+  # `--exclude-rule` needs a different string on each of these two paths for the
+  # very same rule. scripts/policy.py computes it and then proves it worked.
+  local baseline_path="$BASELINE" path="."
   if (( RESOLVED_IS_DOCKER )); then
-    config=/baseline/semgrep
+    baseline_path=/baseline
     path=/repo
   fi
-  _semgrep_exec "${RESOLVED_CMD[@]}" --config "$config" "$path"
+
+  # The consumer's policy is resolved BEFORE anything is scanned, and a bad one
+  # is fatal. A policy error is a usage error, not a finding: it must never be
+  # reported as a clean scan, and it must not be recoverable into "carry on with
+  # the defaults" — that would apply a policy the consumer did not write.
+  POLICY_JSON="$WORKDIR/policy.json"
+  python3 "$BASELINE/scripts/policy.py" resolve \
+    --target "$TARGET" --baseline "$BASELINE" \
+    --baseline-path "$baseline_path" --out "$POLICY_JSON" \
+    || die "the policy in $TARGET/.maxi-quality.yml is not usable (see above)"
+
+  local -a cfg=()
+  local line
+  while IFS= read -r line; do
+    cfg+=("$line")
+  done < <(python3 "$BASELINE/scripts/policy.py" args \
+             --resolved "$POLICY_JSON" \
+             --baseline-path "$baseline_path" --target-path "$path")
+
+  _semgrep_exec "${RESOLVED_CMD[@]}" ${cfg[@]+"${cfg[@]}"} "$path"
 }
 
 _semgrep_exec() {
@@ -223,12 +314,33 @@ _semgrep_exec() {
     extra+=(--baseline-commit "$BASE_REF")
     info "semgrep: new-code-only against $BASE_REF"
   fi
-  if [[ -n "$JSON_OUT" ]]; then
-    # --json-output writes a COPY of the results; the human-readable output on
-    # stdout is unchanged. Using -o/--output instead would replace it, and the
-    # scan log is what someone reads when a gate fails.
-    extra+=(--json-output="$JSON_OUT")
+
+  # THE RESULTS ARE ALWAYS WRITTEN AS JSON, and the verdict always comes from
+  # them — not from semgrep's exit code.
+  #
+  # `--error` can only say "something matched". It cannot express "something
+  # matched a rule this repo downgraded to a warning", so a policy with a `warn`
+  # list is unrepresentable in an exit code. Reading the JSON is also the rule
+  # this repo already arrived at the hard way: semgrep prints a rule id once per
+  # file and lists further matches beneath it, so counting the human-readable
+  # output undercounts (docs/STATUS.md §5). One path, for every repo, policy or
+  # not — the alternative was a second code path that only consumers with a
+  # policy file ever exercised.
+  #
+  # --json-output writes a COPY; stdout stays the human-readable log someone
+  # reads when a gate fails, which is what the ratchet fixtures grep.
+  local json_host="$WORKDIR/semgrep.json" json_arg staged=""
+  json_arg="$json_host"
+  if (( RESOLVED_IS_DOCKER )); then
+    # The container can only write inside the mount, so stage it there and move
+    # it back — the same trick the SBOM needs, for the same reason. Before this,
+    # --json-out under docker wrote to a path inside the container and the file
+    # simply never appeared on the host.
+    staged="$TARGET/.maxi-quality-semgrep.json"
+    json_arg="/repo/.maxi-quality-semgrep.json"
   fi
+  extra+=(--json-output="$json_arg")
+
   local rc=0
   # THE `cd` IS LOAD-BEARING, and its absence was a silent no-op gate.
   #
@@ -247,11 +359,68 @@ _semgrep_exec() {
   # the native/uvx path was affected — and why the bug survived: the two paths
   # disagreed and nothing compared them.
   #
-  # --error makes findings a non-zero exit; without it semgrep exits 0.
+  # No `--error`: findings are classified from the JSON below, so semgrep's own
+  # exit code is reserved for semgrep FAILING — a config that would not load, a
+  # target that does not exist. Those must not be reported as findings.
   # ${a[@]+"${a[@]}"} is the bash 3.2 (macOS system bash) safe way to expand a
   # possibly-empty array under `set -u`.
-  ( cd "$TARGET" && "$@" --error --metrics=off --disable-version-check ${extra[@]+"${extra[@]}"} ) || rc=$?
-  record_result semgrep "$rc"
+  ( cd "$TARGET" && "$@" --metrics=off --disable-version-check ${extra[@]+"${extra[@]}"} ) || rc=$?
+
+  if [[ -n "$staged" && -f "$staged" ]]; then
+    mv "$staged" "$json_host"
+  fi
+
+  if (( rc != 0 )); then
+    # semgrep itself failed. Not a finding, and emphatically not a pass.
+    record_status semgrep "ERROR (semgrep exit $rc)"
+    FINDINGS=1
+    return 0
+  fi
+
+  # The caller's copy, if they asked for one. Written from the file the verdict
+  # was actually computed from, so a report can never disagree with the gate.
+  if [[ -n "$JSON_OUT" ]]; then
+    mkdir -p "$(dirname "$JSON_OUT")"
+    cp "$json_host" "$JSON_OUT"
+  fi
+
+  # classify's stdout is teed rather than left to flow, because the summary
+  # needs one number out of it. Deriving that number a second time from the
+  # JSON is how the docker and native paths came to disagree about
+  # --changed-only: two computations of the same thing, one of them wrong.
+  # Under `set -o pipefail` the pipeline reports python's exit code, not tee's.
+  local -a cls_extra=()
+  if (( ANNOTATE )); then
+    cls_extra+=(--annotate --max-annotations "$MAX_ANNOTATIONS")
+    if [[ -n "$ANNOTATE_PREFIX" ]]; then
+      cls_extra+=(--annotate-prefix "$ANNOTATE_PREFIX")
+    fi
+  fi
+
+  local crc=0 classify_out="$WORKDIR/classify.out"
+  python3 "$BASELINE/scripts/policy.py" classify \
+    --resolved "$POLICY_JSON" --results "$json_host" \
+    ${cls_extra[@]+"${cls_extra[@]}"} | tee "$classify_out" || crc=$?
+
+  # Files semgrep could not parse. NOT a finding and NOT a failure (#43) — but
+  # it belongs on the summary line, because a scan that skipped nine files is
+  # not the same clean as a scan that read all of them.
+  local unparsed suffix=""
+  unparsed=$(sed -n 's/^semgrep_unparsed=//p' "$classify_out" | tail -1)
+  [[ -n "$unparsed" ]] || unparsed=0
+  if (( unparsed > 0 )); then
+    suffix=" ($unparsed file(s) UNPARSED)"
+  fi
+
+  case "$crc" in
+    0) record_status semgrep "clean$suffix" ;;
+    1) record_status semgrep "FINDINGS$suffix"; FINDINGS=1 ;;
+    # Exit 2 is a broken mechanism: unreadable results, a semgrep error that is
+    # not a per-file parse failure, every file unparseable, or a disabled rule
+    # that was not actually disabled. Each one means the verdict is unknown,
+    # and an unknown verdict is a failure here rather than a pass.
+    *) record_status semgrep "ERROR (policy exit $crc)"; FINDINGS=1 ;;
+  esac
   return 0
 }
 

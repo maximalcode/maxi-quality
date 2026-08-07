@@ -6,6 +6,9 @@ node_modules/
 bin/
 obj/
 
+# Rust
+target/
+
 # OS / editor
 .DS_Store
 *.swp

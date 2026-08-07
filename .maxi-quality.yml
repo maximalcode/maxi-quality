@@ -1,0 +1,40 @@
+# maxi-quality's own policy — this repo is a consumer of itself.
+#
+# It exists for one reason, and it is the same reason samples/semgrep/ sits
+# outside the TypeScript and .NET projects (docs/STATUS.md §4): a fixture for
+# one subsystem must not shift another subsystem's expected counts.
+#
+# samples/policy/ holds deliberately-violating code whose purpose is to prove
+# THIS FILE's mechanism works — a disabled rule that must go quiet, a warn rule
+# that must stop gating, an excluded path, a consumer's own rule. Scanned as
+# part of the repo they would land in samples/expected/semgrep.json and couple
+# the rule manifest to the policy fixtures, so that editing one would mean
+# regenerating the other.
+#
+# Excluded here rather than in a .semgrepignore, because a custom .semgrepignore
+# REPLACES semgrep's built-in defaults rather than adding to them — measured
+# 2026-08-03: with a .semgrepignore listing one directory, node_modules/ started
+# being scanned. This repo has a node_modules/ full of TypeScript.
+#
+# Note the pattern has no `**`. semgrep's --exclude matches path components and
+# silently ignores a `samples/policy/**`; scripts/policy.py rejects that form
+# outright so nobody rediscovers it the hard way.
+#
+# samples/parse-errors/ is here for a sharper version of the same reason (#43).
+# It holds C# that semgrep CANNOT PARSE, on purpose, and
+# scripts/check-expected.py refuses any run whose `.errors` is non-empty — so
+# leaving it in the scanned tree would fail layer2-counts outright and make the
+# fixture untestable in the repo that ships it. CI scans it explicitly instead.
+paths:
+  exclude:
+    - samples/policy
+    - samples/parse-errors
+    # The slop fixtures (#51, #52) prove knip and deptry, not Semgrep. Scanned
+    # as part of the repo they would couple two subsystems' manifests the same
+    # way samples/policy would — and samples/knip's bait (dead files, an
+    # unused-dependency package.json) is exactly the kind of tree other
+    # scanners misread.
+    - samples/knip
+    - samples/knip-clean
+    - samples/deptry
+    - samples/deptry-clean

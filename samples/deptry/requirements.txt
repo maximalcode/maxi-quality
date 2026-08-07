@@ -1,0 +1,15 @@
+# NOT dependencies of anything — this is fixture METADATA for the deptry gate.
+#
+# beautifulsoup4 is declared in pyproject.toml and imported as `bs4`. deptry
+# resolves that mismatch from the installed package's metadata; run against an
+# environment where the package is absent, it falls back to name normalization
+# and reports a false DEP001 (`bs4` missing) plus a false DEP002
+# (`beautifulsoup4` unused). Measured in #39 — the eval ran deptry overlaid on
+# the project's own environment for exactly this reason, and CI installs this
+# file to get the same property.
+#
+# Pinned like every other version in samples/ (dependabot.yml covers this
+# directory): the asserted finding set is only meaningful against a known
+# resolution behaviour.
+beautifulsoup4==4.15.0
+click==8.4.2

@@ -52,6 +52,12 @@ HISTORY_ROW = re.compile(r"^\|\s*(\d{4}-\d{2}-\d{2})\s*\|.*\|$", re.M)
 # Keep the table readable rather than unbounded; the issue is a dashboard, not
 # an audit log. Old rows fall off the bottom.
 MAX_HISTORY = 52
+# Same reasoning for the unparsed-file list (#43): a repo whose house style
+# semgrep's parser cannot read produces one row per file, and a hundred rows in
+# the middle of a dashboard buries everything under it. Truncation is announced
+# rather than silent — an unlabelled cut reads as "that was all of them", which
+# is the same failure shape as every gate bug here.
+MAX_UNPARSED_ROWS = 20
 
 
 def load_sbom(path: str | None) -> tuple[int, collections.Counter[str]] | None:
@@ -106,35 +112,70 @@ def _first_error(errors: list) -> str:
     return text[:197] + "..." if len(text) > 200 else text
 
 
-def load_findings(path: str) -> tuple[collections.Counter[str], str | None]:
-    """Return (counts, reason-this-is-not-a-finding-set).
+def load_findings(path: str) -> tuple[collections.Counter[str], str | None, list[str]]:
+    """Return (counts, reason-this-is-not-a-finding-set, unparsed-files).
 
     The second element is what stops a broken run from rendering as a clean one.
     Two shapes reach here as `results: []`:
 
-      - `.errors` is populated — a rule failed to parse, a target could not be
-        read, semgrep aborted. It scanned some or none of the tree and does not
-        know what it missed.
+      - `.errors` holds something that is not a per-file parse failure — a rule
+        failed to load, a target could not be read, semgrep aborted. It scanned
+        some or none of the tree and does not know what it missed.
       - `.paths.scanned` is empty — it ran to completion over nothing at all,
         which on a full-repo report means the target was wrong, not that the
         repo is empty. (`.paths` absent entirely is an older/leaner output and
         is NOT treated as an error; only an explicit empty list is.)
+
+    THE THIRD ELEMENT IS A COVERAGE GAP, NOT AN OUTAGE (#43). A file semgrep
+    cannot parse had no rule run against it, but the rest of the scan is real.
+    Treating that as ERRORED — which this did — blanked the whole standing
+    report and wrote ERRORED into the permanent history table because one C# 12
+    primary constructor was in the tree. Now the findings still render and the
+    unparsed files get their own line, which is the number that was previously
+    invisible in both directions.
+
+    The split itself lives in policy.py so the gate and the report cannot
+    disagree about what counts as a failed scan. That was worth one import: two
+    copies of this rule is exactly how the docker and native semgrep paths came
+    to disagree about --changed-only.
     """
+    from policy import PER_FILE_ERROR_TYPES, error_type  # noqa: PLC0415 — sibling script
+
     with open(path) as fh:
         data = json.load(fh)
 
-    errors = data.get("errors") or []
-    if errors:
-        return collections.Counter(), f"semgrep reported {len(errors)} error(s): {_first_error(errors)}"
+    unparsed_errs, fatal = [], []
+    for err in data.get("errors") or []:
+        tag = error_type(err) if isinstance(err, dict) else "?"
+        (unparsed_errs if tag in PER_FILE_ERROR_TYPES else fatal).append(err)
+
+    if fatal:
+        return (
+            collections.Counter(),
+            f"semgrep reported {len(fatal)} error(s): {_first_error(fatal)}",
+            [],
+        )
+
+    # Deduplicated: one file with three unparseable constructs is three errors
+    # and still one hole.
+    unparsed = sorted({e.get("path", "?") for e in unparsed_errs if isinstance(e, dict)})
 
     scanned = (data.get("paths") or {}).get("scanned")
     if scanned is not None and len(scanned) == 0:
-        return collections.Counter(), "semgrep scanned 0 files"
+        return collections.Counter(), "semgrep scanned 0 files", unparsed
+    # Same guard the gate applies: if nothing semgrep looked at could be parsed,
+    # `results: []` means "nobody looked", and that must not render as clean.
+    if scanned and unparsed and len(unparsed) >= len(scanned):
+        return (
+            collections.Counter(),
+            f"all {len(scanned)} file(s) semgrep looked at failed to parse",
+            unparsed,
+        )
 
     counts = collections.Counter(
         r["check_id"].split(".")[-1] for r in data.get("results", [])
     )
-    return counts, None
+    return counts, None, unparsed
 
 
 def previous_history(body: str | None) -> dict[str, str]:
@@ -162,7 +203,7 @@ def previous_history(body: str | None) -> dict[str, str]:
 
 
 def build(counts, date, gitleaks, osv, previous, target, licenses="not run",
-          sbom=None, scan_error=None) -> str:
+          sbom=None, scan_error=None, unparsed=None) -> str:
     total = sum(counts.values())
     top = counts.most_common(1)[0] if counts else None
     top_txt = f"{top[0]} ({top[1]})" if top else "—"
@@ -214,6 +255,28 @@ def build(counts, date, gitleaks, osv, previous, target, licenses="not run",
     else:
         lines.append("No Semgrep findings. ")
     lines.append("")
+
+    # #43 — the number that used to be invisible in both directions. Before
+    # this, an unparseable file blanked the report as ERRORED; the fix must not
+    # swing to the other extreme and simply not mention it, because a file
+    # nothing ran against is not a file with no findings.
+    if unparsed:
+        lines += [
+            "### Not scanned",
+            "",
+            f"{len(unparsed)} file(s) Semgrep could not parse. **No rule ran "
+            "against them**, so they contribute 0 to every number above — that "
+            "is missing coverage, not a clean result.",
+            "",
+            "| File |",
+            "|---|",
+        ]
+        lines += [f"| `{p}` |" for p in unparsed[:MAX_UNPARSED_ROWS]]
+        if len(unparsed) > MAX_UNPARSED_ROWS:
+            # Said out loud, because a truncated list that does not say it was
+            # truncated reads as the whole list.
+            lines.append(f"| …and {len(unparsed) - MAX_UNPARSED_ROWS} more |")
+        lines.append("")
 
     if sbom:
         n_components, license_counts = sbom
@@ -285,7 +348,7 @@ def main() -> int:
             body = None
 
     try:
-        counts, scan_error = load_findings(args.json)
+        counts, scan_error, unparsed = load_findings(args.json)
     except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
         # Nothing is printed on this path, deliberately: the caller writes
         # stdout over the standing issue, and an empty body would erase the
@@ -304,6 +367,7 @@ def main() -> int:
             args.licenses,
             load_sbom(args.sbom),
             scan_error,
+            unparsed,
         )
     )
     if scan_error:

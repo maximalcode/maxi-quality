@@ -99,11 +99,34 @@ Keep the numbers — measured evidence is the point of `docs/STATUS.md` and it
 identifies nobody once the names are gone.
 
 **Public-only tooling is now permitted, but only after it is measured.** Free
-CodeQL and SonarCloud become available; that is not a reason to adopt either. The
-track record is unambiguous — the free Semgrep registry found **0 of 28** planted
-findings and ships no C# rules; SonarQube found **1 of 8**
-(`docs/EVAL-vs-sonarqube.md`). Anything new gets run against `samples/` and reported
-with numbers before it is wired in.
+CodeQL and SonarCloud become available; that is not a reason to adopt either.
+Anything new gets run against `samples/` and reported with numbers before it is
+wired in.
+
+The track record says the rule works, and it works **in both directions** — do
+not read it as "nothing ever passes", which would just be reflexive rejection
+wearing the costume of rigour:
+
+- `p/security-audit` found **0 of the 28** findings our own conventions produced
+  on the same files (`docs/STATUS.md` §7, 2026-08-01), and **0 of 103** on the
+  bigger corpus a year's worth of fixtures later
+  (`docs/EVAL-vs-oss-tools.md` §2d).
+- SonarQube found **1 of 8** (`docs/EVAL-vs-sonarqube.md`).
+- CodeQL scored well and is still declined — it cannot run on a private repo at
+  any free tier, so it could gate this repo and never a consumer
+  (`EVAL-vs-oss-tools.md` §2h, issue #23). That asymmetry decides more of this
+  than detection scores do.
+- **`eslint-plugin-sonarjs` was measured and ADOPTED** (#11) — five bug classes
+  typescript-eslint has no rule for, zero findings on the clean fixtures. Nine
+  of ten candidates were declined; one was not.
+
+**One correction to a claim this file used to make.** It said the free Semgrep
+registry "ships no C# rules". That is true of **`p/security-audit` specifically**
+— scanning a tree with three C# files, its language table shows no `csharp` row
+at all — and false of the registry as a whole: `p/owasp-top-ten` runs 27 C#
+rules and `p/csharp` is a 27-rule C# pack (`EVAL-vs-oss-tools.md` §2d). Neither
+changes the verdict, and both are worth stating correctly, because a wrong
+reason for a right decision is how the decision gets overturned later.
 
 **Free/OSS only still holds.** Public makes branch protection free, which is the
 one thing that was genuinely blocked on spend. It does not relax §5.
@@ -121,12 +144,16 @@ do not silently diverge from it.
 
 ## 4. Scope discipline
 
-Shipped and verified: **TypeScript, C#/.NET and Python.**
+Shipped and verified: **TypeScript, C#/.NET, Python and Rust.**
 
 Already shipped, do not re-litigate: `quality.yml` + the `layer2` composite
 action, `adopt.sh` and `check-pins.sh`, the
-dependency bump policy (#13), clean fixtures for all three languages, and
-`configs/python/` (Ruff + mypy, measured against Consumer C before shipping).
+dependency bump policy (#13), clean fixtures for all four languages,
+`configs/python/` (Ruff + mypy, measured against Consumer C before shipping),
+and `configs/rust/` (clippy pedantic + rustfmt + cargo-deny, #58 — the C#
+copy pattern, because Cargo cannot consume `[lints]` remotely; Semgrep Rust
+rules stay out while upstream support is experimental, and cargo-audit stays
+out because cargo-deny's advisories check is the same feed).
 
 **On the Python ruleset specifically:** it is Consumer C's own thirteen families,
 not a set invented here. Issue #15 originally proposed `E,F,B,UP,SIM,S`, which
@@ -160,7 +187,7 @@ Adding a 13th convention requires removing one, or an explicit decision from the
 user to raise the cap. A new rule is justified by *a real bug that slipped
 through*, never by "this would be nice to catch".
 
-Note the distinction: 12 **conventions**, currently 19 **rule ids**. Semgrep
+Note the distinction: 12 **conventions**, currently 28 **rule ids**. Semgrep
 patterns are language-specific, so one convention needs a separate id per
 language when the syntax differs. Splitting an existing convention into a
 per-language id is not new scope; inventing a new convention is.
@@ -178,7 +205,7 @@ per-language id is not new scope; inventing a new convention is.
   moves `v1` on a green push to it, so a merge to `main` is not a checkpoint —
   it ships to every consumer pinning `@v1`. Promoting `develop` to `main` is
   the user's decision, not yours; do not open or merge that PR unasked. Both
-  branches carry the same 18 required checks, admins included.
+  branches carry the same 20 required checks, admins included.
 - **Tags gate the consumers.** Projects pin the baseline by tag (`@v1`), so an
   updated ruleset never silently breaks an old project. Do not tag until the
   step that the tag represents is actually verified working. The immutable

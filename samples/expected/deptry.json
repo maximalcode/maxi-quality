@@ -1,0 +1,15 @@
+{
+  "tool": "deptry",
+  "findings": [
+    {
+      "rule": "DEP002",
+      "file": "pyproject.toml",
+      "line": 0
+    },
+    {
+      "rule": "DEP001",
+      "file": "src/sample_deptry/main.py",
+      "line": 4
+    }
+  ]
+}

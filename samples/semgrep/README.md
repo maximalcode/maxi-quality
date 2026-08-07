@@ -26,10 +26,11 @@ no suppression file. A path allowlist survives both.
 
 ## Why these files sit outside the language projects
 
-`samples/typescript/` and `samples/dotnet/` have exact expected finding counts of
-their own. Keeping the Semgrep bait out of those projects means adding a rule
-fixture can never shift a Layer 1 count. Nothing here is ever compiled or linted
-— Semgrep only parses it.
+`samples/typescript/`, `samples/dotnet/` and `samples/python/` have exact
+expected finding counts of their own. Keeping the Semgrep bait out of those
+projects means adding a rule fixture can never shift a Layer 1 count. Nothing
+here is ever compiled, linted or type-checked — `ruff` and `mypy` run against
+`samples/python/`, not this directory, and Semgrep only parses what is here.
 
 ## Negative controls
 
@@ -59,3 +60,20 @@ looks about right.
 
 Adding a branch means adding bait for it in the same change. Do not add one
 without.
+
+## Duplication controls
+
+`QueryBuilder.cs` and `query-builder.ts` carry a third kind of case, and it is
+not a negative control: lines that **must fire exactly once**. Two conventions
+now have a second rule id for the same bug away from the sink, and the two ids
+overlap on the inline form — `cmd.CommandText = "SELECT ..." + id`,
+`` exec(`ls -la ${dir}`) ``. Each of those is held to one id by a `pattern-not`
+or a `metavariable-regex`, and each has a fixture here. The manifest records one
+finding on those lines; a second one appearing is the exclusion having gone, and
+it fails CI the same way a missing finding does.
+
+The same files also carry **a fixture that is expected to stay silent** —
+`exec(buildCommand(dir))`, the cross-function case that Semgrep OSS's
+intraprocedural taint does not reach. It sits with the working bait rather than
+in a `-clean` file because it is not clean code; it is a known gap, and the day
+a Semgrep release closes it the manifest is what says so.

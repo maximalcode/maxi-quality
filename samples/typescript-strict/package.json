@@ -1,0 +1,14 @@
+{
+  "name": "@maximalcode/sample-typescript-strict",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Intentionally un-typecheckable TypeScript. `npm run typecheck` MUST fail — that is the test. No eslint here; this project exists to prove tsconfig.strict.json.",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "~6.0.3"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "@maximalcode/sample-knip-clean",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Deliberately CLEAN TypeScript. `knip` MUST pass with zero findings — that is the test.",
+  "dependencies": {
+    "ms": "2.1.3"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.3"
+  }
+}

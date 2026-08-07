@@ -1,0 +1,4 @@
+# TODOs are tracked in review here, not by the gate.
+rules:
+  warn:
+    - todo-without-issue

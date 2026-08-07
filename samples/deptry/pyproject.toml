@@ -1,0 +1,21 @@
+# Intentionally-slopped dependency manifest. `deptry` MUST fail with exactly
+# the expected findings — that is the test.
+#
+# The bait, hand-planted (issue #51's sibling, #52; measured in #39):
+#   DEP002 — `requests` is declared below and imported by nothing.
+#   DEP001 — `yaml` is imported in src/sample_deptry/main.py and the package
+#            that provides it (pyyaml) is declared nowhere.
+# The negative control:
+#   `beautifulsoup4` is declared here and imported as `bs4` — the import-name
+#   ≠ package-name trap. It must NOT be flagged, which only works when deptry
+#   can see the installed package's metadata (samples/deptry/requirements.txt
+#   is installed in CI for exactly that reason).
+[project]
+name = "sample-deptry"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = [
+    "requests>=2.34.2",
+    "click>=8.1",
+    "beautifulsoup4>=4.12",
+]

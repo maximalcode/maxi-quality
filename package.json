@@ -3,10 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Reusable static-analysis baseline (TypeScript + C#). See docs/CONCEPT.md.",
+  "description": "Reusable static-analysis baseline (TypeScript, C#, Python, Rust). See docs/CONCEPT.md.",
   "license": "MIT",
   "exports": {
     "./configs/typescript/eslint.config.mjs": "./configs/typescript/eslint.config.mjs",
+    "./configs/typescript/prettier.config.mjs": "./configs/typescript/prettier.config.mjs",
     "./configs/typescript/tsconfig.strict.json": "./configs/typescript/tsconfig.strict.json"
   },
   "files": [
@@ -14,22 +15,39 @@
   ],
   "workspaces": [
     "samples/typescript",
-    "samples/typescript-clean"
+    "samples/typescript-clean",
+    "samples/typescript-strict"
   ],
   "scripts": {
     "verify:ts": "npm run lint --workspace @maximalcode/sample-typescript",
-    "verify:ts:clean": "npm run lint --workspace @maximalcode/sample-typescript-clean"
+    "verify:ts:clean": "npm run lint --workspace @maximalcode/sample-typescript-clean",
+    "verify:ts:types": "npm run typecheck --workspace @maximalcode/sample-typescript-strict",
+    "verify:ts:types:clean": "npm run typecheck --workspace @maximalcode/sample-typescript-clean",
+    "verify:rust": "cd samples/rust && RUSTFLAGS=-Dwarnings cargo clippy --all-targets --locked",
+    "verify:rust:clean": "cd samples/rust-clean && RUSTFLAGS=-Dwarnings cargo clippy --all-targets --locked",
+    "verify:format": "prettier --config configs/typescript/prettier.config.mjs --check \"**/*.{ts,mts,cts,js,mjs,cjs}\"",
+    "format": "prettier --config configs/typescript/prettier.config.mjs --write \"**/*.{ts,mts,cts,js,mjs,cjs}\""
   },
   "peerDependencies": {
     "@eslint/js": ">=9",
     "eslint": ">=9",
+    "eslint-plugin-sonarjs": ">=4",
+    "prettier": ">=3",
     "typescript": ">=5.4 <6.1",
     "typescript-eslint": ">=8"
+  },
+  "peerDependenciesMeta": {
+    "prettier": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^24.10.1",
     "eslint": "^10.8.0",
+    "eslint-plugin-sonarjs": "^4.2.0",
+    "knip": "6.31.0",
+    "prettier": "^3.9.6",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.65.0"
   }

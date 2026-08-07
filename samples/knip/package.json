@@ -1,0 +1,15 @@
+{
+  "name": "@maximalcode/sample-knip",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Intentionally-slopped TypeScript. `knip` MUST fail with exactly the expected findings — that is the test.",
+  "main": "src/index.ts",
+  "dependencies": {
+    "left-pad": "1.3.0",
+    "ms": "2.1.3"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.3"
+  }
+}

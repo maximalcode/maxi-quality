@@ -103,6 +103,19 @@ csharp_prefer_simple_using_statement = true:suggestion
 csharp_style_prefer_pattern_matching = true:suggestion
 
 # --- Naming: the three rules that actually get violated ---------------------
+# THIS LINE IS WHAT MAKES THE THREE RULES BELOW DO ANYTHING (#8). Measured
+# 2026-08-03: without it, every naming violation built cleanly — a probe with an
+# un-prefixed interface, a snake_case class and a PascalCase private field
+# produced ZERO IDE1006. `dotnet_naming_rule.<rule>.severity` governs the IDE
+# experience; build enforcement reads the diagnostic's own severity, and that
+# was never set. The rules were not "inert because no sample violates them",
+# which is how this looked from the outside — they were switched off.
+#
+# Two of the three were masked by analyzers that happen to overlap (CA1715 on
+# the interface prefix, CA1707/S101 on the type name), so the gap only showed
+# up on the third: a private field named `Count` was caught by NOTHING.
+dotnet_diagnostic.IDE1006.severity = error   # naming rule violation
+
 dotnet_naming_rule.interfaces_start_with_i.severity = error
 dotnet_naming_rule.interfaces_start_with_i.symbols = interface_symbols
 dotnet_naming_rule.interfaces_start_with_i.style = prefix_i_pascal

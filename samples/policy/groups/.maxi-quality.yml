@@ -1,0 +1,4 @@
+# Security only — this repo has not adopted the convention rules yet.
+rules:
+  groups:
+    - security

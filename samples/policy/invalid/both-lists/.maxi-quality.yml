@@ -1,0 +1,5 @@
+rules:
+  disable:
+    - todo-without-issue
+  warn:
+    - todo-without-issue

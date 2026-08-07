@@ -51,6 +51,13 @@ DOTNET_RE = re.compile(
     r"(?P<file>[^\s(]+\.cs)\((?P<line>\d+),\d+\): error (?P<rule>[A-Za-z]+\d+)"
 )
 
+# tsc has no JSON diagnostic output either. Anchored at the start of a line
+# because tsc indents the explanatory continuation lines of a nested type error
+# ("Types of property 'retries' are incompatible.") and those are not findings.
+TSC_RE = re.compile(
+    r"^(?P<file>\S+?\.[cm]?tsx?)\((?P<line>\d+),\d+\): error (?P<rule>TS\d+)", re.M
+)
+
 
 class ParseError(Exception):
     pass
@@ -107,6 +114,79 @@ def parse_mypy(text: str) -> list[dict]:
     return out
 
 
+def parse_knip(text: str) -> list[dict]:
+    """knip --reporter json. One entry per issue *type* per file; the type name
+    (files, exports, types, dependencies, unlisted, ...) is the rule id, so a
+    manifest diff says WHICH kind of detection was lost, not just where.
+
+    knip prints paths relative to its own working directory, and CI runs it
+    from inside the fixture — so these manifests are fixture-relative where
+    every other manifest is repo-relative. Whole-file findings (`files`) have
+    no line; 0 marks them, deliberately outside any real file's range."""
+    out = []
+    for issue in json.loads(text).get("issues", []):
+        for rule, entries in issue.items():
+            if rule == "file" or not isinstance(entries, list):
+                continue
+            for entry in entries:
+                # `duplicates` nests one level deeper: a list of clone groups.
+                for e in entry if isinstance(entry, list) else [entry]:
+                    out.append(
+                        {"rule": rule, "file": _rel(issue["file"]), "line": e.get("line") or 0}
+                    )
+    return out
+
+
+def parse_deptry(text: str) -> list[dict]:
+    """deptry --json-output. DEP002 (declared but unused) points at
+    pyproject.toml with a null line — 0 in the manifest, same convention as
+    knip's whole-file findings."""
+    return [
+        {
+            "rule": r["error"]["code"],
+            "file": _rel(r["location"]["file"]),
+            "line": r["location"]["line"] or 0,
+        }
+        for r in json.loads(text)
+    ]
+
+
+def parse_clippy(text: str) -> list[dict]:
+    """`cargo clippy --message-format=json` — JSONL, one object per line.
+
+    Like the knip manifests, clippy's are FIXTURE-relative: cargo runs from
+    inside the fixture and prints paths relative to the workspace root.
+
+    Deduplicated like dotnet's, and for the same shape of reason: with
+    `--all-targets` the crate is compiled once as a binary and once as a test
+    harness, and every lint fires in both units. When a forbid-level error
+    stops cargo early, the second unit may be skipped entirely — deduping makes
+    "one unit reported" and "both units reported" the same set, so the
+    manifest cannot flap on build scheduling."""
+    seen = set()
+    out = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        d = json.loads(line)
+        if d.get("reason") != "compiler-message":
+            continue
+        m = d["message"]
+        code = (m.get("code") or {}).get("code")
+        if not code or m.get("level") not in ("warning", "error"):
+            continue
+        primary = [s for s in m.get("spans", []) if s.get("is_primary")]
+        if not primary:
+            continue
+        key = (code, _rel(primary[0]["file_name"]), primary[0]["line_start"])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"rule": key[0], "file": key[1], "line": key[2]})
+    return out
+
+
 def parse_dotnet(text: str) -> list[dict]:
     seen = set()
     out = []
@@ -119,12 +199,26 @@ def parse_dotnet(text: str) -> list[dict]:
     return out
 
 
+def parse_tsc(text: str) -> list[dict]:
+    """tsc prints paths relative to the CWD, so run it as `tsc -p <dir>` from the
+    repo root rather than cd-ing in — same reason the dotnet job does not use
+    `working-directory:`."""
+    return [
+        {"rule": m["rule"], "file": _rel(m["file"]), "line": int(m["line"])}
+        for m in TSC_RE.finditer(text)
+    ]
+
+
 PARSERS = {
+    "clippy": parse_clippy,
     "semgrep": parse_semgrep,
     "eslint": parse_eslint,
     "ruff": parse_ruff,
     "mypy": parse_mypy,
     "dotnet": parse_dotnet,
+    "tsc": parse_tsc,
+    "knip": parse_knip,
+    "deptry": parse_deptry,
 }
 
 

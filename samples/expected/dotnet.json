@@ -2,6 +2,56 @@
   "tool": "dotnet",
   "findings": [
     {
+      "rule": "IDE0005",
+      "file": "samples/dotnet/Escalations.cs",
+      "line": 31
+    },
+    {
+      "rule": "IDE0052",
+      "file": "samples/dotnet/Escalations.cs",
+      "line": 40
+    },
+    {
+      "rule": "CA1805",
+      "file": "samples/dotnet/Escalations.cs",
+      "line": 45
+    },
+    {
+      "rule": "CS8625",
+      "file": "samples/dotnet/Escalations.cs",
+      "line": 45
+    },
+    {
+      "rule": "IDE0060",
+      "file": "samples/dotnet/Escalations.cs",
+      "line": 50
+    },
+    {
+      "rule": "IDE1006",
+      "file": "samples/dotnet/Naming.cs",
+      "line": 38
+    },
+    {
+      "rule": "S101",
+      "file": "samples/dotnet/Naming.cs",
+      "line": 38
+    },
+    {
+      "rule": "IDE1006",
+      "file": "samples/dotnet/Naming.cs",
+      "line": 46
+    },
+    {
+      "rule": "S101",
+      "file": "samples/dotnet/Naming.cs",
+      "line": 46
+    },
+    {
+      "rule": "IDE1006",
+      "file": "samples/dotnet/Naming.cs",
+      "line": 56
+    },
+    {
       "rule": "CS0414",
       "file": "samples/dotnet/Program.cs",
       "line": 22

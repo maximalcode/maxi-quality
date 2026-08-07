@@ -1,0 +1,15 @@
+name: quality
+on: [push, pull_request]
+jobs:
+  quality:
+    uses: maximalcode/maxi-quality/.github/workflows/quality.yml@v1
+    with:
+      # THE LINE THAT MATTERS. Everything already on origin/main is
+      # grandfathered; the gate only fails on findings this branch introduced.
+      #
+      # Layer 2 only, to begin with. Layer 1 has no per-finding grandfathering
+      # in ESLint, Roslyn or mypy — a rule is either on and failing your build
+      # or off — so it is a cleanup sprint, not a config change. Turn it on one
+      # language at a time, later.
+      changed-only: origin/main
+      languages: 'none'

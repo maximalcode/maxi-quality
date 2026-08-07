@@ -9,3 +9,6 @@
 # where a human looks at the new rule and decides. See .github/dependabot.yml.
 ruff==0.16.1
 mypy==2.3.0
+# The dependency gate (#52), measured in #39. Not part of Consumer C's
+# toolchain pins above — it is this repo's own gate over samples/deptry.
+deptry==0.25.1

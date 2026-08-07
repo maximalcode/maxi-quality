@@ -1,0 +1,10 @@
+# A monorepo with a vendored SDK it does not own, and no money handling.
+rules:
+  disable:
+    - no-float-for-money
+  warn:
+    - todo-without-issue
+paths:
+  exclude:
+    - third_party        # NOT 'third_party/**' — semgrep's --exclude matches
+                         # path components and would silently ignore the glob.

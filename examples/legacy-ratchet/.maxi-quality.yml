@@ -1,0 +1,5 @@
+# Week one on a repo nobody has linted before: nothing is switched off, but the
+# noisiest advisory rule is a warning rather than a gate while the team reads it.
+rules:
+  warn:
+    - todo-without-issue

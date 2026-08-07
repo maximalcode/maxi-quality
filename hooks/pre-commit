@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+#
+# maxi-quality pre-commit hook — OPT-IN, and never installed without asking.
+#
+# Install with:  scripts/adopt.sh <repo> --hooks
+# Bypass with:   git commit --no-verify
+#
+# WHY THIS EXISTS
+#
+# CI is the gate; this is not. The gap it closes is one of TIMING, and it
+# matters most for the finding that matters most: a leaked credential caught in
+# CI is eight minutes and a force-push later than the same credential caught at
+# `git commit`, and by then it is in the remote history and has to be treated as
+# compromised regardless of what you do next. Gitleaks on a staged diff costs
+# about 50 ms (measured 2026-08-05 on this repo), so there is no reason for that
+# to be a CI-only check.
+#
+# THREE PROPERTIES, ALL DELIBERATE, ALL LOAD-BEARING
+#
+# 1. OPT-IN. A hook that appears in someone's repo without them asking is the
+#    kind of thing people rip out along with everything near it.
+# 2. BYPASSABLE, and it says so on every failure. A hook that cannot be skipped
+#    gets uninstalled permanently the first time someone needs to commit a WIP
+#    at the end of a day. `--no-verify` is the feature, not the loophole.
+# 3. IT NEVER BLOCKS ON ITS OWN PROBLEMS. A missing tool, an unreadable
+#    baseline, a semgrep that will not start — every one of those warns and
+#    lets the commit through. This is a convenience; the gate is CI. A hook
+#    that fails closed on its own plumbing teaches people to pass --no-verify
+#    reflexively, and then it is not catching anything either.
+#
+# IT SCANS THE INDEX, NOT THE WORKING TREE
+#
+# The classic hook bug, and the reason this one materialises staged blobs into a
+# temp directory rather than pointing semgrep at the files on disk: `git commit`
+# commits the INDEX. If a file has staged changes and further unstaged ones, the
+# copy on disk is not what is being committed — so a working-tree scan both
+# misses findings you are about to commit and reports ones you are not. Gitleaks
+# has `--staged` and gets this right on its own.
+
+set -uo pipefail
+
+# The baseline checkout. Substituted at install time by adopt.sh, and
+# overridable so a team can keep it somewhere else without re-installing.
+BASELINE="${MAXI_QUALITY_BASELINE:-@BASELINE@}"
+
+BOLD=$'\033[1m'; DIM=$'\033[2m'; RED=$'\033[31m'; YEL=$'\033[33m'; OFF=$'\033[0m'
+warn() { printf '%spre-commit:%s %s\n' "$YEL" "$OFF" "$1" >&2; }
+info() { printf '%spre-commit:%s %s\n' "$DIM" "$OFF" "$1" >&2; }
+
+# BASH 3.2, NOT 4. macOS still ships 3.2.57 as /bin/bash, and a pre-commit hook
+# is the single most likely thing in this repo to run there. `mapfile` is a
+# bash 4 builtin: on 3.2 it is "command not found", and under `set -u` the next
+# line then dies on an unbound STAGED — so the hook aborts every commit with a
+# shell error. Caught by actually running it, not by reading it.
+#
+# Same reason for the `${arr[@]+…}` guard below: on 3.2, `"${arr[@]}"` on an
+# EMPTY array is an unbound-variable error under `set -u`.
+#
+# `|| true`: a repo with no commits yet has no HEAD, and an empty staged set is
+# a perfectly normal thing to hit here.
+STAGED=()
+while IFS= read -r _line; do
+  [ -n "$_line" ] && STAGED+=("$_line")
+done < <(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)
+# `${#arr[@]}` is safe on an empty array even on 3.2; `"${arr[@]}"` is not.
+# Verified against /bin/bash 3.2.57.
+if [[ ${#STAGED[@]} -eq 0 ]]; then
+  exit 0
+fi
+
+FAILED=0
+
+# --- 1. Secrets, on the staged diff ------------------------------------------
+#
+# First because it is the one that cannot be undone later. ~50 ms.
+if command -v gitleaks >/dev/null 2>&1; then
+  if ! gitleaks git . --staged --no-banner --redact >/dev/null 2>&1; then
+    printf '%s%s✖ gitleaks found a secret in the staged changes%s\n' "$BOLD" "$RED" "$OFF" >&2
+    # Re-run visibly. The quiet run above is what decides; this is for the
+    # human, and it is redacted so the hook never prints the secret itself.
+    gitleaks git . --staged --no-banner --redact >&2 || true
+    FAILED=1
+  fi
+else
+  warn "gitleaks not installed — skipping the secret scan (brew install gitleaks)"
+fi
+
+# --- 2. Semgrep, on the staged CONTENT ---------------------------------------
+#
+# Skippable on its own: it is the slow half (~2 s), and someone committing in a
+# tight loop should be able to keep the free check and drop this one without
+# uninstalling the hook and losing both.
+if [[ "${MAXI_QUALITY_HOOK_SKIP_SEMGREP:-}" == "1" ]]; then
+  info "semgrep skipped (MAXI_QUALITY_HOOK_SKIP_SEMGREP=1)"
+elif [[ ! -d "$BASELINE/semgrep" ]]; then
+  warn "maxi-quality not found at $BASELINE — skipping the Semgrep pass."
+  warn "set MAXI_QUALITY_BASELINE to your checkout, or re-run adopt.sh --hooks."
+elif ! command -v semgrep >/dev/null 2>&1 && ! command -v uvx >/dev/null 2>&1; then
+  warn "neither semgrep nor uvx is installed — skipping the Semgrep pass"
+else
+  STAGE_DIR="$(mktemp -d)"
+  # shellcheck disable=SC2064 # expand STAGE_DIR now: it is gone by trap time otherwise
+  trap "rm -rf '$STAGE_DIR'" EXIT
+
+  # Materialise the STAGED blob of each file, keeping its relative path — the
+  # rules use `paths: exclude` patterns like "*Tests*" and "Program.cs", so a
+  # flattened directory would silently change which rules apply.
+  copied=0
+  for f in ${STAGED[@]+"${STAGED[@]}"}; do
+    mkdir -p "$STAGE_DIR/$(dirname "$f")" 2>/dev/null || continue
+    if git show ":$f" > "$STAGE_DIR/$f" 2>/dev/null; then
+      copied=$((copied + 1))
+    fi
+  done
+
+  if [[ "$copied" -eq 0 ]]; then
+    info "nothing to scan with semgrep"
+  else
+    SEMGREP=(semgrep)
+    command -v semgrep >/dev/null 2>&1 || SEMGREP=(uvx "semgrep==$(
+      sed -n 's/^SEMGREP_PIN="\([0-9.]*\)".*/\1/p' "$BASELINE/scripts/scan.sh" | head -1
+    )")
+    out=""
+    rc=0
+    out=$("${SEMGREP[@]}" \
+      --config "$BASELINE/semgrep/general" \
+      --config "$BASELINE/semgrep/security" \
+      --config "$BASELINE/semgrep/conventions" \
+      --metrics=off --disable-version-check --error --quiet \
+      "$STAGE_DIR" 2>&1) || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      printf '%s%s✖ Semgrep findings in the staged changes%s\n' "$BOLD" "$RED" "$OFF" >&2
+      # Paths are rewritten back to repo-relative. A finding pointing into
+      # /tmp/tmp.XYZ is not something anyone can act on.
+      printf '%s\n' "${out//$STAGE_DIR\//}" >&2
+      FAILED=1
+    fi
+  fi
+fi
+
+# --- verdict ------------------------------------------------------------------
+if [[ "$FAILED" -ne 0 ]]; then
+  printf '\n%scommit blocked by the maxi-quality pre-commit hook.%s\n' "$BOLD" "$OFF" >&2
+  printf 'Fix the findings above, or bypass this once with:\n\n' >&2
+  printf '    git commit --no-verify\n\n' >&2
+  printf 'This hook is a convenience — CI is the real gate, and it will see the\n' >&2
+  printf 'same findings on the pull request.\n' >&2
+  exit 1
+fi
+exit 0

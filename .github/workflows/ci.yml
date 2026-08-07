@@ -106,6 +106,170 @@ jobs:
           (cd samples/typescript-clean && ../../node_modules/.bin/eslint src -f json) > /tmp/eslint-clean.json || true
           python3 scripts/check-expected.py --tool eslint \
             --input /tmp/eslint-clean.json --expected samples/expected/eslint-clean.json
+      # --- tsconfig.strict.json, issue #7 -----------------------------------
+      # Everything above tests ESLint. tsc was run by NOTHING, so 13 of the 14
+      # hand-written compiler flags had no test and any of them could be deleted
+      # with every job green. Same two-part shape as the ESLint half: assert the
+      # resolved CONFIGURATION, then assert that it produces errors.
+      - name: The resolved TypeScript compiler options must not change silently
+        shell: bash
+        run: node scripts/snapshot-tsconfig.mjs --check
+      - name: Strict TS sample must FAIL with exactly the expected diagnostics
+        shell: bash
+        run: |
+          set -uo pipefail
+          # The gate a consumer actually gets: a non-zero tsc.
+          rc=0; out=$(npm run verify:ts:types 2>&1) || rc=$?
+          echo "$out"
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/typescript-strict type-checked — tsconfig.strict.json regressed'
+            exit 1
+          fi
+          # Then WHICH diagnostics. `-p <dir>` from the repo root rather than a
+          # cd, because tsc prints paths relative to the CWD and the manifest
+          # holds repo-relative ones.
+          ./node_modules/.bin/tsc --noEmit -p samples/typescript-strict > /tmp/tsc.txt 2>&1 || true
+          python3 scripts/check-expected.py --tool tsc \
+            --input /tmp/tsc.txt --expected samples/expected/tsc.json
+      - name: Clean TS sample must TYPE-CHECK with zero diagnostics
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; out=$(npm run verify:ts:types:clean 2>&1) || rc=$?
+          echo "$out"
+          if [[ $rc -ne 0 ]]; then
+            echo '::error::samples/typescript-clean failed to type-check — the compiler baseline is over-strict. Fix the config, do not add ts-expect-error to the fixture.'
+            exit 1
+          fi
+          ./node_modules/.bin/tsc --noEmit -p samples/typescript-clean > /tmp/tsc-clean.txt 2>&1 || true
+          python3 scripts/check-expected.py --tool tsc \
+            --input /tmp/tsc-clean.txt --expected samples/expected/tsc-clean.json
+      # declaration/declarationMap/sourceMap are the three flags no --noEmit run
+      # can see. They are worth asserting because a consumer publishing a library
+      # loses its .d.ts silently: nothing fails, the package just ships untyped.
+      - name: The emit flags must actually emit
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm -rf /tmp/ts-emit
+          ./node_modules/.bin/tsc -p samples/typescript-clean --noEmit false --outDir /tmp/ts-emit
+          for f in clean.d.ts clean.d.ts.map clean.js.map; do
+            [[ -f /tmp/ts-emit/$f ]] || {
+              echo "::error::$f was not emitted — declaration/declarationMap/sourceMap regressed in tsconfig.strict.json"
+              exit 1
+            }
+          done
+      # --- the formatter, issue #42 -----------------------------------------
+      # docs/CONCEPT.md §4 has claimed since the first commit that formatting is
+      # "autofixed, never argued about". For TypeScript that was a claim with
+      # nothing behind it — no config, no tool, no check — which is the same
+      # shape as every other bug this repo has shipped.
+      - name: Everything Prettier owns must already be formatted
+        shell: bash
+        run: npm run verify:format
+      # THE ONE THAT MATTERS, and it is the ablation the step above cannot do.
+      # "The tree is formatted" and "the tree is formatted BY OUR CONFIG" are
+      # different claims, and only the second is worth a config file. Measured
+      # 2026-08-05, prettier 3.9.6: with `--no-config`, 21 files fail — Prettier
+      # defaults to printWidth 80 (we ship 100, matching configs/editorconfig
+      # and ruff.toml) and to double quotes (we ship single). Delete
+      # configs/typescript/prettier.config.mjs and the step above stays green.
+      - name: ...and formatted by OUR config, not Prettier's defaults
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          ./node_modules/.bin/prettier --no-config \
+            --check "**/*.{ts,mts,cts,js,mjs,cjs}" >/dev/null 2>&1 || rc=$?
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::the tree is formatted identically with and without configs/typescript/prettier.config.mjs — that config is now proving nothing. Either printWidth/singleQuote were reverted to Prettier defaults, or the settings that differ no longer appear in any checked file.'
+            exit 1
+          fi
+          echo 'OK: the shipped Prettier config changes the verdict'
+      # --ignore-path /dev/null on purpose: .prettierignore lists samples/format
+      # so that `npm run format` cannot quietly repair the fixtures, and this is
+      # the one place that has to look past it.
+      - name: The misformatted TS fixture must be REJECTED
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          ./node_modules/.bin/prettier --config configs/typescript/prettier.config.mjs \
+            --ignore-path /dev/null --check samples/format/bad-format.ts >/dev/null 2>&1 || rc=$?
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/format/bad-format.ts passed prettier --check. Either the fixture was formatted (do not do that — fix the config instead) or the gate stopped reading it.'
+            exit 1
+          fi
+          # And the width ablation from the other side: this file is Prettier-
+          # clean at printWidth 100 and dirty at Prettier's default 80. Both
+          # halves are asserted, because "fails with defaults" alone is also
+          # what a plain syntax error looks like.
+          rc=0
+          ./node_modules/.bin/prettier --config configs/typescript/prettier.config.mjs \
+            --ignore-path /dev/null --check samples/format/needs-width-100.ts >/dev/null 2>&1 || rc=$?
+          [[ $rc -eq 0 ]] || {
+            echo '::error::samples/format/needs-width-100.ts is not clean under our config — printWidth regressed, or the fixture line drifted outside 81-100 chars'
+            exit 1; }
+          rc=0
+          ./node_modules/.bin/prettier --no-config \
+            --ignore-path /dev/null --check samples/format/needs-width-100.ts >/dev/null 2>&1 || rc=$?
+          [[ $rc -ne 0 ]] || {
+            echo '::error::samples/format/needs-width-100.ts is clean under Prettier defaults too — its long line no longer exceeds 80 chars, so it separates nothing'
+            exit 1; }
+          echo 'OK: the misformatted fixture fails and the width ablation separates 100 from 80'
+      # --- knip, issue #51 --------------------------------------------------
+      # Dead files, unused exports/types and unused/unlisted dependencies —
+      # the slop classes that survived #39's measurement (6 of 6 planted
+      # findings, 0 of 6 negative controls flagged, and 19× quieter than a
+      # lint recommended-set on real code). Same two-part shape as every other
+      # gate: the bad fixture must FAIL with exactly the manifest, the clean
+      # one must PASS with zero findings.
+      #
+      # knip runs from inside the fixture and prints paths relative to it, so
+      # samples/expected/knip*.json are fixture-relative where the other
+      # manifests are repo-relative — scripts/check-expected.py says so too.
+      - name: Knip fixture must fail with exactly the expected findings
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; (cd samples/knip && ../../node_modules/.bin/knip --reporter json) > /tmp/knip.json || rc=$?
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/knip passed knip — the dead-code/dependency detection regressed'
+            exit 1
+          fi
+          python3 scripts/check-expected.py --tool knip \
+            --input /tmp/knip.json --expected samples/expected/knip.json
+      - name: Clean knip sample must PASS with zero findings
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; (cd samples/knip-clean && ../../node_modules/.bin/knip --reporter json) > /tmp/knip-clean.json || rc=$?
+          if [[ $rc -ne 0 ]]; then
+            cat /tmp/knip-clean.json
+            echo '::error::samples/knip-clean was flagged — the gate is over-strict. Fix the config, do not add ignores to the fixture.'
+            exit 1
+          fi
+          python3 scripts/check-expected.py --tool knip \
+            --input /tmp/knip-clean.json --expected samples/expected/knip-clean.json
+      # The ablation, same argument as the Prettier --no-config step above:
+      # "the clean fixture passes" and "the clean fixture passes BECAUSE OF
+      # its knip.json" are different claims. The fixture's entry point is
+      # deliberately not one knip would find on its own (src/clean.ts), which
+      # is what #39 measured on every real consumer: a zero-config run on a
+      # non-default layout reports the layout, not defects. Config aside, the
+      # verdict must flip.
+      - name: ...and its knip.json is what makes it pass, not knip's defaults
+        shell: bash
+        run: |
+          set -uo pipefail
+          mv samples/knip-clean/knip.json /tmp/knip-config-aside.json
+          rc=0; (cd samples/knip-clean && ../../node_modules/.bin/knip --reporter json) >/dev/null 2>&1 || rc=$?
+          mv /tmp/knip-config-aside.json samples/knip-clean/knip.json
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/knip-clean passes without its knip.json — the entry declaration is proving nothing. Either knip defaults grew to cover src/clean.ts or the fixture layout drifted to a default one.'
+            exit 1
+          fi
+          echo 'OK: the shipped knip.json changes the verdict'
 
   layer1-dotnet:
     runs-on: ubuntu-latest
@@ -114,6 +278,15 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           dotnet-version: '10.0.x'
+      # #8 — the .NET twin of the tsconfig and ESLint snapshots. The finding
+      # manifest cannot see a property that bakes no diagnostic out:
+      # TreatWarningsAsErrors and WarningLevel change other diagnostics' SEVERITY
+      # rather than the set of them, and RestoreLockedMode is conditional on a
+      # lock file that samples/dotnet does not have. Deleting any of those left
+      # every job green.
+      - name: The resolved MSBuild properties must not change silently
+        shell: bash
+        run: ./scripts/snapshot-msbuild-props.sh --check
       # NOT `working-directory:` — the manifests hold repo-relative paths, so
       # check-expected.py has to run from the repo root.
       - name: Sample must fail with exactly the expected diagnostics
@@ -154,6 +327,66 @@ jobs:
           fi
           printf '%s' "$out" | python3 scripts/check-expected.py --tool dotnet \
             --input - --expected samples/expected/dotnet-clean.json
+      # --- the formatter, issue #42 -----------------------------------------
+      #
+      # `dotnet format whitespace`, NOT bare `dotnet format`. MEASURED
+      # 2026-08-05, SDK 10.0.301: the bare form also runs Code Style analysis
+      # and 622 analyzer references, so against samples/dotnet it reports S101,
+      # IDE0005, IDE0052, IDE0060 and CS8625 — the BUILD gate's findings wearing
+      # the formatter's exit code. One red check would then mean two unrelated
+      # things, and the build step above already owns those diagnostics. The
+      # `whitespace` subcommand is layout only.
+      - name: C# samples must already be whitespace-formatted
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for d in samples/dotnet samples/dotnet-clean samples/dotnet-tests; do
+            dotnet format whitespace "$d" --verify-no-changes --verbosity quiet
+          done
+      # THE ABLATION, and this one is not decoration: for C# almost everything
+      # in configs/editorconfig agrees with the tool's own defaults, so a
+      # fixture that merely fails proves the formatter ran and nothing about
+      # WHICH config it ran with. `insert_final_newline = true` is the setting
+      # that genuinely differs, so the fixture is a file with no trailing
+      # newline and it is checked TWICE — once with the shipped .editorconfig
+      # staged beside it, once with none. The two verdicts must disagree.
+      #
+      # Measured 2026-08-05: without the config, exit 0. With it,
+      # `FINALNEWLINE: Fix final newline. Insert '\n'`.
+      - name: The shipped .editorconfig must be what decides the C# verdict
+        shell: bash
+        run: |
+          set -uo pipefail
+          stage() {
+            rm -rf "$1"; mkdir -p "$1"
+            cp samples/format/MissingFinalNewline.cs "$1/"
+          }
+          # Guard the fixture before either run. If an editor or a
+          # .gitattributes ever appends the newline, both runs go green and the
+          # ablation silently stops testing anything — which is the exact
+          # failure mode this whole job exists to catch.
+          if [[ -z "$(tail -c 1 samples/format/MissingFinalNewline.cs)" ]]; then
+            echo '::error::samples/format/MissingFinalNewline.cs now ENDS with a newline, so it no longer separates the shipped .editorconfig from the tool defaults. Strip the trailing newline (printf, not an editor) to restore the fixture.'
+            exit 1
+          fi
+
+          stage /tmp/fmt-bare
+          rc=0
+          dotnet format whitespace /tmp/fmt-bare --folder --verify-no-changes \
+            --verbosity quiet >/dev/null 2>&1 || rc=$?
+          [[ $rc -eq 0 ]] || {
+            echo "::error::the fixture failed dotnet format whitespace with NO .editorconfig (exit $rc) — it is misformatted in some way other than the missing final newline, so the ablation no longer isolates insert_final_newline"
+            exit 1; }
+
+          stage /tmp/fmt-config
+          cp configs/editorconfig /tmp/fmt-config/.editorconfig
+          rc=0
+          dotnet format whitespace /tmp/fmt-config --folder --verify-no-changes \
+            --verbosity quiet >/dev/null 2>&1 || rc=$?
+          [[ $rc -ne 0 ]] || {
+            echo '::error::the fixture PASSED with configs/editorconfig staged beside it — insert_final_newline is no longer being enforced, so the C# format gate is running on tool defaults and configs/editorconfig gates nothing'
+            exit 1; }
+          echo 'OK: configs/editorconfig changes the verdict — the C# format gate is driven by the shipped config'
 
   # #25 — the test-project relaxation, asserted from BOTH sides. A one-sided
   # check would pass just as happily if the waiver swallowed everything.
@@ -211,7 +444,21 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.12'
-      - run: pip install -r samples/python/requirements-dev.txt
+      # requirements-dev.txt is the lint toolchain (+ deptry, #52).
+      # samples/deptry/requirements.txt is the deptry fixture's metadata: it
+      # installs beautifulsoup4 so deptry can map the `bs4` import back to the
+      # declared package — the import-name ≠ package-name control only means
+      # something when the package metadata is actually visible.
+      - run: |
+          pip install -r samples/python/requirements-dev.txt
+          pip install -r samples/deptry/requirements.txt
+      # #8 — the Python twin of the tsconfig, ESLint and MSBuild snapshots.
+      # `ignore = []` is this config's most load-bearing empty value and no
+      # fixture can see it; mypy's `strict` is an ALIAS whose expansion no
+      # finding proves. Both are asserted here, from each tool's own resolver.
+      - name: The resolved ruff and mypy settings must not change silently
+        shell: bash
+        run: python3 scripts/snapshot-python-settings.py --check
       - name: Ruff sample must fail with exactly 14 errors
         shell: bash
         run: |
@@ -244,7 +491,7 @@ jobs:
             exit 1
           fi
           echo 'OK: all 13 rule families represented in the fixture'
-      - name: Mypy sample must fail with exactly 5 errors
+      - name: Mypy sample must fail with exactly 11 errors
         shell: bash
         run: |
           set -uo pipefail
@@ -277,6 +524,307 @@ jobs:
             exit 1
           fi
           echo 'OK: clean Python sample passes ruff and mypy with zero findings'
+      # --- the formatter, issue #42 -----------------------------------------
+      # configs/python/ruff.toml has had a [format] section since it was written
+      # and NOTHING RAN IT. Present, plausible, gating nothing — the same shape
+      # as dotnet_diagnostic.IDE1006.severity never being set (docs/STATUS.md §4).
+      - name: Python sources must already be ruff-formatted
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ruff format --check --config configs/python/ruff.toml \
+            samples/python samples/python-clean
+      - name: The misformatted Python fixture must be REJECTED
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          ruff format --check --config configs/python/ruff.toml \
+            samples/format/bad_format.py >/dev/null 2>&1 || rc=$?
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/format/bad_format.py passed ruff format --check. Either the fixture was formatted (do not do that) or the gate stopped reading it.'
+            exit 1
+          fi
+          # The ablation. Everything in [format] is a ruff DEFAULT, so that
+          # section on its own is unfalsifiable — delete it and nothing moves.
+          # `line-length = 100` is the setting that is not a default (ruff ships
+          # 88) and it drives the formatter as well as E501, so it is the one
+          # with a fixture: clean at 100, rewrapped at 88. --isolated ignores
+          # every config file, which is the only way to get ruff's true defaults.
+          rc=0
+          ruff format --check --config configs/python/ruff.toml \
+            samples/format/needs_width_100.py >/dev/null 2>&1 || rc=$?
+          [[ $rc -eq 0 ]] || {
+            echo '::error::samples/format/needs_width_100.py is not clean under our config — line-length regressed, or the fixture line drifted outside 89-100 chars'
+            exit 1; }
+          rc=0
+          ruff format --check --isolated samples/format/needs_width_100.py >/dev/null 2>&1 || rc=$?
+          [[ $rc -ne 0 ]] || {
+            echo '::error::samples/format/needs_width_100.py is clean at ruff defaults too — its long line no longer exceeds 88 chars, so it separates nothing'
+            exit 1; }
+          echo 'OK: the misformatted fixture fails and the width ablation separates 100 from 88'
+      # --- deptry, issue #52 ------------------------------------------------
+      # Unused (DEP002) and undeclared (DEP001) Python dependencies, measured
+      # in #39: 2 of 2 planted findings, 0 false positives including the
+      # import-name ≠ package-name trap.
+      #
+      # It lives HERE, beside the Layer 1 Python steps, and deliberately NOT
+      # in the scan.sh / Layer 2 umbrella — that is the integration decision
+      # #52 asked for. deptry is per-language and per-package by design:
+      # measured at a consumer's workspace root it reported 125 findings, 118
+      # of them one first-party artifact; on a member package, 3. A gate that
+      # ships 94% noise on day one gets deleted, which is worse than no gate.
+      # Layer 2 runs once per repo from the root; this tool must never do that.
+      - name: Deptry fixture must fail with exactly the expected findings
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; (cd samples/deptry && deptry src --json-output /tmp/deptry.json) >/tmp/deptry.log 2>&1 || rc=$?
+          cat /tmp/deptry.log
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/deptry passed deptry — the dependency detection regressed'
+            exit 1
+          fi
+          python3 scripts/check-expected.py --tool deptry \
+            --input /tmp/deptry.json --expected samples/expected/deptry.json
+      # The clean half needs its own pyproject.toml: deptry refuses to run at
+      # all without a dependency manifest (measured — samples/python-clean
+      # deliberately has none, so it cannot play this role).
+      - name: Clean deptry sample must PASS with zero findings
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; (cd samples/deptry-clean && deptry src --json-output /tmp/deptry-clean.json) >/tmp/deptry-clean.log 2>&1 || rc=$?
+          cat /tmp/deptry-clean.log
+          if [[ $rc -ne 0 ]]; then
+            echo '::error::samples/deptry-clean was flagged — the gate is over-strict. Fix the invocation, do not add per-rule ignores to the fixture.'
+            exit 1
+          fi
+          python3 scripts/check-expected.py --tool deptry \
+            --input /tmp/deptry-clean.json --expected samples/expected/deptry-clean.json
+
+  # #58 — Rust Layer 1. clippy is the conventions layer (Semgrep's Rust support
+  # is experimental and stays out), cargo-deny is the supply chain. The
+  # toolchain and cargo-deny are PINNED to the same versions adopt.sh stamps
+  # into consumers — check-pins.sh asserts that stays true, because CI
+  # validating a different analyzer than consumers run is how the samples stop
+  # meaning what they claim (#13).
+  layer1-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Pinned toolchain and cargo-deny
+        shell: bash
+        env:
+          # From the .sha256 file next to the release artifact. Verifying it is
+          # the difference between "we downloaded a binary" and "we downloaded
+          # THAT binary" — same standard the actionlint step sets.
+          CARGO_DENY_SHA256: '9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f'
+        run: |
+          set -Eeuo pipefail
+          rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
+          rustup default 1.97.1
+          curl -sSfL -o /tmp/cargo-deny.tgz \
+            https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
+          echo "${CARGO_DENY_SHA256}  /tmp/cargo-deny.tgz" | sha256sum -c -
+          tar xzf /tmp/cargo-deny.tgz -C "$HOME/.cargo/bin" --strip-components=1 \
+            cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny
+          cargo deny --version
+      # The fixture manifests carry COPIES of configs/rust (same shape as the
+      # sample .editorconfigs, and the same drift risk). rustfmt.toml and
+      # deny.toml must match verbatim; the [lints] block appended to each
+      # fixture Cargo.toml must be byte-identical to what adopt.sh derives
+      # from lints.toml for a single crate.
+      - name: Fixture copies must match configs/rust verbatim
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for d in samples/rust samples/rust-clean; do
+            diff -u configs/rust/rustfmt.toml "$d/rustfmt.toml" || {
+              echo "::error::$d/rustfmt.toml drifted from configs/rust — recopy it"; exit 1; }
+            diff -u configs/rust/deny.toml "$d/deny.toml" || {
+              echo "::error::$d/deny.toml drifted from configs/rust — recopy it"; exit 1; }
+            sed 's/^\[workspace\.lints/[lints/' configs/rust/lints.toml > /tmp/expected-lints.toml
+            awk '/# maxi-quality — Rust lint baseline/{found=1} found{print}' "$d/Cargo.toml" > /tmp/actual-lints.toml
+            diff -u /tmp/expected-lints.toml /tmp/actual-lints.toml || {
+              echo "::error::the [lints] block in $d/Cargo.toml drifted from configs/rust/lints.toml — regenerate it the way adopt.sh writes it"
+              exit 1; }
+          done
+          echo 'OK: both fixtures carry configs/rust verbatim'
+      # #8's pattern, Rust edition: the manifests pin what the fixtures BAIT,
+      # not what the config ENABLES. The resolved lint argv, the resolved
+      # rustfmt config and the deny.toml posture are asserted directly —
+      # forbid-vs-deny on unsafe_code is invisible to every fixture.
+      - name: The resolved Rust settings must not change silently
+        shell: bash
+        run: python3 scripts/snapshot-rust-settings.py --check
+      - name: Sample must fail clippy with exactly the expected findings
+        shell: bash
+        run: |
+          set -uo pipefail
+          # First the gate a consumer actually gets: -Dwarnings and a
+          # non-zero exit...
+          rc=0; out=$(cd samples/rust && RUSTFLAGS=-Dwarnings cargo clippy --all-targets --locked 2>&1) || rc=$?
+          echo "$out"
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/rust passed clippy — the config regressed'
+            exit 1
+          fi
+          # ...then WHICH lints fired, from the machine-readable output. No
+          # -Dwarnings here: the JSON run matches how the manifest was
+          # generated, and the flag only relabels levels the parser already
+          # accepts.
+          (cd samples/rust && cargo clippy --all-targets --locked --message-format=json) > /tmp/clippy.json 2>/dev/null || true
+          python3 scripts/check-expected.py --tool clippy \
+            --input /tmp/clippy.json --expected samples/expected/clippy.json
+      # Every enabled tier must be REPRESENTED, not just some finding set —
+      # the same belt the 13 ruff families get. One rule per tier: the rust
+      # group at forbid, clippy::all, pedantic, a curated nursery pick and a
+      # curated cargo pick. Any tier vanishing from the fixture's output means
+      # that tier was switched off, whatever the total says.
+      - name: Every lint tier must be represented
+        shell: bash
+        run: |
+          set -uo pipefail
+          missing=()
+          for rule in unsafe_code clippy::needless_return clippy::cast_possible_truncation \
+                      clippy::or_fun_call clippy::wildcard_dependencies; do
+            grep -q "\"$rule\"" /tmp/clippy.json || missing+=("$rule")
+          done
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::no finding from ${missing[*]} — that tier is enabled but unproven"
+            exit 1
+          fi
+          echo 'OK: rust-forbid, all, pedantic, nursery and cargo tiers all fire'
+      - name: Clean Rust sample must pass clippy with zero warnings
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; out=$(cd samples/rust-clean && RUSTFLAGS=-Dwarnings cargo clippy --all-targets --locked 2>&1) || rc=$?
+          echo "$out"
+          if [[ $rc -ne 0 ]]; then
+            echo '::error::samples/rust-clean was flagged — the baseline is over-strict. Fix the config, do not add #[allow] to the fixture.'
+            exit 1
+          fi
+          (cd samples/rust-clean && cargo clippy --all-targets --locked --message-format=json) > /tmp/clippy-clean.json 2>/dev/null || true
+          python3 scripts/check-expected.py --tool clippy \
+            --input /tmp/clippy-clean.json --expected samples/expected/clippy-clean.json
+      # --- the formatter ----------------------------------------------------
+      - name: The misformatted fixture must be REJECTED, the clean one passed
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; (cd samples/rust && cargo fmt --check) >/dev/null 2>&1 || rc=$?
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/rust passed cargo fmt --check. Either the fixture was formatted (do not do that) or the gate stopped reading it.'
+            exit 1
+          fi
+          rc=0; (cd samples/rust-clean && cargo fmt --check) || rc=$?
+          if [[ $rc -ne 0 ]]; then
+            echo '::error::samples/rust-clean failed cargo fmt --check — reformat it or fix rustfmt.toml'
+            exit 1
+          fi
+          echo 'OK: the formatter rejects the bait and passes the clean fixture'
+      # THE ABLATION. rustfmt's max_width default already IS the house 100, so
+      # width separates nothing here; newline_style = "Unix" is the setting
+      # that genuinely differs from the default ("Auto": whatever the file
+      # already uses). The fixture is consistently-CRLF and correct otherwise:
+      # clean under rustfmt's defaults, rejected under our config. Guarded
+      # first, because an editor or attributes filter normalising it to LF
+      # would turn both runs green and the ablation would silently stop
+      # testing anything.
+      - name: The shipped rustfmt.toml must be what decides the verdict
+        shell: bash
+        run: |
+          set -uo pipefail
+          if ! grep -q $'\r' samples/format/crlf_line_endings.rs; then
+            echo '::error::samples/format/crlf_line_endings.rs no longer contains CRLF, so it cannot separate newline_style = "Unix" from the Auto default. Restore it with printf, not an editor.'
+            exit 1
+          fi
+          rc=0
+          rustfmt --check samples/format/crlf_line_endings.rs >/dev/null 2>&1 || rc=$?
+          [[ $rc -eq 0 ]] || {
+            echo "::error::the CRLF fixture failed rustfmt with NO config (exit $rc) — it is misformatted in some way other than its line endings, so the ablation no longer isolates newline_style"
+            exit 1; }
+          rc=0
+          rustfmt --config-path configs/rust/rustfmt.toml --check \
+            samples/format/crlf_line_endings.rs >/dev/null 2>&1 || rc=$?
+          [[ $rc -ne 0 ]] || {
+            echo '::error::the CRLF fixture PASSED with configs/rust/rustfmt.toml — newline_style is no longer enforced, so the Rust format gate is running on tool defaults'
+            exit 1; }
+          echo 'OK: configs/rust/rustfmt.toml changes the verdict'
+      # --- cargo-deny -------------------------------------------------------
+      # The advisory bait sits behind a cfg(windows) gate, so Linux CI never
+      # downloads or builds it — but the LOCKFILE is target-independent, and
+      # the lockfile is all cargo-deny reads.
+      - name: Dirty lockfile must fail advisories with the known RUSTSEC id
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; out=$(cd samples/rust && cargo deny check advisories bans 2>&1) || rc=$?
+          echo "$out"
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/rust passed cargo-deny — the advisories gate regressed'
+            exit 1
+          fi
+          grep -q 'RUSTSEC-2021-0003' <<<"$out" || {
+            echo '::error::the failure is not the planted advisory (RUSTSEC-2021-0003, smallvec 1.6.0) — something else broke'
+            exit 1; }
+          echo 'OK: the planted advisory is what fails the check'
+      - name: Clean lockfile must pass advisories and bans
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; out=$(cd samples/rust-clean && cargo deny check advisories bans 2>&1) || rc=$?
+          echo "$out"
+          [[ $rc -eq 0 ]] || {
+            echo '::error::samples/rust-clean was flagged by cargo-deny — the posture is over-strict or the DB fetch failed'
+            exit 1; }
+      - name: Clean sample tests must pass
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          (cd samples/rust-clean && cargo test --locked)
+      # --- adopt.sh equivalence, the Rust half of the adopt job -------------
+      # The toolchain lives in THIS job, so the end-to-end claim does too: a
+      # fresh `cargo new` adopted by the script must pass the entire gate at
+      # zero findings, re-running must change nothing, and a manifest that
+      # already has [lints] must be skipped, not clobbered.
+      - name: A fresh cargo-new project adopted by the script passes at zero
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo new /tmp/consumer-rust
+          ./scripts/adopt.sh /tmp/consumer-rust --no-workflow
+          cd /tmp/consumer-rust
+          cargo generate-lockfile
+          cargo fmt --check
+          RUSTFLAGS=-Dwarnings cargo clippy --all-targets --locked
+          cargo deny check advisories bans
+          cargo test --locked
+          echo 'OK: adopted fresh project passes fmt, clippy, deny and test at zero'
+      - name: Rust adoption is idempotent, and never merges by force
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          before=$(sha256sum /tmp/consumer-rust/Cargo.toml | cut -d' ' -f1)
+          ./scripts/adopt.sh /tmp/consumer-rust --no-workflow > /tmp/rust-rerun.log 2>&1
+          after=$(sha256sum /tmp/consumer-rust/Cargo.toml | cut -d' ' -f1)
+          [[ "$before" == "$after" ]] || {
+            echo '::error::re-run modified Cargo.toml — the [lints] append is not idempotent'; exit 1; }
+          n=$(grep -c 'maxi-quality — Rust lint baseline' /tmp/consumer-rust/Cargo.toml)
+          [[ "$n" -eq 1 ]] || { echo "::error::[lints] block appended $n times"; exit 1; }
+          # A manifest with its OWN [lints] section: skip and warn, never merge.
+          cargo new /tmp/consumer-rust-lints
+          printf '\n[lints.clippy]\ndbg_macro = "warn"\n' >> /tmp/consumer-rust-lints/Cargo.toml
+          out=$(./scripts/adopt.sh /tmp/consumer-rust-lints --no-workflow 2>&1)
+          grep -q 'merge configs/rust/lints.toml' <<<"$out" || {
+            echo '::error::adopt.sh did not warn about an existing [lints] section'; exit 1; }
+          if grep -q 'maxi-quality — Rust lint baseline' /tmp/consumer-rust-lints/Cargo.toml; then
+            echo '::error::adopt.sh appended a second [lints] table to a manifest that already had one'
+            exit 1
+          fi
+          echo 'OK: re-run is idempotent and an existing [lints] is left alone'
 
   # The ratchet (`--changed-only`) had NO test, and shipped broken: semgrep's
   # --baseline-commit resolves the ref against the git repo of its WORKING
@@ -803,7 +1351,30 @@ jobs:
           # outside the scanned repo — and the only one with a trailing
           # entrypoint after the image name.
           need '/baseline:ro'
-          need 'returntocorp/semgrep:latest semgrep --config /baseline/semgrep /repo'
+          # THE DOCKER TAG IS READ FROM scan.sh, NOT WRITTEN OUT HERE.
+          #
+          # It used to be the literal `returntocorp/semgrep:latest`, and this
+          # assertion is what caught the pin change in #43 — correctly, but by
+          # failing on the fix rather than on a regression. A hardcoded copy of
+          # a version string in the test for the version string is the same
+          # two-sources-of-truth bug the pin itself has (STATUS §4); reading it
+          # back means a future bump touches one place and this still asserts
+          # that docker gets the pinned tag rather than :latest.
+          PIN=$(sed -n 's/^SEMGREP_PIN="\([0-9.]*\)".*/\1/p' scripts/scan.sh | head -1)
+          [[ -n "$PIN" ]] || { echo '::error::could not read SEMGREP_PIN from scripts/scan.sh'; exit 1; }
+          [[ "$PIN" != "latest" ]] || { echo '::error::scan.sh is back on an unpinned docker tag'; exit 1; }
+          # One --config per selected rule group, emitted by scripts/policy.py.
+          # The group list is what a .maxi-quality.yml narrows; this fixture has
+          # no policy file, so all three must be present.
+          need "returntocorp/semgrep:$PIN semgrep --config /baseline/semgrep/general"
+          need '--config /baseline/semgrep/security'
+          need '--config /baseline/semgrep/conventions'
+          # The results are ALWAYS written as JSON and the verdict comes from
+          # them, so the docker branch has to stage the file inside the mount
+          # and move it back. Before this, --json-out under docker wrote to a
+          # path inside the container and the file never appeared on the host —
+          # so the standing report parsed nothing and looked fine doing it.
+          need '--json-output=/repo/.maxi-quality-semgrep.json'
           # -w /repo is what made the docker path correct while native was not.
           need '-w /repo ghcr.io/gitleaks/gitleaks:latest git /repo'
           need 'ghcr.io/google/osv-scanner:latest scan source --recursive /repo'
@@ -1029,7 +1600,13 @@ jobs:
         run: |
           set -Eeuo pipefail
           mkdir -p /tmp/consumer-bad
-          cp samples/dotnet/Program.cs /tmp/consumer-bad/
+          # ALL the fixture sources, not just Program.cs. The claim below is
+          # "the adopted repo reproduces the sample exactly", and with #8 the
+          # sample grew two files — including the naming bait, which is the one
+          # that proves `dotnet_diagnostic.IDE1006.severity` survives adoption
+          # rather than only working in-tree. Copying one file made the claim
+          # true of that file and not of the sample.
+          cp samples/dotnet/*.cs /tmp/consumer-bad/
           cat > /tmp/consumer-bad/Consumer.csproj <<'CSPROJ'
           <Project Sdk="Microsoft.NET.Sdk">
             <PropertyGroup>
@@ -1044,9 +1621,9 @@ jobs:
           rc=0; out=$(dotnet build --nologo --no-incremental 2>&1) || rc=$?
           echo "$out"
           [[ $rc -ne 0 ]] || { echo '::error::adopted repo did NOT gate on the bad fixture'; exit 1; }
-          grep -qE '^ +13 Error\(s\)$' <<<"$out" || {
-            echo '::error::adopted repo gave a different count than samples/dotnet (13)'; exit 1; }
-          echo 'OK: adopted repo reproduces the sample exactly — 13 errors'
+          grep -qE '^ +23 Error\(s\)$' <<<"$out" || {
+            echo '::error::adopted repo gave a different count than samples/dotnet (23)'; exit 1; }
+          echo 'OK: adopted repo reproduces the sample exactly — 23 errors'
       - name: Refuses to write a Directory.Build.props MSBuild would ignore
         shell: bash
         run: |
@@ -1119,7 +1696,7 @@ jobs:
           echo 'OK: re-run is idempotent and non-destructive'
 
   # #13 — Semgrep is pinned in two places: the layer2 action's input default and
-  # the layer2-counts job below. If they drift, CI asserts 60 findings against a
+  # the layer2-counts job below. If they drift, CI asserts 100 findings against a
   # Semgrep that consumers never run, and the samples quietly stop meaning what
   # they claim. Offline on PRs; the weekly `pins` workflow does the upstream half.
   version-pins:
@@ -1203,20 +1780,48 @@ jobs:
       #
       # Downloading is fine. Downloading and EXECUTING without a pin and a
       # checksum is not.
+      # SCOPE AND SHAPES BOTH WIDENED FOR #3. Two measured holes:
+      #
+      # 1. `scripts/` was never scanned. actions/layer2/action.yml executes
+      #    scripts/scan.sh, so those 895 lines run in every consumer's CI with
+      #    their token — the same reason quality.yml is in scope, and the one
+      #    directory this guard could not see.
+      # 2. The pattern matched PIPES ONLY. Measured against eleven planted
+      #    shapes, five were invisible: `curl -o F && sh F`, the `;` variant,
+      #    the `sudo` variant, `eval "$(curl ...)"`, and download-then-chmod+x.
+      #    That is not a hypothetical class — the digest-verification work
+      #    landed precisely because the pipe guard could not see
+      #    `curl -o ... && sudo install`.
+      #
+      # The `source <(curl ...)` form the issue also listed was already caught:
+      # the `<(` alternation does not care which command consumes it. Verified
+      # rather than assumed, and left alone.
       - name: No unpinned remote code execution
         shell: bash
         run: |
           set -Eeuo pipefail
-          # curl|sh, wget|bash, and the bash <(curl ...) process-substitution
-          # form, which reads differently but does exactly the same thing.
+          # Alternations, in order: curl|sh · <(curl) process substitution ·
+          # eval of a command substitution · fetch-then-run on one line, with
+          # `&&` or `;`, optionally under sudo · fetch-then-chmod +x, which
+          # executes a path rather than a shell and so names no interpreter.
           #
+          # `[^;&]*` between the fetch and the run keeps each alternation inside
+          # ONE command, so an unrelated `sh` later on the line is not a hit.
+          PATTERN='(curl|wget)[^|]*\|[[:space:]]*(sudo[[:space:]]+)?(ba)?sh'
+          PATTERN+='|<\([[:space:]]*(curl|wget)'
+          PATTERN+='|eval[^;]*(curl|wget)'
+          PATTERN+='|(curl|wget)[^;&]*(&&|;)[[:space:]]*(sudo[[:space:]]+)?(ba)?sh([[:space:]]|$)'
+          PATTERN+='|(curl|wget)[^;&]*(&&|;)[^;&]*chmod[[:space:]]+[^;&]*\+x'
+          # Built from what exists, so adding .github/actions/ later is covered
+          # without editing this line, and a missing directory is not a fatal
+          # grep rather than a silently skipped scope.
+          SCAN=(.github/workflows actions scripts)
+          [[ -d .github/actions ]] && SCAN+=(.github/actions)
           # The second grep drops COMMENT lines. Both YAML and shell comments
           # start with #, and this file documents the very patterns it bans —
           # without this, the guard fails on its own rationale, and the fix
           # someone reaches for is deleting the explanation.
-          bad=$(grep -rnE \
-                  '(curl|wget)[^|]*\|[[:space:]]*(sudo[[:space:]]+)?(ba)?sh|<\([[:space:]]*(curl|wget)' \
-                  .github/workflows/ actions/ \
+          bad=$(grep -rnE "$PATTERN" "${SCAN[@]}" \
                 | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)
           if [[ -n "$bad" ]]; then
             echo '::error::remote code is fetched and executed without a version pin and a checksum:'
@@ -1224,7 +1829,43 @@ jobs:
             echo 'Use a SHA-pinned action, or download a pinned release and verify it with sha256sum -c.'
             exit 1
           fi
-          echo 'OK: no unpinned remote code execution in any workflow or action'
+          echo "OK: no unpinned remote code execution in ${SCAN[*]}"
+
+          # THE GUARD IS ITSELF GUARDED, in this step rather than a separate one
+          # so the pattern under test IS the pattern above and cannot drift from
+          # a copy. A widened regex that quietly matches nothing reads exactly
+          # like a clean tree, which is the failure this repo keeps meeting: a
+          # check that is satisfied while the thing it guards against is present.
+          #
+          # The corpus lives in samples/guards/ rather than inline here, because
+          # inline the shapes were real hits in a scanned file and the guard
+          # failed on its own test data. See the header of that file.
+          fails=0
+          caught=0
+          missed=0
+          while IFS= read -r shape; do
+            [[ -z "$shape" || "$shape" == \#* ]] && continue
+            if printf '%s\n' "$shape" | grep -qE "$PATTERN"; then
+              caught=$((caught + 1))
+            else
+              echo "::error::the guard no longer catches: $shape"
+              fails=1
+            fi
+          done < samples/guards/banned-fetch-exec.txt
+          while IFS= read -r shape; do
+            [[ -z "$shape" || "$shape" == \#* ]] && continue
+            if printf '%s\n' "$shape" | grep -qE "$PATTERN"; then
+              echo "::error::the guard now false-positives on: $shape"
+              fails=1
+            else
+              missed=$((missed + 1))
+            fi
+          done < samples/guards/allowed-fetch-exec.txt
+          # An empty corpus passes both loops without asserting anything.
+          [[ $caught -gt 0 && $missed -gt 0 ]] || {
+            echo '::error::the guard corpus is empty — this self-test stopped testing'; exit 1; }
+          [[ $fails -eq 0 ]] || exit 1
+          echo "OK: the guard catches all $caught banned shapes and none of the $missed controls"
 
       # Composite actions reach the baseline's scripts through
       # ${GITHUB_ACTION_PATH}/../../scripts/... — that is the whole reason they
@@ -1239,18 +1880,26 @@ jobs:
           set -Eeuo pipefail
           missing=0
           checked=0
+          # BRACES ARE NOW OPTIONAL (#3). The pattern matched `${GITHUB_ACTION_PATH}`
+          # only, so the equally valid `$GITHUB_ACTION_PATH/../../scripts/x.sh`
+          # was invisible — and an unresolvable one of those breaks a consumer at
+          # runtime exactly the same way. Nothing in the tree uses the unbraced
+          # form today; the guard should not depend on that staying true.
+          ACTION_DIRS=(actions)
+          [[ -d .github/actions ]] && ACTION_DIRS+=(.github/actions)
           while IFS=: read -r file ref; do
             # ${GITHUB_ACTION_PATH} is the directory holding that action.yml, so
             # resolve each reference relative to ITS OWN action — not to some
             # other one that happens to sit at the same depth.
-            rel="${ref#*GITHUB_ACTION_PATH\}}"
+            rel="${ref#*GITHUB_ACTION_PATH}"
+            rel="${rel#\}}"
             path="${file%/*}/${rel#/}"
             checked=$((checked + 1))
             if [[ ! -e "$path" ]]; then
-              echo "::error file=$file::unresolvable reference \${GITHUB_ACTION_PATH}$rel (looked for $path)"
+              echo "::error file=$file::unresolvable reference \$GITHUB_ACTION_PATH$rel (looked for $path)"
               missing=1
             fi
-          done < <(grep -roE '\$\{GITHUB_ACTION_PATH\}[^"'"'"' ]*' actions/ | sort -u)
+          done < <(grep -roE '\$\{?GITHUB_ACTION_PATH\}?[^"'"'"' ]*' "${ACTION_DIRS[@]}" | sort -u)
           [[ "$checked" -gt 0 ]] || {
             echo '::error::found no GITHUB_ACTION_PATH references at all — this guard stopped guarding'
             exit 1; }
@@ -1315,8 +1964,25 @@ jobs:
                   # A `uses:` job (reusable-workflow call) has no steps.
                   yield from (job or {}).get('steps', []) or []
 
-          targets = sorted(pathlib.Path('actions').glob('*/action.yml')) \
-                  + sorted(pathlib.Path('.github/workflows').glob('*.yml'))
+          # GLOBS WIDENED FOR #3. `*/action.yml` missed three real shapes: a
+          # `.yaml` extension, an action nested deeper than one directory, and
+          # anything under .github/actions/. Each would have been a file this
+          # guard reported clean because it never opened it — the same failure
+          # the header above describes, one directory over.
+          def discover():
+              seen = set()
+              for root in ('actions', '.github/actions'):
+                  base = pathlib.Path(root)
+                  if not base.is_dir():
+                      continue
+                  for pat in ('**/action.yml', '**/action.yaml'):
+                      seen.update(base.glob(pat))
+              wf = pathlib.Path('.github/workflows')
+              for pat in ('*.yml', '*.yaml'):
+                  seen.update(wf.glob(pat))
+              return sorted(seen)
+
+          targets = discover()
           for p in targets:
               doc = yaml.safe_load(p.read_text())
               for i, step in enumerate(steps_of(doc)):
@@ -1349,6 +2015,25 @@ jobs:
           # the runner, and the GHA_EXPR placeholder is assigned by definition.
           shellcheck -s bash -e SC2154 /tmp/blocks/*.sh
           echo 'OK: every workflow and composite-action shell block is shellcheck-clean and passes inputs via env:'
+
+      # The step above lints shell EMBEDDED in YAML. The 895 lines in scripts/
+      # were linted by nothing at all — and scripts/scan.sh is not incidental
+      # tooling, it is what actions/layer2 executes in every consumer's CI.
+      #
+      # This is a ratchet, not a cleanup: measured before adding, all three
+      # scripts are already clean at default severity, so the check costs
+      # nothing today and is only ever paid by a regression.
+      - name: Every shipped script must be shellcheck-clean
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          shopt -s nullglob
+          files=(scripts/*.sh)
+          # A glob that stops matching is silence, and silence reads as success.
+          [[ ${#files[@]} -gt 0 ]] || {
+            echo '::error::found no scripts/*.sh — this guard stopped guarding'; exit 1; }
+          shellcheck -s bash "${files[@]}"
+          echo "OK: ${#files[@]} shipped scripts are shellcheck-clean"
 
   layer2:
     runs-on: ubuntu-latest
@@ -1634,7 +2319,21 @@ jobs:
         run: |
           set -Eeuo pipefail
           pipx install semgrep==1.172.0
-          semgrep --config semgrep --json --metrics=off --disable-version-check \
+
+          # This job invokes semgrep DIRECTLY rather than through scan.sh, so it
+          # has to resolve the same policy scan.sh would — otherwise the two
+          # disagree about what is in scope and this job asserts a finding set
+          # nobody actually runs. That is the "semgrep is pinned twice" problem
+          # in a different costume, and the fix is the same: one source of
+          # truth. Here it is the repo's own .maxi-quality.yml, which excludes
+          # samples/policy so the policy fixtures cannot shift this manifest.
+          python3 scripts/policy.py resolve --target . --baseline . \
+            --baseline-path . --out /tmp/policy.json
+          ARGS=()
+          while IFS= read -r line; do ARGS+=("$line"); done < <(
+            python3 scripts/policy.py args --resolved /tmp/policy.json \
+              --baseline-path . --target-path .)
+          semgrep "${ARGS[@]}" --json --metrics=off --disable-version-check \
             > /tmp/results.json || true
 
           # The set assertion. This is what a bare total could not do: a rule
@@ -1659,3 +2358,554 @@ jobs:
             echo "::error::$defined rule ids defined but only $fired fire — a rule has no fixture"
             exit 1; }
           echo "OK: expected findings match, all $defined defined rule ids fire"
+
+  # The policy file's own test suite. Every knob is asserted in BOTH directions:
+  # the fixture with its policy, and the same fixture with the policy removed.
+  #
+  # The second half is the one that matters and it is not theoretical. The
+  # `exclude` fixture originally excluded a directory called `vendor/`, which
+  # semgrep skips by default anyway — so it passed while proving nothing, and
+  # only ablation showed the finding count was 1 either way. Same trap as
+  # docs/STATUS.md §4's `noImplicitReturns` fixture that actually failed on
+  # `strictNullChecks`: a fixture proves *an* outcome, never *which setting
+  # caused it*.
+  policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install semgrep and PyYAML
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          pipx install semgrep==1.172.0
+          python3 -c 'import yaml' 2>/dev/null \
+            || python3 -m pip install --quiet --break-system-packages pyyaml
+          python3 -c 'import yaml'
+
+      - name: Every invalid policy is rejected, and none of them is a warning
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          fail=0
+          for d in samples/policy/invalid/*/; do
+            rc=0
+            out=$(python3 scripts/policy.py resolve --target "$d" \
+                    --baseline . --baseline-path . 2>&1) || rc=$?
+            if [[ "$rc" -ne 3 ]]; then
+              echo "::error::$d was accepted (exit $rc) — an invalid policy must be fatal"
+              fail=1
+              continue
+            fi
+            # An error that does not name the offending key is a bad error.
+            grep -qi 'error:' <<<"$out" || {
+              echo "::error::$d failed without an 'error:' message"; fail=1; }
+            printf '  rejected  %-18s %s\n' "$(basename "$d")" "$(head -1 <<<"$out" | cut -c1-96)"
+          done
+          [[ "$fail" -eq 0 ]]
+          echo 'OK: every invalid policy is a hard error'
+
+      - name: Each knob works — and removing it brings the finding back
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          # gate count for a fixture, with its policy in place or ablated away
+          gate() {
+            ./scripts/scan.sh "samples/policy/$1" --skip gitleaks --skip osv 2>&1 \
+              | sed -n 's/^semgrep_gate=//p' | tail -1
+          }
+          warns() {
+            ./scripts/scan.sh "samples/policy/$1" --skip gitleaks --skip osv 2>&1 \
+              | sed -n 's/^semgrep_warn=//p' | tail -1
+          }
+          rules() {
+            ./scripts/scan.sh "samples/policy/$1" --skip gitleaks --skip osv 2>&1 \
+              | grep -oE '❯+❱ [A-Za-z0-9_.-]+' | sed 's/.*\.//' | sort -u | tr '\n' ' '
+          }
+          ablate()  { mv "samples/policy/$1/.maxi-quality.yml" "$RUNNER_TEMP/$1.yml"; }
+          restore() { mv "$RUNNER_TEMP/$1.yml" "samples/policy/$1/.maxi-quality.yml"; }
+          eq() {
+            [[ "$2" == "$3" ]] || { echo "::error::$1: expected '$3', got '$2'"; exit 1; }
+            echo "  OK  $1 = $2"
+          }
+
+          # --- disable: the named rule goes quiet, the control still fires ----
+          eq 'disable/gate'          "$(gate disable)"  '1'
+          eq 'disable/rules'         "$(rules disable)" 'todo-without-issue '
+          ablate disable
+          eq 'disable/ablated-gate'  "$(gate disable)"  '2'
+          eq 'disable/ablated-rules' "$(rules disable)" 'no-ambient-clock todo-without-issue '
+          restore disable
+
+          # --- warn: reported, counted separately, and NOT gating -------------
+          eq 'warn/gate'             "$(gate warn)"     '0'
+          eq 'warn/warn'             "$(warns warn)"    '1'
+          rc=0
+          ./scripts/scan.sh samples/policy/warn --skip gitleaks --skip osv >/dev/null 2>&1 || rc=$?
+          eq 'warn/exit'             "$rc"              '0'
+          ablate warn
+          eq 'warn/ablated-gate'     "$(gate warn)"     '1'
+          restore warn
+
+          # --- exclude: the path is out of scope, everything else is not ------
+          eq 'exclude/gate'          "$(gate exclude)"  '1'
+          ablate exclude
+          eq 'exclude/ablated-gate'  "$(gate exclude)"  '2'
+          restore exclude
+
+          # --- extends: the consumer's own rule runs alongside the baseline ---
+          eq 'extends/gate'          "$(gate extends)"  '1'
+          eq 'extends/rules'         "$(rules extends)" 'local-no-direct-process-env '
+          ablate extends
+          eq 'extends/ablated-gate'  "$(gate extends)"  '0'
+          restore extends
+
+          # --- groups: an unselected group stops applying ---------------------
+          eq 'groups/gate'           "$(gate groups)"   '1'
+          eq 'groups/rules'          "$(rules groups)"  'weak-crypto '
+          ablate groups
+          eq 'groups/ablated-gate'   "$(gate groups)"   '2'
+          restore groups
+
+          echo 'OK: every policy knob is load-bearing in both directions'
+
+      - name: The resolved policy matches its snapshot
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # What the policy RESOLVES to, not what the file says — the same
+          # division of labour as configs/*/…snapshot.json. A rule deleted from
+          # semgrep/ changes gate_rules here even if no fixture triggered it.
+          # --baseline-path is a fixed placeholder so the snapshot does not
+          # encode whoever ran it last: the check_id prefix is derived from that
+          # path, so a real one would bake in a home directory.
+          {
+            for d in samples/policy/*/; do
+              n=$(basename "$d")
+              case "$n" in invalid|expected) continue ;; esac
+              echo "=== $n"
+              python3 scripts/policy.py resolve --target "$d" --baseline . \
+                --baseline-path BASELINE --explain
+            done
+          } > "$RUNNER_TEMP/resolved.txt"
+          diff -u samples/policy/expected/resolved.txt "$RUNNER_TEMP/resolved.txt" || {
+            echo '::error::the resolved policy drifted from its snapshot'
+            exit 1; }
+          echo 'OK: resolved policy matches samples/policy/expected/resolved.txt'
+
+      # --- #43: a file semgrep cannot read vs a scan that failed -------------
+      #
+      # These were the same thing — any non-empty `.errors` exited 2 — and a
+      # real C# codebase using C# 12 primary constructors turned a clean scan
+      # into a red gate. Both halves are asserted, because the fix is wrong in
+      # a different way if either one is missing: gate on parse errors and the
+      # check gets ignored; never gate and a repo semgrep cannot read at all
+      # reports clean forever.
+      - name: An unparseable file is a coverage gap, not a scan failure
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          out=$(./scripts/scan.sh samples/parse-errors/mixed \
+                  --skip gitleaks --skip osv 2>&1) || rc=$?
+          echo "$out"
+          # exit 1 = the PLANTED FINDING gated. Not exit 2, which is what the
+          # unparseable file next to it used to produce.
+          [[ "$rc" -eq 1 ]] || {
+            echo "::error::expected exit 1 (the planted finding), got $rc"; exit 1; }
+          # The control. Without a real finding here, "clean, 1 unparsed" cannot
+          # be told apart from "semgrep fell over and reported nothing".
+          eq() { [[ "$2" == "$3" ]] || {
+            echo "::error::$1: expected '$3', got '$2'"; exit 1; }; echo "  OK  $1 = $2"; }
+          eq gate     "$(sed -n 's/^semgrep_gate=//p' <<<"$out" | tail -1)" 1
+          eq unparsed "$(sed -n 's/^semgrep_unparsed=//p' <<<"$out" | tail -1)" 1
+          # Counting it is not enough — the file has to be NAMED, or the
+          # coverage hole is still invisible to whoever reads the log.
+          grep -q 'unparsed .*PrimaryConstructor\.cs' <<<"$out" || {
+            echo '::error::the unparsed file was counted but never named'; exit 1; }
+          grep -q 'file(s) UNPARSED' <<<"$out" || {
+            echo '::error::the summary line does not carry the unparsed count'; exit 1; }
+          echo 'OK: findings still gate; the coverage gap is named but does not gate'
+
+      - name: ...but a tree semgrep cannot parse AT ALL is a failed scan
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          out=$(./scripts/scan.sh samples/parse-errors/total \
+                  --skip gitleaks --skip osv 2>&1) || rc=$?
+          echo "$out"
+          [[ "$rc" -ne 0 ]] || {
+            echo '::error::a tree where NOTHING parsed reported success — "0 findings because nobody looked" must never read as clean'
+            exit 1; }
+          grep -q 'ERROR (policy exit 2)' <<<"$out" || {
+            echo '::error::expected the semgrep summary line to be ERROR (policy exit 2)'
+            exit 1; }
+          grep -q 'failed to parse, so no rule ran' <<<"$out" || {
+            echo '::error::the failure did not say WHY — it must name the cause, not just exit'
+            exit 1; }
+          echo 'OK: nothing-parsed is still a hard failure'
+
+      # THE ALLOWLIST HAS TO BE AN ALLOWLIST. If the split ever became a
+      # denylist — "everything is per-file except these" — a semgrep release
+      # inventing a new failure mode would silently stop gating. Fed an error
+      # type that is not on the list, classify must still exit 2.
+      - name: An unrecognised semgrep error type is still fatal
+        shell: bash
+        run: |
+          set -uo pipefail
+          python3 scripts/policy.py resolve --target . --baseline . \
+            --baseline-path . --out "$RUNNER_TEMP/p.json"
+          cat > "$RUNNER_TEMP/invented.json" <<'JSON'
+          {"results": [],
+           "errors": [{"type": "SomeFutureSemgrepFailure",
+                       "message": "invented for this test",
+                       "path": "a.cs"}],
+           "paths": {"scanned": ["a.cs"]}}
+          JSON
+          rc=0
+          out=$(python3 scripts/policy.py classify --resolved "$RUNNER_TEMP/p.json" \
+                  --results "$RUNNER_TEMP/invented.json" 2>&1) || rc=$?
+          echo "$out"
+          [[ "$rc" -eq 2 ]] || {
+            echo "::error::an unknown error type exited $rc, not 2 — the parse-error split has become a denylist and a future semgrep failure would stop gating"
+            exit 1; }
+          echo 'OK: unknown error types are still fatal'
+
+      # The standing report shares the split, by importing it rather than
+      # reimplementing it. Before #43 one unparseable file rendered the whole
+      # report as ERRORED and wrote ERRORED into the permanent history table.
+      - name: The standing report shows the gap instead of blanking
+        shell: bash
+        run: |
+          set -uo pipefail
+          ./scripts/scan.sh samples/parse-errors/mixed --skip gitleaks --skip osv \
+            --json-out "$RUNNER_TEMP/pe.json" >/dev/null 2>&1 || true
+          rc=0
+          out=$(python3 scripts/quality-report.py --json "$RUNNER_TEMP/pe.json" \
+                  --date 2026-01-01 --target demo/repo \
+                  --gitleaks clean --osv clean) || rc=$?
+          echo "$out"
+          [[ "$rc" -eq 0 ]] || {
+            echo "::error::the report exited $rc — an unparseable file is still being treated as an outage"
+            exit 1; }
+          grep -q 'debug-print-left-behind-dotnet' <<<"$out" || {
+            echo '::error::the findings breakdown is missing — the report blanked'; exit 1; }
+          grep -q '### Not scanned' <<<"$out" || {
+            echo '::error::the report does not mention the unparsed file at all, which is the other way to get this wrong'
+            exit 1; }
+          grep -q 'ERRORED' <<<"$out" && {
+            echo '::error::the run was recorded as ERRORED in the history table'; exit 1; }
+          echo 'OK: the report renders findings AND names the coverage gap'
+
+      # --- #40: annotations render findings, they do not decide anything -----
+      #
+      # THE ASSERTION THAT MATTERS IS THE NEGATIVE ONE. An annotation layer that
+      # can influence the exit code is a gate with a second, undocumented way to
+      # go green. Everything below is arranged so that a rendering bug can only
+      # produce a worse-looking run, never a passing one.
+      - name: Annotations render on the diff, gating ones as errors
+        shell: bash
+        run: |
+          set -uo pipefail
+          out=$(./scripts/scan.sh samples/policy/warn --skip gitleaks --skip osv \
+                  --annotate 2>&1) || true
+          echo "$out"
+          # A warn-only rule must annotate as ::warning, not ::error — the
+          # policy's downgrade has to survive into the rendering, or the diff
+          # shows a red mark for something the gate deliberately let through.
+          grep -qE '^::warning file=.*title=todo-without-issue::' <<<"$out" || {
+            echo '::error::the warn-only finding did not annotate as ::warning'
+            exit 1; }
+          grep -qE '^::error ' <<<"$out" && {
+            echo '::error::a warn-only fixture emitted an ::error annotation'
+            exit 1; }
+          # And the gating direction, on a fixture that actually gates.
+          out=$(./scripts/scan.sh samples/policy/disable --skip gitleaks --skip osv \
+                  --annotate 2>&1) || true
+          grep -qE '^::error file=.*line=[0-9]+.*title=' <<<"$out" || {
+            echo '::error::a gating finding did not annotate as ::error with a file and line'
+            exit 1; }
+          echo 'OK: gating findings annotate as errors, warn-only as warnings'
+
+      - name: A broken annotation path cannot make a failing scan pass
+        shell: bash
+        run: |
+          set -uo pipefail
+          # 1. The cap set to zero — the most direct form of "the renderer
+          #    produced nothing". The verdict must be identical.
+          rc_plain=0
+          ./scripts/scan.sh samples/policy/disable --skip gitleaks --skip osv \
+            >/dev/null 2>&1 || rc_plain=$?
+          rc_zero=0
+          out=$(./scripts/scan.sh samples/policy/disable --skip gitleaks --skip osv \
+                  --annotate --max-annotations 0 2>&1) || rc_zero=$?
+          echo "$out"
+          [[ "$rc_plain" -eq 1 && "$rc_zero" -eq 1 ]] || {
+            echo "::error::exit code changed with annotations: plain=$rc_plain annotated-cap-0=$rc_zero"
+            exit 1; }
+          grep -q 'suppressed' <<<"$out" || {
+            echo '::error::annotations were suppressed silently — the count must be stated'
+            exit 1; }
+
+          # 2. MALFORMED FINDINGS. A result with no path, no start and no extra
+          #    is what a semgrep output-format change looks like from here. The
+          #    annotator must degrade, not raise — a traceback would take the
+          #    verdict down with it.
+          python3 scripts/policy.py resolve --target . --baseline . \
+            --baseline-path . --out "$RUNNER_TEMP/p.json"
+          cat > "$RUNNER_TEMP/malformed.json" <<'JSON'
+          {"results": [{"check_id": "semgrep.general.no-ambient-clock"},
+                       {"check_id": "x.weak-crypto", "path": "a.ts", "start": "nonsense"}],
+           "errors": [], "paths": {"scanned": ["a.ts"]}}
+          JSON
+          rc=0
+          out=$(python3 scripts/policy.py classify --resolved "$RUNNER_TEMP/p.json" \
+                  --results "$RUNNER_TEMP/malformed.json" --annotate 2>&1) || rc=$?
+          echo "$out"
+          [[ "$rc" -eq 1 ]] || {
+            echo "::error::malformed findings changed the verdict (exit $rc, expected 1) — the annotator is not isolated from it"
+            exit 1; }
+          grep -q 'semgrep_gate=2' <<<"$out" || {
+            echo '::error::the gate count did not survive the malformed results'
+            exit 1; }
+          echo 'OK: annotations are additive — cap, suppression and malformed input all leave the verdict alone'
+
+      # --- #40: the opt-in pre-commit hook -----------------------------------
+      #
+      # Driven through a real `git commit` in a scratch repo rather than by
+      # calling the script. A hook has two failure modes a direct invocation
+      # cannot see: git runs it with its own environment, and the thing it is
+      # supposed to scan is the INDEX, not the working tree.
+      - name: The pre-commit hook is opt-in, blocks staged secrets, and is bypassable
+        shell: bash
+        run: |
+          set -uo pipefail
+          R="$RUNNER_TEMP/hookrepo"; rm -rf "$R"; mkdir -p "$R/src"
+          git -C "$R" init -q .
+          git -C "$R" config user.name t
+          git -C "$R" config user.email t@example.invalid
+          echo '{}' > "$R/package.json"; echo '{}' > "$R/package-lock.json"
+
+          # OPT-IN: adoption without --hooks must install nothing. A hook that
+          # arrives unasked is one people delete along with everything near it.
+          ./scripts/adopt.sh "$R" --no-workflow >/dev/null 2>&1
+          [[ ! -e "$R/.git/hooks/pre-commit" ]] || {
+            echo '::error::adopt.sh installed a pre-commit hook WITHOUT --hooks'
+            exit 1; }
+
+          ./scripts/adopt.sh "$R" --no-workflow --hooks >/dev/null 2>&1
+          [[ -x "$R/.git/hooks/pre-commit" ]] || {
+            echo '::error::--hooks did not install an executable pre-commit hook'; exit 1; }
+
+          echo 'export const ok = 1;' > "$R/src/ok.ts"
+          git -C "$R" add -A
+          rc=0; git -C "$R" commit -qm base >/dev/null 2>&1 || rc=$?
+          [[ "$rc" -eq 0 ]] || {
+            echo "::error::the hook blocked a clean commit (exit $rc)"
+            git -C "$R" commit -m base 2>&1 | tail -20; exit 1; }
+          BASE=$(git -C "$R" rev-parse HEAD)
+
+          # THE INDEX, NOT THE WORKING TREE. The secret is staged and then
+          # overwritten on disk. `git commit` commits the index, so a hook that
+          # scans the working tree sees clean code and waves through the very
+          # commit it exists to stop. This is the single most common way a
+          # pre-commit hook is quietly wrong.
+          #
+          # The variable is named `apiToken` on purpose. hardcoded-secret-ts
+          # matches on the NAME (`metavariable-regex` over password|token|…),
+          # so a fixture called `t` trips gitleaks and NOT semgrep — which is
+          # how the first version of this test passed on a laptop with gitleaks
+          # installed and failed on a runner that only has semgrep. A fixture
+          # whose verdict depends on which tool happens to be present is not a
+          # test of the hook.
+          printf "export const apiToken = 'ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8';\n" \
+            > "$R/src/leak.ts"
+          git -C "$R" add src/leak.ts
+          echo 'export const clean = 1;' > "$R/src/leak.ts"
+          rc=0
+          out=$(git -C "$R" commit -qm leak 2>&1) || rc=$?
+          echo "$out"
+          [[ "$rc" -ne 0 ]] || {
+            echo '::error::a STAGED secret was committed — the hook is scanning the working tree instead of the index'
+            exit 1; }
+          [[ "$(git -C "$R" rev-parse HEAD)" == "$BASE" ]] || {
+            echo '::error::the commit landed anyway'; exit 1; }
+
+          # WHICH HALF BLOCKED IT, not just that something did. A bare "the
+          # commit failed" would stay green if the Semgrep pass silently
+          # stopped running and gitleaks alone carried it — the same
+          # passes-without-checking shape this whole job exists to catch.
+          grep -q 'Semgrep findings in the staged changes' <<<"$out" || {
+            echo '::error::the commit was blocked, but NOT by the Semgrep pass — it is not running against the staged content'
+            exit 1; }
+          # And the gitleaks half, in whichever state this machine is in. The
+          # skip path is asserted too: failing soft on a missing tool is
+          # deliberate, but it has to be VISIBLE or the hook is quietly doing
+          # half its job.
+          if command -v gitleaks >/dev/null 2>&1; then
+            grep -q 'gitleaks found a secret' <<<"$out" || {
+              echo '::error::gitleaks is installed but did not flag a staged credential'
+              exit 1; }
+          else
+            grep -q 'gitleaks not installed' <<<"$out" || {
+              echo '::error::gitleaks is absent and the hook said nothing about it — a skipped check must never be silent'
+              exit 1; }
+            # SAID OUT LOUD, because this is the branch CI actually takes: this
+            # job installs semgrep and not gitleaks, so the hook's `gitleaks
+            # git --staged` invocation is exercised on a laptop and NOT here.
+            # Installing gitleaks would mean a third place pinning its version
+            # and sha256, which is the problem #43 just finished removing for
+            # semgrep. What IS covered on a runner: gitleaks itself, through
+            # actions/layer2 in the layer2 job.
+            echo 'NOTE: gitleaks absent here — the hook fell through to Semgrep, and the fall-through was visible. The gitleaks invocation itself is only exercised where gitleaks is installed.'
+          fi
+
+          # BYPASSABLE. This is a feature, not a hole: a hook that cannot be
+          # skipped gets uninstalled the first time somebody needs to commit a
+          # WIP, and then it catches nothing at all.
+          rc=0; git -C "$R" commit -qm leak --no-verify >/dev/null 2>&1 || rc=$?
+          [[ "$rc" -eq 0 ]] || {
+            echo '::error::--no-verify did not bypass the hook'; exit 1; }
+
+          # AND THE OTHER DIRECTION: a secret that is only in the working tree
+          # is not being committed, so it must not block. A hook that fires on
+          # unstaged edits is one people disable.
+          git -C "$R" reset -q --hard "$BASE"
+          printf "export const t = 'ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8';\n" > "$R/src/leak.ts"
+          echo 'export const other = 2;' > "$R/src/other.ts"
+          git -C "$R" add src/other.ts
+          rc=0; git -C "$R" commit -qm other >/dev/null 2>&1 || rc=$?
+          [[ "$rc" -eq 0 ]] || {
+            echo '::error::an UNSTAGED secret blocked the commit — the hook is scanning the working tree'
+            exit 1; }
+          echo 'OK: opt-in, index-scoped in both directions, and bypassable'
+
+      # A hook is the one script in this repo most likely to run on a
+      # developer's Mac, where /bin/bash is still 3.2.57. It shipped with
+      # `mapfile` — a bash 4 builtin — and aborted every commit with "command
+      # not found" until this was caught by running it rather than reading it.
+      - name: The hook must run under bash 3.2
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # COMMENTS ARE STRIPPED FIRST. The hook documents the bug it shipped
+          # with, by name — so a guard reading the raw file fails on the
+          # explanation of why the guard exists. Exactly the shape the
+          # fetch-and-execute guard already had to be taught (STATUS §4).
+          sed 's/[[:space:]]*#.*$//' hooks/pre-commit > "$RUNNER_TEMP/hook.stripped"
+          # `mapfile`/`readarray`, associative arrays and `${var^^}` are the
+          # bash 4 constructs that would silently reintroduce this.
+          if grep -nE '\b(mapfile|readarray)\b|declare -A|\$\{[A-Za-z_]+\^\^' \
+               "$RUNNER_TEMP/hook.stripped"; then
+            echo '::error::hooks/pre-commit uses a bash 4 construct; macOS ships bash 3.2.57'
+            exit 1
+          fi
+          bash -n hooks/pre-commit
+          echo 'OK: no bash 4 constructs in the hook'
+
+  # examples/ is documentation that executes. A worked example that would not
+  # actually work is worse than no example — the reader trusts it more than the
+  # prose, and finds out in their own CI. So each one is asserted here:
+  # detected as the language it claims, clean under Layer 2, and — where it
+  # carries a policy file — the policy has to genuinely resolve.
+  #
+  # Note what this does NOT do: build or lint the examples. `adopt` already
+  # proves end-to-end that a repo adopted by the script behaves exactly like the
+  # hand-configured sample, in both directions. Repeating that per example would
+  # assert the same thing five more times and slowly.
+  examples:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install semgrep and PyYAML
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          pipx install semgrep==1.172.0
+          python3 -c 'import yaml' 2>/dev/null \
+            || python3 -m pip install --quiet --break-system-packages pyyaml
+          python3 -c 'import yaml'
+
+      - name: Every example is detected as the language it claims
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          expect() {
+            dir="examples/$1"; shift
+            out=$(./scripts/adopt.sh "$dir" --dry-run 2>&1)
+            for lang in "$@"; do
+              grep -qF "detected: $lang" <<<"$out" || {
+                echo "::error::$dir was not detected as $lang"
+                echo "$out"; exit 1; }
+            done
+            echo "  OK  $dir → $*"
+          }
+          expect typescript-npm  'TypeScript'
+          expect dotnet          'C#/.NET'
+          expect python-uv       'Python'
+          expect rust-cli        'Rust'
+          expect mixed-monorepo  'TypeScript' 'C#/.NET'
+          expect legacy-ratchet  'TypeScript'
+
+      - name: Every example scans CLEAN
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # An example carrying a violation teaches the violation. The scan runs
+          # per example so a failure names which one, and with each example's
+          # OWN policy file in effect — the mixed-monorepo one disables a rule,
+          # and a run that ignored it would be testing a different repo than the
+          # one the reader copies.
+          fail=0
+          for d in examples/*/; do
+            [[ -f "$d/README.md" ]] || continue
+            rc=0
+            out=$(./scripts/scan.sh "$d" --skip gitleaks --skip osv 2>&1) || rc=$?
+            if [[ "$rc" -ne 0 ]]; then
+              echo "::error::$d does not scan clean (exit $rc)"
+              echo "$out" | tail -40
+              fail=1
+            else
+              echo "  OK  $d clean"
+            fi
+          done
+          [[ "$fail" -eq 0 ]]
+
+      - name: Every documented policy file actually resolves
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # The failure this catches: a policy snippet in the docs that would be
+          # rejected by scripts/policy.py. Unknown keys are hard errors, so a
+          # stale example is a consumer whose first run after copying it exits 3.
+          n=0
+          for f in examples/*/.maxi-quality.yml; do
+            d=$(dirname "$f")
+            python3 scripts/policy.py resolve --target "$d" --baseline . \
+              --baseline-path . >/dev/null || {
+                echo "::error::$f does not resolve"; exit 1; }
+            echo "  OK  $f resolves"
+            n=$((n + 1))
+          done
+          # A loop over zero files passes trivially. There must BE examples with
+          # policy files, or this step is asserting nothing at all.
+          [[ "$n" -ge 2 ]] || {
+            echo "::error::expected at least 2 examples carrying a policy file, found $n"
+            exit 1; }
+
+      - name: Every example workflow pins this repo, and the ratchet keeps its ratchet
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for f in examples/*/.github/workflows/quality.yml; do
+            python3 -c "import sys, yaml; yaml.safe_load(open(sys.argv[1]))" "$f"
+            grep -qF 'maximalcode/maxi-quality/.github/workflows/quality.yml@' "$f" || {
+              echo "::error::$f does not call this repo's reusable workflow"; exit 1; }
+            echo "  OK  $f"
+          done
+          # The one example whose entire reason for existing is that line.
+          grep -qF 'changed-only:' examples/legacy-ratchet/.github/workflows/quality.yml || {
+            echo '::error::legacy-ratchet lost its changed-only — it is the whole point of that example'
+            exit 1; }
+          echo 'OK: every example workflow is valid and pinned'

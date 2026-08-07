@@ -3,7 +3,7 @@
 Handover doc. Read [`CONCEPT.md`](CONCEPT.md) for *what this is*; read this for
 *what actually exists, what is proven, and what to do next.*
 
-**Last updated:** 2026-08-02 · **Branches:** `develop` (default, where work
+**Last updated:** 2026-08-05 · **Branches:** `develop` (default, where work
 lands) → `main` (release) · **Tags:** `v1` (moving, follows `main`) · `v1.0.x`
 (immutable — the newest is on
 [Releases](https://github.com/maximalcode/maxi-quality/releases))
@@ -67,12 +67,18 @@ must pass.
 
 ```
 configs/editorconfig                    shared .editorconfig (all languages)
-configs/typescript/eslint.config.mjs    strict-type-checked + stylistic, exported flat config
+configs/typescript/eslint.config.mjs    strict-type-checked + stylistic + SonarJS recommended, exported flat config
 configs/typescript/tsconfig.strict.json extends-able strict compiler options
+configs/typescript/prettier.config.mjs  the formatter — printWidth 100 + single quotes are the two
+                                        non-defaults; the rest are Prettier defaults stated on purpose
+configs/typescript/expected-rules.json  the ENABLED ESLint rule set, 1342 bindings across 4 probes
+configs/typescript/tsconfig.snapshot.json the options it RESOLVES to — the gate on a silently deleted flag
 configs/dotnet/Directory.Build.props    AnalysisLevel, TreatWarningsAsErrors, Sonar + Roslynator
+configs/dotnet/msbuild.snapshot.json    the properties it RESOLVES to, in both the default and CI+lock-file shapes
 configs/dotnet/dotnet.editorconfig      C# severities + minimal style
 configs/python/ruff.toml                13 rule families, line-length 100, extend-able
 configs/python/mypy.ini                 mypy strict + warn_unreachable (COPY — mypy has no extend)
+configs/python/settings.snapshot.json   what ruff and mypy RESOLVE to — 344 rules, and `strict` expanded
 
 semgrep/general/       todo-without-issue, catch-and-swallow, debug-print, sync-over-async
 semgrep/security/      sql-string-concat, command-injection, weak-crypto, hardcoded-secret
@@ -81,34 +87,73 @@ semgrep/conventions/   no-ambient-clock, mutation-requires-authz,
 
 scripts/adopt.sh          adopt into a consumer: detect languages, drop the copies
 scripts/scan.sh           Layer 2 runner: semgrep + gitleaks + osv (+ SBOM, licences)
+scripts/policy.py         resolves a consumer's .maxi-quality.yml, emits semgrep
+                          args, classifies findings into gating vs warn-only, and
+                          splits per-file parse failures out of scan failures (#43)
+.maxi-quality.yml         this repo's own policy — keeps samples/policy and
+                          samples/parse-errors out of its rule manifest (it is a
+                          consumer of itself)
+hooks/pre-commit          OPT-IN hook (#40): gitleaks on the staged diff, semgrep
+                          on the staged CONTENT. Installed only by
+                          `adopt.sh --hooks`; bash 3.2, because macOS
 scripts/check-pins.sh     bump policy (#13): pin consistency + upstream drift
 scripts/quality-report.py renders the standing-report issue body (no network)
 scripts/coverage.py       coverage ratchet: lcov + Cobertura vs a committed floor
 scripts/check-expected.py diffs a tool's JSON output against a committed manifest
 scripts/snapshot-eslint-rules.mjs  serialises the ENABLED rule set, so deleting a
                           rule no fixture triggers still fails CI
+scripts/snapshot-tsconfig.mjs      the same idea for tsc --showConfig
+scripts/snapshot-msbuild-props.sh  ...for dotnet msbuild -getProperty
+scripts/snapshot-python-settings.py ...for ruff --show-settings and mypy's own resolver
 .gitleaks.toml            allowlists the deliberately-planted sample secrets
+
+docs/ADOPTION.md       how a project takes this on, per language
+docs/REFERENCE.md      every input, flag, exit code and rule id
+examples/              five copyable consumer repos — ts-npm, dotnet, python-uv,
+                       mixed-monorepo, legacy-ratchet. NOT fixtures: CI asserts
+                       each scans clean, is detected as the language it claims,
+                       and that any policy file in it actually resolves
 
 actions/layer2/        the Layer 2 gate — how the rules reach a consumer
 actions/report-issue/  upserts the standing report issue; outputs its number
 actions/coverage/      the coverage ratchet
 
-samples/typescript/       Layer 1 TS sample — `npm run lint` must fail
+samples/typescript/       Layer 1 TS sample — `npm run lint` must fail (14 findings)
 samples/typescript-clean/ negative control — must PASS with zero findings
+samples/typescript-strict/ compiler sample — `tsc` must fail with 12 diagnostics (#7)
 samples/dotnet/           Layer 1 C# sample — `dotnet build` must fail
 samples/dotnet-tests/     Layer 1 C# *Tests* sample — proves the #25 relaxation
 samples/dotnet-clean/     negative control — must BUILD 0 errors / 0 warnings
-samples/python/           Layer 1 Python sample — ruff 14 errors, mypy 5 errors
+samples/python/           Layer 1 Python sample — ruff 14 errors, mypy 11 errors
 samples/python-clean/     negative control — must PASS ruff AND mypy, zero findings
+samples/parse-errors/     C# semgrep CANNOT PARSE (#43), in two shapes: one
+                          unparseable file beside a parseable one with a real
+                          finding (a coverage gap, not a failure), and the
+                          unparseable file alone (nothing parsed = exit 2).
+                          Excluded from the repo's own scan — check-expected.py
+                          refuses any run with non-empty `.errors`
+samples/format/           the formatter's suite (#42) — two misformatted files and
+                          three ABLATIONS, each correct under our settings and wrong
+                          under the tool's own defaults, so deleting a format config
+                          turns a check red instead of leaving it quietly true
 samples/semgrep/          Layer 2 sample — outside both projects on purpose
+samples/guards/           the fetch-and-execute shapes ci.yml's supply-chain guard
+                          must catch, and the verified downloads it must not (#3)
 samples/coverage/         coverage fixtures, hand-checked: 65.00 / 75.00 / 40.00 /
                           66.67 %, and 71.67 % when the first two are summed
 samples/sbom/             CycloneDX fixture — all three licence spellings
+samples/policy/           the policy file's own suite: one fixture per knob
+                          (disable, warn, exclude, extends, groups), each
+                          asserted with its policy AND with it ablated away, plus
+                          eight invalid policies that must every one be fatal
+samples/policy/expected/  the resolved-policy snapshot — what a policy RESOLVES
+                          to, with a placeholder baseline path so it encodes
+                          nobody's home directory
 samples/expected/         the manifests: rule id + file + line per tool, so a
                           regression names the rule that stopped firing
 ```
 
-**Rule budget: 12 conventions, 19 rule ids — the cap is fully spent.** A 13th
+**Rule budget: 12 conventions, 28 rule ids — the cap is fully spent.** A 13th
 convention requires removing one or an explicit decision to raise the cap. The
 id count is higher than the convention count because Semgrep patterns are
 language-specific; splitting a convention per language is not new scope.
@@ -119,20 +164,49 @@ language-specific; splitting a convention per language is not new scope.
 
 ```bash
 npm install
-npm run verify:ts                        # expect exit 1, 8 errors
+npm run verify:ts                        # expect exit 1, 14 errors
 npm run verify:ts:clean                  # expect exit 0, ZERO findings
-cd samples/dotnet && dotnet build        # expect exit 1, 13 errors, 0 warnings
+npm run verify:ts:types                  # expect exit 2, 12 tsc diagnostics
+npm run verify:ts:types:clean            # expect exit 0, ZERO diagnostics
+npm run verify:format                    # expect exit 0, everything formatted
+node scripts/snapshot-eslint-rules.mjs --check
+node scripts/snapshot-tsconfig.mjs --check
+./scripts/snapshot-msbuild-props.sh --check
+python3 scripts/snapshot-python-settings.py --check
+cd samples/dotnet && dotnet build        # expect exit 1, 23 errors, 0 warnings
 cd ../dotnet-tests && dotnet build       # expect exit 1, 3 errors, 0 warnings
 cd ../dotnet-clean && dotnet build       # expect exit 0, 0 errors, 0 warnings
 cd ../..
 pip install -r samples/python/requirements-dev.txt
 ruff check samples/python                # expect exit 1, 14 errors
 mypy --config-file configs/python/mypy.ini samples/python/src
-                                         # expect exit 1, 5 errors
+                                         # expect exit 1, 11 errors
 ruff check samples/python-clean          # expect exit 0, ZERO findings
 mypy --config-file configs/python/mypy.ini samples/python-clean/src
                                          # expect exit 0, ZERO findings
-./scripts/scan.sh                        # expect exit 1, 60 semgrep findings / 19 rule ids
+ruff format --check --config configs/python/ruff.toml samples/python samples/python-clean
+                                         # expect exit 0, 4 files already formatted
+dotnet format whitespace samples/dotnet-clean --verify-no-changes
+                                         # expect exit 0 — WHITESPACE, not bare
+                                         # `dotnet format`, which re-runs 622 analyzers
+./scripts/scan.sh                        # expect exit 1, 100 semgrep findings / 28 rule ids
+
+# the policy file, both directions (samples/policy/)
+./scripts/scan.sh samples/policy/warn --skip gitleaks --skip osv
+                                         # expect exit 0 — warn-only, not gating
+./scripts/scan.sh samples/policy/disable --skip gitleaks --skip osv
+                                         # expect exit 1, gate=1: the disabled
+                                         # rule silent, the control still firing
+
+# parse errors vs scan failures (samples/parse-errors/, #43)
+./scripts/scan.sh samples/parse-errors/mixed --skip gitleaks --skip osv
+                                         # expect exit 1 — gate=1 from the
+                                         # PARSEABLE file, semgrep_unparsed=1
+./scripts/scan.sh samples/parse-errors/total --skip gitleaks --skip osv
+                                         # expect ERROR (policy exit 2) — every
+                                         # file unparseable is a failed scan
+python3 scripts/policy.py resolve --target samples/policy/invalid/unknown-key \
+        --baseline . --baseline-path .   # expect exit 3, naming the bad key
 
 python3 scripts/coverage.py --report samples/coverage/lcov.info \
         --floor-file /tmp/f.json         # expect coverage=65.00
@@ -190,9 +264,19 @@ Gitleaks v8.30.1 and OSV-Scanner v2 via Docker — nothing was installed globall
 | **`scan.sh` targets bash 3.2** | macOS ships 3.2.57, where `"${arr[@]}"` on an empty array is fatal under `set -u`. Uses `${arr[@]+"${arr[@]}"}`. |
 | **Cross-language Semgrep rules** | A rule listing two languages needs every pattern to parse in *both*. 5 patterns were rejected for this. Where syntax differs, split into `-ts` / `-dotnet` ids with an identical message. |
 | **A rule's message can lie about its own escape hatch** | `catch-and-swallow` told you to explain the silence in a comment; comments are not AST nodes, so a comment-only block was still `{ }` and still matched. Following the instruction verbatim did not clear the finding. Fixed 2026-07-31 with a `pattern-not-regex` that re-reads the source text. **On real code this rule was 4/4 false positives in TypeScript** (Consumer A). If a rule documents an escape hatch, test the escape hatch — the pattern proves the rule fires, never that it can be satisfied. **It then recurred on 2026-08-02**: the regex walks from the exception parens straight to the brace, so a C# exception filter (`catch (T e) when (…)`) stepped over it and a documented-and-intentional filtered catch could not be cleared either. The deeper lesson is the shape, not the syntax — a lexical negation bolted onto an AST rule can silently miss every catch-clause form nobody thought to plant, and each miss costs a consumer a false positive first. |
+| **A config block can ship switched OFF, not merely unbaited** | Found 2026-08-03 building the #8 fixtures. The three `dotnet_naming_rule` blocks were described as "inert — no sample violates them". The real cause was one level down: `dotnet_naming_rule.<rule>.severity` drives the IDE experience, while the BUILD reads the diagnostic's own severity — and `dotnet_diagnostic.IDE1006.severity` was never set. A probe with an un-prefixed interface, a snake_case class and a PascalCase private field built **clean**. Two of the three were masked by analyzers that happen to overlap (CA1715, CA1707/S101), so the gap only surfaced on the third, where a private field named `Count` was caught by nothing at all. One line fixed all three. **The lesson is the diagnosis, not the line: "no sample violates it" and "it does not work" look identical from outside, and only a planted violation tells them apart.** |
+| **`IDE0035` is not emitted at build** | Measured on .NET SDK 10, same session: real unreachable code produces `CS0162` and no `IDE0035` at all, so that severity escalation is redundant rather than load-bearing. Kept — one SDK on one runner is thin evidence for deleting a consumer-visible severity — but explicitly NOT covered, and `samples/dotnet/Escalations.cs` says so where someone would otherwise assume it is. |
+| **A linter and a compiler in the same baseline can contradict each other** | Found 2026-08-03 in the real-code noise run for #11. `sonarjs/no-redundant-optional` fires on `retries?: number \| undefined` and asks for the union to be deleted. `configs/typescript/tsconfig.strict.json` sets `exactOptionalPropertyTypes`, under which the two spellings mean different things — so following the linter makes `tsc` reject the code with TS2375. Verified both ways round. **It was also the highest-volume rule in the run at 144 of 520 findings, which is the part worth remembering: the thing a new plugin says most often is the thing most worth reading.** The rule is off and `samples/typescript-clean` carries the shape, so re-enabling it makes the clean fixture dirty rather than shipping. |
+| **A `-clean` fixture cannot estimate noise** | Same run. `samples/typescript-clean` is 89 lines of deliberately simple code — enough to disqualify an over-strict config, not enough to say what 217 new rules do to a codebase somebody already wrote. Measured against 44,089 lines of real TypeScript, SonarJS `recommended` produced **11.8 findings per KLOC**; two rules were 52% of it and neither found a bug. A plugin adopted on catch-rate alone would have shipped that. The `-clean` fixtures answer "is it over-strict?", never "is it worth it?" — those need different corpora, and `docs/EVAL-vs-oss-tools.md` §2i is the second one. |
+| **A compiler-flag fixture can fail on the wrong flag** | Found 2026-08-03 building `samples/typescript-strict` for #7. `function classify(n: number): string { if (n > 0) return 'positive'; }` looks like the obvious bait for `noImplicitReturns`, and it does fail — with TS2366 from `strictNullChecks`. Delete `noImplicitReturns` and CI stays red, so the flag reads as covered and is not. Widening the return type to `string \| undefined` satisfies `strictNullChecks` and leaves TS7030 holding the error alone. **The general shape: a fixture proves *an* error, never *which setting caused it*.** Every flag→error mapping in that directory is now verified by ablation — switch the one flag off, confirm that specific error is the one that disappears — and the manifest pins the TS code rather than just the count. |
+| **`--isolatedModules false` changes nothing** | Measured on tsc 6.0.3 in `samples/typescript-strict`: `verbatimModuleSyntax` subsumes it, and TS1205's own message names `verbatimModuleSyntax`. Three more flags are unbaitable for their own measured reasons — `esModuleInterop: false` is refused outright (TS5107, deprecated ahead of TS 7), `forceConsistentCasingInFileNames` needs a case-insensitive filesystem, and the emit trio is invisible under `--noEmit`. Hence `configs/typescript/tsconfig.snapshot.json`: what `tsc --showConfig` **resolves**, not what the JSON file says, so it also pins the options tsc implies (`moduleDetection: force`, `preserveConstEnums`). |
 | **`pattern-not-regex` must be nested under `patterns:`** | Placed at rule level next to a top-level `pattern-either`, Semgrep **silently ignores it** — no error, no warning, the rule just behaves as if it were absent. Verified the hard way: identical output before and after adding it. It only takes effect inside a `patterns:` block alongside the `pattern-either`. |
 | **Analyzer versions pinned, not floating** | With `TreatWarningsAsErrors`, an analyzer upgrade that adds rules is a breaking change. Bump deliberately — the policy and its mechanism are §6 (#13). |
-| **Semgrep is pinned twice** | `actions/layer2/action.yml` (what consumers get) and `ci.yml`'s `layer2-counts` (what validates the 60/19 assertion). They must match or CI is testing a tool nobody runs. `scripts/check-pins.sh --offline` guards it on every PR. |
+| **Semgrep is pinned three times, and the third was not pinned at all** | `actions/layer2/action.yml` (what consumers get) and `ci.yml`'s `layer2-counts` (what validates the manifest) were guarded by `check-pins.sh` from the start. `scripts/scan.sh` — the one a human runs locally — was not: a bare `uvx semgrep` and `returntocorp/semgrep:latest`. That is why a C# parse failure was irreproducible between two runs minutes apart; they were not the same tool. A local scan that disagrees with the gate is worse than no local scan, because people trust it. All three are now asserted, and `check-pins.sh` also asserts the literal is USED rather than merely assigned — a pin nothing reads is a comment. |
+| **`mapfile` is bash 4, and macOS is not** | `hooks/pre-commit` shipped with `mapfile -t` and aborted **every commit** on macOS with `command not found`, then `STAGED: unbound variable` under `set -u`. `scan.sh` had targeted bash 3.2 since the start; the hook — the one script most likely to run on a developer's laptop rather than a runner — did not. Caught by running it, not by reading it. CI now greps the hook for bash 4 constructs, **with comments stripped**, because the file documents the bug by name and the guard failed on its own explanation. |
+| **A hook that scans the working tree is quietly wrong** | `git commit` commits the INDEX. A file with staged changes and further unstaged ones is not what is being committed, so a working-tree scan both misses findings you are committing and reports ones you are not. The hook materialises staged blobs first, and CI asserts both directions: a staged secret blocks with the file on disk clean, and an unstaged secret does not block. |
+| **A malformed finding used to take the verdict down with it** | `r.get("start", {}).get("line")` raised `AttributeError` on a result whose `start` was not a dict — an unhandled traceback whose exit code happened to be 1, so the gate was right by accident rather than by design. semgrep's JSON schema is not a contract this repo controls. Found by feeding `classify` a deliberately malformed result while testing that annotations cannot change the exit code (#40), which is a test that was looking somewhere else entirely. |
+| **A file the scanner cannot parse is not a scan that failed** | Any non-empty semgrep `.errors` exited 2, so a codebase whose house style is C# 12 primary constructors got a red gate over a clean scan: `Ran 22 rules on 29 files: 0 findings`, then `refusing to treat the result as a finding set`. Nothing a consumer can fix, which is how a check gets ignored. **The worse half had no output at all** — an unparsed file has no rule run against it, so it contributes 0 to every number while looking like a failure rather than a hole. Parse failures are now named, counted (`semgrep_unparsed=N`) and non-gating. Two guards keep that from becoming the silent pass: the recognised types are an **allowlist**, so a failure mode a future semgrep invents is still fatal; and if *every* file looked at failed to parse, that is exit 2, because `results: []` then means nobody looked. |
 | **osv-scanner emits empty licences unless you ask** | `--format=cyclonedx-1-6` alone gives every component `"licenses": []` — the key is present and the array empty. Bare `--licenses` (no `=allowlist`) is the report-only mode that actually resolves them, and it exits 0. Without it the standing report renders a tidy table of *N* UNKNOWNs and looks completely fine. Measured: 104 components, 0 with licences vs 102 with. |
 | **osv-scanner needs `--all-packages` for an SBOM** | Otherwise the CycloneDX output holds only the packages in the *results* — 28 instead of 94 on this repo. An inventory that shrinks as things improve is not an inventory. |
 | **osv-scanner will not create its output directory** | It exits **127** with `failed to create output file`, which reads as "the tool is broken" rather than "make the folder". `scan.sh` `mkdir -p`s the parent. |
@@ -213,7 +297,15 @@ Gitleaks v8.30.1 and OSV-Scanner v2 via Docker — nothing was installed globall
 | **The interpolation guard cannot exempt comments** | The fetch-and-execute guard skips comment lines so this repo can document what it bans. The interpolation guard must NOT: substitution happens before bash sees the text, so a value containing a newline escapes a shell comment into executable code. The literal expression syntax is therefore simply never written inside a `run:` body here — actionlint also tries to parse it. |
 | **`workflow_run` + `branches:` is not an origin check** | `branches:` filters the triggering run's HEAD BRANCH NAME, and for a fork PR that name is the branch inside the FORK — so anyone who forks and commits on their own `main` matches `branches: [main]`. The job then runs in THIS repo with THIS repo's permissions. `release-tag.yml` had `contents: write` and gated only on `conclusion == 'success'`, which made the `v1` tag hijackable by any fork PR that passed CI — and CI passes for any change that leaves `samples/` alone. Found in the pre-publication security review, 2026-08-01, before the repo went public and made it reachable by anyone. The real gate is `workflow_run.event == 'push'`. |
 | **The SHA-pin guard did not cover pipes** | It matches `uses:` lines. `curl … \| sh` is not a `uses:` line, so `quality.yml` shipped an unpinned installer — fetched over a moving URL, piped into a shell, running in EVERY consumer's CI with THEIR token — while `workflow-lint` reported "every third-party action is pinned". The lesson is not "add the missing regex", it is that a guard which passes while its own violation sits in the same file gets cited as evidence. There is now a second check for fetch-and-execute, and it skips comment lines so this file can document the pattern it bans. |
+| **`--exclude-rule` needs the FULL prefixed id, and the prefix encodes the config path** | Measured 2026-08-03 on semgrep 1.172.0, building the policy file. `--exclude-rule weak-crypto` excludes **nothing** and exits 0 without a word; `--exclude-rule semgrep.security.weak-crypto` works. The prefix is derived from `--config` exactly as written, so the same rule is `semgrep.security.weak-crypto` from the repo root, `baseline.semgrep.security.weak-crypto` under docker, and `Users.<you>.dev.maxi-quality.semgrep.security.weak-crypto` from an absolute path. `scan.sh` passes a different config path on its native and docker branches, so an exclusion computed for one is silently inert on the other — the same divergence that made `--changed-only` a no-op gate. `policy.py` computes the prefix **and** `classify` then asserts no disabled rule survived into the results, so a mangling change fails loudly instead of quietly un-disabling somebody's policy. |
+| **`--exclude` matches path components, not globs** | Same session. `--exclude 'legacy/**'` — the spelling every other tool accepts, and the first thing anyone writes — matches nothing and reports nothing. `legacy`, `legacy/` and `samples/policy` all work; `./legacy` and `*/legacy/*` do not. `policy.py` rejects any pattern containing `**` and names the working form, and `classify` separately fails if a finding is reported under a path the policy said to exclude. |
+| **A `.semgrepignore` REPLACES semgrep's defaults** | Measured while looking for somewhere to put the policy fixtures. A `.semgrepignore` listing one directory caused `node_modules/` to start being scanned — the built-in ignore list is not merged with yours, it is superseded. This repo has a `node_modules/` full of TypeScript, so that would have been a very loud accident. The fixtures are excluded through this repo's own `.maxi-quality.yml` instead, which is one mechanism rather than two and dogfoods the feature. |
+| **An exclusion fixture can be inert because the tool already ignores that path** | The `paths.exclude` fixture first excluded a directory called `vendor/`. It passed. It also passed with the policy deleted — semgrep skips `vendor/` by default, so the fixture proved nothing at all, exactly like the `noImplicitReturns` fixture that really failed on `strictNullChecks`. Renamed to `legacy/`, and every policy fixture is now asserted **twice**: once with its policy and once with the policy moved out of the way. The ablation is the assertion; the passing run on its own never was one. |
 | **Two tags, on purpose** | `v1` is a *moving* pointer to the newest `v1.x` (the `actions/checkout@v4` convention) — that is how consumers pick up fixes without editing a workflow file, so moving it forward requires a force-push and that is expected, not an accident. It follows `main` automatically via `release-tag.yml`, which is why a merge to `main` is a release and contributions go to `develop` instead. The `v1.0.x` tags are immutable, for pinning something that can never shift; they are cut by hand, one per release worth naming, and each gets a GitHub Release carrying the notes. **Never attach a Release to `v1`** — it is force-pushed, so the notes would come to describe a different commit than the one they were written for. |
+| **A duplication percentage without a generated-code exclusion is a scope artifact** | Measured 2026-08-05 (issue #39). The same C# tree scanned twice: 27.19% duplicated lines with EF Core migrations in scope, 4.36% without — 31 generated files were half the corpus and most of the numerator. Issue #39 warned about this repo's own snapshot files inflating a denominator by ~2×; the consumer-side version is worse because codegen inflates the *numerator* too. The general rule: record the exclusion list in the same row as the percentage, or the percentage is about the scan, not the code. |
+| **A dead-code detector cannot tell a public surface from dead code** | Same evaluation, three costumes: vulture flags 4 findings on `samples/python-clean` because the fixture is library-shaped (public functions whose callers are outside the fixture, by design); knip's unused-export findings on a published library package are indistinguishable from public API (19 of its 26 real-code findings sit in that class); and no free C# tool even attempts unused *public* members — Roslynator's RCS1213 gates on `Accessibility.Private` in its own source, and even paid NDepend excludes public members by default. Structural, not tunable: external callers are invisible to a single-tree scan. Gate files and dependencies everywhere; gate exports only in application code. |
+| **A dependency checker has a designed granularity, and running it above that granularity measures the layout** | deptry at a Python monorepo root: 125 findings, 118 of them one first-party artifact (workspace packages declared as root dev-deps, imported as runtime code). The same tool per package: 3 findings, sane ones. The count did not describe the dependencies either time — at root it described the workspace shape. Same lesson class as "a fixture proves *an* error, never *which setting caused it*": a number needs its scope stated before it means anything. |
+| **Our own conventions mandate token-identical code, so a clone gate would fight the baseline itself** | The densest real duplication found in any consumer (101 clones over 21.4 KLOC of C#) classified as the repo's *required* per-mutation transaction/idempotency rails — the visible-at-every-site pattern `mutation-requires-authz` exists to keep visible. A duplication gate and this baseline's conventions give opposite verdicts on the same lines, the same two-halves-contradicting shape as `no-redundant-optional` vs `exactOptionalPropertyTypes`. The literature agrees from the other side: clones predict change-coupling, not defects (EVAL-vs-oss-tools §2n). |
 
 ---
 
@@ -312,10 +404,17 @@ before anything was written, and the measurement changed what got built.
 repo's own planted samples: 22 rules loaded (2 multilang + 20 TS, **zero C#**),
 ~100% of lines parsed, **0 findings**, on files carrying planted SQL injection
 and command injection. Our 12 hand-written conventions found 28 on those same
-files at the time of that scan (60 today — the ruleset gained fixtures and
+files at the time of that scan (100 today — the ruleset gained fixtures and
 branches since, which is why this number is left as measured rather than
 refreshed). Same result as `docs/EVAL-vs-sonarqube.md`. Adding scanners would
 have made the gate slower and no better.
+
+> **Read "zero C#" narrowly.** That observation is about the pack scanned here,
+> `p/security-audit`. It is not true of the free registry as a whole:
+> `p/owasp-top-ten` runs 27 C# rules and `p/csharp` is a 27-rule C# pack
+> (`EVAL-vs-oss-tools.md` §2d, 2026-08-02). The conclusion is unchanged —
+> `p/owasp-top-ten` still found 3 of 103 — but the reason as originally written
+> was wider than the measurement supported.
 
 **Enforcement is the weak part, and it is not a tooling problem.** Branch
 protection on a private repo owned by a personal account needs GitHub Pro:
