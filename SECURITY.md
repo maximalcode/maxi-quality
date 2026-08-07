@@ -28,9 +28,11 @@ bait for the cargo-deny advisories gate, and CI asserts that exact id fires —
 same contract as the fake credentials above. Two things make it safe: the
 dependency sits behind a `cfg(windows)` target gate, so no CI run ever
 downloads or compiles it (the lockfile entry alone is what cargo-deny reads),
-and nothing in this repository executes any code from it. A dependency scanner
-run against a clone **will** report it; that is the intended state, and the
-same advice applies — exclude `samples/`.
+and nothing in this repository executes any code from it. OSV-Scanner needs no
+action — `samples/rust/osv-scanner.toml` ignores exactly that advisory, scoped
+to the fixture directory, and is loaded automatically (the `.gitleaks.toml`
+pattern). Other dependency scanners **will** report it; that is the intended
+state, and the same advice applies — exclude `samples/`.
 
 ## Reporting a vulnerability
 

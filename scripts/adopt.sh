@@ -342,18 +342,22 @@ if [ "$HAS_RUST" -eq 1 ]; then
       NEEDS_MERGE=1
     else
       wrote "$MANIFEST (append [lints])"
+      # Decided BEFORE the append: reading the manifest inside a block that
+      # redirects into it is the read-and-write-same-file trap (SC2094).
+      IS_WORKSPACE=0
+      grep -qE '^\[workspace\]' "$MANIFEST" && IS_WORKSPACE=1
       if [ "$DRY_RUN" -eq 0 ]; then
         {
           printf '\n'
-          if grep -qE '^\[workspace\]' "$MANIFEST"; then
+          if [ "$IS_WORKSPACE" -eq 1 ]; then
             cat "$BASELINE/configs/rust/lints.toml"
           else
             sed 's/^\[workspace\.lints/[lints/' "$BASELINE/configs/rust/lints.toml"
           fi
         } >> "$MANIFEST"
-        if grep -qE '^\[workspace\.lints' "$MANIFEST"; then
-          info "workspace detected: members opt in with '[lints]' + 'workspace = true'"
-        fi
+      fi
+      if [ "$IS_WORKSPACE" -eq 1 ]; then
+        info "workspace detected: members opt in with '[lints]' + 'workspace = true'"
       fi
     fi
   fi
