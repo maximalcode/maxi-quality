@@ -1,8 +1,10 @@
 # `examples/` — copyable consumer repos
 
-Each directory is a complete, minimal repo of one shape. Copy the one that
-matches yours rather than assembling snippets, then run `adopt.sh` against it to
-get the files that cannot be consumed remotely.
+Six complete consumer repos, each asserted by CI to scan clean and to gate
+correctly. Copy the directory that matches the shape of your repo rather than
+assembling snippets, then run `adopt.sh` against it to get the files that cannot
+be consumed remotely. If your repo is not new, start with
+[`legacy-ratchet/`](legacy-ratchet/).
 
 | Example | Shape | Shows |
 |---|---|---|
@@ -14,9 +16,8 @@ get the files that cannot be consumed remotely.
 | [`legacy-ratchet/`](legacy-ratchet/) | an existing repo nobody has linted | `changed-only` + `languages: none` — **start here if the repo is not new** |
 
 **These are not fixtures.** `samples/` holds deliberately broken code that the
-baseline must reject; everything here is the correct thing to copy. CI asserts
-each example scans clean, is detected as the language it claims, and — where one
-carries a `.maxi-quality.yml` — that the policy actually resolves. A documented
-example that would not work is a worse bug than no example.
+baseline must reject. Everything here is the correct thing to copy. CI asserts
+that each example scans clean, is detected as the language it claims, and where
+it carries a `.maxi-quality.yml`, that the policy actually resolves.
 
 Full walkthrough: [`../docs/ADOPTION.md`](../docs/ADOPTION.md).
