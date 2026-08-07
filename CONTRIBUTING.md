@@ -119,9 +119,9 @@ passes, the config regressed — fix the config, not the sample. If a clean samp
 starts failing, the config became over-strict — again fix the config, and never
 silence it with a disable comment or a `NoWarn` inside the fixture.
 
-It runs in about two minutes and needs Node, the .NET SDK, Python, and either the
-Layer 2 tools natively or Docker. The full command list is in
-[`docs/STATUS.md`](docs/STATUS.md) §3.
+It runs in about two minutes and needs Node, the .NET SDK, Python, the pinned
+Rust toolchain (plus cargo-deny), and either the Layer 2 tools natively or
+Docker. The full command list is in [`docs/STATUS.md`](docs/STATUS.md) §3.
 
 ### TypeScript
 
@@ -285,6 +285,24 @@ so `bad_strict.py` baits the expansion itself — `warn_return_any`,
 `disallow_any_generics`, `strict_equality`, `disallow_untyped_calls`.
 `settings.snapshot.json` proves the alias **expands**; `bad_strict.py` proves the
 expansion **does something**.
+
+### Rust
+
+```bash
+npm run verify:rust        # expect 8 findings, non-zero exit (one is an ERROR: unsafe_code at forbid)
+npm run verify:rust:clean  # expect ZERO warnings
+(cd samples/rust && cargo deny check advisories)   # expect RUSTSEC-2021-0003, and only it
+```
+
+The eight findings cover every enabled tier — the `rust` group at `forbid`
+(`unsafe_code`), `clippy::all`, `pedantic`, the curated nursery picks and a
+cargo pick — and CI asserts tier coverage separately from the manifest, the
+same belt the 13 Ruff families get. The advisory bait (`smallvec 1.6.0`) sits
+behind a `cfg(windows)` gate: the lockfile entry is what cargo-deny reads, and
+no CI run ever builds the vulnerable crate. `settings.snapshot.json`'s Rust
+twin (`configs/rust/settings.snapshot.json`) pins the **resolved** lint argv —
+`forbid=unsafe_code` versus `deny` is invisible to every fixture, and the
+snapshot is the only check that sees it.
 
 ### Layer 2 and the policy file
 

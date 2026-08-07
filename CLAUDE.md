@@ -144,12 +144,16 @@ do not silently diverge from it.
 
 ## 4. Scope discipline
 
-Shipped and verified: **TypeScript, C#/.NET and Python.**
+Shipped and verified: **TypeScript, C#/.NET, Python and Rust.**
 
 Already shipped, do not re-litigate: `quality.yml` + the `layer2` composite
 action, `adopt.sh` and `check-pins.sh`, the
-dependency bump policy (#13), clean fixtures for all three languages, and
-`configs/python/` (Ruff + mypy, measured against Consumer C before shipping).
+dependency bump policy (#13), clean fixtures for all four languages,
+`configs/python/` (Ruff + mypy, measured against Consumer C before shipping),
+and `configs/rust/` (clippy pedantic + rustfmt + cargo-deny, #58 — the C#
+copy pattern, because Cargo cannot consume `[lints]` remotely; Semgrep Rust
+rules stay out while upstream support is experimental, and cargo-audit stays
+out because cargo-deny's advisories check is the same feed).
 
 **On the Python ruleset specifically:** it is Consumer C's own thirteen families,
 not a set invented here. Issue #15 originally proposed `E,F,B,UP,SIM,S`, which

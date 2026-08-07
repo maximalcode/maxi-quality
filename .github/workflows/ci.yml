@@ -603,6 +603,229 @@ jobs:
           python3 scripts/check-expected.py --tool deptry \
             --input /tmp/deptry-clean.json --expected samples/expected/deptry-clean.json
 
+  # #58 — Rust Layer 1. clippy is the conventions layer (Semgrep's Rust support
+  # is experimental and stays out), cargo-deny is the supply chain. The
+  # toolchain and cargo-deny are PINNED to the same versions adopt.sh stamps
+  # into consumers — check-pins.sh asserts that stays true, because CI
+  # validating a different analyzer than consumers run is how the samples stop
+  # meaning what they claim (#13).
+  layer1-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Pinned toolchain and cargo-deny
+        shell: bash
+        env:
+          # From the .sha256 file next to the release artifact. Verifying it is
+          # the difference between "we downloaded a binary" and "we downloaded
+          # THAT binary" — same standard the actionlint step sets.
+          CARGO_DENY_SHA256: '9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f'
+        run: |
+          set -Eeuo pipefail
+          rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
+          rustup default 1.97.1
+          curl -sSfL -o /tmp/cargo-deny.tgz \
+            https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
+          echo "${CARGO_DENY_SHA256}  /tmp/cargo-deny.tgz" | sha256sum -c -
+          tar xzf /tmp/cargo-deny.tgz -C "$HOME/.cargo/bin" --strip-components=1 \
+            cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny
+          cargo deny --version
+      # The fixture manifests carry COPIES of configs/rust (same shape as the
+      # sample .editorconfigs, and the same drift risk). rustfmt.toml and
+      # deny.toml must match verbatim; the [lints] block appended to each
+      # fixture Cargo.toml must be byte-identical to what adopt.sh derives
+      # from lints.toml for a single crate.
+      - name: Fixture copies must match configs/rust verbatim
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for d in samples/rust samples/rust-clean; do
+            diff -u configs/rust/rustfmt.toml "$d/rustfmt.toml" || {
+              echo "::error::$d/rustfmt.toml drifted from configs/rust — recopy it"; exit 1; }
+            diff -u configs/rust/deny.toml "$d/deny.toml" || {
+              echo "::error::$d/deny.toml drifted from configs/rust — recopy it"; exit 1; }
+            sed 's/^\[workspace\.lints/[lints/' configs/rust/lints.toml > /tmp/expected-lints.toml
+            awk '/# maxi-quality — Rust lint baseline/{found=1} found{print}' "$d/Cargo.toml" > /tmp/actual-lints.toml
+            diff -u /tmp/expected-lints.toml /tmp/actual-lints.toml || {
+              echo "::error::the [lints] block in $d/Cargo.toml drifted from configs/rust/lints.toml — regenerate it the way adopt.sh writes it"
+              exit 1; }
+          done
+          echo 'OK: both fixtures carry configs/rust verbatim'
+      # #8's pattern, Rust edition: the manifests pin what the fixtures BAIT,
+      # not what the config ENABLES. The resolved lint argv, the resolved
+      # rustfmt config and the deny.toml posture are asserted directly —
+      # forbid-vs-deny on unsafe_code is invisible to every fixture.
+      - name: The resolved Rust settings must not change silently
+        shell: bash
+        run: python3 scripts/snapshot-rust-settings.py --check
+      - name: Sample must fail clippy with exactly the expected findings
+        shell: bash
+        run: |
+          set -uo pipefail
+          # First the gate a consumer actually gets: -Dwarnings and a
+          # non-zero exit...
+          rc=0; out=$(cd samples/rust && RUSTFLAGS=-Dwarnings cargo clippy --all-targets --locked 2>&1) || rc=$?
+          echo "$out"
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/rust passed clippy — the config regressed'
+            exit 1
+          fi
+          # ...then WHICH lints fired, from the machine-readable output. No
+          # -Dwarnings here: the JSON run matches how the manifest was
+          # generated, and the flag only relabels levels the parser already
+          # accepts.
+          (cd samples/rust && cargo clippy --all-targets --locked --message-format=json) > /tmp/clippy.json 2>/dev/null || true
+          python3 scripts/check-expected.py --tool clippy \
+            --input /tmp/clippy.json --expected samples/expected/clippy.json
+      # Every enabled tier must be REPRESENTED, not just some finding set —
+      # the same belt the 13 ruff families get. One rule per tier: the rust
+      # group at forbid, clippy::all, pedantic, a curated nursery pick and a
+      # curated cargo pick. Any tier vanishing from the fixture's output means
+      # that tier was switched off, whatever the total says.
+      - name: Every lint tier must be represented
+        shell: bash
+        run: |
+          set -uo pipefail
+          missing=()
+          for rule in unsafe_code clippy::needless_return clippy::cast_possible_truncation \
+                      clippy::or_fun_call clippy::wildcard_dependencies; do
+            grep -q "\"$rule\"" /tmp/clippy.json || missing+=("$rule")
+          done
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::no finding from ${missing[*]} — that tier is enabled but unproven"
+            exit 1
+          fi
+          echo 'OK: rust-forbid, all, pedantic, nursery and cargo tiers all fire'
+      - name: Clean Rust sample must pass clippy with zero warnings
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; out=$(cd samples/rust-clean && RUSTFLAGS=-Dwarnings cargo clippy --all-targets --locked 2>&1) || rc=$?
+          echo "$out"
+          if [[ $rc -ne 0 ]]; then
+            echo '::error::samples/rust-clean was flagged — the baseline is over-strict. Fix the config, do not add #[allow] to the fixture.'
+            exit 1
+          fi
+          (cd samples/rust-clean && cargo clippy --all-targets --locked --message-format=json) > /tmp/clippy-clean.json 2>/dev/null || true
+          python3 scripts/check-expected.py --tool clippy \
+            --input /tmp/clippy-clean.json --expected samples/expected/clippy-clean.json
+      # --- the formatter ----------------------------------------------------
+      - name: The misformatted fixture must be REJECTED, the clean one passed
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; (cd samples/rust && cargo fmt --check) >/dev/null 2>&1 || rc=$?
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/rust passed cargo fmt --check. Either the fixture was formatted (do not do that) or the gate stopped reading it.'
+            exit 1
+          fi
+          rc=0; (cd samples/rust-clean && cargo fmt --check) || rc=$?
+          if [[ $rc -ne 0 ]]; then
+            echo '::error::samples/rust-clean failed cargo fmt --check — reformat it or fix rustfmt.toml'
+            exit 1
+          fi
+          echo 'OK: the formatter rejects the bait and passes the clean fixture'
+      # THE ABLATION. rustfmt's max_width default already IS the house 100, so
+      # width separates nothing here; newline_style = "Unix" is the setting
+      # that genuinely differs from the default ("Auto": whatever the file
+      # already uses). The fixture is consistently-CRLF and correct otherwise:
+      # clean under rustfmt's defaults, rejected under our config. Guarded
+      # first, because an editor or attributes filter normalising it to LF
+      # would turn both runs green and the ablation would silently stop
+      # testing anything.
+      - name: The shipped rustfmt.toml must be what decides the verdict
+        shell: bash
+        run: |
+          set -uo pipefail
+          if ! grep -q $'\r' samples/format/crlf_line_endings.rs; then
+            echo '::error::samples/format/crlf_line_endings.rs no longer contains CRLF, so it cannot separate newline_style = "Unix" from the Auto default. Restore it with printf, not an editor.'
+            exit 1
+          fi
+          rc=0
+          rustfmt --check samples/format/crlf_line_endings.rs >/dev/null 2>&1 || rc=$?
+          [[ $rc -eq 0 ]] || {
+            echo "::error::the CRLF fixture failed rustfmt with NO config (exit $rc) — it is misformatted in some way other than its line endings, so the ablation no longer isolates newline_style"
+            exit 1; }
+          rc=0
+          rustfmt --config-path configs/rust/rustfmt.toml --check \
+            samples/format/crlf_line_endings.rs >/dev/null 2>&1 || rc=$?
+          [[ $rc -ne 0 ]] || {
+            echo '::error::the CRLF fixture PASSED with configs/rust/rustfmt.toml — newline_style is no longer enforced, so the Rust format gate is running on tool defaults'
+            exit 1; }
+          echo 'OK: configs/rust/rustfmt.toml changes the verdict'
+      # --- cargo-deny -------------------------------------------------------
+      # The advisory bait sits behind a cfg(windows) gate, so Linux CI never
+      # downloads or builds it — but the LOCKFILE is target-independent, and
+      # the lockfile is all cargo-deny reads.
+      - name: Dirty lockfile must fail advisories with the known RUSTSEC id
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; out=$(cd samples/rust && cargo deny check advisories bans 2>&1) || rc=$?
+          echo "$out"
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/rust passed cargo-deny — the advisories gate regressed'
+            exit 1
+          fi
+          grep -q 'RUSTSEC-2021-0003' <<<"$out" || {
+            echo '::error::the failure is not the planted advisory (RUSTSEC-2021-0003, smallvec 1.6.0) — something else broke'
+            exit 1; }
+          echo 'OK: the planted advisory is what fails the check'
+      - name: Clean lockfile must pass advisories and bans
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; out=$(cd samples/rust-clean && cargo deny check advisories bans 2>&1) || rc=$?
+          echo "$out"
+          [[ $rc -eq 0 ]] || {
+            echo '::error::samples/rust-clean was flagged by cargo-deny — the posture is over-strict or the DB fetch failed'
+            exit 1; }
+      - name: Clean sample tests must pass
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          (cd samples/rust-clean && cargo test --locked)
+      # --- adopt.sh equivalence, the Rust half of the adopt job -------------
+      # The toolchain lives in THIS job, so the end-to-end claim does too: a
+      # fresh `cargo new` adopted by the script must pass the entire gate at
+      # zero findings, re-running must change nothing, and a manifest that
+      # already has [lints] must be skipped, not clobbered.
+      - name: A fresh cargo-new project adopted by the script passes at zero
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo new /tmp/consumer-rust
+          ./scripts/adopt.sh /tmp/consumer-rust --no-workflow
+          cd /tmp/consumer-rust
+          cargo generate-lockfile
+          cargo fmt --check
+          RUSTFLAGS=-Dwarnings cargo clippy --all-targets --locked
+          cargo deny check advisories bans
+          cargo test --locked
+          echo 'OK: adopted fresh project passes fmt, clippy, deny and test at zero'
+      - name: Rust adoption is idempotent, and never merges by force
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          before=$(sha256sum /tmp/consumer-rust/Cargo.toml | cut -d' ' -f1)
+          ./scripts/adopt.sh /tmp/consumer-rust --no-workflow > /tmp/rust-rerun.log 2>&1
+          after=$(sha256sum /tmp/consumer-rust/Cargo.toml | cut -d' ' -f1)
+          [[ "$before" == "$after" ]] || {
+            echo '::error::re-run modified Cargo.toml — the [lints] append is not idempotent'; exit 1; }
+          n=$(grep -c 'maxi-quality — Rust lint baseline' /tmp/consumer-rust/Cargo.toml)
+          [[ "$n" -eq 1 ]] || { echo "::error::[lints] block appended $n times"; exit 1; }
+          # A manifest with its OWN [lints] section: skip and warn, never merge.
+          cargo new /tmp/consumer-rust-lints
+          printf '\n[lints.clippy]\ndbg_macro = "warn"\n' >> /tmp/consumer-rust-lints/Cargo.toml
+          out=$(./scripts/adopt.sh /tmp/consumer-rust-lints --no-workflow 2>&1)
+          grep -q 'merge configs/rust/lints.toml' <<<"$out" || {
+            echo '::error::adopt.sh did not warn about an existing [lints] section'; exit 1; }
+          if grep -q 'maxi-quality — Rust lint baseline' /tmp/consumer-rust-lints/Cargo.toml; then
+            echo '::error::adopt.sh appended a second [lints] table to a manifest that already had one'
+            exit 1
+          fi
+          echo 'OK: re-run is idempotent and an existing [lints] is left alone'
+
   # The ratchet (`--changed-only`) had NO test, and shipped broken: semgrep's
   # --baseline-commit resolves the ref against the git repo of its WORKING
   # DIRECTORY, and scan.sh never cd'd into the target. It diffed the wrong
@@ -2621,6 +2844,7 @@ jobs:
           expect typescript-npm  'TypeScript'
           expect dotnet          'C#/.NET'
           expect python-uv       'Python'
+          expect rust-cli        'Rust'
           expect mixed-monorepo  'TypeScript' 'C#/.NET'
           expect legacy-ratchet  'TypeScript'
 

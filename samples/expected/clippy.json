@@ -1,0 +1,45 @@
+{
+  "tool": "clippy",
+  "findings": [
+    {
+      "rule": "clippy::wildcard_dependencies",
+      "file": "src/main.rs",
+      "line": 1
+    },
+    {
+      "rule": "clippy::cast_possible_truncation",
+      "file": "src/main.rs",
+      "line": 14
+    },
+    {
+      "rule": "clippy::or_fun_call",
+      "file": "src/main.rs",
+      "line": 19
+    },
+    {
+      "rule": "clippy::collection_is_never_read",
+      "file": "src/main.rs",
+      "line": 24
+    },
+    {
+      "rule": "clippy::vec_init_then_push",
+      "file": "src/main.rs",
+      "line": 24
+    },
+    {
+      "rule": "clippy::borrow_as_ptr",
+      "file": "src/main.rs",
+      "line": 29
+    },
+    {
+      "rule": "unsafe_code",
+      "file": "src/main.rs",
+      "line": 30
+    },
+    {
+      "rule": "clippy::needless_return",
+      "file": "src/main.rs",
+      "line": 40
+    }
+  ]
+}

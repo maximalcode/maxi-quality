@@ -1,7 +1,8 @@
 # maxi-quality
 
-> **Status:** TypeScript, C# and Python shipped and verified. Java deliberately
-> not built until a project needs it. Current state and every measurement:
+> **Status:** TypeScript, C#, Python and Rust shipped and verified. Java
+> deliberately not built until a project needs it. Current state and every
+> measurement:
 > [STATUS.md](STATUS.md)
 > **Repo:** `maximalcode/maxi-quality` — public (CLAUDE.md §2)
 > **Adopting:** [ADOPTION.md](ADOPTION.md) · **Looking something up:** [REFERENCE.md](REFERENCE.md)
@@ -11,7 +12,7 @@
 > **Planned work** lives in the issue tracker, not in this document.
 
 A personal, reusable static-analysis baseline that makes every current and future
-project (TypeScript, C#/.NET, Python) professional by default — free tools only,
+project (TypeScript, C#/.NET, Python, Rust) professional by default — free tools only,
 one-time setup, stamped onto new repos in minutes.
 
 **On CodeQL — measured 2026-08-02, and it is not wired in.** Publishing this
@@ -171,6 +172,7 @@ maxi-quality/
 | **C#/.NET** | built-in Roslyn `latest-recommended`, `SonarAnalyzer.CSharp`, `Roslynator.Analyzers`, `TreatWarningsAsErrors` | copy `Directory.Build.props` — .NET has no remote-extends; this is the one accepted copy (small, rarely changes) |
 | **Java** — *not built* | Error Prone (+ NullAway), SpotBugs; Checkstyle only for style | **Nothing exists in `configs/java/` and nothing will until a real project needs it** (§9). This row is the plan, not a shipped config. |
 | **Python** | Ruff, 13 families (`E W F I B C4 UP N SIM ASYNC S T20 RUF`) + mypy `strict` | `ruff.toml` supports `extend = <path>` — but use the `extend-` forms of `select`/`per-file-ignores`, the bare ones REPLACE. mypy has no extend: `mypy.ini` is a copy |
+| **Rust** | clippy `all` + `pedantic` + curated nursery/cargo picks, `unsafe_code = "forbid"`, `-Dwarnings` in CI only; cargo-deny for RustSec advisories + duplicate versions (#58) | the C# pattern, by necessity: Cargo cannot consume `[lints]` remotely, so adopt.sh appends the block to the consumer's own `Cargo.toml` (marker-guarded) and copies `rustfmt.toml` + `deny.toml`. Semgrep's Rust support is experimental — clippy IS the conventions layer |
 
 **Principle:** compiler-adjacent analyzers do the bug-finding; style stays
 minimal. Formatting is autofixed, never argued about.
@@ -186,6 +188,7 @@ nothing (#42). What ships now:
 | **TypeScript** | Prettier | `configs/typescript/prettier.config.mjs` | `npm run verify:format` |
 | **Python** | `ruff format` | the `[format]` section of `configs/python/ruff.toml` | `ruff format --check` |
 | **C#/.NET** | `dotnet format whitespace` | `configs/editorconfig` | `dotnet format whitespace --verify-no-changes` |
+| **Rust** | `cargo fmt` | `configs/rust/rustfmt.toml` — stable options only, `newline_style = "Unix"` the one non-default | `cargo fmt --check` |
 | **Java** | — | — | nothing, and nothing until a real project needs it (§9) |
 
 Three things this table is careful about, each of which was measured rather

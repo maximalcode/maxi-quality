@@ -110,6 +110,44 @@ if [ "$CI_SEMGREP_COUNT" -ne 1 ]; then
   exit 2
 fi
 
+# THE RUST PAIR (#58). The toolchain and cargo-deny are pinned in TWO places:
+# adopt.sh stamps them into every consumer's scaffolded workflow, and ci.yml's
+# layer1-rust job installs its own. If they drift, CI validates the finding
+# manifests against a clippy consumers never run — the exact Semgrep failure
+# this script was written for, wearing a different toolchain.
+ADOPT="$BASELINE/scripts/adopt.sh"
+[ -f "$ADOPT" ] || die "not found: $ADOPT"
+
+RUST_PIN="$(sed -n 's/^RUST_TOOLCHAIN_PIN="\([0-9.]*\)".*/\1/p' "$ADOPT" | head -1)"
+DENY_PIN="$(sed -n 's/^CARGO_DENY_PIN="\([0-9.]*\)".*/\1/p' "$ADOPT" | head -1)"
+[ -n "$RUST_PIN" ] || die "could not read RUST_TOOLCHAIN_PIN from $ADOPT"
+[ -n "$DENY_PIN" ] || die "could not read CARGO_DENY_PIN from $ADOPT"
+# Assigned is not used — the same decorative-pin trap as scan.sh's (#43).
+grep -q 'rustup toolchain install [$]RUST_TOOLCHAIN_PIN' "$ADOPT" \
+  || die "$ADOPT sets RUST_TOOLCHAIN_PIN but the scaffold no longer installs it — the pin is decorative"
+grep -q 'download/[$]CARGO_DENY_PIN/' "$ADOPT" \
+  || die "$ADOPT sets CARGO_DENY_PIN but the scaffold no longer downloads it — the pin is decorative"
+
+# Every occurrence in ci.yml, not the first — same argument as the semgrep
+# grep above: `rustup default` drifting from `rustup toolchain install` is two
+# versions under a guard reporting one.
+CI_RUST_ALL="$(grep -oE 'rustup (toolchain install|default) [0-9.]+' "$CI" | grep -oE '[0-9.]+$' | sort -u)"
+[ -n "$CI_RUST_ALL" ] || die "could not read any rustup pin from $CI"
+[ "$(printf '%s\n' "$CI_RUST_ALL" | grep -c .)" -eq 1 ] || {
+  printf '\033[31mFAIL\033[0m — ci.yml pins more than one Rust toolchain:\n'
+  printf '%s\n' "$CI_RUST_ALL" | sed 's/^/  /'
+  exit 2
+}
+CI_RUST="$(printf '%s\n' "$CI_RUST_ALL" | head -1)"
+CI_DENY_ALL="$(grep -oE 'cargo-deny/releases/download/[0-9.]+/' "$CI" | grep -oE '[0-9]+\.[0-9.]+' | sort -u)"
+[ -n "$CI_DENY_ALL" ] || die "could not read any cargo-deny pin from $CI"
+[ "$(printf '%s\n' "$CI_DENY_ALL" | grep -c .)" -eq 1 ] || {
+  printf '\033[31mFAIL\033[0m — ci.yml pins more than one cargo-deny:\n'
+  printf '%s\n' "$CI_DENY_ALL" | sed 's/^/  /'
+  exit 2
+}
+CI_DENY="$(printf '%s\n' "$CI_DENY_ALL" | head -1)"
+
 # THE THIRD SITE (#43). scripts/scan.sh is what a human runs locally, and until
 # #43 it pinned nothing at all — `uvx semgrep` and `returntocorp/semgrep:latest`.
 # A local scan resolving a different semgrep than CI is how a parse failure came
@@ -131,6 +169,10 @@ info "semgrep       $SCAN_SEMGREP   (scan.sh, uvx + docker fallbacks)"
 info "gitleaks      $GITLEAKS_PIN"
 info "osv-scanner   $OSV_PIN"
 info "uv            $UV_PIN   (quality.yml)"
+info "rust          $RUST_PIN   (adopt.sh scaffold)"
+info "rust          $CI_RUST   (ci.yml)"
+info "cargo-deny    $DENY_PIN   (adopt.sh scaffold)"
+info "cargo-deny    $CI_DENY   (ci.yml)"
 printf '\n'
 
 # --- consistency: the two Semgrep pins must agree ----------------------------
@@ -148,6 +190,17 @@ if [ "$SEMGREP_PIN" != "$CI_SEMGREP" ] || [ "$SEMGREP_PIN" != "$SCAN_SEMGREP" ];
   exit 2
 fi
 info "semgrep pins agree across all three files"
+
+# --- consistency: the Rust pair, same rule, same severity --------------------
+if [ "$RUST_PIN" != "$CI_RUST" ] || [ "$DENY_PIN" != "$CI_DENY" ]; then
+  printf '\033[31mFAIL\033[0m — Rust pins disagree:\n'
+  printf '  scripts/adopt.sh (scaffold)  : rust %s · cargo-deny %s\n' "$RUST_PIN" "$DENY_PIN"
+  printf '  .github/workflows/ci.yml     : rust %s · cargo-deny %s\n' "$CI_RUST" "$CI_DENY"
+  printf '\nThe clippy manifest and the RUSTSEC fixture would be asserted against a\n'
+  printf 'toolchain consumers are never handed. Set both files to the same versions.\n'
+  exit 2
+fi
+info "rust pins agree between adopt.sh and ci.yml"
 
 if [ "$OFFLINE" -eq 1 ]; then
   printf '\n\033[32mPASS\033[0m — pins are internally consistent (--offline; upstream not checked)\n'
@@ -186,6 +239,10 @@ compare "semgrep"     "$SEMGREP_PIN"  "$(latest_pypi semgrep)"
 compare "gitleaks"    "$GITLEAKS_PIN" "$(latest_gh gitleaks/gitleaks | sed 's/^v//')"
 compare "osv-scanner" "$OSV_PIN"      "$(latest_gh google/osv-scanner)"
 compare "uv"          "$UV_PIN"      "$(latest_gh astral-sh/uv)"
+# Not the GitHub releases API: rust-lang/rust publishes the channel manifest,
+# and the [pkg.rust] version line is the stable version.
+compare "rust"        "$RUST_PIN"    "$(curl -fsSL --max-time 20 https://static.rust-lang.org/dist/channel-rust-stable.toml 2>/dev/null | sed -n '/^\[pkg\.rust\]/,/^\[/{s/^version = "\([0-9.]*\).*/\1/p;}' | head -1)"
+compare "cargo-deny"  "$DENY_PIN"    "$(latest_gh EmbarkStudios/cargo-deny)"
 
 printf '\n'
 if [ "$DRIFT" -eq 1 ]; then

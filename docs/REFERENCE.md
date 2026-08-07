@@ -18,7 +18,7 @@ jobs:
 
 | Input | Default | What it does |
 |---|---|---|
-| `languages` | `auto` | `auto` detects by lockfile/project glob. A CSV subset of `ts,dotnet,python` forces it. `none` runs **Layer 2 only** — the adoption entry point for a repo that wants secrets, vulns and conventions gated before taking on Layer 1 |
+| `languages` | `auto` | `auto` detects by lockfile/project glob. A CSV subset of `ts,dotnet,python` forces it. `none` runs **Layer 2 only** — the adoption entry point for a repo that wants secrets, vulns and conventions gated before taking on Layer 1. **Rust is deliberately not in this list**: its lint config lives in the consumer's own `Cargo.toml`, so `adopt.sh` scaffolds a pinned-toolchain `rust` job in the consumer's workflow instead ([ADOPTION.md](ADOPTION.md) §4b) — Layer 2 already covers Rust with no input at all, because OSV-Scanner reads `Cargo.lock` natively |
 | `node-version` | `24` | |
 | `dotnet-version` | `10.0.x` | |
 | `python-version` | `3.12` | |
