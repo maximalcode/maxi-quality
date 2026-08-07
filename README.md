@@ -6,6 +6,7 @@ consumed from one repo instead of rebuilt in every project.
 [![ci](https://img.shields.io/github/actions/workflow/status/maximalcode/maxi-quality/ci.yml?branch=main&label=ci)](https://github.com/maximalcode/maxi-quality/actions/workflows/ci.yml)
 [![release](https://img.shields.io/github/v/tag/maximalcode/maxi-quality?filter=v1.*.*&label=release)](https://github.com/maximalcode/maxi-quality/tags)
 [![license](https://img.shields.io/github/license/maximalcode/maxi-quality)](LICENSE)
+[![openssf scorecard](https://api.scorecard.dev/projects/github.com/maximalcode/maxi-quality/badge)](https://scorecard.dev/viewer/?uri=github.com/maximalcode/maxi-quality)
 ![tools: free / OSS only](https://img.shields.io/badge/tools-free%20%2F%20OSS%20only-blue)
 
 **Who this is for:** you maintain more than one repo, and you want
