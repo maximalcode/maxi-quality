@@ -42,6 +42,25 @@ on:
     branches: [main, develop]
   pull_request:
 
+# Declared here rather than inherited from the repo setting, and that is the
+# point. The repo default is already read-only, so this changes nothing today —
+# it changes what happens the day someone flips that setting back, or forks
+# this repo without it. A workflow that relies on a setting it cannot see is
+# relying on something no reviewer of this file can check.
+#
+# Found by BOTH tools added in #61, independently, on their first run: CodeQL
+# raised actions/missing-workflow-permissions once per job (21 alerts) and
+# Scorecard scored Token-Permissions 0 on `no topLevel permission defined`.
+# That agreement is the argument for keeping them — the settings layer had no
+# fixtures, and this is the first thing it caught.
+#
+# `contents: read` is the whole requirement: every job here reads the tree,
+# runs analyzers over fixtures and asserts counts. Nothing in this file calls
+# the API or writes anything back. The one workflow that does need write is
+# release-tag.yml, which declares it locally.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
