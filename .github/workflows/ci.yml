@@ -1702,6 +1702,85 @@ jobs:
           fi
           echo 'OK: adopted Python repo gates at 14/14 and keeps inherited waivers'
 
+      # #70's upgrade path. A repo adopted BEFORE Rust moved into the reusable
+      # workflow still carries the scaffolded `rust:` job, and the reusable call
+      # now runs Rust itself — two clippy runs, the second one pinned to a
+      # toolchain that no longer moves. adopt.sh cannot rewrite a consumer's own
+      # workflow file (write_new leaves it alone, deliberately), so saying it
+      # out loud IS the fix, and an unsaid warning is no fix at all.
+      - name: Warns a pre-#70 consumer carrying the scaffolded rust job
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p /tmp/old-rust/.github/workflows /tmp/old-rust/src
+          printf '[package]\nname = "old"\nversion = "0.1.0"\n' > /tmp/old-rust/Cargo.toml
+          : > /tmp/old-rust/Cargo.lock
+          printf 'fn main() {}\n' > /tmp/old-rust/src/main.rs
+          # The workflow a pre-#70 adopt.sh wrote — and then WITHOUT the comment
+          # it used to carry, because the warning must key on the job rather
+          # than on a marker the tidiest consumers are likeliest to have
+          # deleted. Both shapes run clippy twice; both must be reported.
+          cat > /tmp/wf-marked.yml <<'WF'
+          name: quality
+          on: [push, pull_request]
+          jobs:
+            quality:
+              uses: maximalcode/maxi-quality/.github/workflows/quality.yml@v1
+            # Rust Layer 1 (maxi-quality). Toolchain and cargo-deny are PINNED.
+            rust:
+              runs-on: ubuntu-latest
+              steps:
+                - run: cargo clippy --all-targets --locked
+          WF
+          cat > /tmp/wf-reworded.yml <<'WF'
+          name: quality
+          on: [push, pull_request]
+          jobs:
+            quality:
+              uses: maximalcode/maxi-quality/.github/workflows/quality.yml@v1
+            rust:
+              runs-on: ubuntu-latest
+              steps:
+                - run: cargo clippy --all-targets --locked
+          WF
+          for variant in marked reworded; do
+            cp "/tmp/wf-$variant.yml" /tmp/old-rust/.github/workflows/quality.yml
+            before=$(sha256sum /tmp/old-rust/.github/workflows/quality.yml | cut -d' ' -f1)
+            out=$(./scripts/adopt.sh /tmp/old-rust 2>&1)
+            echo "$out"
+            grep -q "already declares a 'rust:' job of its own" <<<"$out" || {
+              echo "::error::[$variant] adopt.sh did not warn about the second rust job — a consumer would run clippy twice"
+              exit 1; }
+            after=$(sha256sum /tmp/old-rust/.github/workflows/quality.yml | cut -d' ' -f1)
+            [[ "$before" == "$after" ]] || {
+              echo "::error::[$variant] adopt.sh rewrote the consumer workflow — it must warn, not clobber"; exit 1; }
+            echo "  OK  $variant"
+          done
+          echo 'OK: a second rust job is reported with or without the old marker comment'
+
+      # A repo adopted TODAY gets the same six lines as every other language.
+      # This is the assertion that the scaffolded job is gone, not merely
+      # unused: a stray `rust:` here is #70 reopening itself.
+      - name: A fresh Rust adoption gets the plain six-line workflow
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p /tmp/new-rust/src
+          printf '[package]\nname = "new"\nversion = "0.1.0"\n' > /tmp/new-rust/Cargo.toml
+          : > /tmp/new-rust/Cargo.lock
+          printf 'fn main() {}\n' > /tmp/new-rust/src/main.rs
+          ./scripts/adopt.sh /tmp/new-rust >/dev/null
+          wf=/tmp/new-rust/.github/workflows/quality.yml
+          cat "$wf"
+          python3 -c "import sys, yaml; yaml.safe_load(open(sys.argv[1]))" "$wf"
+          if grep -qE '^\s+rust:' "$wf"; then
+            echo '::error::adopt.sh still scaffolds a rust job — it belongs in the reusable workflow now'
+            exit 1
+          fi
+          n=$(python3 -c "import sys, yaml; print(len(yaml.safe_load(open(sys.argv[1]))['jobs']))" "$wf")
+          [[ "$n" -eq 1 ]] || { echo "::error::expected exactly 1 job in a fresh adoption, got $n"; exit 1; }
+          echo 'OK: a Rust repo adopts the same six lines as every other language'
+
       - name: Idempotent, and never clobbers
         shell: bash
         run: |
@@ -2300,6 +2379,69 @@ jobs:
 
           mkdir -p "$F/py-dev"; : > "$F/py-dev/requirements-dev.txt"
 
+          # Rust (#70). A plain binary crate with its lockfile committed.
+          mkdir -p "$F/rust-bin"
+          printf '[package]\nname = "a"\n' > "$F/rust-bin/Cargo.toml"
+          : > "$F/rust-bin/Cargo.lock"
+
+          # A cargo workspace: only the ROOT carries Cargo.lock while every
+          # member carries a manifest — the same walk-up the TS fixture proves.
+          mkdir -p "$F/rust-ws/crates/a" "$F/rust-ws/crates/b"
+          printf '[workspace]\nmembers = ["crates/*"]\n' > "$F/rust-ws/Cargo.toml"
+          : > "$F/rust-ws/Cargo.lock"
+          printf '[package]\nname = "a"\n' > "$F/rust-ws/crates/a/Cargo.toml"
+          printf '[package]\nname = "b"\n' > "$F/rust-ws/crates/b/Cargo.toml"
+
+          # THE BUG SHAPE, one level down from #70 itself: a crate clippy
+          # cannot open, because `--locked` refuses to run without a lockfile.
+          mkdir -p "$F/rust-nolock"
+          printf '[package]\nname = "a"\n' > "$F/rust-nolock/Cargo.toml"
+
+          # A crate the workspace's `members` list omits. It sits under the
+          # root's Cargo.lock so it LOOKS covered, and `cargo clippy` at the
+          # root analyses members only — the sln-partial case above, in Cargo's
+          # spelling, and the reason this branch parses TOML rather than globs.
+          mkdir -p "$F/rust-orphan/crates/a" "$F/rust-orphan/crates/b"
+          printf '[workspace]\nmembers = ["crates/a"]\n' > "$F/rust-orphan/Cargo.toml"
+          : > "$F/rust-orphan/Cargo.lock"
+          printf '[package]\nname = "a"\n' > "$F/rust-orphan/crates/a/Cargo.toml"
+          printf '[package]\nname = "b"\n' > "$F/rust-orphan/crates/b/Cargo.toml"
+
+          # Cargo auto-promotes a path dependency inside the workspace
+          # directory to a member, so `members` never naming it is normal and
+          # flagging it would hard-fail a legitimate repo. Transitive on
+          # purpose: crates/a is a member, libs/util is only reachable through
+          # it.
+          mkdir -p "$F/rust-pathdep/crates/a" "$F/rust-pathdep/libs/util"
+          printf '[workspace]\nmembers = ["crates/a"]\n' > "$F/rust-pathdep/Cargo.toml"
+          : > "$F/rust-pathdep/Cargo.lock"
+          printf '[package]\nname = "a"\n\n[dependencies]\nutil = { path = "../../libs/util" }\n' \
+            > "$F/rust-pathdep/crates/a/Cargo.toml"
+          printf '[package]\nname = "util"\n' > "$F/rust-pathdep/libs/util/Cargo.toml"
+
+          # `exclude` is the consumer saying "not part of this build" — a
+          # deliberate statement, and the same class of answer as passing
+          # languages: without rust.
+          mkdir -p "$F/rust-excluded/crates/a" "$F/rust-excluded/vendor/old"
+          printf '[workspace]\nmembers = ["crates/a"]\nexclude = ["vendor/old"]\n' \
+            > "$F/rust-excluded/Cargo.toml"
+          : > "$F/rust-excluded/Cargo.lock"
+          printf '[package]\nname = "a"\n' > "$F/rust-excluded/crates/a/Cargo.toml"
+          printf '[package]\nname = "old"\n' > "$F/rust-excluded/vendor/old/Cargo.toml"
+
+          mkdir -p "$F/rust-nested/svc"
+          printf '[package]\nname = "a"\n' > "$F/rust-nested/svc/Cargo.toml"
+          : > "$F/rust-nested/svc/Cargo.lock"
+
+          # target/ holds manifests cargo vendored during a build. They are not
+          # the repo's code, and a matrix entry per vendored crate would be an
+          # analysis of somebody else's source.
+          mkdir -p "$F/rust-target/target/pkg"
+          printf '[package]\nname = "a"\n' > "$F/rust-target/Cargo.toml"
+          : > "$F/rust-target/Cargo.lock"
+          printf '[package]\nname = "v"\n' > "$F/rust-target/target/pkg/Cargo.toml"
+          : > "$F/rust-target/target/pkg/Cargo.lock"
+
           run "$F/npm" auto
           eq 'npm rc' "$rc" 0
           eq 'npm ts_dirs' "$(val ts_dirs)" '["."]'
@@ -2355,11 +2497,61 @@ jobs:
           eq 'py-dev has_python' "$(val has_python)" true
           eq 'py-dev python_dirs' "$(val python_dirs)" '["."]'
 
+          run "$F/rust-bin" auto
+          eq 'rust-bin rc' "$rc" 0
+          eq 'rust-bin rust_dirs' "$(val rust_dirs)" '["."]'
+          eq 'rust-bin has_rust' "$(val has_rust)" true
+
+          run "$F/rust-ws" auto
+          eq 'rust-ws rc' "$rc" 0
+          eq 'rust-ws rust_dirs' "$(val rust_dirs)" '["."]'
+
+          run "$F/rust-nolock" auto
+          eq 'rust-nolock rc' "$rc" 1
+          says 'rust-nolock' 'Cargo.lock'
+
+          # ...and it must stay escapable, or the fix is a new way to be stuck.
+          run "$F/rust-nolock" none
+          eq 'rust-nolock+none rc' "$rc" 0
+          eq 'rust-nolock+none has_rust' "$(val has_rust)" false
+          run "$F/rust-nolock" ts
+          eq 'rust-nolock+ts rc' "$rc" 0
+          eq 'rust-nolock+ts has_rust' "$(val has_rust)" false
+
+          run "$F/rust-orphan" auto
+          eq 'rust-orphan rc' "$rc" 1
+          says 'rust-orphan' 'crates/b'
+
+          run "$F/rust-pathdep" auto
+          eq 'rust-pathdep rc' "$rc" 0
+          eq 'rust-pathdep rust_dirs' "$(val rust_dirs)" '["."]'
+
+          run "$F/rust-excluded" auto
+          eq 'rust-excluded rc' "$rc" 0
+          eq 'rust-excluded rust_dirs' "$(val rust_dirs)" '["."]'
+
+          run "$F/rust-nested" auto
+          eq 'rust-nested rc' "$rc" 0
+          eq 'rust-nested rust_dirs' "$(val rust_dirs)" '["svc"]'
+
+          run "$F/rust-target" auto
+          eq 'rust-target rc' "$rc" 0
+          eq 'rust-target rust_dirs' "$(val rust_dirs)" '["."]'
+
+          # A repo with no Rust must not grow a Rust job.
+          run "$F/npm" auto
+          eq 'npm has_rust' "$(val has_rust)" false
+          eq 'npm rust_dirs' "$(val rust_dirs)" '[]'
+
           # And this repo itself, which is the workspace shape in miniature:
-          # a root lockfile with two sample package.json files under it.
+          # a root lockfile with two sample package.json files under it, plus
+          # the three crates — every one of which must carry its own lockfile,
+          # because that is exactly what this baseline now asks of consumers.
           run "$GITHUB_WORKSPACE" auto
           eq 'self rc' "$rc" 0
           eq 'self ts_dirs' "$(val ts_dirs)" '["."]'
+          eq 'self has_rust' "$(val has_rust)" true
+          eq 'self rust_dirs' "$(val rust_dirs)" '["examples/rust-cli","samples/rust","samples/rust-clean"]'
 
           echo 'OK: every detection fixture classified, and the two silent skips now fail loud'
 

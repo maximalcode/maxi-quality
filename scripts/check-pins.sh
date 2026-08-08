@@ -110,23 +110,50 @@ if [ "$CI_SEMGREP_COUNT" -ne 1 ]; then
   exit 2
 fi
 
-# THE RUST PAIR (#58). The toolchain and cargo-deny are pinned in TWO places:
-# adopt.sh stamps them into every consumer's scaffolded workflow, and ci.yml's
-# layer1-rust job installs its own. If they drift, CI validates the finding
-# manifests against a clippy consumers never run — the exact Semgrep failure
-# this script was written for, wearing a different toolchain.
+# THE RUST PAIR (#58, and #70 moved one half of it). The toolchain and
+# cargo-deny are pinned in TWO places: quality.yml's rust job is the one every
+# consumer actually runs, and ci.yml's layer1-rust job installs its own to
+# validate the fixtures. If they drift, CI validates the finding manifests
+# against a clippy consumers never run — the exact Semgrep failure this script
+# was written for, wearing a different toolchain.
+#
+# The consumer-facing half used to be scripts/adopt.sh, which stamped a pinned
+# job into each consumer's own workflow file. Since #70 it is quality.yml, so
+# this is now an assertion about the file that runs rather than about the file
+# that once wrote the file that ran.
+RUST_PIN="$(pin_of rust-version '      ' "$QUALITY")"
+[ -n "$RUST_PIN" ] || die "could not read rust-version from $QUALITY"
+# Declared is not used — the same decorative-pin trap as scan.sh's (#43). Both
+# halves are checked: an input nothing reads, and a rustup line that hardcodes
+# a version instead of reading the input, are the same failure from either end.
+grep -q 'RUST_VERSION: [$]{{ inputs.rust-version }}' "$QUALITY" \
+  || die "$QUALITY declares rust-version but no step passes it through — the pin is decorative"
+grep -q 'rustup toolchain install "[$]RUST_VERSION"' "$QUALITY" \
+  || die "$QUALITY declares rust-version but the rust job no longer installs it — the pin is decorative"
+
+# cargo-deny is a literal URL rather than an input (the checksum is bound to the
+# version — quality.yml says why), so it is read the same way as ci.yml's.
+QUALITY_DENY_ALL="$(grep -oE 'cargo-deny/releases/download/[0-9.]+/' "$QUALITY" | grep -oE '[0-9]+\.[0-9.]+' | sort -u)"
+[ -n "$QUALITY_DENY_ALL" ] || die "could not read any cargo-deny pin from $QUALITY"
+[ "$(printf '%s\n' "$QUALITY_DENY_ALL" | grep -c .)" -eq 1 ] || {
+  printf '\033[31mFAIL\033[0m — quality.yml pins more than one cargo-deny:\n'
+  printf '%s\n' "$QUALITY_DENY_ALL" | sed 's/^/  /'
+  exit 2
+}
+DENY_PIN="$(printf '%s\n' "$QUALITY_DENY_ALL" | head -1)"
+
+# THE THIRD CARGO-DENY SITE. adopt.sh no longer installs cargo-deny, but it
+# still PRINTS a version in its summary ("install cargo-deny X to match CI"),
+# and a version a human is told to install is a pin like any other: let it
+# drift and every adopter runs a different cargo-deny than the gate, which is
+# this script's founding complaint (#43) with the tool swapped out. Cheaper to
+# assert than to notice.
 ADOPT="$BASELINE/scripts/adopt.sh"
 [ -f "$ADOPT" ] || die "not found: $ADOPT"
-
-RUST_PIN="$(sed -n 's/^RUST_TOOLCHAIN_PIN="\([0-9.]*\)".*/\1/p' "$ADOPT" | head -1)"
-DENY_PIN="$(sed -n 's/^CARGO_DENY_PIN="\([0-9.]*\)".*/\1/p' "$ADOPT" | head -1)"
-[ -n "$RUST_PIN" ] || die "could not read RUST_TOOLCHAIN_PIN from $ADOPT"
-[ -n "$DENY_PIN" ] || die "could not read CARGO_DENY_PIN from $ADOPT"
-# Assigned is not used — the same decorative-pin trap as scan.sh's (#43).
-grep -q 'rustup toolchain install [$]RUST_TOOLCHAIN_PIN' "$ADOPT" \
-  || die "$ADOPT sets RUST_TOOLCHAIN_PIN but the scaffold no longer installs it — the pin is decorative"
-grep -q 'download/[$]CARGO_DENY_PIN/' "$ADOPT" \
-  || die "$ADOPT sets CARGO_DENY_PIN but the scaffold no longer downloads it — the pin is decorative"
+ADOPT_DENY="$(sed -n 's/^CARGO_DENY_PIN="\([0-9.]*\)".*/\1/p' "$ADOPT" | head -1)"
+[ -n "$ADOPT_DENY" ] || die "could not read CARGO_DENY_PIN from $ADOPT"
+grep -q 'cargo-deny %s to match CI' "$ADOPT" \
+  || die "$ADOPT sets CARGO_DENY_PIN but no longer tells anyone to install it — the pin is decorative"
 
 # Every occurrence in ci.yml, not the first — same argument as the semgrep
 # grep above: `rustup default` drifting from `rustup toolchain install` is two
@@ -147,6 +174,17 @@ CI_DENY_ALL="$(grep -oE 'cargo-deny/releases/download/[0-9.]+/' "$CI" | grep -oE
   exit 2
 }
 CI_DENY="$(printf '%s\n' "$CI_DENY_ALL" | head -1)"
+
+# The checksum is the other half of the cargo-deny pin, and it is copied into
+# both files. Bumping the version in one of them while the other keeps its old
+# checksum produces a job that dies on `sha256sum -c` — loud, but only after a
+# push, and only in whichever half was half-bumped. Both are read as sets, so a
+# file that disagrees with ITSELF is caught too.
+deny_sha_of() { grep -oE "CARGO_DENY_SHA256: '[0-9a-f]{64}'" "$1" | grep -oE '[0-9a-f]{64}' | sort -u; }
+QUALITY_DENY_SHA="$(deny_sha_of "$QUALITY")"
+CI_DENY_SHA="$(deny_sha_of "$CI")"
+[ -n "$QUALITY_DENY_SHA" ] || die "could not read CARGO_DENY_SHA256 from $QUALITY"
+[ -n "$CI_DENY_SHA" ] || die "could not read CARGO_DENY_SHA256 from $CI"
 
 # THE THIRD SITE (#43). scripts/scan.sh is what a human runs locally, and until
 # #43 it pinned nothing at all — `uvx semgrep` and `returntocorp/semgrep:latest`.
@@ -169,10 +207,11 @@ info "semgrep       $SCAN_SEMGREP   (scan.sh, uvx + docker fallbacks)"
 info "gitleaks      $GITLEAKS_PIN"
 info "osv-scanner   $OSV_PIN"
 info "uv            $UV_PIN   (quality.yml)"
-info "rust          $RUST_PIN   (adopt.sh scaffold)"
+info "rust          $RUST_PIN   (quality.yml)"
 info "rust          $CI_RUST   (ci.yml)"
-info "cargo-deny    $DENY_PIN   (adopt.sh scaffold)"
+info "cargo-deny    $DENY_PIN   (quality.yml)"
 info "cargo-deny    $CI_DENY   (ci.yml)"
+info "cargo-deny    $ADOPT_DENY   (adopt.sh, the 'install locally' line)"
 printf '\n'
 
 # --- consistency: the two Semgrep pins must agree ----------------------------
@@ -192,15 +231,22 @@ fi
 info "semgrep pins agree across all three files"
 
 # --- consistency: the Rust pair, same rule, same severity --------------------
-if [ "$RUST_PIN" != "$CI_RUST" ] || [ "$DENY_PIN" != "$CI_DENY" ]; then
+if [ "$RUST_PIN" != "$CI_RUST" ] || [ "$DENY_PIN" != "$CI_DENY" ] \
+   || [ "$DENY_PIN" != "$ADOPT_DENY" ] || [ "$QUALITY_DENY_SHA" != "$CI_DENY_SHA" ]; then
   printf '\033[31mFAIL\033[0m — Rust pins disagree:\n'
-  printf '  scripts/adopt.sh (scaffold)  : rust %s · cargo-deny %s\n' "$RUST_PIN" "$DENY_PIN"
-  printf '  .github/workflows/ci.yml     : rust %s · cargo-deny %s\n' "$CI_RUST" "$CI_DENY"
+  printf '  .github/workflows/quality.yml : rust %s · cargo-deny %s\n' "$RUST_PIN" "$DENY_PIN"
+  printf '  .github/workflows/ci.yml      : rust %s · cargo-deny %s\n' "$CI_RUST" "$CI_DENY"
+  printf '  scripts/adopt.sh (summary)    : cargo-deny %s\n' "$ADOPT_DENY"
+  if [ "$QUALITY_DENY_SHA" != "$CI_DENY_SHA" ]; then
+    printf '  cargo-deny checksums differ:\n'
+    printf '    quality.yml : %s\n' "$QUALITY_DENY_SHA"
+    printf '    ci.yml      : %s\n' "$CI_DENY_SHA"
+  fi
   printf '\nThe clippy manifest and the RUSTSEC fixture would be asserted against a\n'
   printf 'toolchain consumers are never handed. Set both files to the same versions.\n'
   exit 2
 fi
-info "rust pins agree between adopt.sh and ci.yml"
+info "rust pins agree across quality.yml, ci.yml and adopt.sh"
 
 if [ "$OFFLINE" -eq 1 ]; then
   printf '\n\033[32mPASS\033[0m — pins are internally consistent (--offline; upstream not checked)\n'

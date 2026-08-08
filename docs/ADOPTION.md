@@ -355,12 +355,13 @@ be files on disk. So Rust follows the C# pattern — adopt-time copies, like
 cd <repo> && cargo generate-lockfile   # then COMMIT Cargo.lock
 ```
 
-That copies `rustfmt.toml` and `deny.toml`, appends the `[lints]` block to
+That copies `rustfmt.toml` and `deny.toml` and appends the `[lints]` block to
 your manifest (marker-guarded, so re-running never appends twice; a manifest
 that already has its own `[lints]` gets a skip and a warning, never a merge
-attempt), and scaffolds a `rust` CI job beside the reusable workflow call. On
-a workspace root the block arrives as `[workspace.lints]`, and each member
-opts in with two lines in its own manifest:
+attempt). The CI side is the plain six-line reusable call — the same one every
+other language gets. On a workspace root the block arrives as
+`[workspace.lints]`, and each member opts in with two lines in its own
+manifest:
 
 ```toml
 [lints]
@@ -372,20 +373,28 @@ tier that matches `strict-type-checked` and `mypy --strict` — plus a curated
 cherry-pick of nursery and cargo lints (each pick and each disable justified
 by a one-line comment in `configs/rust/lints.toml`), and
 `unsafe_code = "forbid"` as the default posture. Warnings become errors **in
-CI only**, via `RUSTFLAGS=-Dwarnings` in the scaffolded job: a contributor's
+CI only**, via `RUSTFLAGS=-Dwarnings` in the `rust` job: a contributor's
 local `cargo check` warns instead of walling them mid-refactor. There is no
 Semgrep here on purpose — its Rust support is experimental, and clippy *is*
 the conventions layer for Rust.
 
-**Four things to know:**
+**Five things to know:**
 
 - **The toolchain is pinned, and that is the contract.** With warnings
   promoted to errors, a clippy upgrade that adds lints is a breaking change
-  (the STATUS §4 argument), so the scaffolded job installs a pinned version,
-  never `stable`. Bump it deliberately, in its own commit.
-- **Commit `Cargo.lock`.** The scaffolded job runs everything `--locked` and
-  fails without one — deliberately. For a binary the lockfile is not hygiene:
-  it is the document cargo-deny and Layer 2's OSV-Scanner actually read.
+  (the STATUS §4 argument), so the job installs a pinned version, never
+  `stable`. It lives in the reusable workflow, and `rust-version` is the input
+  for a repo that needs to hold one back — bump it deliberately.
+- **Commit `Cargo.lock`, or detection stops the run.** The job runs everything
+  `--locked`, which cannot run without a lockfile, so a crate that has none is
+  a crate clippy would never open. Detection refuses it by name rather than
+  reporting "no Rust here" and going green (#70). For a binary the lockfile is
+  not hygiene anyway: it is the document cargo-deny and Layer 2's OSV-Scanner
+  actually read.
+- **The gate does not run your tests.** `cargo fmt --check`, `cargo clippy` and
+  `cargo deny` — the same split as the TypeScript and Python jobs, which lint
+  and type-check but never invoke a test runner. Keep `cargo test` in a job of
+  your own.
 - **`unsafe_code` is forbidden, not denied.** `forbid` is what a stray
   `#[allow(unsafe_code)]` cannot waive. A crate that genuinely needs FFI
   lowers it to `"deny"` in its own manifest and documents why — the same
@@ -394,6 +403,30 @@ the conventions layer for Rust.
   be noisy on first run. Waive a single site with `#[allow(clippy::...)]`
   and a written reason — scoped and greppable — rather than a global allow
   in the manifest.
+
+### Upgrading — if you adopted Rust before it joined the workflow
+
+**Delete the `rust:` job from your own `.github/workflows/quality.yml`.** Early
+Rust adopters got a whole pinned-toolchain job written into their repo, because
+Rust could not ride the reusable workflow yet. It can now (#70), and `@v1` moves
+on its own — so the moment this ships, a repo still carrying that job runs
+clippy **twice**: once from the baseline, once from a copy whose toolchain pin
+only moves when someone re-runs `adopt.sh`.
+
+Nothing can do this for you. `adopt.sh` will not rewrite a workflow file you
+own, so re-running it warns and stops; and the tag moving is what triggers the
+duplication in the first place, which reaches repos that never re-run anything.
+Hence this note.
+
+Two ways out, and do not leave both jobs in place:
+
+- **Keep the baseline's** — delete your `rust:` job. The six-line `quality:`
+  call covers Rust. Note it runs `cargo fmt --check`, `cargo clippy` and
+  `cargo deny` but **not** `cargo test`; if your old job ran tests, keep that
+  part in a job of your own.
+- **Keep your own** — pass a `languages:` input without `rust`
+  (`languages: ts,dotnet,python`, or `none` for Layer 2 only) so the baseline
+  stops running it.
 
 ### Formatting — `cargo fmt`
 
@@ -414,8 +447,8 @@ cargo-audit would (RustSec — so no second tool), `bans` warns on duplicate
 semver-incompatible versions, and the **licence allowlist ships empty** for
 the same reason the Layer 2 `licenses` input has no default: an allowlist is
 a per-repo policy call, and a default would gate wrongly somewhere on day
-one. The scaffolded job therefore runs `cargo deny check advisories bans`;
-add `licenses` to that line when the allowlist holds your policy.
+one. The `rust` job therefore runs `cargo deny check advisories bans`; add
+`licenses` to that line when the allowlist holds your policy.
 
 Layer 2 needs **zero Rust changes** — Gitleaks is language-agnostic and
 OSV-Scanner reads `Cargo.lock` natively. A Rust repo on the reusable workflow
@@ -739,7 +772,7 @@ standing report shows you the real set before you commit to one.
 Node 24 / npm 11 and .NET SDK 10 were used to verify. Anything reasonably recent
 should work; the TypeScript peer range above is the one real constraint. Rust
 needs no extra installs beyond rustup — clippy and rustfmt ship with the
-toolchain, and the scaffolded CI job installs its own pinned cargo-deny
+toolchain, and the baseline's `rust` job installs its own pinned cargo-deny
 (install the same version locally to match).
 
 Layer 2 tools are optional locally — `scan.sh` falls back to `uvx` (Semgrep) or

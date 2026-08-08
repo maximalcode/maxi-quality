@@ -18,10 +18,11 @@ jobs:
 
 | Input | Default | What it does |
 |---|---|---|
-| `languages` | `auto` | `auto` detects by lockfile/project glob. A CSV subset of `ts,dotnet,python` forces it. `none` runs **Layer 2 only** — the adoption entry point for a repo that wants secrets, vulns and conventions gated before taking on Layer 1. **Rust is deliberately not in this list**: its lint config lives in the consumer's own `Cargo.toml`, so `adopt.sh` scaffolds a pinned-toolchain `rust` job in the consumer's workflow instead ([ADOPTION.md](ADOPTION.md) §4b) — Layer 2 already covers Rust with no input at all, because OSV-Scanner reads `Cargo.lock` natively |
+| `languages` | `auto` | `auto` detects by lockfile/project glob. A CSV subset of `ts,dotnet,python,rust` forces it. `none` runs **Layer 2 only** — the adoption entry point for a repo that wants secrets, vulns and conventions gated before taking on Layer 1 |
 | `node-version` | `24` | |
 | `dotnet-version` | `10.0.x` | |
 | `python-version` | `3.12` | |
+| `rust-version` | `1.97.1` | Pinned toolchain for the `rust` job. Same argument as `uv-version` — hold or advance it without waiting on this repo, but the default is a **pin**, never `stable`: with `RUSTFLAGS=-Dwarnings`, a toolchain that adds a clippy lint is a breaking change |
 | `uv-version` | `0.12.1` | Pinned uv for lockfile-based Python projects. Exposed so a consumer can hold or advance it without waiting on this repo — but it has a **pin** as a default, never `latest` |
 | `changed-only` | *(empty)* | Base ref for new-code-only Layer 2. Empty = full scan |
 | `licenses` | *(empty)* | Comma-separated SPDX allowlist. Anything outside it fails. **No default allowlist**, deliberately |
@@ -29,8 +30,9 @@ jobs:
 | `max-annotations` | `50` | Cap per run. GitHub drops them past an undocumented limit; the omitted count is always stated |
 
 Detection **fails loud rather than skipping**: a `package.json` with no lockfile
-at or above it, or a `.csproj` no solution references, stops the run. Both used
-to detect as "no such language here" and go green over code nothing had opened.
+at or above it, a `.csproj` no solution references, or a `Cargo.toml` with no
+`Cargo.lock` at or above it stops the run. All three used to detect as "no such
+language here" and go green over code nothing had opened.
 
 The workflow also **outputs what it detected**, so a caller can assert detection
 actually fired. Without that, a run is green in two very different cases — the

@@ -21,8 +21,9 @@
 # BOTH the workflow and the action — they move together, never independently.
 #
 # v1 scope (deliberate): TypeScript (npm, or pnpm with a packageManager field),
-# C#, and Python (uv or pip). Anything else fails loud, not silent — detection
-# refuses to hand back "no TypeScript here" for a repo that plainly has some.
+# C#, Python (uv or pip) and Rust (a committed Cargo.lock). Anything else fails
+# loud, not silent — detection refuses to hand back "no TypeScript here" for a
+# repo that plainly has some.
 
 name: quality
 
@@ -32,7 +33,8 @@ on:
       languages:
         description: >-
           'auto' detects by lockfile/project glob. Or a CSV subset of
-          "ts,dotnet,python" to force (e.g. "ts" to skip .NET on a mixed repo).
+          "ts,dotnet,python,rust" to force (e.g. "ts" to skip .NET on a mixed
+          repo).
           'none' runs Layer 2 ONLY — the adoption entry point for a repo that
           wants secrets/vulns/conventions gated before taking on Layer 1.
         type: string
@@ -46,6 +48,15 @@ on:
       python-version:
         type: string
         default: '3.12'
+      rust-version:
+        description: >-
+          Pinned Rust toolchain. Same argument as uv-version below — a consumer
+          can hold or advance it without waiting on this repo, but the default
+          is a PIN, never 'stable'. With RUSTFLAGS=-Dwarnings in the job, a
+          toolchain bump that adds a clippy lint is a breaking change, and
+          'stable' would ship one the morning it lands.
+        type: string
+        default: '1.97.1'
       uv-version:
         description: >-
           Pinned uv version for lockfile-based Python projects. Exposed as an
@@ -105,6 +116,9 @@ on:
       has_python:
         description: 'true when at least one Python project was detected'
         value: ${{ jobs.detect.outputs.has_python }}
+      has_rust:
+        description: 'true when at least one Rust crate was detected'
+        value: ${{ jobs.detect.outputs.has_rust }}
 
 jobs:
   detect:
@@ -113,9 +127,11 @@ jobs:
       ts_dirs: ${{ steps.scan.outputs.ts_dirs }}
       dotnet_targets: ${{ steps.scan.outputs.dotnet_targets }}
       python_dirs: ${{ steps.scan.outputs.python_dirs }}
+      rust_dirs: ${{ steps.scan.outputs.rust_dirs }}
       has_ts: ${{ steps.scan.outputs.has_ts }}
       has_dotnet: ${{ steps.scan.outputs.has_dotnet }}
       has_python: ${{ steps.scan.outputs.has_python }}
+      has_rust: ${{ steps.scan.outputs.has_rust }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - id: scan
@@ -295,19 +311,167 @@ jobs:
             fi
           fi
 
+          # Rust: the Cargo.lock directories, keyed and cross-checked exactly
+          # like TS above — in a cargo workspace only the ROOT carries a lock
+          # while every member carries a manifest, so keying on Cargo.toml would
+          # fan out one job per member and analyse the same tree N times.
+          #
+          # The cross-check is not defensive here, it is the point. The job
+          # below runs `--locked`, which REFUSES to run without a lockfile, so a
+          # crate with no Cargo.lock at or above it cannot be analysed at all.
+          # Rust arrived in this workflow (#70) precisely because it was going
+          # green unexamined; a lockless crate is that same outcome one level
+          # down, so it stops the run rather than reducing the scan.
+          #
+          # target/ is pruned: it holds manifests cargo vendored during a build,
+          # which are not this repo's code. That name is cargo's reserved build
+          # directory rather than a guess, so pruning it costs nothing real.
+          # Rust is the one branch that PARSES a manifest instead of globbing
+          # for one, so it is python rather than more find/grep. Two facts force
+          # that, and both are the same failure the .NET branch above guards:
+          #
+          #   1. `--locked` cannot run without a Cargo.lock, so a crate with
+          #      none is a crate clippy would never open.
+          #   2. `cargo clippy --workspace` analyses a workspace's MEMBERS. A
+          #      crate that is not one sits under the root's lockfile looking
+          #      perfectly covered, and nothing ever reads it — the
+          #      .csproj-no-solution-references bug in Cargo's spelling.
+          #
+          # (2) is why sed is not good enough: `members` is a list of globs in
+          # TOML, and guessing at TOML is how you get a guard that passes
+          # wrongly. tomllib is stdlib from 3.11 and this job pins
+          # ubuntu-latest, which ships newer.
+          rust_dirs='[]'
+          if want rust; then
+            rust_dirs=$(python3 - <<'PY'
+          import glob, json, os, sys, tomllib
+
+          PRUNE = {'node_modules', 'target', '.git', '.venv'}
+          manifests, locks = [], []
+          for root, dirs, files in os.walk('.'):
+              dirs[:] = [d for d in dirs if d not in PRUNE]
+              rel = os.path.relpath(root, '.')
+              if 'Cargo.toml' in files:
+                  manifests.append(rel)
+              if 'Cargo.lock' in files:
+                  locks.append(rel)
+
+          lockset = set(locks)
+
+          def lock_above(d):
+              p = d
+              while True:
+                  if p in lockset:
+                      return p
+                  if p == '.':
+                      return None
+                  p = os.path.dirname(p) or '.'
+
+          def load(path):
+              try:
+                  with open(path, 'rb') as fh:
+                      return tomllib.load(fh)
+              except (OSError, tomllib.TOMLDecodeError) as exc:
+                  print(f'::error::{path} could not be parsed as TOML: {exc}', file=sys.stderr)
+                  sys.exit(1)
+
+          # Membership is cargo's rule, not a convenient approximation of it,
+          # because this check HARD-FAILS a consumer's build and a false
+          # positive there is worse than the hole it closes. Three sources, all
+          # from the cargo book's workspace chapter:
+          #   - the root package itself, when the root manifest has [package];
+          #   - every `members` glob;
+          #   - "All path dependencies residing in the workspace directory
+          #     automatically become members" — transitively, so this walks.
+          # `exclude` is the consumer saying "not part of this build", which is
+          # a deliberate statement rather than an oversight; those crates are
+          # dropped from the question entirely, exactly as `languages:` without
+          # rust drops the whole language.
+          covered, excluded = set(locks), set()
+          for d in locks:
+              root_mf = os.path.join(d, 'Cargo.toml')
+              if not os.path.isfile(root_mf):
+                  continue
+              doc = load(root_mf)
+              ws = doc.get('workspace')
+              if ws is None:
+                  continue
+              for pat in ws.get('exclude', []):
+                  for hit in glob.glob(os.path.join(d, pat)):
+                      excluded.add(os.path.relpath(hit, '.'))
+              queue = [d] if 'package' in doc else []
+              for pat in ws.get('members', []):
+                  for hit in glob.glob(os.path.join(d, pat)):
+                      if os.path.isfile(os.path.join(hit, 'Cargo.toml')):
+                          queue.append(os.path.relpath(hit, '.'))
+              seen = set()
+              while queue:
+                  m = queue.pop()
+                  if m in seen:
+                      continue
+                  seen.add(m)
+                  covered.add(m)
+                  mdoc = load(os.path.join(m, 'Cargo.toml'))
+                  tables = [mdoc.get(t, {}) for t in
+                            ('dependencies', 'dev-dependencies', 'build-dependencies')]
+                  tables.append(doc.get('workspace', {}).get('dependencies', {}))
+                  for table in tables:
+                      for spec in table.values():
+                          if not isinstance(spec, dict) or 'path' not in spec:
+                              continue
+                          dep = os.path.relpath(os.path.join(m, spec['path']), '.')
+                          # "residing in the workspace directory" — a path
+                          # dependency OUTSIDE it is not auto-promoted, and
+                          # relpath starting '..' is exactly that test.
+                          inside = not os.path.relpath(dep, d).startswith('..')
+                          if inside and os.path.isfile(os.path.join(dep, 'Cargo.toml')):
+                              queue.append(dep)
+
+          no_lock = sorted(m for m in manifests if m not in excluded and lock_above(m) is None)
+          orphaned = sorted(m for m in manifests
+                            if m not in excluded and lock_above(m) is not None and m not in covered)
+
+          # The two causes get separate messages because they have separate
+          # fixes, and "here is the list" is the difference between a message
+          # someone acts on and one they file a bug about.
+          if no_lock:
+              print(
+                  f'::error::{len(no_lock)} Rust crate(s) have no Cargo.lock at or above them: '
+                  f"{' '.join(no_lock)} — so nothing would have linted them. The Rust job runs "
+                  "--locked, which cannot run without one: commit a lockfile ('cargo "
+                  "generate-lockfile'), or pass languages: without rust to skip them deliberately.",
+                  file=sys.stderr)
+          if orphaned:
+              print(
+                  f'::error::{len(orphaned)} Rust crate(s) are under a workspace that does not list '
+                  f"them as members: {' '.join(orphaned)} — cargo analyses members only, so they "
+                  "would never be built and therefore never analysed. Add them to the workspace's "
+                  "members, or give each its own committed Cargo.lock so it is gated in its own right.",
+                  file=sys.stderr)
+          if no_lock or orphaned:
+              sys.exit(1)
+
+          print(json.dumps(sorted(locks), separators=(',', ':')))
+          PY
+            )
+          fi
+
           has_ts=false; [[ "$ts_dirs" != "[]" ]] && has_ts=true
           has_dotnet=false; [[ "$dotnet_targets" != "[]" ]] && has_dotnet=true
           has_python=false; [[ "$python_dirs" != "[]" ]] && has_python=true
+          has_rust=false; [[ "$rust_dirs" != "[]" ]] && has_rust=true
 
           {
             echo "ts_dirs=$ts_dirs"
             echo "dotnet_targets=$dotnet_targets"
             echo "python_dirs=$python_dirs"
+            echo "rust_dirs=$rust_dirs"
             echo "has_ts=$has_ts"
             echo "has_dotnet=$has_dotnet"
             echo "has_python=$has_python"
+            echo "has_rust=$has_rust"
           } >> "$GITHUB_OUTPUT"
-          echo "detected: ts=$ts_dirs dotnet=$dotnet_targets python=$python_dirs"
+          echo "detected: ts=$ts_dirs dotnet=$dotnet_targets python=$python_dirs rust=$rust_dirs"
 
   typescript:
     needs: detect
@@ -464,6 +628,85 @@ jobs:
           fi
           ruff check .
           mypy .
+
+  # Rust rides the reusable workflow like every other language (#70). It used to
+  # be a job scripts/adopt.sh stamped into the CONSUMER's workflow file, on the
+  # argument that the toolchain bump should be visible in the consumer's own
+  # diff. That argument lost to the one CONCEPT G1 is built on: a scaffolded job
+  # only moves when someone re-runs adopt.sh, which is copy-paste-drift with
+  # extra steps. The pins live HERE now, and `rust-version` is the input for a
+  # consumer who genuinely needs to hold one back.
+  #
+  # clippy IS the conventions layer for Rust — Semgrep's Rust support is
+  # experimental and stays out — so this job is Layer 1 and Layer 2's Rust
+  # story at once. Layer 2 itself needs nothing Rust-specific: Gitleaks is
+  # language-agnostic and OSV-Scanner reads Cargo.lock natively.
+  rust:
+    needs: detect
+    if: needs.detect.outputs.has_rust == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: ${{ fromJSON(needs.detect.outputs.rust_dirs) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # env:, not a splice into the script — the dotnet job below spells out
+      # why at length. This value is an input rather than a globbed filename,
+      # so the exposure is smaller, but the habit is the mitigation.
+      - name: Pinned Rust toolchain
+        shell: bash
+        env:
+          RUST_VERSION: ${{ inputs.rust-version }}
+        run: |
+          set -Eeuo pipefail
+          rustup toolchain install "$RUST_VERSION" --profile minimal --component clippy,rustfmt
+          rustup default "$RUST_VERSION"
+
+      # cargo-deny is pinned here and is deliberately NOT an input, unlike the
+      # toolchain: the checksum below is bound to this exact version, so a
+      # version input without a matching checksum input would either break the
+      # verification or invite dropping it. Verifying the download is what makes
+      # this "we downloaded THAT binary" rather than "we downloaded a binary" —
+      # the same standard every SHA-pinned `uses:` line here meets, in a shape
+      # `uses:` cannot express. Bump the two together.
+      - name: Pinned cargo-deny (checksum-verified)
+        shell: bash
+        env:
+          CARGO_DENY_SHA256: '9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f'
+        run: |
+          set -Eeuo pipefail
+          curl -sSfL -o /tmp/cargo-deny.tgz \
+            https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
+          echo "${CARGO_DENY_SHA256}  /tmp/cargo-deny.tgz" | sha256sum -c -
+          tar xzf /tmp/cargo-deny.tgz -C "$HOME/.cargo/bin" --strip-components=1 \
+            cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny
+
+      - name: Format, lint and audit
+        shell: bash
+        working-directory: ${{ matrix.dir }}
+        run: |
+          set -Eeuo pipefail
+          # --all / --workspace on BOTH, and they are load-bearing rather than
+          # belt-and-braces. Without a package selection flag cargo operates on
+          # `default-members`, which defaults to the ROOT PACKAGE ALONE whenever
+          # the root manifest has a [package] section — the cargo book puts it
+          # flatly: "when a root package is present, you can only operate on it
+          # using --package and --workspace flags". So on the extremely common
+          # root-package-plus-members layout, a bare `cargo clippy` passes
+          # having never opened a single member crate. That is #70's own bug,
+          # one directory down, and detection cannot see it because the members
+          # are genuinely covered by the root's lockfile.
+          cargo fmt --all --check
+          # -Dwarnings HERE and not in the manifest: a contributor's local
+          # `cargo check` should warn them, not wall them mid-refactor. CI is
+          # the gate. --locked is why detection refuses a crate with no
+          # lockfile: without one this line cannot run at all.
+          RUSTFLAGS=-Dwarnings cargo clippy --workspace --all-targets --locked
+          # advisories covers what cargo-audit would (the same RustSec feed);
+          # add 'licenses' once deny.toml's allowlist holds your policy.
+          # cargo-deny reads the whole workspace graph already.
+          cargo deny check advisories bans
 
   layer2:
     runs-on: ubuntu-latest

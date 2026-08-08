@@ -39,9 +39,9 @@
 #   rust     deny.toml                     <- configs/rust/deny.toml
 #   rust     Cargo.toml                    += configs/rust/lints.toml ([lints])
 #   always   .maxi-quality.yml             (commented starter, only if absent)
-#   any      .github/workflows/quality.yml (unless --no-workflow; with a
-#                                           pinned-toolchain rust job when
-#                                           Rust is detected)
+#   any      .github/workflows/quality.yml (unless --no-workflow — the same six
+#                                           lines for every language, Rust
+#                                           included since #70)
 #   --hooks  .git/hooks/pre-commit         <- hooks/pre-commit (only with --hooks)
 #
 # The TS pair is a copy for the same reason Directory.Build.props is: a private
@@ -55,17 +55,13 @@ set -Eeuo pipefail
 
 BASELINE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# The Rust toolchain and cargo-deny versions stamped into the scaffolded CI.
-# PINNED for the reason STATUS §4 gives: with warnings promoted to errors, an
-# analyzer upgrade that adds lints is a breaking change, so "stable" is not a
-# version. scripts/check-pins.sh asserts these agree with the layer1-rust job
-# in ci.yml — CI must validate the same toolchain consumers are handed.
-RUST_TOOLCHAIN_PIN="1.97.1"
+# The cargo-deny version, for the "install it locally to match CI" line in the
+# summary only — this script no longer stamps a Rust job into anyone's workflow
+# (#70), so nothing here installs it. The pins that RUN live in
+# .github/workflows/quality.yml, and scripts/check-pins.sh asserts they agree
+# with ci.yml's layer1-rust job: CI must validate the same toolchain consumers
+# are handed.
 CARGO_DENY_PIN="0.20.2"
-# From the .sha256 file next to the release artifact — the scaffolded job
-# verifies the download before executing it, so a consumer's CI never runs an
-# unverified binary this script pointed it at. Bump it together with the pin.
-CARGO_DENY_SHA256="9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f"
 
 # --- argument parsing --------------------------------------------------------
 TARGET=""
@@ -407,45 +403,31 @@ jobs:
   quality:
     uses: maximalcode/maxi-quality/.github/workflows/quality.yml@$REF
 "
-  # Rust Layer 1 cannot ride the reusable workflow: the lint config lives in
-  # THIS repo's manifest, and the toolchain that runs it should be this repo's
-  # pinned one, visible in this repo's diff when it bumps. Layer 2 needs no
-  # Rust changes — Gitleaks is language-agnostic and OSV-Scanner reads
-  # Cargo.lock natively — so the reusable call above already covers it.
-  if [ "$HAS_RUST" -eq 1 ]; then
-    WORKFLOW_BODY="$WORKFLOW_BODY
-  # Rust Layer 1 (maxi-quality). Toolchain and cargo-deny are PINNED: with
-  # warnings promoted to errors, an analyzer upgrade that adds lints is a
-  # breaking change — bump both deliberately, never via a floating 'stable'.
-  rust:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Pinned Rust toolchain
-        run: |
-          rustup toolchain install $RUST_TOOLCHAIN_PIN --profile minimal --component clippy,rustfmt
-          rustup default $RUST_TOOLCHAIN_PIN
-      - name: Pinned cargo-deny (checksum-verified)
-        run: |
-          curl -sSfL -o /tmp/cargo-deny.tgz \\
-            https://github.com/EmbarkStudios/cargo-deny/releases/download/$CARGO_DENY_PIN/cargo-deny-$CARGO_DENY_PIN-x86_64-unknown-linux-musl.tar.gz
-          echo '$CARGO_DENY_SHA256  /tmp/cargo-deny.tgz' | sha256sum -c -
-          tar xzf /tmp/cargo-deny.tgz -C \"\$HOME/.cargo/bin\" --strip-components=1 \\
-            cargo-deny-$CARGO_DENY_PIN-x86_64-unknown-linux-musl/cargo-deny
-      - run: cargo fmt --check
-      # -Dwarnings HERE and not in the manifest: a contributor's local
-      # \`cargo check\` should warn, not wall them. CI is the gate.
-      - name: cargo clippy — all targets, warnings are errors
-        env:
-          RUSTFLAGS: -Dwarnings
-        run: cargo clippy --all-targets --locked
-      # advisories covers what cargo-audit would (RustSec); add 'licenses' to
-      # the list once deny.toml's allowlist holds your policy.
-      - run: cargo deny check advisories bans
-      - run: cargo test --locked
-"
+  # THE UPGRADE PATH (#70). Until #70 Rust could not ride the reusable
+  # workflow, so this script stamped a whole pinned-toolchain `rust:` job into
+  # the consumer's own file. Those jobs are still out there, and the reusable
+  # call now runs Rust itself — so a repo adopted before #70 would run clippy
+  # TWICE, the second time against pins that only move when someone re-runs
+  # this script. write_new leaves an existing workflow alone, correctly: it is
+  # the consumer's file. Which means this cannot be fixed silently, only said
+  # out loud.
+  WORKFLOW_PATH="$TARGET/.github/workflows/quality.yml"
+  # Keyed on the JOB, not on the comment a pre-#70 adopt.sh wrote above it. A
+  # consumer who reworded or deleted that comment still runs clippy twice, and
+  # a marker only the tidy repos kept is a check that stays quiet on exactly
+  # the repos most likely to have edited the job as well.
+  if [ -f "$WORKFLOW_PATH" ] && grep -qE '^[[:space:]]+rust:[[:space:]]*$' "$WORKFLOW_PATH" 2>/dev/null; then
+    warn "$WORKFLOW_PATH already declares a 'rust:' job of its own."
+    warn "Since #70 the reusable workflow runs Rust itself, so that job is a"
+    warn "second clippy run — and if adopt.sh scaffolded it, one pinned to a"
+    warn "toolchain that no longer moves. Delete it: the 'quality:' call covers"
+    warn "Rust now. To keep your own instead, pass a 'languages:' input without"
+    warn "rust so this baseline stops running it. Do not leave both."
+    warn "Note the baseline job does NOT run 'cargo test': it is a quality gate,"
+    warn "like the TypeScript and Python jobs. Keep your tests in their own job."
+    NEEDS_MERGE=1
   fi
-  write_new "$TARGET/.github/workflows/quality.yml" "$WORKFLOW_BODY"
+  write_new "$WORKFLOW_PATH" "$WORKFLOW_BODY"
 fi
 
 # --- the pre-commit hook, only on --hooks ------------------------------------
@@ -596,26 +578,30 @@ fi
 if [ "$HAS_RUST" -eq 1 ]; then
   printf '  Rust\n'
   printf '    1. No new dev dependencies — clippy and rustfmt ship with the\n'
-  printf '       toolchain; cargo-deny is installed by the scaffolded CI job.\n'
+  printf '       toolchain; cargo-deny is installed by the baseline rust job.\n'
   printf '       Locally: rustup component add clippy rustfmt, and install\n'
   printf '       cargo-deny %s to match CI.\n' "$CARGO_DENY_PIN"
-  printf '    2. COMMIT Cargo.lock. The CI job runs everything with --locked, so\n'
-  printf '       an uncommitted lockfile fails the very first run — deliberately.\n'
-  printf '       For a binary the lockfile is not optional hygiene: it is what\n'
-  printf '       cargo-deny and Layer 2 OSV-Scanner actually read.\n'
-  printf '    3. Workspace roots got [workspace.lints]; each member crate opts in\n'
+  printf '    2. COMMIT Cargo.lock. The gate runs everything with --locked, and\n'
+  printf '       detection REFUSES a crate that has none — a lockless crate is\n'
+  printf '       one clippy cannot open, and this baseline does not do silently\n'
+  printf '       unexamined. For a binary the lockfile is not optional hygiene\n'
+  printf '       either: it is what cargo-deny and OSV-Scanner actually read.\n'
+  printf '    3. The gate runs fmt, clippy and cargo-deny — NOT your tests, the\n'
+  printf '       same split as every other language here. Keep cargo test in a\n'
+  printf '       job of your own.\n'
+  printf '    4. Workspace roots got [workspace.lints]; each member crate opts in\n'
   printf '       with two lines in its own Cargo.toml:  [lints]  workspace = true\n'
-  printf '    4. An existing codebase will be noisy on first run — pedantic is\n'
+  printf '    5. An existing codebase will be noisy on first run — pedantic is\n'
   printf '       the strict tier and there is no ratchet for a compiler lint\n'
   printf '       (README, the ratchet asymmetry). Waive a single site with\n'
   printf '       #[allow(clippy::...)] and a reason; scoped and greppable beats\n'
   printf '       a global allow in the manifest.\n'
-  printf '    5. unsafe_code is FORBIDDEN by default. A crate that genuinely\n'
+  printf '    6. unsafe_code is FORBIDDEN by default. A crate that genuinely\n'
   printf '       needs FFI lowers it to "deny" in its own manifest and documents\n'
   printf '       why — that is a policy call this script does not make for you.\n'
-  printf '    6. OPTIONAL — the formatter: cargo fmt once, alone, and put that\n'
+  printf '    7. OPTIONAL — the formatter: cargo fmt once, alone, and put that\n'
   printf '       commit in .git-blame-ignore-revs. Same rule as Prettier/ruff.\n'
-  printf '    7. OPTIONAL — licences: deny.toml ships an EMPTY allowlist, so the\n'
+  printf '    8. OPTIONAL — licences: deny.toml ships an EMPTY allowlist, so the\n'
   printf '       licenses check is not in the CI gate. Fill the allowlist and add\n'
   printf '       licenses to the cargo deny check line when you have a policy.\n'
 fi
