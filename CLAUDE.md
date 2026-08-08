@@ -214,3 +214,28 @@ per-language id is not new scope; inventing a new convention is.
 - **`samples/` is the test suite.** Every config in `configs/` must be proven by
   an intentionally-bad sample that fails. If a sample stops failing, the config
   regressed — fix the config, do not weaken the sample.
+
+---
+
+## Agent skills
+
+Per-repo configuration for the engineering skills. These files are what the
+skills read; keep them in sync if the answers change.
+
+### Issue tracker
+
+GitHub Issues on `maximalcode/maxi-quality`, via the `gh` CLI. **The tracker is
+public and permanent** — §2's naming rules apply to every issue title, body and
+comment. See [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md).
+
+### Triage labels
+
+The five canonical roles, each label string equal to its name (`needs-triage`,
+`needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See
+[`docs/agents/triage-labels.md`](docs/agents/triage-labels.md).
+
+### Domain docs
+
+Single-context — `CONTEXT.md` + `docs/adr/` at the repo root, with
+`docs/CONCEPT.md` remaining the source of truth (§3). See
+[`docs/agents/domain.md`](docs/agents/domain.md).
