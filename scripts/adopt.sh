@@ -724,7 +724,12 @@ if [ "$HAS_JAVA" -eq 1 ]; then
   printf '       turns OFF classpath processor discovery — that is Maven behaviour,\n'
   printf '       not something this baseline chose, and it is the one way\n'
   printf '       adopting this can break a build that was previously fine.\n'
-  printf '    3. NullAway is told your code is yours via ${project.groupId}. If\n'
+  # Written with %s rather than inline. The literal is a MAVEN property, and a
+  # dollar-brace inside single quotes is flagged (correctly) as a shell
+  # expansion someone forgot to make work — SC2016. Note also that a comment
+  # line STARTING with the linter's own name is read as a directive to it, so
+  # this paragraph deliberately does not.
+  printf '    3. NullAway is told your code is yours via %sproject.groupId}. If\n' '$''{'
   printf '       your sources do not live under your groupId, change that one\n'
   printf '       value — a wrong prefix means NullAway analyses NOTHING and says\n'
   printf '       so nowhere.\n'

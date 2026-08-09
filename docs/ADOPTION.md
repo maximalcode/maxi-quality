@@ -549,6 +549,20 @@ OSV-Scanner reads `pom.xml` natively. Unlike Rust, Semgrep supports Java well, s
 the conventions are real Layer 2 rules rather than being folded into the Layer 1
 analyzer.
 
+**One limit worth knowing: OSV-Scanner sees your DIRECT dependencies only.** A
+`pom.xml` does not contain its dependency graph, so resolving it means fetching
+every POM and BOM from Maven Central at scan time — over a hundred requests for
+one Spring Boot project, and Maven Central rate-limits them (measured: 9 × HTTP
+429 and a failed scan). `scan.sh` therefore passes `--no-resolve`: a gate that
+goes red when a registry is busy is one people re-run until it passes and then
+ignore.
+
+The trade-off is the same one .NET has without a `packages.lock.json`, and it
+has the same answer — it is yours to make, not this baseline's to make silently.
+If you want transitive coverage, run it yourself against a resolved tree
+(`mvn dependency:tree`, or `mvn dependency:list -DoutputFile=`) on whatever
+cadence suits you. That is a decision, not a chore this script should guess at.
+
 ---
 
 ## 5. CI — Layer 2, and the whole point

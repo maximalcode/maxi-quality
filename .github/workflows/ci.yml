@@ -1854,6 +1854,17 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.12'
+      # PyYAML, because the Rust and Java steps below parse the workflow file
+      # adopt.sh scaffolds. The runner image does not ship it, and this job is
+      # the only one that needed it without installing it — which is why the
+      # `rust:` assertion had never actually run.
+      - name: Install PyYAML
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -c 'import yaml' 2>/dev/null \
+            || python3 -m pip install --quiet --break-system-packages pyyaml
+          python3 -c 'import yaml'
       - name: Exit codes and dry-run honesty
         shell: bash
         run: |
@@ -2903,7 +2914,7 @@ jobs:
           eq 'self has_rust' "$(val has_rust)" true
           eq 'self rust_dirs' "$(val rust_dirs)" '["examples/rust-cli","samples/rust","samples/rust-clean"]'
           eq 'self has_java' "$(val has_java)" true
-          eq 'self java_dirs' "$(val java_dirs)" '["samples/java","samples/java-clean","samples/java-lint"]'
+          eq 'self java_dirs' "$(val java_dirs)" '["examples/java-maven","samples/java","samples/java-clean","samples/java-lint"]'
 
           echo 'OK: every detection fixture classified, and the two silent skips now fail loud'
 

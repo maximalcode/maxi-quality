@@ -467,8 +467,35 @@ run_osv() {
 
   # OSV has no changed-only mode: a vulnerable dependency is vulnerable
   # regardless of which commit introduced it.
+  #
+  # --no-resolve, and it is a MEASURED decision rather than a default anyone
+  # would guess (2026-08-09, osv-scanner v2.4.0, adding the Java layer).
+  #
+  # Lockfiles are unaffected by this flag — package-lock.json, Cargo.lock,
+  # requirements.txt and uv.lock are read exactly as before. What it disables is
+  # transitive resolution of MANIFESTS, which in practice means Maven: a
+  # pom.xml's dependency graph is not in the file, so osv-scanner walks it by
+  # fetching every POM and BOM in the tree from Maven Central at scan time.
+  #
+  # On a Spring Boot pom that is over a hundred requests per run, and Maven
+  # Central rate-limits them. Measured on this repo's own tree: WITH resolution
+  # the scan died with 9 × HTTP 429 and exit 127; WITHOUT it, exit 0 — and the
+  # per-file package counts were IDENTICAL for every manifest and lockfile,
+  # because resolution never completed before being throttled.
+  #
+  # A gate that goes red when a third-party registry is busy is not a gate; it
+  # is a check people learn to re-run until it passes, and then to ignore. So
+  # the flag is on.
+  #
+  # WHAT IT COSTS, stated plainly rather than buried: for a Maven project this
+  # means DIRECT dependencies only. Transitive vulnerabilities — which is most
+  # of them in the JVM ecosystem — are not seen here. That is the same
+  # trade-off .NET already has without a packages.lock.json (README: 4 findings
+  # vs 7 on the same project), and it has the same answer: it is the consumer's
+  # call, made with `mvn dependency:tree` or a lockfile-equivalent of their own,
+  # not something this script decides silently by being slow and flaky instead.
   local rc=0
-  "${RESOLVED_CMD[@]}" scan source --recursive "$root" || rc=$?
+  "${RESOLVED_CMD[@]}" scan source --recursive --no-resolve "$root" || rc=$?
   # osv keeps its own three-way result: 128 means "no lockfiles found", which
   # is neither clean nor a finding, so record_result would mislabel it.
   case "$rc" in
