@@ -1679,7 +1679,11 @@ jobs:
           need '--json-output=/repo/.maxi-quality-semgrep.json'
           # -w /repo is what made the docker path correct while native was not.
           need '-w /repo ghcr.io/gitleaks/gitleaks:latest git /repo'
-          need 'ghcr.io/google/osv-scanner:latest scan source --recursive /repo'
+          # --no-resolve is asserted rather than tolerated: it is what keeps a
+          # Maven pom from turning this gate into 100+ Maven Central requests
+          # and an HTTP 429 (STATUS §4), and it is exactly the kind of flag that
+          # gets dropped by someone tidying an argv line.
+          need 'ghcr.io/google/osv-scanner:latest scan source --recursive --no-resolve /repo'
           need 'scan source --recursive --licenses=MIT /repo'
           need 'scan source --recursive --all-packages --licenses'
           echo 'OK: all three ladders resolve to the documented docker commands'
