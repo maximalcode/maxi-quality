@@ -77,3 +77,46 @@ rules:
           - metavariable-regex:
               metavariable: $NAME
               regex: '(?i).*(amount|price|total|balance|cost|fee|salary|payment|subtotal|discount|tax).*'
+
+  # Java, added for issue #10. Java declares a type on every field, local and
+  # parameter, so the coverage is the C# rule's rather than the Python rule's
+  # narrower one — nothing here depends on somebody having written an
+  # annotation.
+  #
+  # Error Prone has no check for this: measured 2026-08-09, a planted
+  # `double price` came back clean.
+  - id: no-float-for-money-java
+    message: >-
+      Binary floating point cannot represent 0.10 exactly, so money in a
+      double/float silently drifts once you sum enough rows. Use
+      java.math.BigDecimal or integer minor units for any amount, price, total,
+      balance or fee.
+    severity: ERROR
+    languages: [java]
+    paths:
+      exclude:
+        - "*Test.java"
+        - "*Tests.java"
+        - "*IT.java"
+        - "**/test/**"
+    pattern-either:
+      # Fields and locals.
+      - patterns:
+          - pattern-either:
+              - pattern: double $NAME;
+              - pattern: float $NAME;
+              - pattern: double $NAME = ...;
+              - pattern: float $NAME = ...;
+          - metavariable-regex:
+              metavariable: $NAME
+              regex: '(?i).*(amount|price|total|balance|cost|fee|salary|payment|subtotal|discount|tax).*'
+      # Method parameters. The body matters here for the same reason it does in
+      # the C# rule: without `{ ... }` the pattern does not match a real
+      # declaration.
+      - patterns:
+          - pattern-either:
+              - pattern: $RET $M(..., double $NAME, ...) { ... }
+              - pattern: $RET $M(..., float $NAME, ...) { ... }
+          - metavariable-regex:
+              metavariable: $NAME
+              regex: '(?i).*(amount|price|total|balance|cost|fee|salary|payment|subtotal|discount|tax).*'

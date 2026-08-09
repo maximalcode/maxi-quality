@@ -110,23 +110,50 @@ if [ "$CI_SEMGREP_COUNT" -ne 1 ]; then
   exit 2
 fi
 
-# THE RUST PAIR (#58). The toolchain and cargo-deny are pinned in TWO places:
-# adopt.sh stamps them into every consumer's scaffolded workflow, and ci.yml's
-# layer1-rust job installs its own. If they drift, CI validates the finding
-# manifests against a clippy consumers never run — the exact Semgrep failure
-# this script was written for, wearing a different toolchain.
+# THE RUST PAIR (#58, and #70 moved one half of it). The toolchain and
+# cargo-deny are pinned in TWO places: quality.yml's rust job is the one every
+# consumer actually runs, and ci.yml's layer1-rust job installs its own to
+# validate the fixtures. If they drift, CI validates the finding manifests
+# against a clippy consumers never run — the exact Semgrep failure this script
+# was written for, wearing a different toolchain.
+#
+# The consumer-facing half used to be scripts/adopt.sh, which stamped a pinned
+# job into each consumer's own workflow file. Since #70 it is quality.yml, so
+# this is now an assertion about the file that runs rather than about the file
+# that once wrote the file that ran.
+RUST_PIN="$(pin_of rust-version '      ' "$QUALITY")"
+[ -n "$RUST_PIN" ] || die "could not read rust-version from $QUALITY"
+# Declared is not used — the same decorative-pin trap as scan.sh's (#43). Both
+# halves are checked: an input nothing reads, and a rustup line that hardcodes
+# a version instead of reading the input, are the same failure from either end.
+grep -q 'RUST_VERSION: [$]{{ inputs.rust-version }}' "$QUALITY" \
+  || die "$QUALITY declares rust-version but no step passes it through — the pin is decorative"
+grep -q 'rustup toolchain install "[$]RUST_VERSION"' "$QUALITY" \
+  || die "$QUALITY declares rust-version but the rust job no longer installs it — the pin is decorative"
+
+# cargo-deny is a literal URL rather than an input (the checksum is bound to the
+# version — quality.yml says why), so it is read the same way as ci.yml's.
+QUALITY_DENY_ALL="$(grep -oE 'cargo-deny/releases/download/[0-9.]+/' "$QUALITY" | grep -oE '[0-9]+\.[0-9.]+' | sort -u)"
+[ -n "$QUALITY_DENY_ALL" ] || die "could not read any cargo-deny pin from $QUALITY"
+[ "$(printf '%s\n' "$QUALITY_DENY_ALL" | grep -c .)" -eq 1 ] || {
+  printf '\033[31mFAIL\033[0m — quality.yml pins more than one cargo-deny:\n'
+  printf '%s\n' "$QUALITY_DENY_ALL" | sed 's/^/  /'
+  exit 2
+}
+DENY_PIN="$(printf '%s\n' "$QUALITY_DENY_ALL" | head -1)"
+
+# THE THIRD CARGO-DENY SITE. adopt.sh no longer installs cargo-deny, but it
+# still PRINTS a version in its summary ("install cargo-deny X to match CI"),
+# and a version a human is told to install is a pin like any other: let it
+# drift and every adopter runs a different cargo-deny than the gate, which is
+# this script's founding complaint (#43) with the tool swapped out. Cheaper to
+# assert than to notice.
 ADOPT="$BASELINE/scripts/adopt.sh"
 [ -f "$ADOPT" ] || die "not found: $ADOPT"
-
-RUST_PIN="$(sed -n 's/^RUST_TOOLCHAIN_PIN="\([0-9.]*\)".*/\1/p' "$ADOPT" | head -1)"
-DENY_PIN="$(sed -n 's/^CARGO_DENY_PIN="\([0-9.]*\)".*/\1/p' "$ADOPT" | head -1)"
-[ -n "$RUST_PIN" ] || die "could not read RUST_TOOLCHAIN_PIN from $ADOPT"
-[ -n "$DENY_PIN" ] || die "could not read CARGO_DENY_PIN from $ADOPT"
-# Assigned is not used — the same decorative-pin trap as scan.sh's (#43).
-grep -q 'rustup toolchain install [$]RUST_TOOLCHAIN_PIN' "$ADOPT" \
-  || die "$ADOPT sets RUST_TOOLCHAIN_PIN but the scaffold no longer installs it — the pin is decorative"
-grep -q 'download/[$]CARGO_DENY_PIN/' "$ADOPT" \
-  || die "$ADOPT sets CARGO_DENY_PIN but the scaffold no longer downloads it — the pin is decorative"
+ADOPT_DENY="$(sed -n 's/^CARGO_DENY_PIN="\([0-9.]*\)".*/\1/p' "$ADOPT" | head -1)"
+[ -n "$ADOPT_DENY" ] || die "could not read CARGO_DENY_PIN from $ADOPT"
+grep -q 'cargo-deny %s to match CI' "$ADOPT" \
+  || die "$ADOPT sets CARGO_DENY_PIN but no longer tells anyone to install it — the pin is decorative"
 
 # Every occurrence in ci.yml, not the first — same argument as the semgrep
 # grep above: `rustup default` drifting from `rustup toolchain install` is two
@@ -148,6 +175,17 @@ CI_DENY_ALL="$(grep -oE 'cargo-deny/releases/download/[0-9.]+/' "$CI" | grep -oE
 }
 CI_DENY="$(printf '%s\n' "$CI_DENY_ALL" | head -1)"
 
+# The checksum is the other half of the cargo-deny pin, and it is copied into
+# both files. Bumping the version in one of them while the other keeps its old
+# checksum produces a job that dies on `sha256sum -c` — loud, but only after a
+# push, and only in whichever half was half-bumped. Both are read as sets, so a
+# file that disagrees with ITSELF is caught too.
+deny_sha_of() { grep -oE "CARGO_DENY_SHA256: '[0-9a-f]{64}'" "$1" | grep -oE '[0-9a-f]{64}' | sort -u; }
+QUALITY_DENY_SHA="$(deny_sha_of "$QUALITY")"
+CI_DENY_SHA="$(deny_sha_of "$CI")"
+[ -n "$QUALITY_DENY_SHA" ] || die "could not read CARGO_DENY_SHA256 from $QUALITY"
+[ -n "$CI_DENY_SHA" ] || die "could not read CARGO_DENY_SHA256 from $CI"
+
 # THE THIRD SITE (#43). scripts/scan.sh is what a human runs locally, and until
 # #43 it pinned nothing at all — `uvx semgrep` and `returntocorp/semgrep:latest`.
 # A local scan resolving a different semgrep than CI is how a parse failure came
@@ -162,6 +200,56 @@ grep -q 'semgrep==[$]SEMGREP_PIN' "$SCAN" \
 grep -q 'returntocorp/semgrep:[$]SEMGREP_PIN' "$SCAN" \
   || die "$SCAN sets SEMGREP_PIN but no longer passes it to docker — the pin is decorative"
 
+# --- THE JAVA PINS (#10) -----------------------------------------------------
+#
+# Four analyzer versions live in configs/java/pom-lints.xml — the file consumers
+# COPY — and the JDK lives in quality.yml. The consistency that matters here is
+# not between two workflow files: it is that CI validates the SAME analyzer
+# versions the consumers were handed, and that the JDK CI compiles the fixtures
+# on is the one the reusable job pins. Otherwise samples/expected/java.json is a
+# manifest for a toolchain nobody runs.
+#
+# Read out of the shipped fragment rather than out of the fixtures: the fixtures
+# are generated FROM it (scripts/pom-region.py), so reading them would be this
+# script checking a copy against itself.
+frag_version() {
+  # <artifactId>X</artifactId> on one line, <version>N</version> on the next —
+  # which is exactly how the fragment is written and how pom-region.py keeps it.
+  grep -A1 "<artifactId>$1</artifactId>" "$JAVA_FRAGMENT" \
+    | grep -oE '<version>[^<]+</version>' | head -1 | sed -e 's|<version>||' -e 's|</version>||'
+}
+JAVA_FRAGMENT="$BASELINE/configs/java/pom-lints.xml"
+[ -f "$JAVA_FRAGMENT" ] || die "missing $JAVA_FRAGMENT"
+
+EP_PIN="$(frag_version error_prone_core)"
+NULLAWAY_PIN="$(frag_version nullaway)"
+COMPILER_PIN="$(frag_version maven-compiler-plugin)"
+SPOTLESS_PIN="$(frag_version spotless-maven-plugin)"
+for pair in "error_prone_core:$EP_PIN" "nullaway:$NULLAWAY_PIN" \
+            "maven-compiler-plugin:$COMPILER_PIN" "spotless-maven-plugin:$SPOTLESS_PIN"; do
+  [ -n "${pair#*:}" ] || die "could not read the ${pair%%:*} version from $JAVA_FRAGMENT"
+done
+
+# palantir-java-format sits one level deeper (inside <palantirJavaFormat>), so
+# it is read by its own element rather than by the artifactId pair above.
+PALANTIR_PIN="$(sed -n '/<palantirJavaFormat>/,/<\/palantirJavaFormat>/p' "$JAVA_FRAGMENT" \
+  | grep -oE '<version>[^<]+</version>' | head -1 | sed -e 's|<version>||' -e 's|</version>||')"
+[ -n "$PALANTIR_PIN" ] || die "could not read the palantir-java-format version from $JAVA_FRAGMENT"
+
+JAVA_PIN="$(pin_of java-version '      ' "$QUALITY")"
+[ -n "$JAVA_PIN" ] || die "could not read java-version from $QUALITY"
+# Same decorative-pin guard as rust-version: an input nothing passes through is
+# a comment with a default value.
+grep -q 'java-version: [$]{{ inputs.java-version }}' "$QUALITY" \
+  || die "$QUALITY declares java-version but no step passes it through — the pin is decorative"
+
+CI_JAVA="$(grep -oE "java-version: '[0-9.]+'" "$CI" | grep -oE "[0-9.]+" | sort -u)"
+[ -n "$CI_JAVA" ] || die "could not read a java-version pin from $CI"
+[ "$(printf '%s\n' "$CI_JAVA" | grep -c .)" -eq 1 ] || {
+  printf '\033[31merror:\033[0m %s pins more than one JDK:\n' "$CI" >&2
+  printf '%s\n' "$CI_JAVA" | sed 's/^/  /'
+  exit 1; }
+
 bold "── pinned ──"
 info "semgrep       $SEMGREP_PIN   (action.yml)"
 info "semgrep       $CI_SEMGREP   (ci.yml, $(grep -cE 'semgrep==[0-9.]+' "$CI") job(s))"
@@ -169,10 +257,18 @@ info "semgrep       $SCAN_SEMGREP   (scan.sh, uvx + docker fallbacks)"
 info "gitleaks      $GITLEAKS_PIN"
 info "osv-scanner   $OSV_PIN"
 info "uv            $UV_PIN   (quality.yml)"
-info "rust          $RUST_PIN   (adopt.sh scaffold)"
+info "rust          $RUST_PIN   (quality.yml)"
 info "rust          $CI_RUST   (ci.yml)"
-info "cargo-deny    $DENY_PIN   (adopt.sh scaffold)"
+info "cargo-deny    $DENY_PIN   (quality.yml)"
 info "cargo-deny    $CI_DENY   (ci.yml)"
+info "cargo-deny    $ADOPT_DENY   (adopt.sh, the 'install locally' line)"
+info "jdk           $JAVA_PIN   (quality.yml)"
+info "jdk           $CI_JAVA   (ci.yml)"
+info "error-prone   $EP_PIN   (configs/java/pom-lints.xml)"
+info "nullaway      $NULLAWAY_PIN   (configs/java/pom-lints.xml)"
+info "mvn-compiler  $COMPILER_PIN   (configs/java/pom-lints.xml)"
+info "spotless      $SPOTLESS_PIN   (configs/java/pom-lints.xml)"
+info "palantir-fmt  $PALANTIR_PIN   (configs/java/pom-lints.xml)"
 printf '\n'
 
 # --- consistency: the two Semgrep pins must agree ----------------------------
@@ -192,15 +288,33 @@ fi
 info "semgrep pins agree across all three files"
 
 # --- consistency: the Rust pair, same rule, same severity --------------------
-if [ "$RUST_PIN" != "$CI_RUST" ] || [ "$DENY_PIN" != "$CI_DENY" ]; then
+if [ "$RUST_PIN" != "$CI_RUST" ] || [ "$DENY_PIN" != "$CI_DENY" ] \
+   || [ "$DENY_PIN" != "$ADOPT_DENY" ] || [ "$QUALITY_DENY_SHA" != "$CI_DENY_SHA" ]; then
   printf '\033[31mFAIL\033[0m — Rust pins disagree:\n'
-  printf '  scripts/adopt.sh (scaffold)  : rust %s · cargo-deny %s\n' "$RUST_PIN" "$DENY_PIN"
-  printf '  .github/workflows/ci.yml     : rust %s · cargo-deny %s\n' "$CI_RUST" "$CI_DENY"
+  printf '  .github/workflows/quality.yml : rust %s · cargo-deny %s\n' "$RUST_PIN" "$DENY_PIN"
+  printf '  .github/workflows/ci.yml      : rust %s · cargo-deny %s\n' "$CI_RUST" "$CI_DENY"
+  printf '  scripts/adopt.sh (summary)    : cargo-deny %s\n' "$ADOPT_DENY"
+  if [ "$QUALITY_DENY_SHA" != "$CI_DENY_SHA" ]; then
+    printf '  cargo-deny checksums differ:\n'
+    printf '    quality.yml : %s\n' "$QUALITY_DENY_SHA"
+    printf '    ci.yml      : %s\n' "$CI_DENY_SHA"
+  fi
   printf '\nThe clippy manifest and the RUSTSEC fixture would be asserted against a\n'
   printf 'toolchain consumers are never handed. Set both files to the same versions.\n'
   exit 2
 fi
-info "rust pins agree between adopt.sh and ci.yml"
+info "rust pins agree across quality.yml, ci.yml and adopt.sh"
+
+if [ "$JAVA_PIN" != "$CI_JAVA" ]; then
+  printf '\033[31merror:\033[0m the JDK pin disagrees between the two workflows:\n' >&2
+  printf '  .github/workflows/quality.yml : jdk %s\n' "$JAVA_PIN" >&2
+  printf '  .github/workflows/ci.yml      : jdk %s\n' "$CI_JAVA" >&2
+  printf '\nsamples/expected/java.json would be asserted against a JDK consumers never\n' >&2
+  printf 'run. Error Prone reaches into javac internals and -Xlint gains categories\n' >&2
+  printf 'between releases, so the finding set is JDK-specific. Bump both together.\n' >&2
+  exit 1
+fi
+info "jdk pin agrees across quality.yml and ci.yml"
 
 if [ "$OFFLINE" -eq 1 ]; then
   printf '\n\033[32mPASS\033[0m — pins are internally consistent (--offline; upstream not checked)\n'
@@ -243,6 +357,20 @@ compare "uv"          "$UV_PIN"      "$(latest_gh astral-sh/uv)"
 # and the [pkg.rust] version line is the stable version.
 compare "rust"        "$RUST_PIN"    "$(curl -fsSL --max-time 20 https://static.rust-lang.org/dist/channel-rust-stable.toml 2>/dev/null | sed -n '/^\[pkg\.rust\]/,/^\[/{s/^version = "\([0-9.]*\).*/\1/p;}' | head -1)"
 compare "cargo-deny"  "$DENY_PIN"    "$(latest_gh EmbarkStudios/cargo-deny)"
+# Maven Central has no releases API; maven-metadata.xml is the equivalent, and
+# its LAST <version> is the newest. Filtered for release versions — Error Prone
+# and Spotless both publish nothing pre-release on these coordinates today, but
+# a bump proposal built on an -RC is a bump nobody wanted.
+latest_maven() {
+  curl -fsSL --max-time 20 "https://repo1.maven.org/maven2/$1/maven-metadata.xml" 2>/dev/null \
+    | grep -oE '<version>[^<]+</version>' | sed -e 's|<version>||' -e 's|</version>||' \
+    | grep -viE 'alpha|beta|rc|-M[0-9]|snapshot' | tail -1
+}
+compare "error-prone"  "$EP_PIN"        "$(latest_maven com/google/errorprone/error_prone_core)"
+compare "nullaway"     "$NULLAWAY_PIN"  "$(latest_maven com/uber/nullaway/nullaway)"
+compare "mvn-compiler" "$COMPILER_PIN"  "$(latest_maven org/apache/maven/plugins/maven-compiler-plugin)"
+compare "spotless"     "$SPOTLESS_PIN"  "$(latest_maven com/diffplug/spotless/spotless-maven-plugin)"
+compare "palantir-fmt" "$PALANTIR_PIN"  "$(latest_maven com/palantir/javaformat/palantir-java-format)"
 
 printf '\n'
 if [ "$DRIFT" -eq 1 ]; then

@@ -38,16 +38,26 @@
 #   rust     rustfmt.toml                  <- configs/rust/rustfmt.toml
 #   rust     deny.toml                     <- configs/rust/deny.toml
 #   rust     Cargo.toml                    += configs/rust/lints.toml ([lints])
+#   java     pom.xml                       += configs/java/pom-lints.xml, as a
+#                                             MARKER-DELIMITED REGION inside
+#                                             <build><plugins>. Re-running
+#                                             replaces the region and nothing
+#                                             else, which is the upgrade path —
+#                                             XML has no append, so without a
+#                                             managed region every baseline bump
+#                                             would be a hand edit.
 #   always   .maxi-quality.yml             (commented starter, only if absent)
-#   any      .github/workflows/quality.yml (unless --no-workflow; with a
-#                                           pinned-toolchain rust job when
-#                                           Rust is detected)
+#   any      .github/workflows/quality.yml (unless --no-workflow — the same six
+#                                           lines for every language, Rust
+#                                           included since #70)
 #   --hooks  .git/hooks/pre-commit         <- hooks/pre-commit (only with --hooks)
 #
 # The TS pair is a copy for the same reason Directory.Build.props is: a private
 # git devDep cannot npm-install in a consumer's CI. The Rust trio is a copy for
 # a harder reason: Cargo has no remote lint consumption at all — [lints] must
-# live in the consumer's own manifest.
+# live in the consumer's own manifest. Java is the Rust case again: Maven's one
+# real inheritance mechanism is a parent POM, which needs a registry to publish
+# and a free <parent> slot to consume, and a Spring Boot project has neither.
 #
 # Exit codes: 0 adopted (or dry-run) · 1 nothing detected · 3 usage error
 
@@ -55,17 +65,13 @@ set -Eeuo pipefail
 
 BASELINE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# The Rust toolchain and cargo-deny versions stamped into the scaffolded CI.
-# PINNED for the reason STATUS §4 gives: with warnings promoted to errors, an
-# analyzer upgrade that adds lints is a breaking change, so "stable" is not a
-# version. scripts/check-pins.sh asserts these agree with the layer1-rust job
-# in ci.yml — CI must validate the same toolchain consumers are handed.
-RUST_TOOLCHAIN_PIN="1.97.1"
+# The cargo-deny version, for the "install it locally to match CI" line in the
+# summary only — this script no longer stamps a Rust job into anyone's workflow
+# (#70), so nothing here installs it. The pins that RUN live in
+# .github/workflows/quality.yml, and scripts/check-pins.sh asserts they agree
+# with ci.yml's layer1-rust job: CI must validate the same toolchain consumers
+# are handed.
 CARGO_DENY_PIN="0.20.2"
-# From the .sha256 file next to the release artifact — the scaffolded job
-# verifies the download before executing it, so a consumer's CI never runs an
-# unverified binary this script pointed it at. Bump it together with the pin.
-CARGO_DENY_SHA256="9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f"
 
 # --- argument parsing --------------------------------------------------------
 TARGET=""
@@ -122,6 +128,7 @@ HAS_DOTNET=0
 HAS_TS=0
 HAS_PYTHON=0
 HAS_RUST=0
+HAS_JAVA=0
 [ -n "$(detect '*.csproj')" ] && HAS_DOTNET=1
 [ -n "$(detect '*.sln')" ] && HAS_DOTNET=1
 [ -n "$(detect '*.slnx')" ] && HAS_DOTNET=1
@@ -133,6 +140,14 @@ HAS_RUST=0
 # One manifest for workspace and single-crate alike — a workspace root and a
 # lone crate both mean "this is a Rust repo".
 [ -n "$(detect 'Cargo.toml')" ] && HAS_RUST=1
+# Java is v1-Maven-only, and Gradle FAILS LOUD rather than adopting half of
+# itself — see the block after detection. Both markers are collected here so
+# the message can name what was actually found.
+[ -n "$(detect 'pom.xml')" ] && HAS_JAVA=1
+GRADLE_FOUND="$(detect 'build.gradle')"
+[ -n "$GRADLE_FOUND" ] || GRADLE_FOUND="$(detect 'build.gradle.kts')"
+
+NEEDS_MERGE=0
 
 bold "── maxi-quality adopt ──"
 info "baseline: $BASELINE"
@@ -140,9 +155,24 @@ info "target:   $TARGET"
 info "ref:      $REF"
 [ "$DRY_RUN" -eq 1 ] && warn "dry run — nothing will be written"
 
-if [ "$HAS_DOTNET" -eq 0 ] && [ "$HAS_TS" -eq 0 ] && [ "$HAS_PYTHON" -eq 0 ] && [ "$HAS_RUST" -eq 0 ]; then
-  warn "no TypeScript, C#, Python or Rust project found under $TARGET"
-  warn "scope is TypeScript, C#, Python and Rust (CLAUDE.md §4). Nothing to do."
+# Gradle before the nothing-detected check, so a Gradle-only repo gets the
+# reason rather than "nothing to do". v1 supports Maven; saying so out loud is
+# the whole difference between a scope decision and a silent hole (#10).
+if [ -n "$GRADLE_FOUND" ] && [ "$HAS_JAVA" -eq 0 ]; then
+  printf '\n'
+  warn "found a Gradle build ($GRADLE_FOUND) and no pom.xml."
+  warn "The Java layer is MAVEN-ONLY in v1 — Gradle gets built when a Gradle"
+  warn "consumer exists, the same just-in-time rule that produced the Java"
+  warn "layer itself. Nothing Java was written, deliberately and not silently."
+  printf '\n'
+  NEEDS_MERGE=1
+fi
+
+if [ "$HAS_DOTNET" -eq 0 ] && [ "$HAS_TS" -eq 0 ] && [ "$HAS_PYTHON" -eq 0 ] \
+   && [ "$HAS_RUST" -eq 0 ] && [ "$HAS_JAVA" -eq 0 ]; then
+  warn "no TypeScript, C#, Python, Rust or Java project found under $TARGET"
+  warn "scope is TypeScript, C#, Python, Rust and Java/Maven (CLAUDE.md §4)."
+  warn "Nothing to do."
   exit 1
 fi
 
@@ -150,13 +180,14 @@ fi
 [ "$HAS_DOTNET" -eq 1 ] && info "detected: C#/.NET"
 [ "$HAS_PYTHON" -eq 1 ] && info "detected: Python"
 [ "$HAS_RUST" -eq 1 ] && info "detected: Rust"
+[ "$HAS_JAVA" -eq 1 ] && info "detected: Java (Maven)"
 printf '\n'
 
 # --- file helpers ------------------------------------------------------------
 # Refuses to clobber by default. A repo that already has a Directory.Build.props
 # needs its properties MERGED, and silently overwriting one is exactly the kind
 # of "helpful" adoption script that loses someone's build config.
-NEEDS_MERGE=0
+# (NEEDS_MERGE is declared above detection — the Gradle branch sets it.)
 
 copy_file() {
   src="$1"; dst="$2"
@@ -363,6 +394,78 @@ if [ "$HAS_RUST" -eq 1 ]; then
   fi
 fi
 
+# --- Java (Maven) ------------------------------------------------------------
+# The Rust pattern, one notch harder. Cargo forces a copy because it cannot
+# consume [lints] remotely; Maven forces one for the same reason, and then
+# refuses the easy delivery on top: TOML appends, XML does not. The block has to
+# land INSIDE <build><plugins>, so there is no `cat >>` — only an edit.
+#
+# An edit a human redoes on every baseline bump is not an upgrade path, so the
+# block is written as a MARKER-DELIMITED REGION and scripts/pom-region.py
+# replaces the region and nothing else. Re-running is idempotent; the consumer's
+# own plugins, properties, comments and formatting are untouched.
+if [ "$HAS_JAVA" -eq 1 ]; then
+  POM="$TARGET/pom.xml"
+  if [ ! -f "$POM" ]; then
+    # Same failure shape as a Cargo.toml below the target and a shadowed
+    # Directory.Build.props: a config written where the build never reads it
+    # looks adopted and analyses nothing.
+    #
+    # This is also the one place #68 (polyglot repos, configs at the wrong
+    # depth) could get WORSE for Java, so it is a refusal rather than a guess:
+    # a Java server under a repo whose root is something else gets told which
+    # directory to re-run against, and nothing is written.
+    printf '\n'
+    warn "pom.xml was found below $TARGET but not AT it, so there is no manifest"
+    warn "here to hold the lint region. Re-run adopt.sh against the directory"
+    warn "that owns the root pom.xml — writing one here would configure nothing."
+    printf '\n'
+    NEEDS_MERGE=1
+  else
+    JAVA_RC=0
+    if [ "$DRY_RUN" -eq 1 ]; then
+      # --dry-run must write NOTHING, so the check mode is used to predict the
+      # outcome: exit 4 is the refusal, 0/1 are "would be current"/"would change".
+      python3 "$BASELINE/scripts/pom-region.py" check --pom "$POM" \
+        --fragment "$BASELINE/configs/java/pom-lints.xml" >/dev/null 2>&1 || JAVA_RC=$?
+      if [ "$JAVA_RC" -eq 4 ]; then
+        JAVA_REFUSED=1
+      else
+        wrote "$POM (maxi-quality lint region)"
+      fi
+    else
+      python3 "$BASELINE/scripts/pom-region.py" apply --pom "$POM" \
+        --fragment "$BASELINE/configs/java/pom-lints.xml" > /tmp/maxi-pom.$$ 2>&1 || JAVA_RC=$?
+      if [ "$JAVA_RC" -eq 0 ]; then
+        wrote "$POM (maxi-quality lint region)"
+      else
+        cat /tmp/maxi-pom.$$ >&2
+      fi
+      rm -f /tmp/maxi-pom.$$
+      [ "$JAVA_RC" -eq 4 ] && JAVA_REFUSED=1
+    fi
+
+    if [ "${JAVA_REFUSED:-0}" -eq 1 ]; then
+      printf '\n'
+      warn "$POM already configures maven-compiler-plugin, so NOTHING was written."
+      warn "Two declarations of one plugin in one POM is not a merge — it is"
+      warn "last-one-wins, so writing the baseline's would SILENTLY DROP the"
+      warn "compilerArgs you already have. If those include -Xlint/-Werror, the"
+      warn "gate would come out weaker than before adoption."
+      warn ""
+      warn "Merge by hand instead: copy the <compilerArgs> and"
+      warn "<annotationProcessorPaths> from"
+      warn "  $BASELINE/configs/java/pom-lints.xml"
+      warn "into your existing declaration, keeping your own args, and add the"
+      warn "spotless plugin beside it (docs/ADOPTION.md §5)."
+      printf '\n'
+      NEEDS_MERGE=1
+    elif [ "$JAVA_RC" -ne 0 ] && [ "$JAVA_RC" -ne 1 ]; then
+      NEEDS_MERGE=1
+    fi
+  fi
+fi
+
 # --- policy ------------------------------------------------------------------
 # Written entirely commented out, so adopting changes nothing about what the
 # gate does. The file exists to be DISCOVERABLE: the alternative to a legitimate
@@ -407,45 +510,31 @@ jobs:
   quality:
     uses: maximalcode/maxi-quality/.github/workflows/quality.yml@$REF
 "
-  # Rust Layer 1 cannot ride the reusable workflow: the lint config lives in
-  # THIS repo's manifest, and the toolchain that runs it should be this repo's
-  # pinned one, visible in this repo's diff when it bumps. Layer 2 needs no
-  # Rust changes — Gitleaks is language-agnostic and OSV-Scanner reads
-  # Cargo.lock natively — so the reusable call above already covers it.
-  if [ "$HAS_RUST" -eq 1 ]; then
-    WORKFLOW_BODY="$WORKFLOW_BODY
-  # Rust Layer 1 (maxi-quality). Toolchain and cargo-deny are PINNED: with
-  # warnings promoted to errors, an analyzer upgrade that adds lints is a
-  # breaking change — bump both deliberately, never via a floating 'stable'.
-  rust:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Pinned Rust toolchain
-        run: |
-          rustup toolchain install $RUST_TOOLCHAIN_PIN --profile minimal --component clippy,rustfmt
-          rustup default $RUST_TOOLCHAIN_PIN
-      - name: Pinned cargo-deny (checksum-verified)
-        run: |
-          curl -sSfL -o /tmp/cargo-deny.tgz \\
-            https://github.com/EmbarkStudios/cargo-deny/releases/download/$CARGO_DENY_PIN/cargo-deny-$CARGO_DENY_PIN-x86_64-unknown-linux-musl.tar.gz
-          echo '$CARGO_DENY_SHA256  /tmp/cargo-deny.tgz' | sha256sum -c -
-          tar xzf /tmp/cargo-deny.tgz -C \"\$HOME/.cargo/bin\" --strip-components=1 \\
-            cargo-deny-$CARGO_DENY_PIN-x86_64-unknown-linux-musl/cargo-deny
-      - run: cargo fmt --check
-      # -Dwarnings HERE and not in the manifest: a contributor's local
-      # \`cargo check\` should warn, not wall them. CI is the gate.
-      - name: cargo clippy — all targets, warnings are errors
-        env:
-          RUSTFLAGS: -Dwarnings
-        run: cargo clippy --all-targets --locked
-      # advisories covers what cargo-audit would (RustSec); add 'licenses' to
-      # the list once deny.toml's allowlist holds your policy.
-      - run: cargo deny check advisories bans
-      - run: cargo test --locked
-"
+  # THE UPGRADE PATH (#70). Until #70 Rust could not ride the reusable
+  # workflow, so this script stamped a whole pinned-toolchain `rust:` job into
+  # the consumer's own file. Those jobs are still out there, and the reusable
+  # call now runs Rust itself — so a repo adopted before #70 would run clippy
+  # TWICE, the second time against pins that only move when someone re-runs
+  # this script. write_new leaves an existing workflow alone, correctly: it is
+  # the consumer's file. Which means this cannot be fixed silently, only said
+  # out loud.
+  WORKFLOW_PATH="$TARGET/.github/workflows/quality.yml"
+  # Keyed on the JOB, not on the comment a pre-#70 adopt.sh wrote above it. A
+  # consumer who reworded or deleted that comment still runs clippy twice, and
+  # a marker only the tidy repos kept is a check that stays quiet on exactly
+  # the repos most likely to have edited the job as well.
+  if [ -f "$WORKFLOW_PATH" ] && grep -qE '^[[:space:]]+rust:[[:space:]]*$' "$WORKFLOW_PATH" 2>/dev/null; then
+    warn "$WORKFLOW_PATH already declares a 'rust:' job of its own."
+    warn "Since #70 the reusable workflow runs Rust itself, so that job is a"
+    warn "second clippy run — and if adopt.sh scaffolded it, one pinned to a"
+    warn "toolchain that no longer moves. Delete it: the 'quality:' call covers"
+    warn "Rust now. To keep your own instead, pass a 'languages:' input without"
+    warn "rust so this baseline stops running it. Do not leave both."
+    warn "Note the baseline job does NOT run 'cargo test': it is a quality gate,"
+    warn "like the TypeScript and Python jobs. Keep your tests in their own job."
+    NEEDS_MERGE=1
   fi
-  write_new "$TARGET/.github/workflows/quality.yml" "$WORKFLOW_BODY"
+  write_new "$WORKFLOW_PATH" "$WORKFLOW_BODY"
 fi
 
 # --- the pre-commit hook, only on --hooks ------------------------------------
@@ -596,28 +685,71 @@ fi
 if [ "$HAS_RUST" -eq 1 ]; then
   printf '  Rust\n'
   printf '    1. No new dev dependencies — clippy and rustfmt ship with the\n'
-  printf '       toolchain; cargo-deny is installed by the scaffolded CI job.\n'
+  printf '       toolchain; cargo-deny is installed by the baseline rust job.\n'
   printf '       Locally: rustup component add clippy rustfmt, and install\n'
   printf '       cargo-deny %s to match CI.\n' "$CARGO_DENY_PIN"
-  printf '    2. COMMIT Cargo.lock. The CI job runs everything with --locked, so\n'
-  printf '       an uncommitted lockfile fails the very first run — deliberately.\n'
-  printf '       For a binary the lockfile is not optional hygiene: it is what\n'
-  printf '       cargo-deny and Layer 2 OSV-Scanner actually read.\n'
-  printf '    3. Workspace roots got [workspace.lints]; each member crate opts in\n'
+  printf '    2. COMMIT Cargo.lock. The gate runs everything with --locked, and\n'
+  printf '       detection REFUSES a crate that has none — a lockless crate is\n'
+  printf '       one clippy cannot open, and this baseline does not do silently\n'
+  printf '       unexamined. For a binary the lockfile is not optional hygiene\n'
+  printf '       either: it is what cargo-deny and OSV-Scanner actually read.\n'
+  printf '    3. The gate runs fmt, clippy and cargo-deny — NOT your tests, the\n'
+  printf '       same split as every other language here. Keep cargo test in a\n'
+  printf '       job of your own.\n'
+  printf '    4. Workspace roots got [workspace.lints]; each member crate opts in\n'
   printf '       with two lines in its own Cargo.toml:  [lints]  workspace = true\n'
-  printf '    4. An existing codebase will be noisy on first run — pedantic is\n'
+  printf '    5. An existing codebase will be noisy on first run — pedantic is\n'
   printf '       the strict tier and there is no ratchet for a compiler lint\n'
   printf '       (README, the ratchet asymmetry). Waive a single site with\n'
   printf '       #[allow(clippy::...)] and a reason; scoped and greppable beats\n'
   printf '       a global allow in the manifest.\n'
-  printf '    5. unsafe_code is FORBIDDEN by default. A crate that genuinely\n'
+  printf '    6. unsafe_code is FORBIDDEN by default. A crate that genuinely\n'
   printf '       needs FFI lowers it to "deny" in its own manifest and documents\n'
   printf '       why — that is a policy call this script does not make for you.\n'
-  printf '    6. OPTIONAL — the formatter: cargo fmt once, alone, and put that\n'
+  printf '    7. OPTIONAL — the formatter: cargo fmt once, alone, and put that\n'
   printf '       commit in .git-blame-ignore-revs. Same rule as Prettier/ruff.\n'
-  printf '    7. OPTIONAL — licences: deny.toml ships an EMPTY allowlist, so the\n'
+  printf '    8. OPTIONAL — licences: deny.toml ships an EMPTY allowlist, so the\n'
   printf '       licenses check is not in the CI gate. Fill the allowlist and add\n'
   printf '       licenses to the cargo deny check line when you have a policy.\n'
+fi
+
+if [ "$HAS_JAVA" -eq 1 ]; then
+  printf '  Java (Maven)\n'
+  printf '    1. No new dependencies to add by hand — Error Prone and NullAway\n'
+  printf '       arrive as annotationProcessorPaths inside the region written\n'
+  printf '       above, pinned. DO NOT hand-edit that region: re-run this script\n'
+  printf '       to refresh it, which is the whole reason it has markers.\n'
+  printf '    2. IF YOU USE LOMBOK OR MAPSTRUCT, add them to\n'
+  printf '       <annotationProcessorPaths> too. Declaring that element at all\n'
+  printf '       turns OFF classpath processor discovery — that is Maven behaviour,\n'
+  printf '       not something this baseline chose, and it is the one way\n'
+  printf '       adopting this can break a build that was previously fine.\n'
+  # Written with %s rather than inline. The literal is a MAVEN property, and a
+  # dollar-brace inside single quotes is flagged (correctly) as a shell
+  # expansion someone forgot to make work — SC2016. Note also that a comment
+  # line STARTING with the linter's own name is read as a directive to it, so
+  # this paragraph deliberately does not.
+  printf '    3. NullAway is told your code is yours via %sproject.groupId}. If\n' '$''{'
+  printf '       your sources do not live under your groupId, change that one\n'
+  printf '       value — a wrong prefix means NullAway analyses NOTHING and says\n'
+  printf '       so nowhere.\n'
+  printf '    4. -Werror AND ERROR PRONE INTERACT, measured and unavoidable: when\n'
+  printf '       javac -Xlint produces a warning, the compile ends before Error\n'
+  printf '       Prone runs, so its findings vanish from the output. The build\n'
+  printf '       stays RED — a green build is one where Error Prone did run — but\n'
+  printf '       the first run on an existing codebase may show only lint\n'
+  printf '       warnings. Fix those, re-run, and the analyzer findings appear.\n'
+  printf '    5. An existing codebase will be noisy on first run and there is no\n'
+  printf '       ratchet for a compiler diagnostic. Waive a single site with\n'
+  printf '       @SuppressWarnings("CheckName") and a comment saying why; scoped\n'
+  printf '       and greppable beats -Xep:CheckName:OFF in the region.\n'
+  printf '    6. OPTIONAL — the formatter. Not run for you, because it reformats\n'
+  printf '       every file and that is your commit to make:\n'
+  printf '         mvn spotless:apply     # once, alone\n'
+  printf '         mvn spotless:check     # the gate\n'
+  printf '       Put that one commit in .git-blame-ignore-revs. The style is\n'
+  printf '       palantir-java-format AOSP: 4-space indent at 100 columns, which\n'
+  printf '       is what the .editorconfig copied above already declares.\n'
 fi
 
 if [ "$NEEDS_MERGE" -eq 1 ]; then

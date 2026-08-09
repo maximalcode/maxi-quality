@@ -12,3 +12,56 @@ rules:
       - pattern: $TASK.GetAwaiter().GetResult()
       - pattern: $TASK.Result
       - pattern: $TASK.Wait()
+
+  # Java, added for issue #10. The convention is identical — blocking a thread
+  # on work that is already asynchronous — and only the spelling differs, which
+  # is what makes this a per-language id rather than a new convention
+  # (CLAUDE.md §4).
+  #
+  # Error Prone has no on-by-default check for any of these.
+  #
+  # NOT in the list: Future.get() on a plain java.util.concurrent.Future. That
+  # interface has no non-blocking form at all, so flagging it would be an
+  # instruction with no fix — the finding would be "stop using Future", which
+  # is not something a rule can ask for on one line. CompletableFuture and
+  # Reactor both have a compositional alternative (thenApply / flatMap), so
+  # for those the message names a real next step.
+  - id: sync-over-async-java
+    message: >-
+      Blocking on asynchronous work (.join() / .get() / .block()) burns a thread
+      and can deadlock a bounded pool. Compose instead — thenApply/thenCompose
+      on a CompletableFuture, flatMap/map on a Mono or Flux — and return the
+      async type to the caller.
+    severity: ERROR
+    languages: [java]
+    paths:
+      exclude:
+        - "*Test.java"
+        - "*Tests.java"
+        - "*IT.java"
+        - "**/test/**"
+    # TWO BRANCHES WITH DIFFERENT PRECISION, on purpose — one name test across
+    # both would be wrong in opposite directions.
+    pattern-either:
+      # block() / blockFirst() / blockLast() exist on Reactor's Mono and Flux
+      # and essentially nowhere else, so there is no false-positive surface to
+      # guard against and no name test.
+      - pattern-either:
+          - pattern: $F.block()
+          - pattern: $F.blockFirst()
+          - pattern: $F.blockLast()
+      # join() and get() are the opposite case. Optional.get(), Map.get(),
+      # AtomicReference.get(), Thread.join(), StringJoiner — an unguarded rule
+      # here fires on most lines of most Java files, gets switched off, and
+      # then finds nothing at all. So the receiver has to LOOK like a future.
+      #
+      # That is a heuristic and this comment is where it says so: the precise
+      # version needs type information semgrep OSS does not have. It buys the
+      # common real case (`resultFuture.get()`) and misses `f.get()`.
+      - patterns:
+          - pattern-either:
+              - pattern: $F.join()
+              - pattern: $F.get()
+          - metavariable-regex:
+              metavariable: $F
+              regex: '(?i).*(future|promise|mono|flux|deferred|async)\w*'

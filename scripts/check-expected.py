@@ -59,6 +59,21 @@ TSC_RE = re.compile(
 )
 
 
+# Maven has no JSON diagnostic output either, so the build log is parsed. javac
+# writes `path/File.java:[LINE,COL] [CheckName] message`, and Maven prefixes the
+# line with its own [ERROR]/[WARNING]. Both prefixes are findings: Error Prone's
+# warning tier gates through -Werror, so dropping the [WARNING] half would make
+# a manifest that cannot see two of the four tiers.
+#
+# javac's own -Xlint uses the identical shape ([rawtypes], [cast]), which is
+# what lets one regex cover the compiler and both plugins.
+JAVAC_RE = re.compile(
+    r"^\[(?:ERROR|WARNING)\]\s+(?P<file>\S+?\.java):\[(?P<line>\d+),\d+\]\s+"
+    r"\[(?P<rule>[A-Za-z][\w.]*)\]",
+    re.M,
+)
+
+
 class ParseError(Exception):
     pass
 
@@ -209,8 +224,35 @@ def parse_tsc(text: str) -> list[dict]:
     ]
 
 
+def parse_javac(text: str) -> list[dict]:
+    """Maven's compiler log — javac's own -Xlint, Error Prone and NullAway.
+
+    Deduplicated like dotnet's and clippy's: Maven prints the compiler's
+    diagnostics once inline and once again in the goal-failure summary, so an
+    un-deduped parse doubles every ERROR while leaving every WARNING alone.
+
+    Paths are ABSOLUTE in Maven's output — javac is forked, so it reports what
+    it was handed. `_rel` folds them back to repo-relative, which is why CI must
+    run this from the repo root rather than from inside the fixture.
+
+    Deliberately NOT a finding: `error: warnings found and -Werror specified`.
+    It carries no file and no rule id, it is a consequence of the findings
+    above it rather than one of them, and counting it would put a phantom entry
+    in every manifest whose fixture happens to trip the warning tier."""
+    seen = set()
+    out = []
+    for m in JAVAC_RE.finditer(text):
+        key_ = (m["rule"], _rel(m["file"]), int(m["line"]))
+        if key_ in seen:
+            continue
+        seen.add(key_)
+        out.append({"rule": key_[0], "file": key_[1], "line": key_[2]})
+    return out
+
+
 PARSERS = {
     "clippy": parse_clippy,
+    "javac": parse_javac,
     "semgrep": parse_semgrep,
     "eslint": parse_eslint,
     "ruff": parse_ruff,

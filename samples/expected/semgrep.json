@@ -112,6 +112,121 @@
       "line": 214
     },
     {
+      "rule": "no-float-for-money-java",
+      "file": "samples/semgrep/Bad.java",
+      "line": 42
+    },
+    {
+      "rule": "no-float-for-money-java",
+      "file": "samples/semgrep/Bad.java",
+      "line": 43
+    },
+    {
+      "rule": "hardcoded-secret-java",
+      "file": "samples/semgrep/Bad.java",
+      "line": 50
+    },
+    {
+      "rule": "hardcoded-secret-java",
+      "file": "samples/semgrep/Bad.java",
+      "line": 52
+    },
+    {
+      "rule": "todo-without-issue",
+      "file": "samples/semgrep/Bad.java",
+      "line": 59
+    },
+    {
+      "rule": "no-ambient-clock-java",
+      "file": "samples/semgrep/Bad.java",
+      "line": 64
+    },
+    {
+      "rule": "no-ambient-clock-java",
+      "file": "samples/semgrep/Bad.java",
+      "line": 68
+    },
+    {
+      "rule": "no-float-for-money-java",
+      "file": "samples/semgrep/Bad.java",
+      "line": 72
+    },
+    {
+      "rule": "weak-crypto-java",
+      "file": "samples/semgrep/Bad.java",
+      "line": 78
+    },
+    {
+      "rule": "weak-crypto-java",
+      "file": "samples/semgrep/Bad.java",
+      "line": 84
+    },
+    {
+      "rule": "weak-crypto-java",
+      "file": "samples/semgrep/Bad.java",
+      "line": 88
+    },
+    {
+      "rule": "sql-string-concat-java",
+      "file": "samples/semgrep/Bad.java",
+      "line": 98
+    },
+    {
+      "rule": "sql-string-concat-java",
+      "file": "samples/semgrep/Bad.java",
+      "line": 102
+    },
+    {
+      "rule": "sql-string-concat-java",
+      "file": "samples/semgrep/Bad.java",
+      "line": 106
+    },
+    {
+      "rule": "sql-string-concat-java",
+      "file": "samples/semgrep/Bad.java",
+      "line": 110
+    },
+    {
+      "rule": "command-injection-java",
+      "file": "samples/semgrep/Bad.java",
+      "line": 121
+    },
+    {
+      "rule": "command-injection-java",
+      "file": "samples/semgrep/Bad.java",
+      "line": 125
+    },
+    {
+      "rule": "sync-over-async-java",
+      "file": "samples/semgrep/Bad.java",
+      "line": 138
+    },
+    {
+      "rule": "sync-over-async-java",
+      "file": "samples/semgrep/Bad.java",
+      "line": 142
+    },
+    {
+      "rule": "sync-over-async-java",
+      "file": "samples/semgrep/Bad.java",
+      "line": 150
+    },
+    {
+      "rule": "debug-print-left-behind-java",
+      "file": "samples/semgrep/Bad.java",
+      "line": 161
+    },
+    {
+      "rule": "debug-print-left-behind-java",
+      "file": "samples/semgrep/Bad.java",
+      "line": 165
+    },
+    {
+      "rule": "debug-print-left-behind-java",
+      "file": "samples/semgrep/Bad.java",
+      "line": 169
+    },
+    {
       "rule": "no-permission-denied-for-invisible-resource-dotnet",
       "file": "samples/semgrep/DocumentsController.cs",
       "line": 30
@@ -192,6 +307,21 @@
       "line": 120
     },
     {
+      "rule": "sql-string-concat-builder-java",
+      "file": "samples/semgrep/QueryBuilder.java",
+      "line": 21
+    },
+    {
+      "rule": "command-injection-indirect-java",
+      "file": "samples/semgrep/QueryBuilder.java",
+      "line": 39
+    },
+    {
+      "rule": "command-injection-java",
+      "file": "samples/semgrep/QueryBuilder.java",
+      "line": 48
+    },
+    {
       "rule": "mutation-requires-authz-dotnet",
       "file": "samples/semgrep/UserService.cs",
       "line": 48
@@ -205,6 +335,26 @@
       "rule": "no-permission-denied-for-invisible-resource-dotnet",
       "file": "samples/semgrep/UserService.cs",
       "line": 97
+    },
+    {
+      "rule": "mutation-requires-authz-java",
+      "file": "samples/semgrep/UserService.java",
+      "line": 22
+    },
+    {
+      "rule": "mutation-requires-authz-java",
+      "file": "samples/semgrep/UserService.java",
+      "line": 26
+    },
+    {
+      "rule": "no-permission-denied-for-invisible-resource-java",
+      "file": "samples/semgrep/UserService.java",
+      "line": 52
+    },
+    {
+      "rule": "no-permission-denied-for-invisible-resource-java",
+      "file": "samples/semgrep/UserService.java",
+      "line": 60
     },
     {
       "rule": "todo-without-issue",
