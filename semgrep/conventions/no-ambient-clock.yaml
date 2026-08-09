@@ -74,6 +74,54 @@ rules:
   # every language it declares and `DateTime.UtcNow` / `new Date()` do not parse
   # as Python. The id above remains the cross-language proof rule for TS and C#
   # (docs/CONCEPT.md §10); this one carries the same message.
+  # Java, added for issue #10. THE SCOPE HERE IS NARROWER THAN THE OTHER THREE
+  # AND THAT IS THE POINT — it is the overlap audit #10 asked for, run against
+  # the real analyzer output rather than against a changelog.
+  #
+  # Measured 2026-08-09 with Error Prone 2.50.0 on this repo's own Java fixture,
+  # by planting all five shapes and reading what came back:
+  #
+  #   new Date()                  -> [JavaUtilDate]            already flagged
+  #   LocalDate.now()             -> [JavaTimeDefaultTimeZone] already flagged
+  #   LocalDateTime.now()         -> [JavaTimeDefaultTimeZone] already flagged
+  #   Instant.now()               -> nothing
+  #   System.currentTimeMillis()  -> nothing
+  #
+  # So this rule matches the last two and only those. Adding the first three
+  # would put a second finding on a line the compiler already failed the build
+  # over, which is not more coverage — it is the same bug reported twice, and
+  # the reason people start ignoring one of the two reporters.
+  #
+  # Instant.now() is the interesting one: it is NOT a JavaTimeDefaultTimeZone
+  # violation, because an Instant carries no zone and there is nothing for the
+  # default zone to silently get wrong. It is still an ambient clock read, and
+  # still the thing that makes "expires tomorrow" untestable.
+  #
+  # System.nanoTime() is deliberately absent: it is a monotonic duration source,
+  # not a wall clock, and injecting a Clock does not replace it.
+  - id: no-ambient-clock-java
+    message: >-
+      Reading the ambient clock directly makes this code untestable — you cannot
+      write a test for "expires tomorrow" without sleeping. Inject a
+      java.time.Clock and read the time from it (clock.instant(),
+      clock.millis()).
+    severity: ERROR
+    languages: [java]
+    paths:
+      exclude:
+        - "*Test.java"
+        - "*Tests.java"
+        - "*IT.java"
+        - "**/test/**"
+        # Same generic shapes as the other three, and the same rule about them:
+        # this list must not become a junk drawer of consumer module names.
+        - "*Seeder*"
+        - "**/dev/**"
+    pattern-either:
+      - pattern: Instant.now()
+      - pattern: java.time.Instant.now()
+      - pattern: System.currentTimeMillis()
+
   - id: no-ambient-clock-python
     message: >-
       Reading the ambient clock directly makes this code untestable — you cannot

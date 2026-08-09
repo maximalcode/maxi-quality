@@ -1,8 +1,7 @@
 # maxi-quality
 
-> **Status:** TypeScript, C#, Python and Rust shipped and verified. Java
-> deliberately not built until a project needs it. Current state and every
-> measurement:
+> **Status:** TypeScript, C#, Python, Rust and Java shipped and verified.
+> Current state and every measurement:
 > [STATUS.md](STATUS.md)
 > **Repo:** `maximalcode/maxi-quality` — public (CLAUDE.md §2)
 > **Adopting:** [ADOPTION.md](ADOPTION.md) · **Looking something up:** [REFERENCE.md](REFERENCE.md)
@@ -12,8 +11,8 @@
 > **Planned work** lives in the issue tracker, not in this document.
 
 A personal, reusable static-analysis baseline that makes every current and future
-project (TypeScript, C#/.NET, Python, Rust) professional by default — free tools only,
-one-time setup, stamped onto new repos in minutes.
+project (TypeScript, C#/.NET, Python, Rust, Java) professional by default — free tools
+only, one-time setup, stamped onto new repos in minutes.
 
 **On CodeQL — measured 2026-08-02, and it is not wired in.** Publishing this
 repo made CodeQL free *for this repo*, which was a reason to measure it, not to
@@ -127,9 +126,13 @@ maxi-quality/
 │   ├── dotnet/
 │   │   ├── Directory.Build.props # AnalysisLevel, WarningsAsErrors, analyzers
 │   │   └── dotnet.editorconfig   # C# style + severity overrides
-│   └── python/
-│       ├── ruff.toml             # 13 rule families, extend-able
-│       └── mypy.ini              # mypy strict (a COPY — mypy has no extend)
+│   ├── python/
+│   │   ├── ruff.toml             # 13 rule families, extend-able
+│   │   └── mypy.ini              # mypy strict (a COPY — mypy has no extend)
+│   └── java/
+│       └── pom-lints.xml         # Error Prone + NullAway + Spotless, as a
+│                                 #   managed region merged into the consumer's
+│                                 #   own pom.xml (Maven cannot extend remotely)
 ├── semgrep/
 │   ├── general/                  # cross-language: no TODO-without-issue,
 │   │                             #   no printf-debugging, no broad
@@ -170,12 +173,23 @@ maxi-quality/
 |---|---|---|
 | **TypeScript** | typescript-eslint `strict-type-checked` (+ `stylistic`) + `eslint-plugin-sonarjs`; Prettier for layout (§4a) | `eslint.base.mjs` + `tsconfig.base.json` are copied in at adopt time, like the .NET props — a git devDep cannot npm-install in a consumer's CI. The project's own `eslint.config.mjs` stays ~3 lines |
 | **C#/.NET** | built-in Roslyn `latest-recommended`, `SonarAnalyzer.CSharp`, `Roslynator.Analyzers`, `TreatWarningsAsErrors` | copy `Directory.Build.props` — .NET has no remote-extends; this is the one accepted copy (small, rarely changes) |
-| **Java** — *not built* | Error Prone (+ NullAway), SpotBugs; Checkstyle only for style | **Nothing exists in `configs/java/` and nothing will until a real project needs it** (§9). This row is the plan, not a shipped config. |
+| **Java** | Error Prone (bug finder) + NullAway at ERROR (null safety), `-Xlint:all,-processing,-serial -Werror`, every version pinned. SpotBugs, PMD and Checkstyle were evaluated and **declined** — EVAL §2p | the C# pattern again, forced harder. Maven has no remote lint consumption and its one inheritance mechanism, a parent POM, needs a registry to publish and a free `<parent>` slot to consume — a Spring Boot project has neither. So `adopt.sh` writes `configs/java/pom-lints.xml` into the consumer's own `pom.xml` as a **marker-delimited managed region**: XML has no append, so without markers every baseline bump would be a hand edit. Re-running replaces the region and nothing else. **Maven only in v1**; Gradle fails loud rather than skipping |
 | **Python** | Ruff, 13 families (`E W F I B C4 UP N SIM ASYNC S T20 RUF`) + mypy `strict` | `ruff.toml` supports `extend = <path>` — but use the `extend-` forms of `select`/`per-file-ignores`, the bare ones REPLACE. mypy has no extend: `mypy.ini` is a copy |
 | **Rust** | clippy `all` + `pedantic` + curated nursery/cargo picks, `unsafe_code = "forbid"`, `-Dwarnings` in CI only; cargo-deny for RustSec advisories + duplicate versions (#58) | the C# pattern for the *config*, by necessity: Cargo cannot consume `[lints]` remotely, so adopt.sh appends the block to the consumer's own `Cargo.toml` (marker-guarded) and copies `rustfmt.toml` + `deny.toml`. The *CI* is the ordinary reusable job like every other language (#70) — the copies are what Cargo forces, not a licence to hand consumers a pinned job that drifts. Semgrep's Rust support is experimental — clippy IS the conventions layer |
 
 **Principle:** compiler-adjacent analyzers do the bug-finding; style stays
 minimal. Formatting is autofixed, never argued about.
+
+**One Java-specific interaction that is worth knowing before adopting it.**
+`-Werror` and Error Prone do not compose in a single `javac` invocation: when
+javac's own `-Xlint` produces a warning, the compile ends before Error Prone's
+pass runs, so its findings are missing from that build's output. Measured
+2026-08-09; no spelling of javac's should-stop policy fixes it, and
+`<failOnWarning>` is implemented by adding `-Werror`, so it fails identically.
+The gate stays sound — a build only goes GREEN when Error Prone has actually run
+and found nothing — but a red build's finding list can be short, and the CI job
+says so out loud when it happens. `samples/java-lint` pins the behaviour from
+both sides so nobody "fixes" it later by quietly dropping the floor.
 
 ### 4a. Formatting
 
@@ -189,7 +203,7 @@ nothing (#42). What ships now:
 | **Python** | `ruff format` | the `[format]` section of `configs/python/ruff.toml` | `ruff format --check` |
 | **C#/.NET** | `dotnet format whitespace` | `configs/editorconfig` | `dotnet format whitespace --verify-no-changes` |
 | **Rust** | `cargo fmt` | `configs/rust/rustfmt.toml` — stable options only, `newline_style = "Unix"` the one non-default | `cargo fmt --check` |
-| **Java** | — | — | nothing, and nothing until a real project needs it (§9) |
+| **Java** | Spotless + palantir-java-format, **AOSP style** | the `<spotless>` half of `configs/java/pom-lints.xml` | `mvn spotless:check` |
 
 Three things this table is careful about, each of which was measured rather
 than assumed:
@@ -201,8 +215,13 @@ than assumed:
 - **Biome is not a second option.** Offering two formatters for one language
   means two possible layouts for the same file, which is the argument the
   section claims to end. Prettier, because every file already conformed to it.
-- **Java is out of the table, not pending in it.** Same rule as the Layer 1 row
-  above: no consuming project, no config.
+- **Java's style is AOSP, not palantir's default.** palantir-java-format ships
+  a 120-column style; AOSP is the same formatter at **4-space indent, 100
+  columns**, which is exactly what `configs/editorconfig` has always declared
+  for `*.java`. Choosing the tool's default would have meant a formatter and an
+  `.editorconfig` disagreeing about every long line in the tree. Proven by
+  `samples/format/NeedsWidth100.java`, which is clean at 100 and rewrapped at
+  120.
 
 Adopting cost nothing here — measured 2026-08-05, all three formatters
 reformat **zero** files in this repo, so the gate started green and only ever

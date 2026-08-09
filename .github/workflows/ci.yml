@@ -847,6 +847,287 @@ jobs:
           fi
           echo 'OK: re-run is idempotent and an existing [lints] is left alone'
 
+  # #10 — Java Layer 1. Error Prone is the bug finder, NullAway the null-safety
+  # layer, spotless+palantir the formatter. Semgrep's Java support is good (the
+  # opposite of its Rust story), so the Java conventions are real Layer 2 rules
+  # and this job is Layer 1 only.
+  #
+  # The JDK and all four analyzer versions are PINNED to what consumers get —
+  # check-pins.sh asserts that stays true, because CI validating a different
+  # analyzer than consumers run is how the samples stop meaning what they claim
+  # (#13). Error Prone reaches into javac internals, so the finding set is
+  # JDK-specific in a way clippy's is not.
+  layer1-java:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      # The fixture poms carry a COPY of configs/java/pom-lints.xml (same shape
+      # as the sample .editorconfigs and the Rust [lints] block, and the same
+      # drift risk). scripts/pom-region.py is the generator, so `check` is the
+      # assertion that the three fixtures are byte-identical to what adopt.sh
+      # would write today.
+      - name: Fixture poms must carry configs/java verbatim
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for d in samples/java samples/java-clean samples/java-lint; do
+            python3 scripts/pom-region.py check --pom "$d/pom.xml" \
+              --fragment configs/java/pom-lints.xml
+          done
+          echo 'OK: all three fixture poms carry the shipped lint region verbatim'
+      # #8's pattern, Java edition, and here it covers more than usual: `-Werror`
+      # is invisible to a fixture whose findings are all ERROR-severity, the four
+      # pinned versions bake out no diagnostic until the day an upgrade adds a
+      # check, <style>AOSP</style> shows up only in the formatter's verdict, and
+      # <fork>true</fork> decides whether Error Prone runs AT ALL rather than
+      # what it reports. The snapshot reads Maven's own resolver, after Spring
+      # Boot's parent has had its say.
+      - name: The resolved Java settings must not change silently
+        shell: bash
+        run: python3 scripts/snapshot-java-settings.py --check
+      # NOT `working-directory:` — the manifests hold repo-relative paths, so
+      # check-expected.py has to run from the repo root. Maven reports ABSOLUTE
+      # paths (javac is forked), and the parser folds them back.
+      - name: Sample must fail with exactly the expected findings
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; out=$(cd samples/java && mvn -B --no-transfer-progress compile 2>&1) || rc=$?
+          echo "$out"
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/java compiled successfully — the config regressed'
+            exit 1
+          fi
+          printf '%s' "$out" | python3 scripts/check-expected.py --tool javac \
+            --input - --expected samples/expected/java.json
+      # Every enabled tier must be REPRESENTED, the same belt the 13 ruff
+      # families and the five clippy tiers get. Three things can switch off
+      # independently here and two of them look identical from outside when they
+      # do: Error Prone loaded at all, its WARNING tier gating, and NullAway
+      # escalated to ERROR.
+      - name: Every analyzer tier must be represented
+        shell: bash
+        run: |
+          set -uo pipefail
+          out=$(cd samples/java && mvn -B --no-transfer-progress compile 2>&1) || true
+          missing=()
+          for tier in ArrayEquals ReferenceEquality NullAway; do
+            grep -q "\[$tier\]" <<<"$out" || missing+=("$tier")
+          done
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::no finding from ${missing[*]} — that tier is enabled but unproven"
+            exit 1
+          fi
+          echo 'OK: Error Prone ERROR, Error Prone WARNING and NullAway all fire'
+      - name: Clean Java sample must COMPILE and TEST with zero findings
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; out=$(cd samples/java-clean && mvn -B --no-transfer-progress test 2>&1) || rc=$?
+          echo "$out"
+          if [[ $rc -ne 0 ]]; then
+            echo '::error::samples/java-clean was flagged — the baseline is over-strict. Fix the config, do not add @SuppressWarnings to the fixture.'
+            exit 1
+          fi
+          printf '%s' "$out" | python3 scripts/check-expected.py --tool javac \
+            --input - --expected samples/expected/java-clean.json
+      # --- the -Werror interaction, pinned from BOTH sides -------------------
+      #
+      # MEASURED 2026-08-09: a javac -Xlint warning ends the compile before
+      # Error Prone's pass runs, so every Error Prone and NullAway finding
+      # disappears from the output. The build stays RED, so this can never make
+      # a gate pass over unexamined code — but the finding LIST is short by
+      # however many the analyzer would have added, and a reader who does not
+      # know that is wrong about their own backlog.
+      #
+      # Nothing fixes it: no spelling of javac's should-stop policy, and
+      # <failOnWarning> is implemented BY ADDING -Werror. So it is pinned as a
+      # tested property instead of a footnote, which is also what stops somebody
+      # "fixing" it later by quietly dropping -Werror.
+      - name: A javac lint warning must gate, and must suppress the analyzer pass
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; out=$(cd samples/java-lint && mvn -B --no-transfer-progress compile 2>&1) || rc=$?
+          echo "$out"
+          [[ $rc -ne 0 ]] || {
+            echo '::error::samples/java-lint compiled successfully — -Werror is no longer gating javac lint'
+            exit 1; }
+          grep -q 'warnings found and -Werror specified' <<<"$out" || {
+            echo '::error::the failure is not -Werror — something else broke in samples/java-lint'
+            exit 1; }
+          if grep -q '\[ReferenceEquality\]' <<<"$out"; then
+            echo '::error::Error Prone reported a finding alongside javac lint warnings. That is BETTER than the documented behaviour, which means the documentation is now wrong: re-measure, then update configs/java/pom-lints.xml, docs/STATUS.md §4 and samples/java-lint before deleting this check.'
+            exit 1
+          fi
+          printf '%s' "$out" | python3 scripts/check-expected.py --tool javac \
+            --input - --expected samples/expected/java-lint.json
+      # THE ABLATION, and it does double duty. Stripping -Werror must (a) turn
+      # the fixture GREEN, proving -Werror is what gates both javac lint and
+      # Error Prone's warning tier, and (b) make the Error Prone finding APPEAR,
+      # proving it was being SUPPRESSED above rather than merely absent. Without
+      # (b) the check above passes just as happily against an Error Prone that
+      # stopped working entirely.
+      - name: ...and stripping -Werror must free the analyzer AND stop gating
+        shell: bash
+        run: |
+          set -uo pipefail
+          rm -rf /tmp/ablate && cp -R samples/java-lint /tmp/ablate && rm -rf /tmp/ablate/target
+          python3 - <<'PY'
+          import re
+          p = '/tmp/ablate/pom.xml'
+          s = open(p).read()
+          out = re.sub(r'[ \t]*<arg>-Werror</arg>\n', '', s)
+          assert out != s, 'the -Werror arg is gone from the fixture pom already'
+          open(p, 'w').write(out)
+          PY
+          rc=0; out=$(cd /tmp/ablate && mvn -B --no-transfer-progress compile 2>&1) || rc=$?
+          echo "$out"
+          [[ $rc -eq 0 ]] || {
+            echo '::error::samples/java-lint still fails with -Werror removed, so that flag is not what gates it — the fixture is misformed in some other way and the check above proves nothing'
+            exit 1; }
+          grep -q '\[ReferenceEquality\]' <<<"$out" || {
+            echo '::error::the Error Prone finding did NOT appear with -Werror removed. It was absent rather than suppressed, which means Error Prone is not running on this fixture at all and the interaction check above is vacuous.'
+            exit 1; }
+          echo 'OK: -Werror gates both tiers, and is what suppresses the analyzer pass'
+      # --- the formatter -----------------------------------------------------
+      - name: Java fixtures must already be formatted
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for d in samples/java samples/java-clean samples/java-lint; do
+            (cd "$d" && mvn -B --no-transfer-progress spotless:check)
+          done
+      # THE ABLATION. Everything else in the spotless block is a default;
+      # <style>AOSP</style> is the one setting that is not (palantir-java-format
+      # ships PALANTIR, which wraps at 120). So the fixture is a file that is
+      # clean at 100 columns and rewrapped at 120 — the same width ablation the
+      # Prettier and ruff gates use, and the reason configs/editorconfig's
+      # max_line_length = 100 and this formatter agree rather than fighting.
+      - name: The AOSP style must be what decides the Java verdict
+        shell: bash
+        run: |
+          set -uo pipefail
+          rm -rf /tmp/fmt-java && cp -R samples/java-clean /tmp/fmt-java && rm -rf /tmp/fmt-java/target
+          cp samples/format/NeedsWidth100.java \
+            /tmp/fmt-java/src/main/java/dev/maximalcode/sample/NeedsWidth100.java
+          rc=0; (cd /tmp/fmt-java && mvn -B --no-transfer-progress spotless:check) >/dev/null 2>&1 || rc=$?
+          [[ $rc -eq 0 ]] || {
+            echo '::error::samples/format/NeedsWidth100.java is not clean under our config — the AOSP style regressed, or the fixture line drifted outside 101-120 chars'
+            exit 1; }
+          python3 - <<'PY'
+          p = '/tmp/fmt-java/pom.xml'
+          s = open(p).read()
+          out = s.replace('<style>AOSP</style>\n', '')
+          assert out != s, 'the AOSP style is gone from the fixture pom already'
+          open(p, 'w').write(out)
+          PY
+          rc=0; (cd /tmp/fmt-java && mvn -B --no-transfer-progress spotless:check) >/dev/null 2>&1 || rc=$?
+          [[ $rc -ne 0 ]] || {
+            echo '::error::the fixture is clean at palantir-java-format DEFAULTS too, so <style>AOSP</style> separates nothing. Either its long line no longer exceeds 100 chars, or palantir changed its default width.'
+            exit 1; }
+          echo 'OK: <style>AOSP</style> changes the verdict — the Java format gate is driven by the shipped config'
+      # --- adopt.sh equivalence, the Java half -------------------------------
+      # The JDK lives in THIS job, so the end-to-end claim does too: a fresh
+      # Maven project adopted by the script must gate identically, re-running
+      # must change nothing, and a pom that already configures the compiler
+      # plugin must be REFUSED rather than clobbered.
+      - name: A fresh Maven project adopted by the script gates identically
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm -rf /tmp/consumer-java
+          mkdir -p /tmp/consumer-java/src/main/java/demo
+          cat > /tmp/consumer-java/pom.xml <<'POM'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <project xmlns="http://maven.apache.org/POM/4.0.0">
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>demo</groupId>
+            <artifactId>consumer</artifactId>
+            <version>1.0</version>
+            <properties>
+              <maven.compiler.release>25</maven.compiler.release>
+              <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+            </properties>
+            <build>
+              <plugins>
+              </plugins>
+            </build>
+          </project>
+          POM
+          printf 'package demo;\n\npublic final class App {\n    private App() {}\n\n    public static int len(String s) {\n        return s.length();\n    }\n}\n' \
+            > /tmp/consumer-java/src/main/java/demo/App.java
+          ./scripts/adopt.sh /tmp/consumer-java --no-workflow
+          (cd /tmp/consumer-java && mvn -B --no-transfer-progress compile)
+          # ...and it must GATE, not merely build. A null dereference is the
+          # NullAway path specifically, which is the half that only works if
+          # ${project.groupId} resolved to something the sources live under.
+          printf 'package demo;\n\npublic final class Boom {\n    private Boom() {}\n\n    static int boom() {\n        String s = null;\n        return s.length();\n    }\n}\n' \
+            > /tmp/consumer-java/src/main/java/demo/Boom.java
+          rc=0; out=$(cd /tmp/consumer-java && mvn -B --no-transfer-progress compile 2>&1) || rc=$?
+          echo "$out"
+          [[ $rc -ne 0 ]] || { echo '::error::adopted repo did NOT gate on a null dereference'; exit 1; }
+          grep -q '\[NullAway\]' <<<"$out" || {
+            echo '::error::the adopted repo failed, but not on NullAway — AnnotatedPackages did not resolve to the source package, which is the silent failure configs/java warns about'
+            exit 1; }
+          echo 'OK: adopted project builds clean code and gates a null dereference'
+      - name: Java adoption is idempotent, and refuses rather than clobbering
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          before=$(sha256sum /tmp/consumer-java/pom.xml | cut -d' ' -f1)
+          ./scripts/adopt.sh /tmp/consumer-java --no-workflow > /tmp/java-rerun.log 2>&1
+          after=$(sha256sum /tmp/consumer-java/pom.xml | cut -d' ' -f1)
+          [[ "$before" == "$after" ]] || {
+            echo '::error::re-run modified pom.xml — the managed region is not idempotent, which makes every baseline bump a diff nobody asked for'; exit 1; }
+          n=$(grep -c 'maxi-quality:begin' /tmp/consumer-java/pom.xml)
+          [[ "$n" -eq 1 ]] || { echo "::error::the lint region was written $n times"; exit 1; }
+          # A pom that already configures maven-compiler-plugin: REFUSE and say
+          # why, never merge. Two declarations of one plugin in one POM is
+          # last-one-wins, so writing ours would silently delete a -Werror the
+          # consumer already had — the exact downgrade #10 warns about.
+          rm -rf /tmp/consumer-java-own
+          mkdir -p /tmp/consumer-java-own/src/main/java/demo
+          cat > /tmp/consumer-java-own/pom.xml <<'POM'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <project xmlns="http://maven.apache.org/POM/4.0.0">
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>demo</groupId>
+            <artifactId>own</artifactId>
+            <version>1.0</version>
+            <build>
+              <plugins>
+                <plugin>
+                  <groupId>org.apache.maven.plugins</groupId>
+                  <artifactId>maven-compiler-plugin</artifactId>
+                  <configuration>
+                    <compilerArgs>
+                      <arg>-Xlint:all,-processing,-serial</arg>
+                      <arg>-Werror</arg>
+                    </compilerArgs>
+                  </configuration>
+                </plugin>
+              </plugins>
+            </build>
+          </project>
+          POM
+          out=$(./scripts/adopt.sh /tmp/consumer-java-own --no-workflow 2>&1)
+          echo "$out"
+          grep -q 'already configures maven-compiler-plugin' <<<"$out" || {
+            echo '::error::adopt.sh did not warn about an existing maven-compiler-plugin declaration'; exit 1; }
+          if grep -q 'maxi-quality:begin' /tmp/consumer-java-own/pom.xml; then
+            echo '::error::adopt.sh wrote its region into a pom that already declares the compiler plugin — the consumer just lost their own compilerArgs'
+            exit 1
+          fi
+          grep -q '\-Werror' /tmp/consumer-java-own/pom.xml || {
+            echo '::error::the consumer -Werror floor is gone from the pom'; exit 1; }
+          echo 'OK: re-run is idempotent, and an existing compiler-plugin declaration is refused intact'
+
   # The ratchet (`--changed-only`) had NO test, and shipped broken: semgrep's
   # --baseline-commit resolves the ref against the git repo of its WORKING
   # DIRECTORY, and scan.sh never cd'd into the target. It diffed the wrong
@@ -2442,6 +2723,37 @@ jobs:
           printf '[package]\nname = "v"\n' > "$F/rust-target/target/pkg/Cargo.toml"
           : > "$F/rust-target/target/pkg/Cargo.lock"
 
+          # Java (#10). A single-module Maven project carrying the lint region.
+          mkdir -p "$F/mvn"
+          printf '<project><modelVersion>4.0.0</modelVersion><!-- maxi-quality:begin --><!-- maxi-quality:end --></project>\n' \
+            > "$F/mvn/pom.xml"
+
+          # An aggregator and its modules. Only the ROOT is a matrix unit:
+          # <build><plugins> is inherited by modules, and one entry per module
+          # would build the same reactor N times. The .sln-preference shape, in
+          # Maven's spelling.
+          mkdir -p "$F/mvn-multi/mod-a" "$F/mvn-multi/mod-b"
+          printf '<project><modelVersion>4.0.0</modelVersion><modules><module>mod-a</module><module>mod-b</module></modules><!-- maxi-quality:begin --><!-- maxi-quality:end --></project>\n' \
+            > "$F/mvn-multi/pom.xml"
+          printf '<project><modelVersion>4.0.0</modelVersion></project>\n' > "$F/mvn-multi/mod-a/pom.xml"
+          printf '<project><modelVersion>4.0.0</modelVersion></project>\n' > "$F/mvn-multi/mod-b/pom.xml"
+
+          # THE BUG SHAPE. A pom with no lint region builds perfectly and
+          # analyses nothing — `mvn compile` green over code Error Prone never
+          # opened. That is the whole failure this baseline exists to prevent,
+          # so it stops the run rather than reducing the scan.
+          mkdir -p "$F/mvn-unwired"
+          printf '<project><modelVersion>4.0.0</modelVersion></project>\n' > "$F/mvn-unwired/pom.xml"
+
+          # Gradle: v1 is Maven-only, and "no Java here" is a lie about a repo
+          # that plainly has some. Same class as the yarn lockfile above.
+          mkdir -p "$F/gradle"
+          : > "$F/gradle/build.gradle.kts"
+
+          mkdir -p "$F/mvn-nested/svc"
+          printf '<project><modelVersion>4.0.0</modelVersion><!-- maxi-quality:begin --><!-- maxi-quality:end --></project>\n' \
+            > "$F/mvn-nested/svc/pom.xml"
+
           run "$F/npm" auto
           eq 'npm rc' "$rc" 0
           eq 'npm ts_dirs' "$(val ts_dirs)" '["."]'
@@ -2543,6 +2855,44 @@ jobs:
           eq 'npm has_rust' "$(val has_rust)" false
           eq 'npm rust_dirs' "$(val rust_dirs)" '[]'
 
+          run "$F/mvn" auto
+          eq 'mvn rc' "$rc" 0
+          eq 'mvn java_dirs' "$(val java_dirs)" '["."]'
+          eq 'mvn has_java' "$(val has_java)" true
+
+          run "$F/mvn-multi" auto
+          eq 'mvn-multi rc' "$rc" 0
+          eq 'mvn-multi java_dirs' "$(val java_dirs)" '["."]'
+
+          run "$F/mvn-nested" auto
+          eq 'mvn-nested rc' "$rc" 0
+          eq 'mvn-nested java_dirs' "$(val java_dirs)" '["svc"]'
+
+          run "$F/mvn-unwired" auto
+          eq 'mvn-unwired rc' "$rc" 1
+          says 'mvn-unwired' 'maxi-quality lint region'
+
+          # ...and it must stay escapable, or the fix is a new way to be stuck.
+          run "$F/mvn-unwired" none
+          eq 'mvn-unwired+none rc' "$rc" 0
+          eq 'mvn-unwired+none has_java' "$(val has_java)" false
+          run "$F/mvn-unwired" ts
+          eq 'mvn-unwired+ts rc' "$rc" 0
+          eq 'mvn-unwired+ts has_java' "$(val has_java)" false
+
+          run "$F/gradle" auto
+          eq 'gradle rc' "$rc" 1
+          says 'gradle' 'MAVEN-ONLY'
+
+          run "$F/gradle" none
+          eq 'gradle+none rc' "$rc" 0
+          eq 'gradle+none has_java' "$(val has_java)" false
+
+          # A repo with no Java must not grow a Java job.
+          run "$F/npm" auto
+          eq 'npm has_java' "$(val has_java)" false
+          eq 'npm java_dirs' "$(val java_dirs)" '[]'
+
           # And this repo itself, which is the workspace shape in miniature:
           # a root lockfile with two sample package.json files under it, plus
           # the three crates — every one of which must carry its own lockfile,
@@ -2552,6 +2902,8 @@ jobs:
           eq 'self ts_dirs' "$(val ts_dirs)" '["."]'
           eq 'self has_rust' "$(val has_rust)" true
           eq 'self rust_dirs' "$(val rust_dirs)" '["examples/rust-cli","samples/rust","samples/rust-clean"]'
+          eq 'self has_java' "$(val has_java)" true
+          eq 'self java_dirs' "$(val java_dirs)" '["samples/java","samples/java-clean","samples/java-lint"]'
 
           echo 'OK: every detection fixture classified, and the two silent skips now fail loud'
 
@@ -3091,6 +3443,7 @@ jobs:
           expect dotnet          'C#/.NET'
           expect python-uv       'Python'
           expect rust-cli        'Rust'
+          expect java-maven      'Java (Maven)'
           expect mixed-monorepo  'TypeScript' 'C#/.NET'
           expect legacy-ratchet  'TypeScript'
 

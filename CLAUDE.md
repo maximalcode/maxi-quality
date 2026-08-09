@@ -144,7 +144,7 @@ do not silently diverge from it.
 
 ## 4. Scope discipline
 
-Shipped and verified: **TypeScript, C#/.NET, Python and Rust.**
+Shipped and verified: **TypeScript, C#/.NET, Python, Rust and Java.**
 
 Already shipped, do not re-litigate: `quality.yml` + the `layer2` composite
 action, `adopt.sh` and `check-pins.sh`, the
@@ -161,12 +161,25 @@ is a strict *subset* — writing that would have downgraded the only consuming
 project. If a future session is tempted to trim it, that is the trap. Measure
 against Consumer C before narrowing anything.
 
-**Java has no consuming project yet.** Do not write Java configs speculatively —
-confirm which repo will consume them first. Tracked as an issue, not here.
+**Java shipped 2026-08-09 (#10), Maven only.** Error Prone + NullAway at ERROR
++ Spotless/palantir in AOSP style, delivered as a marker-delimited managed
+region in the consumer's own `pom.xml` (Maven has no remote lint consumption and
+XML has no append, so `scripts/pom-region.py` is the upgrade path). SpotBugs, PMD
+and Checkstyle were measured and DECLINED — `EVAL-vs-oss-tools.md` §2p. **Gradle
+is not built**: it gets written the day a Gradle consumer exists, and until then
+detection fails loud rather than skipping.
+
+Two things about it that are easy to lose. First, `-Werror` and Error Prone do
+not compose in one javac invocation — a lint warning suppresses the whole
+analyzer pass — and `samples/java-lint` pins that from both sides; do not
+"simplify" it away. Second, the adoption cost was **never measured against
+Consumer D**, only against a representative fixture built here, and STATUS §5
+says so explicitly. Do not quietly fill that cell with a fixture number.
 
 The rule that governs this has not changed: speculative configs for languages
 with no real consuming project are dead weight. They get written the day a real
-project needs them, not before. Python clears that bar; Java does not yet.
+project needs them, not before. Python and Java clear that bar; Gradle does not
+yet.
 
 **SonarQube CE is DROPPED, not parked**, and the "≥3 consuming repos" trigger is
 void — repo count is not evidence. It was measured in
@@ -187,7 +200,7 @@ Adding a 13th convention requires removing one, or an explicit decision from the
 user to raise the cap. A new rule is justified by *a real bug that slipped
 through*, never by "this would be nice to catch".
 
-Note the distinction: 12 **conventions**, currently 28 **rule ids**. Semgrep
+Note the distinction: 12 **conventions**, currently 40 **rule ids**. Semgrep
 patterns are language-specific, so one convention needs a separate id per
 language when the syntax differs. Splitting an existing convention into a
 per-language id is not new scope; inventing a new convention is.

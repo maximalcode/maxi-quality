@@ -18,11 +18,12 @@ jobs:
 
 | Input | Default | What it does |
 |---|---|---|
-| `languages` | `auto` | `auto` detects by lockfile/project glob. A CSV subset of `ts,dotnet,python,rust` forces it. `none` runs **Layer 2 only** — the adoption entry point for a repo that wants secrets, vulns and conventions gated before taking on Layer 1 |
+| `languages` | `auto` | `auto` detects by lockfile/project glob. A CSV subset of `ts,dotnet,python,rust,java` forces it. `none` runs **Layer 2 only** — the adoption entry point for a repo that wants secrets, vulns and conventions gated before taking on Layer 1 |
 | `node-version` | `24` | |
 | `dotnet-version` | `10.0.x` | |
 | `python-version` | `3.12` | |
 | `rust-version` | `1.97.1` | Pinned toolchain for the `rust` job. Same argument as `uv-version` — hold or advance it without waiting on this repo, but the default is a **pin**, never `stable`: with `RUSTFLAGS=-Dwarnings`, a toolchain that adds a clippy lint is a breaking change |
+| `java-version` | `25` | Pinned JDK for the `java` job. A **pin** for the same reason `rust-version` is one, only more so: Error Prone reaches into javac internals that move between releases, and with `-Werror` in the compiler args a JDK that adds an `-Xlint` category is a breaking change |
 | `uv-version` | `0.12.1` | Pinned uv for lockfile-based Python projects. Exposed so a consumer can hold or advance it without waiting on this repo — but it has a **pin** as a default, never `latest` |
 | `changed-only` | *(empty)* | Base ref for new-code-only Layer 2. Empty = full scan |
 | `licenses` | *(empty)* | Comma-separated SPDX allowlist. Anything outside it fails. **No default allowlist**, deliberately |
@@ -33,6 +34,19 @@ Detection **fails loud rather than skipping**: a `package.json` with no lockfile
 at or above it, a `.csproj` no solution references, or a `Cargo.toml` with no
 `Cargo.lock` at or above it stops the run. All three used to detect as "no such
 language here" and go green over code nothing had opened.
+
+Java adds two of the same shape. A **`build.gradle[.kts]` with no `pom.xml`**
+stops the run — the Java layer is Maven-only in v1, and "no Java here" is a lie
+about a repo that plainly has some. And a **`pom.xml` carrying no
+`maxi-quality:begin` region** stops it too: that project builds perfectly and
+analyses nothing, so `mvn compile` would be green over code Error Prone never
+opened. Both are escapable the same way every other loud check is — pass
+`languages:` without `java` to skip them deliberately.
+
+The Java matrix unit is a **root POM**, meaning one that no other POM lists in
+its `<modules>`. Maven builds an aggregator and its modules in one reactor, and
+`<build><plugins>` in an aggregator is inherited by its modules, so keying on
+every `pom.xml` would analyse the same tree once per module.
 
 The workflow also **outputs what it detected**, so a caller can assert detection
 actually fired. Without that, a run is green in two very different cases — the
@@ -216,36 +230,67 @@ Measured 2026-08-05: semgrep `1.172.0` is the newest release on PyPI and
 
 ---
 
-## The ruleset — 12 conventions, 28 rule ids
+## The ruleset — 12 conventions, 40 rule ids
 
-Semgrep patterns are language-specific, so a convention whose C#, TypeScript and
-Python syntax differ needs one rule id per language with an identical message.
-That is why 12 conventions produce 28 ids. **The cap is on conventions, and it is
+Semgrep patterns are language-specific, so a convention whose C#, TypeScript,
+Python and Java syntax differ needs one rule id per language with an identical
+message.
+That is why 12 conventions produce 40 ids. **The cap is on conventions, and it is
 12, hard** — new ones get added when a real bug slips through, never
 speculatively.
 
-The **Py** column is not a Semgrep column. Ruff already covers half of these
-conventions outright, and a Semgrep rule for something Layer 1 already catches is
-a second finding on one line, not more coverage — so where Ruff has it, the cell
-names the Ruff rule and there is no Semgrep id.
+**The Py and Java columns are not pure Semgrep columns.** Ruff already covers
+half of these conventions for Python, and Error Prone covers three of them for
+Java. A Semgrep rule for something Layer 1 already catches is a second finding on
+one line, not more coverage — so where the Layer 1 analyzer has it, the cell
+names that check and there is no Semgrep id. The Java column was decided by
+planting each shape and reading Error Prone's actual output (2026-08-09), not by
+reading its check list.
 
-| Convention | Rule id(s) | TS | C# | Py |
-|---|---|:--:|:--:|:--|
-| **general** | | | | |
-| TODO without a tracked issue | `todo-without-issue` | ✅ | ✅ | ✅ |
-| Empty catch block | `catch-and-swallow-{ts,dotnet}` | ✅ | ✅ | ruff `SIM105` |
-| Printf-debugging left behind | `debug-print-left-behind-{ts,dotnet}` | ✅ | ✅ | ruff `T201` |
-| Blocking on a Task | `sync-over-async` | — | ✅ | ruff `ASYNC251` |
-| **security** | | | | |
-| SQL built by concat/interpolation | `sql-string-concat-{ts,dotnet}`, `sql-string-concat-builder-{ts,dotnet}` | ✅ | ✅ | ruff `S608` |
-| Shell command from interpolation | `command-injection-{ts,dotnet}`, `command-injection-indirect-{ts,dotnet}` | ✅ | ✅ | ruff `S602` |
-| MD5/SHA1/DES/RC4, any case, all DES variants | `weak-crypto` | ✅ | ✅ | ruff `S324` |
-| Secret-named var assigned a literal | `hardcoded-secret-{ts,dotnet,python}` | ✅ | ✅ | ✅ |
-| **conventions** (mine) | | | | |
-| Ambient clock instead of injected | `no-ambient-clock`, `no-ambient-clock-python` | ✅ | ✅ | ✅ |
-| Mutation without an authz gate | `mutation-requires-authz-{ts,dotnet,python}` | ✅ | ✅ | ✅ |
-| 403 for an invisible resource | `no-permission-denied-for-invisible-resource-{ts,dotnet,python}` | ✅ | ✅ | ✅ |
-| double/float for money | `no-float-for-money`, `no-float-for-money-python` | — | ✅ | ✅ |
+| Convention | Rule id(s) | TS | C# | Py | Java |
+|---|---|:--:|:--:|:--|:--|
+| **general** | | | | | |
+| TODO without a tracked issue | `todo-without-issue` | ✅ | ✅ | ✅ | ✅ |
+| Empty catch block | `catch-and-swallow-{ts,dotnet}` | ✅ | ✅ | ruff `SIM105` | EP `EmptyCatch` |
+| Printf-debugging left behind | `debug-print-left-behind-{ts,dotnet,java}` | ✅ | ✅ | ruff `T201` | ✅ |
+| Blocking on async work | `sync-over-async`, `sync-over-async-java` | — | ✅ | ruff `ASYNC251` | ✅ |
+| **security** | | | | | |
+| SQL built by concat/interpolation | `sql-string-concat-{ts,dotnet,java}`, `sql-string-concat-builder-{ts,dotnet,java}` | ✅ | ✅ | ruff `S608` | ✅ |
+| Shell command from interpolation | `command-injection-{ts,dotnet,java}`, `command-injection-indirect-{ts,dotnet,java}` | ✅ | ✅ | ruff `S602` | ✅ |
+| MD5/SHA1/DES/RC4, any case, all DES variants | `weak-crypto`, `weak-crypto-java` | ✅ | ✅ | ruff `S324` | ✅ |
+| Secret-named var assigned a literal | `hardcoded-secret-{ts,dotnet,python,java}` | ✅ | ✅ | ✅ | ✅ |
+| **conventions** (mine) | | | | | |
+| Ambient clock instead of injected | `no-ambient-clock`, `no-ambient-clock-{python,java}` | ✅ | ✅ | ✅ | partly ✅, partly EP |
+| Mutation without an authz gate | `mutation-requires-authz-{ts,dotnet,python,java}` | ✅ | ✅ | ✅ | ✅ |
+| 403 for an invisible resource | `no-permission-denied-for-invisible-resource-{ts,dotnet,python,java}` | ✅ | ✅ | ✅ | ✅ |
+| double/float for money | `no-float-for-money`, `no-float-for-money-{python,java}` | — | ✅ | ✅ | ✅ |
+
+**The two split cells in the Java column are the overlap audit, measured.**
+Error Prone's `EmptyCatch` is on by default, so `catch-and-swallow-java` was not
+written — the compiler already fails the build on that line. The ambient-clock
+row is split because Error Prone covers only *part* of the convention:
+`new Date()` is `JavaUtilDate` and `LocalDate.now()` / `LocalDateTime.now()` are
+`JavaTimeDefaultTimeZone`, while `Instant.now()` (zone-independent, so
+`JavaTimeDefaultTimeZone` allows it) and `System.currentTimeMillis()` are covered
+by nothing. `no-ambient-clock-java` matches exactly those two and deliberately
+not the other three.
+
+**`mutation-requires-authz-java` exempts `@PreAuthorize`, `@Secured` and
+`@RolesAllowed`, and that is load-bearing rather than convenient.** In a Spring
+codebase the annotation *is* the authorisation check — enforced by a method
+interceptor before the body runs — so a rule that only knew about an explicit
+gate call would fire on every correctly-secured service in the repo. Each
+exemption has a counterexample in `samples/semgrep/UserService.java` that must
+stay silent, and a sibling that must fire.
+
+**`sync-over-async-java` has two branches with different precision, on purpose.**
+`.block()` / `.blockFirst()` / `.blockLast()` exist on Reactor types and nowhere
+else, so they carry no guard. `.join()` and `.get()` are guarded by a regex on
+the receiver's *name*, because `Optional.get()`, `Map.get()` and `Thread.join()`
+are everywhere and an unguarded rule would fire on most lines of most Java files.
+That is a heuristic, and it is stated as one: it catches `resultFuture.get()` and
+misses `f.get()`. The precise version needs type information Semgrep OSS does not
+have.
 
 `no-ambient-clock` and `weak-crypto` are single rule ids covering TypeScript and
 C# together — that is the concept §10 criterion (*the same rule fires in a TS and

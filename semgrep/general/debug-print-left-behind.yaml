@@ -50,3 +50,36 @@ rules:
       - pattern: System.Diagnostics.Debug.WriteLine(...)
       - pattern: Debug.WriteLine(...)
       - pattern: Console.WriteLine(...)
+
+  # Java, added for issue #10. Error Prone has no on-by-default check for
+  # System.out — measured 2026-08-09, a planted println came back clean — so
+  # unlike catch-and-swallow this one is a real gap rather than a duplicate.
+  #
+  # printStackTrace() is in the list and the other two languages have no twin
+  # for it: it is Java's most common printf-debugging idiom, it writes to
+  # stderr with no level and no category, and it is what people reach for
+  # INSTEAD of logging the exception.
+  - id: debug-print-left-behind-java
+    message: >-
+      Printf-debugging left in the tree. Use the project logger (SLF4J) so the
+      output has a level, a category and somewhere to go in production —
+      printStackTrace() in particular loses the exception to stderr.
+    severity: WARNING
+    languages: [java]
+    paths:
+      exclude:
+        - "*Test.java"
+        - "*Tests.java"
+        - "*IT.java"
+        - "**/test/**"
+        # The C# rule excludes Program.cs because a process entrypoint
+        # announcing itself is liveness reporting, not debugging left behind.
+        # Java spells that file Main.java or Application.java.
+        - "**/Main.java"
+        - "**/*Application.java"
+    pattern-either:
+      - pattern: System.out.println(...)
+      - pattern: System.out.print(...)
+      - pattern: System.err.println(...)
+      - pattern: System.err.print(...)
+      - pattern: $E.printStackTrace()

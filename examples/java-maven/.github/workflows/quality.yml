@@ -1,0 +1,7 @@
+name: quality
+
+on: [push, pull_request]
+
+jobs:
+  quality:
+    uses: maximalcode/maxi-quality/.github/workflows/quality.yml@v1

@@ -129,3 +129,58 @@ rules:
               ...
               $AUTHZ.authorize(...)
               ...
+
+  # Java, added for issue #10.
+  #
+  # THE @PreAuthorize EXEMPTION IS LOAD-BEARING, not a convenience. In a Spring
+  # codebase the annotation IS the authorisation check — it is enforced by a
+  # method interceptor before the body runs — so a rule that only knows about
+  # an explicit gate CALL fires on every correctly-secured service in the repo.
+  # That is the shape docs/STATUS.md §4 records for catch-and-swallow: 4 of 4
+  # false positives on real code, from a rule that was right about the pattern
+  # and wrong about the idiom.
+  #
+  # Every exemption below has a counterexample in samples/semgrep/UserService.java
+  # that must stay silent, and a sibling that must fire — a fixture that merely
+  # passes cannot tell "the exemption matched" from "the rule never reached the
+  # method" (docs/STATUS.md §4).
+  - id: mutation-requires-authz-java
+    message: >-
+      Service mutation method with no authorisation check. Every create/update/
+      delete entry point must be gated — @PreAuthorize on the method, or an
+      explicit authz call before it touches state. "The caller already checked"
+      is how privilege-escalation bugs happen.
+    severity: ERROR
+    languages: [java]
+    paths:
+      include:
+        - "*Service.java"
+        - "*Handler.java"
+      exclude:
+        - "*Test.java"
+        - "*Tests.java"
+        - "*IT.java"
+        - "**/test/**"
+    patterns:
+      - pattern: |
+          public $RET $METHOD(...) { ... }
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: '^(create|update|delete|remove|set|assign|revoke|grant)\w*'
+      - pattern-not: |
+          public $RET $METHOD(...) { ... $AUTHZ.require(...); ... }
+      - pattern-not: |
+          public $RET $METHOD(...) { ... $AUTHZ.authorize(...); ... }
+      - pattern-not: |
+          public $RET $METHOD(...) { ... $AUTHZ.checkPermission(...); ... }
+      # The Spring annotations, all three spellings. @PreAuthorize covers the
+      # SpEL form, @Secured the role-list form, @RolesAllowed the Jakarta one.
+      - pattern-not: |
+          @PreAuthorize(...)
+          public $RET $METHOD(...) { ... }
+      - pattern-not: |
+          @Secured(...)
+          public $RET $METHOD(...) { ... }
+      - pattern-not: |
+          @RolesAllowed(...)
+          public $RET $METHOD(...) { ... }

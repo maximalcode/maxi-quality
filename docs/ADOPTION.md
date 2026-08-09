@@ -458,6 +458,99 @@ what a first-commit adoption needs.
 
 ---
 
+## 4c. Java (Maven) — Layer 1
+
+**`adopt.sh` does this for you.** Everything below is what it does and why, so
+that a hand merge is possible when it refuses.
+
+### What lands in your `pom.xml`, and why it is an edit rather than a file
+
+Maven has no remote lint consumption. Its one real inheritance mechanism is a
+parent POM, and that is unavailable twice over: publishing one needs a registry
+(this baseline ships no artifacts), and a Spring Boot project's single
+`<parent>` slot is already taken. So the config is a **copy** — the same
+constraint Cargo imposes on `[lints]`.
+
+Rust gets away with `cat >> Cargo.toml` because TOML appends. XML does not: the
+block has to land **inside `<build><plugins>`**. So it arrives as a
+marker-delimited managed region:
+
+```xml
+<!-- maxi-quality:begin — Java lint baseline. GENERATED, do not hand-edit. ... -->
+...
+<!-- maxi-quality:end -->
+```
+
+Re-running `adopt.sh` replaces everything between the markers and **nothing**
+outside them — your own plugins, properties, comments and formatting are
+untouched. That is the upgrade path; without it, every baseline bump would be a
+hand edit, which is copy-paste-drift with a changelog.
+
+Never hand-edit inside the markers. `scripts/pom-region.py check` is what CI
+uses to tell a stale region from a current one.
+
+### When `adopt.sh` refuses — and what to do
+
+If your `pom.xml` already configures `maven-compiler-plugin`, **nothing is
+written**. That is not caution, it is correctness: two declarations of one plugin
+in one POM is not a merge, it is last-one-wins, so writing the baseline's would
+**silently delete the `compilerArgs` you already had**. A repo arriving with
+`-Xlint:all -Werror` would come out of adoption *weaker* than it went in.
+
+Merge by hand instead — copy the `<compilerArgs>` and
+`<annotationProcessorPaths>` out of `configs/java/pom-lints.xml` into your
+existing declaration, keeping your own args, and add the spotless plugin beside
+it.
+
+### Three things that will bite, all measured
+
+1. **`-Werror` and Error Prone do not compose.** When javac's own `-Xlint`
+   produces a warning, the compile ends before Error Prone's pass runs, so its
+   findings are **missing from that build's output**. The build is still red —
+   a green build is by definition one where Error Prone ran and found nothing —
+   but your first run on an existing codebase may show four lint warnings and
+   hide forty analyzer findings behind them. Fix the lint warnings, re-run, and
+   the rest appear. Nothing fixes this: not any spelling of javac's should-stop
+   policy, and not `<failOnWarning>`, which is implemented by adding `-Werror`.
+   The CI job prints a `::warning::` naming it whenever it happens.
+2. **`annotationProcessorPaths` turns off classpath processor discovery.** If
+   you use Lombok or MapStruct they must be listed there too. That is Maven's
+   behaviour, not this baseline's, and it is the one way adopting this can break
+   a build that was previously fine.
+3. **NullAway is told which code is yours via `${project.groupId}`**, a prefix
+   match. If your sources do not live under your groupId, change that one value
+   — because getting it wrong means NullAway analyses **nothing** and says so
+   nowhere. `samples/java` plants a null dereference that must fire, which is how
+   this repo proves its own wiring rather than assuming it.
+
+### Formatting — `mvn spotless:apply`
+
+```bash
+mvn spotless:apply     # fix, once, alone
+mvn spotless:check     # the gate
+```
+
+palantir-java-format in **AOSP** style: 4-space indent at 100 columns, which is
+what the shared `.editorconfig` already declares for `*.java`. Deliberately not
+bound to a lifecycle phase — a contributor's `mvn test` should not fail on layout
+mid-refactor, and CI is the gate. Same split as Rust's `-Dwarnings` living in the
+job rather than in the manifest. Run `apply` once, alone, and put that commit in
+`.git-blame-ignore-revs`.
+
+### Scope: Maven only
+
+Gradle gets built when a Gradle consumer exists — the same just-in-time rule that
+produced this layer. Until then a `build.gradle[.kts]` with no `pom.xml` **stops
+the run** rather than skipping, because "no Java here" is a lie about a repo that
+plainly has some.
+
+Layer 2 needs **zero Java changes** — Gitleaks is language-agnostic and
+OSV-Scanner reads `pom.xml` natively. Unlike Rust, Semgrep supports Java well, so
+the conventions are real Layer 2 rules rather than being folded into the Layer 1
+analyzer.
+
+---
+
 ## 5. CI — Layer 2, and the whole point
 
 Your entire `.github/workflows/quality.yml`:

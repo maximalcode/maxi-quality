@@ -21,9 +21,10 @@
 # BOTH the workflow and the action — they move together, never independently.
 #
 # v1 scope (deliberate): TypeScript (npm, or pnpm with a packageManager field),
-# C#, Python (uv or pip) and Rust (a committed Cargo.lock). Anything else fails
-# loud, not silent — detection refuses to hand back "no TypeScript here" for a
-# repo that plainly has some.
+# C#, Python (uv or pip), Rust (a committed Cargo.lock) and Java (MAVEN, with
+# the baseline's lint region in the root pom). Anything else fails loud, not
+# silent — detection refuses to hand back "no TypeScript here" for a repo that
+# plainly has some.
 
 name: quality
 
@@ -33,8 +34,8 @@ on:
       languages:
         description: >-
           'auto' detects by lockfile/project glob. Or a CSV subset of
-          "ts,dotnet,python,rust" to force (e.g. "ts" to skip .NET on a mixed
-          repo).
+          "ts,dotnet,python,rust,java" to force (e.g. "ts" to skip .NET on a
+          mixed repo).
           'none' runs Layer 2 ONLY — the adoption entry point for a repo that
           wants secrets/vulns/conventions gated before taking on Layer 1.
         type: string
@@ -57,6 +58,15 @@ on:
           'stable' would ship one the morning it lands.
         type: string
         default: '1.97.1'
+      java-version:
+        description: >-
+          Pinned JDK for the Java job. A PIN, never 'latest' and never a
+          floating 'temurin' alias, for the same reason rust-version is one:
+          Error Prone reaches into javac internals that move between releases,
+          and with -Werror in the compiler args a JDK bump that adds an -Xlint
+          category is a breaking change delivered by a tag nobody edited.
+        type: string
+        default: '25'
       uv-version:
         description: >-
           Pinned uv version for lockfile-based Python projects. Exposed as an
@@ -119,6 +129,9 @@ on:
       has_rust:
         description: 'true when at least one Rust crate was detected'
         value: ${{ jobs.detect.outputs.has_rust }}
+      has_java:
+        description: 'true when at least one Maven project was detected'
+        value: ${{ jobs.detect.outputs.has_java }}
 
 jobs:
   detect:
@@ -128,10 +141,12 @@ jobs:
       dotnet_targets: ${{ steps.scan.outputs.dotnet_targets }}
       python_dirs: ${{ steps.scan.outputs.python_dirs }}
       rust_dirs: ${{ steps.scan.outputs.rust_dirs }}
+      java_dirs: ${{ steps.scan.outputs.java_dirs }}
       has_ts: ${{ steps.scan.outputs.has_ts }}
       has_dotnet: ${{ steps.scan.outputs.has_dotnet }}
       has_python: ${{ steps.scan.outputs.has_python }}
       has_rust: ${{ steps.scan.outputs.has_rust }}
+      has_java: ${{ steps.scan.outputs.has_java }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - id: scan
@@ -456,22 +471,114 @@ jobs:
             )
           fi
 
+          # Java: MAVEN ONLY in v1, and both halves of that are loud.
+          #
+          # The MATRIX UNIT is a ROOT pom — one that no other pom lists in its
+          # <modules>. Maven builds an aggregator and its modules in one
+          # reactor, so keying on every pom.xml would build the same tree once
+          # per module, and <build><plugins> in an aggregator is INHERITED by
+          # its modules, so the root is also where the baseline's region
+          # belongs.
+          #
+          # The cross-check is the point, and it is this language's version of
+          # the .csproj-no-solution-references guard. A pom.xml with no lint
+          # region builds perfectly and analyses NOTHING — `mvn compile` on it
+          # is green over code Error Prone never opened. That is the
+          # looks-adopted-gates-nothing state, so it stops the run.
+          #
+          # Gradle fails loud rather than skipping, for the same reason a yarn
+          # lockfile does: v1 supports Maven, and "no Java here" is a lie about
+          # a repo that plainly has some.
+          java_dirs='[]'
+          if want java; then
+            java_dirs=$(python3 - <<'PY'
+          import json, os, re, sys, xml.etree.ElementTree as ET
+
+          PRUNE = {'node_modules', 'target', '.git', '.venv', 'build'}
+          poms, gradle = [], []
+          for root, dirs, files in os.walk('.'):
+              dirs[:] = [d for d in dirs if d not in PRUNE]
+              rel = os.path.relpath(root, '.')
+              if 'pom.xml' in files:
+                  poms.append(rel)
+              for g in ('build.gradle', 'build.gradle.kts'):
+                  if g in files:
+                      gradle.append(os.path.join(rel, g).lstrip('./'))
+
+          if not poms:
+              if gradle:
+                  print(
+                      f'::error::{len(gradle)} Gradle build file(s) found and no pom.xml: '
+                      f"{' '.join(sorted(gradle))} — the Java layer is MAVEN-ONLY in v1, so "
+                      "nothing would have analysed them. Gradle support gets built when a "
+                      "Gradle consumer exists; until then pass languages: without java to "
+                      "skip them deliberately.",
+                      file=sys.stderr)
+                  sys.exit(1)
+              print('[]')
+              raise SystemExit(0)
+
+          def strip(tag):
+              return tag.rsplit('}', 1)[-1]
+
+          # A module path is relative to the aggregator's own directory, and may
+          # name a file rather than a directory. Both forms resolve to the
+          # directory that owns the child pom.
+          modules = set()
+          for d in poms:
+              try:
+                  root_el = ET.parse(os.path.join(d, 'pom.xml')).getroot()
+              except ET.ParseError as exc:
+                  print(f'::error::{d}/pom.xml could not be parsed as XML: {exc}', file=sys.stderr)
+                  sys.exit(1)
+              for el in root_el.iter():
+                  if strip(el.tag) != 'module':
+                      continue
+                  child = os.path.normpath(os.path.join(d, (el.text or '').strip()))
+                  if child.endswith('pom.xml'):
+                      child = os.path.dirname(child)
+                  modules.add(os.path.relpath(child, '.'))
+
+          roots = sorted(d for d in poms if d not in modules)
+
+          unwired = [
+              d for d in roots
+              if 'maxi-quality:begin' not in open(os.path.join(d, 'pom.xml'), encoding='utf-8').read()
+          ]
+          if unwired:
+              print(
+                  f'::error::{len(unwired)} Maven project(s) carry no maxi-quality lint region '
+                  f"in their pom.xml: {' '.join(unwired)} — so `mvn compile` would build them "
+                  "and analyse nothing, which is green over code Error Prone never opened. Run "
+                  "scripts/adopt.sh against each of those directories, or pass languages: "
+                  "without java to skip them deliberately.",
+                  file=sys.stderr)
+              sys.exit(1)
+
+          print(json.dumps(roots, separators=(',', ':')))
+          PY
+            )
+          fi
+
           has_ts=false; [[ "$ts_dirs" != "[]" ]] && has_ts=true
           has_dotnet=false; [[ "$dotnet_targets" != "[]" ]] && has_dotnet=true
           has_python=false; [[ "$python_dirs" != "[]" ]] && has_python=true
           has_rust=false; [[ "$rust_dirs" != "[]" ]] && has_rust=true
+          has_java=false; [[ "$java_dirs" != "[]" ]] && has_java=true
 
           {
             echo "ts_dirs=$ts_dirs"
             echo "dotnet_targets=$dotnet_targets"
             echo "python_dirs=$python_dirs"
             echo "rust_dirs=$rust_dirs"
+            echo "java_dirs=$java_dirs"
             echo "has_ts=$has_ts"
             echo "has_dotnet=$has_dotnet"
             echo "has_python=$has_python"
             echo "has_rust=$has_rust"
+            echo "has_java=$has_java"
           } >> "$GITHUB_OUTPUT"
-          echo "detected: ts=$ts_dirs dotnet=$dotnet_targets python=$python_dirs rust=$rust_dirs"
+          echo "detected: ts=$ts_dirs dotnet=$dotnet_targets python=$python_dirs rust=$rust_dirs java=$java_dirs"
 
   typescript:
     needs: detect
@@ -707,6 +814,76 @@ jobs:
           # add 'licenses' once deny.toml's allowlist holds your policy.
           # cargo-deny reads the whole workspace graph already.
           cargo deny check advisories bans
+
+  # Java rides the reusable workflow like every other language. The pins live
+  # HERE rather than in a job adopt.sh stamps into the consumer's file, which is
+  # #70's decision applied to a fifth language: a scaffolded job only moves when
+  # someone re-runs adopt.sh, and that is copy-paste-drift with extra steps.
+  #
+  # What the CONSUMER copies is only what Maven forces — the lint region in
+  # their own pom.xml, because Maven has no remote lint consumption. The CI is
+  # ordinary.
+  #
+  # Layer 2 needs nothing Java-specific: Gitleaks is language-agnostic and
+  # OSV-Scanner reads pom.xml natively. Unlike Rust, semgrep DOES support Java
+  # well, so the Java conventions are real Layer 2 rules rather than being
+  # folded into the Layer 1 analyzer.
+  java:
+    needs: detect
+    if: needs.detect.outputs.has_java == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: ${{ fromJSON(needs.detect.outputs.java_dirs) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java-version }}
+          cache: maven
+
+      # THE GATE IS THE COMPILE. Error Prone and NullAway are javac plugins, so
+      # `mvn compile` IS the analysis run — the same shape as .NET, where
+      # TreatWarningsAsErrors makes a plain build the gate.
+      #
+      # test-compile, not compile: a test source set the analyzer never opens is
+      # the commonest way a Java gate half-runs, and test code is where the
+      # null-safety bugs that reach production get written.
+      #
+      # -B and --no-transfer-progress keep the log readable; -e is deliberately
+      # absent, because a stack trace per finding buries the findings.
+      - name: Compile with Error Prone and NullAway
+        shell: bash
+        working-directory: ${{ matrix.dir }}
+        run: |
+          set -uo pipefail
+          rc=0; out=$(mvn -B --no-transfer-progress test-compile 2>&1) || rc=$?
+          echo "$out"
+          # THE HALF-REPORT WARNING, and it is the reason this step is a script
+          # rather than one `run: mvn` line. When javac's own -Xlint produces a
+          # warning AND -Werror is set, the compile ends before Error Prone
+          # runs, so every Error Prone and NullAway finding is missing from the
+          # output above. The build is correctly RED either way — a GREEN build
+          # is one where Error Prone did run — but a reader who takes this log
+          # for the complete list is wrong by however many the analyzer would
+          # have added. Measured 2026-08-09; configs/java/pom-lints.xml carries
+          # the detail and samples/java-lint pins it.
+          if [[ $rc -ne 0 ]] && grep -q 'warnings found and -Werror specified' <<<"$out"; then
+            echo '::warning::javac -Xlint warnings ended this compile before the Error Prone pass ran, so the findings above are NOT the complete list. Fix the lint warnings and re-run to see what the analyzer adds.'
+          fi
+          exit $rc
+
+      # The formatter, deliberately a separate step and a separate red check —
+      # the same split as `dotnet format whitespace` versus the build gate. One
+      # red check meaning two unrelated things is what that split exists to
+      # avoid, and spotless is not bound to a lifecycle phase for the same
+      # reason Rust's -Dwarnings lives in the job.
+      - name: Everything the formatter owns must already be formatted
+        shell: bash
+        working-directory: ${{ matrix.dir }}
+        run: mvn -B --no-transfer-progress spotless:check
 
   layer2:
     runs-on: ubuntu-latest

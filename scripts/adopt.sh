@@ -38,6 +38,14 @@
 #   rust     rustfmt.toml                  <- configs/rust/rustfmt.toml
 #   rust     deny.toml                     <- configs/rust/deny.toml
 #   rust     Cargo.toml                    += configs/rust/lints.toml ([lints])
+#   java     pom.xml                       += configs/java/pom-lints.xml, as a
+#                                             MARKER-DELIMITED REGION inside
+#                                             <build><plugins>. Re-running
+#                                             replaces the region and nothing
+#                                             else, which is the upgrade path —
+#                                             XML has no append, so without a
+#                                             managed region every baseline bump
+#                                             would be a hand edit.
 #   always   .maxi-quality.yml             (commented starter, only if absent)
 #   any      .github/workflows/quality.yml (unless --no-workflow — the same six
 #                                           lines for every language, Rust
@@ -47,7 +55,9 @@
 # The TS pair is a copy for the same reason Directory.Build.props is: a private
 # git devDep cannot npm-install in a consumer's CI. The Rust trio is a copy for
 # a harder reason: Cargo has no remote lint consumption at all — [lints] must
-# live in the consumer's own manifest.
+# live in the consumer's own manifest. Java is the Rust case again: Maven's one
+# real inheritance mechanism is a parent POM, which needs a registry to publish
+# and a free <parent> slot to consume, and a Spring Boot project has neither.
 #
 # Exit codes: 0 adopted (or dry-run) · 1 nothing detected · 3 usage error
 
@@ -118,6 +128,7 @@ HAS_DOTNET=0
 HAS_TS=0
 HAS_PYTHON=0
 HAS_RUST=0
+HAS_JAVA=0
 [ -n "$(detect '*.csproj')" ] && HAS_DOTNET=1
 [ -n "$(detect '*.sln')" ] && HAS_DOTNET=1
 [ -n "$(detect '*.slnx')" ] && HAS_DOTNET=1
@@ -129,6 +140,14 @@ HAS_RUST=0
 # One manifest for workspace and single-crate alike — a workspace root and a
 # lone crate both mean "this is a Rust repo".
 [ -n "$(detect 'Cargo.toml')" ] && HAS_RUST=1
+# Java is v1-Maven-only, and Gradle FAILS LOUD rather than adopting half of
+# itself — see the block after detection. Both markers are collected here so
+# the message can name what was actually found.
+[ -n "$(detect 'pom.xml')" ] && HAS_JAVA=1
+GRADLE_FOUND="$(detect 'build.gradle')"
+[ -n "$GRADLE_FOUND" ] || GRADLE_FOUND="$(detect 'build.gradle.kts')"
+
+NEEDS_MERGE=0
 
 bold "── maxi-quality adopt ──"
 info "baseline: $BASELINE"
@@ -136,9 +155,24 @@ info "target:   $TARGET"
 info "ref:      $REF"
 [ "$DRY_RUN" -eq 1 ] && warn "dry run — nothing will be written"
 
-if [ "$HAS_DOTNET" -eq 0 ] && [ "$HAS_TS" -eq 0 ] && [ "$HAS_PYTHON" -eq 0 ] && [ "$HAS_RUST" -eq 0 ]; then
-  warn "no TypeScript, C#, Python or Rust project found under $TARGET"
-  warn "scope is TypeScript, C#, Python and Rust (CLAUDE.md §4). Nothing to do."
+# Gradle before the nothing-detected check, so a Gradle-only repo gets the
+# reason rather than "nothing to do". v1 supports Maven; saying so out loud is
+# the whole difference between a scope decision and a silent hole (#10).
+if [ -n "$GRADLE_FOUND" ] && [ "$HAS_JAVA" -eq 0 ]; then
+  printf '\n'
+  warn "found a Gradle build ($GRADLE_FOUND) and no pom.xml."
+  warn "The Java layer is MAVEN-ONLY in v1 — Gradle gets built when a Gradle"
+  warn "consumer exists, the same just-in-time rule that produced the Java"
+  warn "layer itself. Nothing Java was written, deliberately and not silently."
+  printf '\n'
+  NEEDS_MERGE=1
+fi
+
+if [ "$HAS_DOTNET" -eq 0 ] && [ "$HAS_TS" -eq 0 ] && [ "$HAS_PYTHON" -eq 0 ] \
+   && [ "$HAS_RUST" -eq 0 ] && [ "$HAS_JAVA" -eq 0 ]; then
+  warn "no TypeScript, C#, Python, Rust or Java project found under $TARGET"
+  warn "scope is TypeScript, C#, Python, Rust and Java/Maven (CLAUDE.md §4)."
+  warn "Nothing to do."
   exit 1
 fi
 
@@ -146,13 +180,14 @@ fi
 [ "$HAS_DOTNET" -eq 1 ] && info "detected: C#/.NET"
 [ "$HAS_PYTHON" -eq 1 ] && info "detected: Python"
 [ "$HAS_RUST" -eq 1 ] && info "detected: Rust"
+[ "$HAS_JAVA" -eq 1 ] && info "detected: Java (Maven)"
 printf '\n'
 
 # --- file helpers ------------------------------------------------------------
 # Refuses to clobber by default. A repo that already has a Directory.Build.props
 # needs its properties MERGED, and silently overwriting one is exactly the kind
 # of "helpful" adoption script that loses someone's build config.
-NEEDS_MERGE=0
+# (NEEDS_MERGE is declared above detection — the Gradle branch sets it.)
 
 copy_file() {
   src="$1"; dst="$2"
@@ -355,6 +390,78 @@ if [ "$HAS_RUST" -eq 1 ]; then
       if [ "$IS_WORKSPACE" -eq 1 ]; then
         info "workspace detected: members opt in with '[lints]' + 'workspace = true'"
       fi
+    fi
+  fi
+fi
+
+# --- Java (Maven) ------------------------------------------------------------
+# The Rust pattern, one notch harder. Cargo forces a copy because it cannot
+# consume [lints] remotely; Maven forces one for the same reason, and then
+# refuses the easy delivery on top: TOML appends, XML does not. The block has to
+# land INSIDE <build><plugins>, so there is no `cat >>` — only an edit.
+#
+# An edit a human redoes on every baseline bump is not an upgrade path, so the
+# block is written as a MARKER-DELIMITED REGION and scripts/pom-region.py
+# replaces the region and nothing else. Re-running is idempotent; the consumer's
+# own plugins, properties, comments and formatting are untouched.
+if [ "$HAS_JAVA" -eq 1 ]; then
+  POM="$TARGET/pom.xml"
+  if [ ! -f "$POM" ]; then
+    # Same failure shape as a Cargo.toml below the target and a shadowed
+    # Directory.Build.props: a config written where the build never reads it
+    # looks adopted and analyses nothing.
+    #
+    # This is also the one place #68 (polyglot repos, configs at the wrong
+    # depth) could get WORSE for Java, so it is a refusal rather than a guess:
+    # a Java server under a repo whose root is something else gets told which
+    # directory to re-run against, and nothing is written.
+    printf '\n'
+    warn "pom.xml was found below $TARGET but not AT it, so there is no manifest"
+    warn "here to hold the lint region. Re-run adopt.sh against the directory"
+    warn "that owns the root pom.xml — writing one here would configure nothing."
+    printf '\n'
+    NEEDS_MERGE=1
+  else
+    JAVA_RC=0
+    if [ "$DRY_RUN" -eq 1 ]; then
+      # --dry-run must write NOTHING, so the check mode is used to predict the
+      # outcome: exit 4 is the refusal, 0/1 are "would be current"/"would change".
+      python3 "$BASELINE/scripts/pom-region.py" check --pom "$POM" \
+        --fragment "$BASELINE/configs/java/pom-lints.xml" >/dev/null 2>&1 || JAVA_RC=$?
+      if [ "$JAVA_RC" -eq 4 ]; then
+        JAVA_REFUSED=1
+      else
+        wrote "$POM (maxi-quality lint region)"
+      fi
+    else
+      python3 "$BASELINE/scripts/pom-region.py" apply --pom "$POM" \
+        --fragment "$BASELINE/configs/java/pom-lints.xml" > /tmp/maxi-pom.$$ 2>&1 || JAVA_RC=$?
+      if [ "$JAVA_RC" -eq 0 ]; then
+        wrote "$POM (maxi-quality lint region)"
+      else
+        cat /tmp/maxi-pom.$$ >&2
+      fi
+      rm -f /tmp/maxi-pom.$$
+      [ "$JAVA_RC" -eq 4 ] && JAVA_REFUSED=1
+    fi
+
+    if [ "${JAVA_REFUSED:-0}" -eq 1 ]; then
+      printf '\n'
+      warn "$POM already configures maven-compiler-plugin, so NOTHING was written."
+      warn "Two declarations of one plugin in one POM is not a merge — it is"
+      warn "last-one-wins, so writing the baseline's would SILENTLY DROP the"
+      warn "compilerArgs you already have. If those include -Xlint/-Werror, the"
+      warn "gate would come out weaker than before adoption."
+      warn ""
+      warn "Merge by hand instead: copy the <compilerArgs> and"
+      warn "<annotationProcessorPaths> from"
+      warn "  $BASELINE/configs/java/pom-lints.xml"
+      warn "into your existing declaration, keeping your own args, and add the"
+      warn "spotless plugin beside it (docs/ADOPTION.md §5)."
+      printf '\n'
+      NEEDS_MERGE=1
+    elif [ "$JAVA_RC" -ne 0 ] && [ "$JAVA_RC" -ne 1 ]; then
+      NEEDS_MERGE=1
     fi
   fi
 fi
@@ -604,6 +711,40 @@ if [ "$HAS_RUST" -eq 1 ]; then
   printf '    8. OPTIONAL — licences: deny.toml ships an EMPTY allowlist, so the\n'
   printf '       licenses check is not in the CI gate. Fill the allowlist and add\n'
   printf '       licenses to the cargo deny check line when you have a policy.\n'
+fi
+
+if [ "$HAS_JAVA" -eq 1 ]; then
+  printf '  Java (Maven)\n'
+  printf '    1. No new dependencies to add by hand — Error Prone and NullAway\n'
+  printf '       arrive as annotationProcessorPaths inside the region written\n'
+  printf '       above, pinned. DO NOT hand-edit that region: re-run this script\n'
+  printf '       to refresh it, which is the whole reason it has markers.\n'
+  printf '    2. IF YOU USE LOMBOK OR MAPSTRUCT, add them to\n'
+  printf '       <annotationProcessorPaths> too. Declaring that element at all\n'
+  printf '       turns OFF classpath processor discovery — that is Maven behaviour,\n'
+  printf '       not something this baseline chose, and it is the one way\n'
+  printf '       adopting this can break a build that was previously fine.\n'
+  printf '    3. NullAway is told your code is yours via ${project.groupId}. If\n'
+  printf '       your sources do not live under your groupId, change that one\n'
+  printf '       value — a wrong prefix means NullAway analyses NOTHING and says\n'
+  printf '       so nowhere.\n'
+  printf '    4. -Werror AND ERROR PRONE INTERACT, measured and unavoidable: when\n'
+  printf '       javac -Xlint produces a warning, the compile ends before Error\n'
+  printf '       Prone runs, so its findings vanish from the output. The build\n'
+  printf '       stays RED — a green build is one where Error Prone did run — but\n'
+  printf '       the first run on an existing codebase may show only lint\n'
+  printf '       warnings. Fix those, re-run, and the analyzer findings appear.\n'
+  printf '    5. An existing codebase will be noisy on first run and there is no\n'
+  printf '       ratchet for a compiler diagnostic. Waive a single site with\n'
+  printf '       @SuppressWarnings("CheckName") and a comment saying why; scoped\n'
+  printf '       and greppable beats -Xep:CheckName:OFF in the region.\n'
+  printf '    6. OPTIONAL — the formatter. Not run for you, because it reformats\n'
+  printf '       every file and that is your commit to make:\n'
+  printf '         mvn spotless:apply     # once, alone\n'
+  printf '         mvn spotless:check     # the gate\n'
+  printf '       Put that one commit in .git-blame-ignore-revs. The style is\n'
+  printf '       palantir-java-format AOSP: 4-space indent at 100 columns, which\n'
+  printf '       is what the .editorconfig copied above already declares.\n'
 fi
 
 if [ "$NEEDS_MERGE" -eq 1 ]; then

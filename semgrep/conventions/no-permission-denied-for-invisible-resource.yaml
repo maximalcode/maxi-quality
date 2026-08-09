@@ -86,3 +86,32 @@ rules:
           if $X is None:
               ...
               raise PermissionDenied(...)
+
+  # Java, added for issue #10. Two idioms, because Spring has two: the
+  # status-carrying ResponseStatusException and Spring Security's own
+  # AccessDeniedException, which — like the C# rule's StatusCode.PermissionDenied
+  # — carries no number at all and so cannot be matched by looking for 403.
+  - id: no-permission-denied-for-invisible-resource-java
+    message: >-
+      Throwing 403 / AccessDeniedException after a not-found check leaks the
+      resource's existence — an enumeration oracle. Return 404 unless the caller
+      is already allowed to know the resource exists.
+    severity: ERROR
+    languages: [java]
+    paths:
+      exclude:
+        - "*Test.java"
+        - "*Tests.java"
+        - "*IT.java"
+        - "**/test/**"
+    pattern-either:
+      - pattern: |
+          if ($X == null) { ... throw new $EX(HttpStatus.FORBIDDEN, ...); ... }
+      - pattern: |
+          if ($X == null) { ... throw new $EX(HttpStatus.UNAUTHORIZED, ...); ... }
+      - pattern: |
+          if ($X == null) { ... throw new AccessDeniedException(...); ... }
+      - pattern: |
+          if (!$X.isPresent()) { ... throw new AccessDeniedException(...); ... }
+      - pattern: |
+          if ($X.isEmpty()) { ... throw new AccessDeniedException(...); ... }

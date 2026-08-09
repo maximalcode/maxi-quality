@@ -874,6 +874,67 @@ looked is part of the result.
 
 ---
 
+### 2p. SpotBugs and PMD vs. Error Prone, on the Java fixtures (2026-08-09, issue #10)
+
+Issue #10 specified Error Prone and NullAway as the Java Layer 1 and listed
+**SpotBugs** as "evaluate; may not clear the bar". Issue #67, filed from the
+consuming side, proposed **PMD** "tuned like clippy pedantic". Neither was
+pre-judged; both were run.
+
+**Corpus.** `samples/java` (8 planted findings, the four analyzer tiers) and
+`samples/java-clean` (idiomatic Spring Boot 4 — records, `JdbcClient`,
+constructor injection, a `RowMapper`, an integration-shaped test). Error Prone
+was disabled for these runs so the bad fixture would compile — SpotBugs reads
+bytecode and cannot run on a build that fails.
+
+**Settings.** SpotBugs 4.9.8.0 at `<effort>Max</effort>` and
+`<threshold>Low</threshold>` — its most sensitive configuration, chosen so a
+poor result cannot be blamed on a timid one. PMD 3.28.0 at its default ruleset.
+
+| | Planted findings caught (of 8) | Caught that Error Prone does NOT | Findings on the clean fixture |
+|---|---|---|---|
+| **Error Prone 2.50.0 + NullAway 0.13.8** | 8 | — | **0** |
+| **SpotBugs 4.9.8.0** | 4 | **0** | 1 |
+| **PMD 3.28.0** | **0** | 0 | 1 |
+
+**SpotBugs: declined.** Its four hits are `EC_BAD_ARRAY_COMPARE`,
+`SA_LOCAL_SELF_ASSIGNMENT`, `ES_COMPARING_PARAMETER_STRING_WITH_EQ` and
+`NP_NULL_PARAM_DEREF_NONVIRTUAL` — which are, one for one, Error Prone's
+`ArrayEquals`, `SelfAssignment` and `ReferenceEquality` plus one of NullAway's
+three. **Zero marginal catch**, at the cost of a second tool, a bytecode pass
+that cannot run until the build already succeeds, and a report format needing
+its own parser.
+
+The clean-fixture finding is the sharper argument: `EI_EXPOSE_REP2` on
+
+```java
+public WidgetService(WidgetRepository widgets, Clock clock) {
+```
+
+— it flags **constructor injection**, which is the single most universal pattern
+in the framework the consuming project is built on. Not a tuning problem: a rule
+whose true-positive rate on a Spring codebase is near zero is one every adopter
+switches off, and #39's lesson is that the highest-volume rule in a new tool is
+the one worth reading first.
+
+**PMD: declined, and more decisively.** Zero of eight. It found no planted bug at
+all, and its one finding was on the *clean* fixture — `UnusedFormalParameter` for
+`rowNum` in a `RowMapper`, a parameter Spring's own interface requires and that
+no implementation can remove. That is the `p/security-audit` result again (0 of
+28, then 0 of 103): a mature, widely-deployed tool scoring zero on a corpus of
+real planted bugs, because its ruleset is aimed at a different question.
+
+**What would reopen either.** New measured evidence on a bigger corpus, the same
+bar `eslint-plugin-sonarjs` cleared and nine other candidates did not. Repo
+count, popularity and "it is the standard Java tool" are not evidence.
+
+**Checkstyle was declined without a scoreboard, and the reason is structural
+rather than empirical.** CONCEPT §4a's argument against offering two formatters
+for one language applies equally to offering a formatter *and* a style linter:
+two tools with a view on the same lines is the argument that section exists to
+end. Spotless owns layout; Error Prone owns bugs; there is no third question for
+Checkstyle to answer that this baseline wants answered.
+
 ## 3. Verdict
 
 ### 3a. Adopt: one plugin, conditionally
@@ -982,7 +1043,19 @@ remainder. The condition is the granularity: deptry runs per package, never at
 a workspace root, and the adoption issue must encode that or the gate ships
 94% noise on day one.
 
-### 3e. Declined, with the numbers
+### 3e. Java (2026-08-09, issue #10)
+
+**Adopted:** Error Prone 2.50.0 (the bug finder), NullAway 0.13.8 at ERROR (the
+null-safety layer), Spotless 3.9.0 + palantir-java-format 2.97.0 in AOSP style
+(the formatter — 4-space at 100 columns, which is what `configs/editorconfig`
+already declares).
+
+**Declined:** SpotBugs (0 marginal findings, 1 false positive on constructor
+injection), PMD (0 of 8 planted findings, 1 false positive on a framework-
+required parameter), Checkstyle (structural — Spotless already owns layout).
+Numbers in §2p.
+
+### 3f. Declined, with the numbers
 
 | Candidate | Measured | Why not |
 |---|---|---|
