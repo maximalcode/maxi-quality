@@ -1867,7 +1867,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           python3 -c 'import yaml' 2>/dev/null \
-            || python3 -m pip install --quiet --break-system-packages pyyaml
+            || python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
           python3 -c 'import yaml'
       - name: Exit codes and dry-run honesty
         shell: bash
@@ -2340,8 +2340,8 @@ jobs:
           # can hard-fail. Try in order, then assert rather than continue with a
           # guard that would silently extract nothing.
           python3 -c 'import yaml' 2>/dev/null \
-            || python3 -m pip install --quiet pyyaml 2>/dev/null \
-            || python3 -m pip install --quiet --break-system-packages pyyaml
+            || python3 -m pip install --quiet 'pyyaml==6.0.3' 2>/dev/null \
+            || python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
           python3 -c 'import yaml'
 
           rm -rf /tmp/blocks && mkdir -p /tmp/blocks
@@ -2578,7 +2578,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           python3 -c 'import yaml' 2>/dev/null \
-            || python3 -m pip install --quiet --break-system-packages pyyaml
+            || python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
           python3 - <<'PY'
           import yaml
           wf = yaml.safe_load(open('.github/workflows/quality.yml'))
@@ -2992,7 +2992,7 @@ jobs:
           set -Eeuo pipefail
           pipx install semgrep==1.172.0
           python3 -c 'import yaml' 2>/dev/null \
-            || python3 -m pip install --quiet --break-system-packages pyyaml
+            || python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
           python3 -c 'import yaml'
 
       - name: Every invalid policy is rejected, and none of them is a warning
@@ -3437,7 +3437,7 @@ jobs:
           set -Eeuo pipefail
           pipx install semgrep==1.172.0
           python3 -c 'import yaml' 2>/dev/null \
-            || python3 -m pip install --quiet --break-system-packages pyyaml
+            || python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
           python3 -c 'import yaml'
 
       - name: Every example is detected as the language it claims
