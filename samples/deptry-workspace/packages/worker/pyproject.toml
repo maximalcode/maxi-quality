@@ -1,0 +1,11 @@
+# The other workspace MEMBER, src layout — so its target is `src` rather than
+# `.`. Both layouts appear in this fixture on purpose: the enumeration picks
+# the scan root per package, and a fixture with only one shape would leave that
+# choice unproven.
+[project]
+name = "sample-deptry-ws-worker"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = [
+    "beautifulsoup4>=4.12",
+]

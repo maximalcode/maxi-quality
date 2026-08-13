@@ -38,3 +38,4 @@ paths:
     - samples/knip-clean
     - samples/deptry
     - samples/deptry-clean
+    - samples/deptry-workspace

@@ -278,6 +278,59 @@ CI_JAVA="$(grep -oE "java-version: '[0-9.]+'" "$CI" | grep -oE "[0-9.]+" | sort 
   printf '%s\n' "$CI_JAVA" | sed 's/^/  /'
   exit 1; }
 
+# --- THE DEAD-CODE PINS (#97) ------------------------------------------------
+#
+# knip and deptry are the first tools in this baseline that the CONSUMER
+# installs and the BASELINE holds to a floor. That makes the drift here a
+# different shape from every pin above: the risk is not two files installing
+# different versions, it is CI validating samples/expected/knip.json with a knip
+# that a consumer would be REFUSED for running.
+#
+# The floor is a hard error in actions/deadcode because 5.64.3 shipped a false
+# positive on signature-only types (#51), and a gate that fails on a finding
+# that is not real teaches people to ignore it. So the floor and the version the
+# fixtures are asserted against have to be the same number, and the two example
+# repos — which are documentation people copy — have to name it too.
+DEADCODE="$BASELINE/actions/deadcode/action.yml"
+PKG="$BASELINE/package.json"
+EXAMPLE_PKG="$BASELINE/examples/typescript-npm/package.json"
+[ -f "$DEADCODE" ] || die "not found: $DEADCODE"
+[ -f "$PKG" ] || die "not found: $PKG"
+[ -f "$EXAMPLE_PKG" ] || die "not found: $EXAMPLE_PKG"
+
+KNIP_FLOOR="$(pin_of knip-min-version '  ' "$DEADCODE")"
+[ -n "$KNIP_FLOOR" ] || die "could not read knip-min-version from $DEADCODE"
+# Declared is not used — the same decorative-pin guard the rust and java pins
+# carry. An input the script never compares against is a comment.
+grep -q 'KNIP_MIN: [$]{{ inputs.knip-min-version }}' "$DEADCODE" \
+  || die "$DEADCODE declares knip-min-version but no step passes it through — the floor is decorative"
+
+knip_version_in() { grep -oE '"knip": *"[^"]+"' "$1" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+'; }
+KNIP_DEV="$(knip_version_in "$PKG")"
+KNIP_EXAMPLE="$(knip_version_in "$EXAMPLE_PKG")"
+[ -n "$KNIP_DEV" ] || die "could not read the knip devDependency from $PKG"
+[ -n "$KNIP_EXAMPLE" ] || die "could not read the knip devDependency from $EXAMPLE_PKG"
+
+# deptry, same argument one language over. The version CI installs to assert
+# samples/expected/deptry.json, and the one the worked example tells a reader
+# to add, must not drift apart — a finding manifest is only meaningful against a
+# known resolution behaviour, which samples/deptry/requirements.txt already says
+# about beautifulsoup4.
+#
+# NOTE the two are not the same KIND of constraint: `deptry==0.25.1` is an exact
+# pin and `deptry>=0.25.1` is a floor. Only the NUMBERS are compared, and that
+# is the whole intent — an example telling a reader to install a version older
+# than the one CI measured against is the drift worth catching. Do not "fix"
+# this into an operator comparison; a consumer pinning exactly is not an error.
+PY_DEV="$BASELINE/samples/python/requirements-dev.txt"
+EXAMPLE_PY="$BASELINE/examples/python-uv/pyproject.toml"
+[ -f "$PY_DEV" ] || die "not found: $PY_DEV"
+[ -f "$EXAMPLE_PY" ] || die "not found: $EXAMPLE_PY"
+DEPTRY_CI="$(grep -oE '^deptry==[0-9.]+' "$PY_DEV" | cut -d= -f3)"
+DEPTRY_EXAMPLE="$(grep -oE 'deptry>=[0-9.]+' "$EXAMPLE_PY" | grep -oE '[0-9]+\.[0-9.]+')"
+[ -n "$DEPTRY_CI" ] || die "could not read the deptry pin from $PY_DEV"
+[ -n "$DEPTRY_EXAMPLE" ] || die "could not read the deptry floor from $EXAMPLE_PY"
+
 bold "── pinned ──"
 info "semgrep       $SEMGREP_PIN   (action.yml)"
 info "semgrep       $CI_SEMGREP   (ci.yml, $(grep -cE 'semgrep==[0-9.]+' "$CI") job(s))"
@@ -298,6 +351,11 @@ info "nullaway      $NULLAWAY_PIN   (configs/java/pom-lints.xml)"
 info "mvn-compiler  $COMPILER_PIN   (configs/java/pom-lints.xml)"
 info "spotless      $SPOTLESS_PIN   (configs/java/pom-lints.xml)"
 info "palantir-fmt  $PALANTIR_PIN   (configs/java/pom-lints.xml)"
+info "knip          $KNIP_FLOOR   (actions/deadcode, the floor consumers are held to)"
+info "knip          $KNIP_DEV   (package.json, what CI asserts the fixtures with)"
+info "knip          $KNIP_EXAMPLE   (examples/typescript-npm)"
+info "deptry        $DEPTRY_CI   (samples/python/requirements-dev.txt)"
+info "deptry        $DEPTRY_EXAMPLE   (examples/python-uv)"
 printf '\n'
 
 # --- consistency: the two Semgrep pins must agree ----------------------------
@@ -344,6 +402,33 @@ if [ "$JAVA_PIN" != "$CI_JAVA" ]; then
   exit 1
 fi
 info "jdk pin agrees across quality.yml and ci.yml"
+
+# --- consistency: the dead-code floor (#97) ----------------------------------
+# All four are compared as one set. The pair that MUST hold is floor vs the
+# devDependency: if this repo asserts samples/expected/knip.json with a knip
+# below the floor, CI is validating the fixtures with a version the action would
+# refuse — a gate whose evidence comes from a tool it will not let consumers
+# run. The examples are in the set because they are documentation people copy,
+# and a worked example naming a version the gate rejects is a first run that
+# fails for a reason the reader did nothing to cause.
+if [ "$KNIP_FLOOR" != "$KNIP_DEV" ] || [ "$KNIP_FLOOR" != "$KNIP_EXAMPLE" ]; then
+  printf '\033[31mFAIL\033[0m — knip versions disagree:\n'
+  printf '  actions/deadcode/action.yml       : floor %s\n' "$KNIP_FLOOR"
+  printf '  package.json                      : %s\n' "$KNIP_DEV"
+  printf '  examples/typescript-npm           : %s\n' "$KNIP_EXAMPLE"
+  printf '\nThe fixtures would be asserted against a knip the gate refuses, or the\n'
+  printf 'worked example would name one. 5.64.3 shipped a false positive that\n'
+  printf '6.31.0 fixed, which is why the floor is a hard error at all.\n'
+  exit 2
+fi
+if [ "$DEPTRY_CI" != "$DEPTRY_EXAMPLE" ]; then
+  printf '\033[31mFAIL\033[0m — deptry versions disagree:\n'
+  printf '  samples/python/requirements-dev.txt : %s\n' "$DEPTRY_CI"
+  printf '  examples/python-uv/pyproject.toml   : %s\n' "$DEPTRY_EXAMPLE"
+  printf '\nsamples/expected/deptry.json is a manifest for one resolution behaviour.\n'
+  exit 2
+fi
+info "dead-code pins agree (knip floor, devDependency and example; deptry both sites)"
 
 if [ "$OFFLINE" -eq 1 ]; then
   printf '\n\033[32mPASS\033[0m — pins are internally consistent (--offline; upstream not checked)\n'

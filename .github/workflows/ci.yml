@@ -290,6 +290,156 @@ jobs:
           fi
           echo 'OK: the shipped knip.json changes the verdict'
 
+      # --- the GATE over those findings, issue #97 --------------------------
+      # The three steps above prove knip detects. They say nothing about which
+      # findings may FAIL A CONSUMER'S BUILD, and that is a separate decision
+      # with its own measurement: 19 of the 26 real-code findings in #39 were
+      # exports in a published library, where an unreferenced export is public
+      # API rather than a defect. So the gating set is asserted here, from the
+      # same fixture output, at each of the three settings a consumer can be in.
+      - name: The knip gate gates the measured set, and only that
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          (cd samples/knip && ../../node_modules/.bin/knip --reporter json --no-exit-code) \
+            > /tmp/knip-gate.json
+
+          # The assertions below name the RULE AND FILE of every gating finding,
+          # not how many there are. scripts/check-expected.py's docstring is the
+          # standard and the reason is not hypothetical here: with a count, a
+          # `files` finding that stopped gating while `unlisted` gained one
+          # leaves knip_gate=3 green over exactly the swap that docstring is
+          # about. The counts are still asserted, as the "and nothing else" half.
+          gates() { grep -E '^  GATE ' <<<"$1" | awk '{print $2, $3}' | sort; }
+          same() {
+            diff -u "$1" <(gates "$2") || { echo "::error::$3"; exit 1; }
+          }
+
+          # Default: files, dependencies and unlisted gate; exports and types
+          # are reported and do not.
+          cat > /tmp/knip-want.txt <<'WANT'
+          dependencies package.json:9
+          files src/orphan.ts:0
+          unlisted src/index.ts:2
+          WANT
+          out=$(python3 scripts/deadcode-gate.py --tool knip --input /tmp/knip-gate.json) && rc=0 || rc=$?
+          echo "$out"
+          [[ "$rc" -eq 1 ]] || { echo '::error::the knip gate did not fail on the bait fixture'; exit 1; }
+          same /tmp/knip-want.txt "$out" 'the gating knip finding SET drifted — see the diff above'
+          grep -qx 'knip_advisory=4' <<<"$out" || {
+            echo '::error::expected 4 advisory knip findings (3 exports + 1 type)'; exit 1; }
+
+          # ...and dead-code-exports: true is what moves them into the gate. An
+          # input nothing can be shown to change is an input nobody should trust.
+          cat > /tmp/knip-want-exports.txt <<'WANT'
+          dependencies package.json:9
+          exports src/barrel/impl.ts:5
+          exports src/barrel/index.ts:1
+          exports src/util.ts:14
+          files src/orphan.ts:0
+          types src/util.ts:6
+          unlisted src/index.ts:2
+          WANT
+          out=$(python3 scripts/deadcode-gate.py --tool knip --input /tmp/knip-gate.json --gate-exports) && rc=0 || rc=$?
+          [[ "$rc" -eq 1 ]] || { echo '::error::--gate-exports did not fail on the bait fixture'; exit 1; }
+          same /tmp/knip-want-exports.txt "$out" \
+            '--gate-exports must move exactly the 3 exports and the 1 type into the gate'
+
+          # The ratchet. A legacy repo adopting this must be able to grandfather
+          # its backlog or it deletes the gate instead of fixing it — so a
+          # finding in an unchanged file is reported and does NOT fail the
+          # build, and the same finding in a changed file does. Named, because
+          # "one finding gated" is also what gating the WRONG one looks like.
+          printf 'src/index.ts\n' > /tmp/knip-changed.txt
+          printf 'unlisted src/index.ts:2\n' > /tmp/knip-want-ratchet.txt
+          out=$(python3 scripts/deadcode-gate.py --tool knip --input /tmp/knip-gate.json \
+                  --changed-list /tmp/knip-changed.txt) && rc=0 || rc=$?
+          echo "$out"
+          [[ "$rc" -eq 1 ]] || { echo '::error::the ratchet swallowed a finding in a CHANGED file'; exit 1; }
+          same /tmp/knip-want-ratchet.txt "$out" \
+            'the ratchet must gate the finding in src/index.ts and only that'
+
+          # And it must still be a GATE. A ratchet that gates nothing whatever
+          # the diff contains is the `--changed-only` no-op bug again (STATUS §4).
+          : > /tmp/knip-nothing.txt
+          python3 scripts/deadcode-gate.py --tool knip --input /tmp/knip-gate.json \
+            --changed-list /tmp/knip-nothing.txt > /tmp/knip-none.log && rc=0 || rc=$?
+          [[ "$rc" -eq 0 ]] || { echo '::error::an empty diff must produce no gating findings'; exit 1; }
+          grep -qx 'knip_advisory=7' /tmp/knip-none.log || {
+            echo '::error::an empty diff must still REPORT all 7 findings — silence is not a ratchet'; exit 1; }
+
+          # A tool that did not run must never read as clean.
+          : > /tmp/knip-empty.json
+          rc=0; python3 scripts/deadcode-gate.py --tool knip --input /tmp/knip-empty.json >/dev/null 2>&1 || rc=$?
+          [[ "$rc" -eq 3 ]] || { echo "::error::empty knip output must exit 3, got $rc"; exit 1; }
+          echo 'OK: the knip gating set, the exports switch, the ratchet and the empty-input refusal all hold'
+
+      # The composite action is the thing a consumer actually runs, so it is
+      # exercised rather than re-implemented — the same argument the layer2 job
+      # makes for `uses: ./actions/layer2`.
+      #
+      # The symlink reproduces what every step above already does by hand
+      # (`../../node_modules/.bin/knip`): the fixture has no install of its own,
+      # and the action deliberately looks for the tool in the PROJECT, because
+      # CI runs the version the consumer pinned rather than smuggling in one.
+      - name: Wire the clean fixture up as a real package
+        shell: bash
+        run: ln -s ../../node_modules samples/knip-clean/node_modules
+
+      - name: A repo without knip installed warns in auto mode
+        id: absent
+        continue-on-error: true
+        uses: ./actions/deadcode
+        with:
+          tool: knip
+          dir: samples/knip
+          mode: auto
+
+      - name: ...and FAILS in require mode
+        id: absent-required
+        continue-on-error: true
+        uses: ./actions/deadcode
+        with:
+          tool: knip
+          dir: samples/knip
+          mode: require
+
+      - name: The clean fixture must pass through the action itself
+        id: clean
+        continue-on-error: true
+        uses: ./actions/deadcode
+        with:
+          tool: knip
+          dir: samples/knip-clean
+          mode: require
+
+      - name: Every dead-code action outcome must be the expected one
+        shell: bash
+        env:
+          ABSENT: ${{ steps.absent.outcome }}
+          ABSENT_REQUIRED: ${{ steps.absent-required.outcome }}
+          CLEAN: ${{ steps.clean.outcome }}
+        run: |
+          set -Eeuo pipefail
+          # samples/knip has no node_modules, so 'auto' must let the build
+          # through — v1 is a moving tag and a gate that arrives as an outage on
+          # every adopted repo gets deleted. It must still be LOUD, which the
+          # action does with ::warning::.
+          [[ "$ABSENT" == 'success' ]] || {
+            echo "::error::auto mode failed on a repo without knip installed (outcome=$ABSENT) — that is the outage this default exists to avoid"; exit 1; }
+          # ...and require mode is the escape hatch that makes the softness
+          # opt-out rather than permanent.
+          [[ "$ABSENT_REQUIRED" == 'failure' ]] || {
+            echo "::error::require mode passed with knip absent (outcome=$ABSENT_REQUIRED) — then it requires nothing"; exit 1; }
+          [[ "$CLEAN" == 'success' ]] || {
+            echo "::error::samples/knip-clean failed the action (outcome=$CLEAN) — the gate is over-strict, or the action cannot find a tool that is there"; exit 1; }
+          echo 'OK: auto warns, require fails, and a clean package passes through the real action'
+
+      - name: Unwire the fixture
+        if: always()
+        shell: bash
+        run: rm -f samples/knip-clean/node_modules
+
   layer1-dotnet:
     runs-on: ubuntu-latest
     steps:
@@ -623,6 +773,162 @@ jobs:
           fi
           python3 scripts/check-expected.py --tool deptry \
             --input /tmp/deptry-clean.json --expected samples/expected/deptry-clean.json
+
+      # --- the GRANULARITY, issue #97 ---------------------------------------
+      # #52's one condition is "per package, never at a workspace root", and
+      # until now it lived in prose: adopt.sh printed it as advice under a
+      # heading that said OPTIONAL. It is scripts/deptry-targets.py now, so it
+      # is a thing that can be wrong, and this is where it is proved wrong.
+      - name: The deptry target enumeration must match the committed one
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/deptry-targets.py --dir samples/deptry-workspace > /tmp/targets.json
+          # A plain diff of normalised JSON: unlike a finding manifest there is
+          # no rule id to key on, and the ORDER is part of the claim (the root
+          # is enumerated as a package in its own right, not skipped).
+          python3 -m json.tool --sort-keys /tmp/targets.json > /tmp/targets.norm
+          python3 -m json.tool --sort-keys samples/expected/deptry-targets.json > /tmp/targets.want
+          diff -u /tmp/targets.want /tmp/targets.norm || {
+            echo '::error::the deptry target enumeration drifted. Both halves matter: which directories are scanned, and which nested packages each one excludes.'
+            exit 1; }
+          echo 'OK: root + two members, with the members excluded from the root run'
+
+      # THE ABLATION, and it is the whole reason the fixture exists. The
+      # "workspace fixture must pass through the action" step below is the
+      # other half — it runs the REAL enumeration-and-invocation loop rather
+      # than a copy of it, which is why there is no hand-rolled loop here:
+      # a test that re-implements the thing under test still passes when the
+      # thing under test breaks.
+      #
+      # "Every package is clean" and "the granularity is what makes them clean"
+      # are different claims, and only the second justifies the enumeration —
+      # without this step a fixture with nothing to find would pass identically.
+      #
+      # Asserted as a count rather than a manifest on purpose: what is being
+      # pinned is that the naive invocation reports the members' dependencies at
+      # all, not which code it picks. deptry says DEP001 for a package that is
+      # absent from the environment and DEP003 for one that is present, so a
+      # manifest here would flap on what CI happens to have installed.
+      - name: ...and the naive workspace-root run is NOT — 94% noise, measured
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          (cd samples/deptry-workspace && deptry . --json-output /tmp/deptry-naive.json) \
+            >/tmp/deptry-naive.log 2>&1 || rc=$?
+          cat /tmp/deptry-naive.log
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::a bare deptry run at the workspace root is clean too, so the per-package enumeration is proving nothing. Either the fixture lost its member packages or deptry learned to read workspaces — check before deleting scripts/deptry-targets.py.'
+            exit 1
+          fi
+          n=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' /tmp/deptry-naive.json)
+          [[ "$n" -eq 2 ]] || {
+            echo "::error::expected the naive root run to report both members' dependencies (2 findings), got $n"
+            exit 1; }
+          echo 'OK: 0 findings per package, 2 from the same tree scanned as one'
+
+      - name: The deptry gate gates the measured codes, and ratchets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # Rule AND file, never a count — same standard as the knip gate step
+          # above, and the same reason.
+          gates() { grep -E '^  GATE ' <<<"$1" | awk '{print $2, $3}' | sort; }
+          same() {
+            diff -u "$1" <(gates "$2") || { echo "::error::$3"; exit 1; }
+          }
+
+          # DEP001 and DEP002 are the two #39 planted and confirmed. DEP003 and
+          # DEP004 were never measured here, so they report and do not gate.
+          cat > /tmp/deptry-want.txt <<'WANT'
+          DEP001 src/sample_deptry/main.py:4
+          DEP002 pyproject.toml:0
+          WANT
+          out=$(python3 scripts/deadcode-gate.py --tool deptry \
+                  --input /tmp/deptry.json) && rc=0 || rc=$?
+          echo "$out"
+          [[ "$rc" -eq 1 ]] || { echo '::error::the deptry gate did not fail on the bait fixture'; exit 1; }
+          same /tmp/deptry-want.txt "$out" 'the gating deptry finding SET drifted — see the diff above'
+
+          # DEP003 must be REPORTED and must NOT gate, and the naive
+          # workspace-root run above is a free source of a real one to prove it
+          # with — a fixture planted here would only prove the constant.
+          out=$(python3 scripts/deadcode-gate.py --tool deptry \
+                  --input /tmp/deptry-naive.json) && rc=0 || rc=$?
+          echo "$out"
+          grep -qE '^  advisory  DEP003 ' <<<"$out" || {
+            echo '::error::DEP003 vanished instead of being reported as advisory'; exit 1; }
+          grep -qE '^  GATE      DEP003 ' <<<"$out" && {
+            echo '::error::DEP003 gated — it was never measured here, so it must only report'; exit 1; }
+
+          # The ratchet: same findings, nothing changed, no gate — but still
+          # reported. Silence would be a switched-off check wearing a ratchet.
+          : > /tmp/deptry-nothing.txt
+          out=$(python3 scripts/deadcode-gate.py --tool deptry --input /tmp/deptry.json \
+                  --changed-list /tmp/deptry-nothing.txt) && rc=0 || rc=$?
+          [[ "$rc" -eq 0 ]] || { echo '::error::an empty diff must produce no gating deptry findings'; exit 1; }
+          grep -qx 'deptry_advisory=2' <<<"$out" || {
+            echo '::error::an empty diff must still REPORT both findings'; exit 1; }
+
+          # ...and the manifest is exactly what a dependency edit touches, so
+          # DEP002 gating on a changed pyproject.toml is the case that matters.
+          printf 'pyproject.toml\n' > /tmp/deptry-changed.txt
+          printf 'DEP002 pyproject.toml:0\n' > /tmp/deptry-want-ratchet.txt
+          out=$(python3 scripts/deadcode-gate.py --tool deptry --input /tmp/deptry.json \
+                  --changed-list /tmp/deptry-changed.txt) && rc=0 || rc=$?
+          [[ "$rc" -eq 1 ]] || { echo '::error::a DEP002 on a CHANGED manifest must gate'; exit 1; }
+          same /tmp/deptry-want-ratchet.txt "$out" \
+            'the ratchet must gate the pyproject.toml finding and only that'
+          echo 'OK: DEP001/DEP002 gate, DEP003 reports only, and the ratchet holds both ways'
+
+      # The composite action, exercised rather than re-implemented — the same
+      # argument the layer2 job makes for `uses: ./actions/layer2`.
+      - name: The workspace fixture must pass through the action itself
+        id: ws
+        continue-on-error: true
+        uses: ./actions/deadcode
+        with:
+          tool: deptry
+          dir: samples/deptry-workspace
+          mode: require
+
+      - name: ...and the bait fixture must not
+        id: bait
+        continue-on-error: true
+        uses: ./actions/deadcode
+        with:
+          tool: deptry
+          dir: samples/deptry
+          mode: require
+
+      - name: A directory with no readable manifest warns, and requires
+        id: nomanifest
+        continue-on-error: true
+        uses: ./actions/deadcode
+        with:
+          tool: deptry
+          dir: samples/python-clean
+          mode: auto
+
+      - name: Every deptry action outcome must be the expected one
+        shell: bash
+        env:
+          WS: ${{ steps.ws.outcome }}
+          BAIT: ${{ steps.bait.outcome }}
+          NOMANIFEST: ${{ steps.nomanifest.outcome }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$WS" == 'success' ]] || {
+            echo "::error::the workspace fixture failed through the action (outcome=$WS) — the enumeration works standalone and not where consumers run it"; exit 1; }
+          [[ "$BAIT" == 'failure' ]] || {
+            echo "::error::the bait fixture passed through the action (outcome=$BAIT) — the gate does not gate"; exit 1; }
+          # samples/python-clean deliberately has no dependency manifest, which
+          # is the "nothing was examined" case. auto must let it through and say
+          # so; it must never read as a clean scan.
+          [[ "$NOMANIFEST" == 'success' ]] || {
+            echo "::error::auto mode failed on a directory with no manifest (outcome=$NOMANIFEST)"; exit 1; }
+          echo 'OK: the workspace passes, the bait fails, and an unexaminable directory warns rather than lying'
 
   # #58 — Rust Layer 1. clippy is the conventions layer (Semgrep's Rust support
   # is experimental and stays out), cargo-deny is the supply chain. The
@@ -3523,3 +3829,36 @@ jobs:
             echo '::error::legacy-ratchet lost its changed-only — it is the whole point of that example'
             exit 1; }
           echo 'OK: every example workflow is valid and pinned'
+
+      # #97. The gate defaults to 'auto', which WARNS when the tool is absent —
+      # so an example that merely omits the input would document a repo where
+      # the dead-code gate quietly does nothing, which is the state this issue
+      # exists to end. The two fully-adopted examples show the finished shape:
+      # the tool declared as a dev dependency AND the mode raised to require.
+      - name: The adopted examples must actually gate dead code
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          need() {
+            grep -qF "$2" "$1" || {
+              echo "::error::$1 no longer contains '$2' — see #97"; exit 1; }
+          }
+          # TypeScript: the tool, the config it cannot work without, and the mode.
+          need examples/typescript-npm/package.json '"knip"'
+          need examples/typescript-npm/knip.json '"entry"'
+          need examples/typescript-npm/.github/workflows/quality.yml 'dead-code: require'
+          # ...and the exports switch, which is the application-vs-library call.
+          need examples/typescript-npm/.github/workflows/quality.yml 'dead-code-exports: true'
+          # A knip config with no entry points is a zero-config run wearing a
+          # config file: it reports the layout rather than the defects.
+          python3 -c '
+          import json, sys
+          entry = json.load(open("examples/typescript-npm/knip.json")).get("entry") or []
+          if not entry:
+              sys.exit("::error::examples/typescript-npm/knip.json declares no entry points")
+          print(f"  OK  knip.json declares {len(entry)} entry point(s)")
+          '
+          # Python: deptry as a dev dependency, and the mode.
+          need examples/python-uv/pyproject.toml 'deptry'
+          need examples/python-uv/.github/workflows/quality.yml 'dead-code: require'
+          echo 'OK: both adopted examples declare the tool and require the gate'

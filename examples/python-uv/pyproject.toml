@@ -4,4 +4,8 @@ version = "0.0.0"
 requires-python = ">=3.12"
 
 [dependency-groups]
-dev = ["ruff>=0.14", "mypy>=1.18"]
+# deptry alongside ruff and mypy, and a DEV dependency like both: CI runs the
+# versions you pin, it does not smuggle in its own. It also has to resolve
+# inside this project's environment or the import-name != package-name mapping
+# breaks (beautifulsoup4 imports as bs4), so it cannot be an isolated tool.
+dev = ["ruff>=0.14", "mypy>=1.18", "deptry>=0.25.1"]

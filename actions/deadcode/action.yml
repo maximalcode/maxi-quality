@@ -1,0 +1,283 @@
+# maxi-quality — the dead-code and unused-dependency gate (#97).
+#
+# WHY THIS IS AN ACTION AND NOT FOUR LINES IN quality.yml
+#
+# It needs scripts/ from THIS repo on the runner, and the Layer 1 jobs check out
+# the CONSUMER only. Resolving a `maximalcode/maxi-quality/actions/...@v1`
+# reference makes GitHub download this entire repo at that ref using its own
+# scoped token — the same delivery vehicle actions/layer2 already uses, with no
+# PAT and no vendored copy. A second checkout step in quality.yml would be a
+# third place the v1 coupling has to be spelled out.
+#
+# Version coupling: quality.yml@v1 references this action @v1. The tag moves
+# both together, never independently.
+#
+# WHAT THIS IS NOT
+#
+# It is not an "AI slop detector". There is no mechanical signature for model
+# authorship, and #39 refused that framing on purpose — a dead export is a dead
+# export whoever typed it. Every check here names a falsifiable failure: an
+# unimported file, an undeclared dependency, a declared dependency nothing
+# imports. What #39 actually observed is that the dominant failure mode of
+# AI-assisted code is VOLUME, and that every other gate in this baseline answers
+# "is this code wrong?" while nothing answered "should this code exist?".
+#
+# THE TWO TOOLS, AND THE CONDITIONS THAT CAME WITH THEM
+#
+#   knip   (#51) — unused files, exports, types and dependencies in TypeScript.
+#                  6 of 6 planted findings, 0 of 6 negative controls flagged,
+#                  19x quieter than a lint recommended-set on real code.
+#   deptry (#52) — unused and undeclared Python dependencies. 2 of 2 planted,
+#                  0 false positives including the import-name != package-name
+#                  control.
+#
+# Each was adopted WITH a condition, and the conditions are encoded here rather
+# than restated in prose: knip needs a real config or it reports your layout
+# instead of your defects, and deptry must run per package or it reports 94%
+# noise. See scripts/deadcode-gate.py and scripts/deptry-targets.py.
+
+name: 'maxi-quality dead-code gate'
+description: >-
+  knip (TypeScript) or deptry (Python) over one package, with the measured
+  gating set and the changed-only ratchet applied to the results.
+
+inputs:
+  tool:
+    description: '"knip" or "deptry".'
+    required: true
+  dir:
+    description: >-
+      The package directory quality.yml detected. For deptry this is the SCAN
+      ROOT, not the scan target: the targets under it are enumerated per
+      package, because a workspace-root run is the invocation #52 measured and
+      rejected.
+    default: '.'
+  mode:
+    description: >-
+      'auto' (the default) runs the tool when the project has it installed and
+      says loudly in the log when it does not. 'require' turns a missing tool
+      into a failure.
+
+      auto is the default because `v1` is a MOVING TAG. `require` as a default
+      would red every adopted repo the moment this merges to main, for a tool
+      they have not installed yet — a gate that arrives as an outage gets
+      deleted, and this one has waited long enough to be worth landing intact.
+      A repo that wants the guarantee sets 'require' and gets it.
+    default: 'auto'
+  gate-exports:
+    description: >-
+      knip only. 'true' also gates unused exports and types. APPLICATION CODE
+      ONLY: in a published library an export nothing in-repo references is
+      indistinguishable from public API, and 19 of the 26 real-code findings in
+      #39 sat in exactly that class. Gating them there ships an unfixable
+      finding.
+    default: 'false'
+  changed-only:
+    description: >-
+      Base ref for the ratchet. The SCAN is always full — reachability is a
+      whole-graph question and neither tool takes a file list — so this filters
+      the RESULTS: everything is reported, only findings in files changed since
+      the base ref can fail the build.
+    default: ''
+  knip-min-version:
+    description: >-
+      Refused below this. 5.64.3 shipped a false positive on signature-only
+      types that 6.31.0 fixed (#51), and a known-wrong analyzer is worse than a
+      missing one — so this is a hard error in every mode, unlike a tool that
+      is simply absent.
+    default: '6.31.0'
+
+runs:
+  using: composite
+  steps:
+    # EVERY input reaches the shell through `env:`. `${{ }}` is textual
+    # substitution done before bash parses the script, so a value containing a
+    # quote or a `;` stops being a value and becomes code — actions/layer2
+    # spells this out at length and the habit is the mitigation.
+    - name: Dead code and unused dependencies
+      shell: bash
+      env:
+        TOOL: ${{ inputs.tool }}
+        DIR: ${{ inputs.dir }}
+        MODE: ${{ inputs.mode }}
+        GATE_EXPORTS: ${{ inputs.gate-exports }}
+        CHANGED_ONLY: ${{ inputs.changed-only }}
+        KNIP_MIN: ${{ inputs.knip-min-version }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -Eeuo pipefail
+
+        SCRIPTS="$ACTION_PATH/../../scripts"
+        CHANGED_ARGS=()
+
+        # `${arr[@]:+"${arr[@]}"}` throughout rather than a bare `"${arr[@]}"`:
+        # under `set -u` an EMPTY array is an unbound variable in bash 3.2, and
+        # this file is also run by hand on macOS while a change is being
+        # checked. On the runner's bash 5 both spellings behave the same, so
+        # the guard costs nothing and stops the local rehearsal from being a
+        # different program than the one CI runs.
+
+        case "$MODE" in
+          auto|require) ;;
+          *) echo "::error::mode must be 'auto' or 'require', got '$MODE'"; exit 1 ;;
+        esac
+
+        # --- the ratchet ------------------------------------------------------
+        if [[ -n "$CHANGED_ONLY" ]]; then
+          # A shallow checkout has no base ref to diff against. Same fetch the
+          # layer2 action does, and the same `|| true`: a base that cannot be
+          # fetched is handled below, where it can be reported properly.
+          git fetch --no-tags --depth=200 origin "${CHANGED_ONLY#origin/}" 2>/dev/null || true
+          if ! git rev-parse --verify --quiet "$CHANGED_ONLY" >/dev/null; then
+            # NOT a silent full-gate fallback. Gating everything would fail a
+            # legacy repo's build on its whole backlog, and gating nothing would
+            # be a switched-off check — both are wrong answers to "the ratchet
+            # is broken", so this stops instead.
+            echo "::error::changed-only base ref '$CHANGED_ONLY' cannot be resolved after fetching it. Refusing to guess: gating everything would fail the build on the backlog this ratchet exists to grandfather, and gating nothing would be a switched-off gate."
+            exit 1
+          fi
+          # Three dots: since the MERGE BASE, so the diff is what the pull
+          # request introduced rather than everything that landed on the base
+          # branch meanwhile.
+          git diff --name-only "$CHANGED_ONLY...HEAD" > "$RUNNER_TEMP/mq-changed.txt"
+          n=$(wc -l < "$RUNNER_TEMP/mq-changed.txt" | tr -d ' ')
+          echo "ratchet: $n file(s) changed since $CHANGED_ONLY — findings outside them are advisory"
+          CHANGED_ARGS=(--changed-list "$RUNNER_TEMP/mq-changed.txt")
+        fi
+
+        # A tool the project does not have. Loud in both modes — the difference
+        # is only whether it stops the build, never whether it is visible.
+        missing() {
+          if [[ "$MODE" == "require" ]]; then
+            echo "::error::$1"
+            exit 1
+          fi
+          echo "::warning::$1 The dead-code gate did NOT run here — a green build below says nothing about dead code in this package. Set dead-code: require to turn this warning into a failure once adoption is done."
+          exit 0
+        }
+
+        rc=0
+
+        # === knip =============================================================
+        if [[ "$TOOL" == "knip" ]]; then
+          cd "$DIR"
+          KNIP=./node_modules/.bin/knip
+          [[ -x "$KNIP" ]] || missing "knip is not installed in $DIR (npm i -D knip)."
+
+          # A VERSION CHECK THAT FAILS IN BOTH MODES, deliberately unlike the
+          # presence check above: 5.64.3 reports unused exports that are not
+          # unused, and a gate that fails on a false positive teaches people to
+          # ignore it.
+          have=$("$KNIP" --version)
+          if [[ "$(printf '%s\n%s\n' "$KNIP_MIN" "$have" | sort -V | head -1)" != "$KNIP_MIN" ]]; then
+            echo "::error::knip $have is older than the required $KNIP_MIN. 5.64.3 shipped a false positive on signature-only types (#51); a known-wrong analyzer is worse than none."
+            exit 1
+          fi
+
+          # THE CONFIG IS NOT OPTIONAL. Measured across every real consumer in
+          # #39: a zero-config run on a non-default layout reports the layout
+          # rather than the defects. Entry points are the consumer's to declare,
+          # so a missing config is an error and never a default-layout run.
+          # `if` blocks rather than `[[ ]] && cmd`, here and below. docs/STATUS.md
+          # §4 states the precise rule this repo measured: a false `[[ ]] && cmd`
+          # under `set -e` bites as the last statement of a script or a function.
+          # Neither of these is one today, which is exactly why they are written
+          # this way now — the next edit is what would make them one.
+          found=0
+          for c in knip.json knip.jsonc .knip.json .knip.jsonc \
+                   knip.ts knip.js knip.config.ts knip.config.js knip.config.mjs; do
+            if [[ -f "$c" ]]; then
+              found=1
+              break
+            fi
+          done
+          if [[ "$found" -eq 0 ]] && grep -q '"knip"' package.json 2>/dev/null; then
+            found=1
+          fi
+          if [[ "$found" -eq 0 ]]; then
+            echo "::error::no knip config in $DIR. knip's verdicts are only as good as the entry points you declare, and a zero-config run on a non-default layout reports your layout rather than your defects. scripts/adopt.sh writes a knip.json stub; fill in the real entry points."
+            exit 1
+          fi
+
+          GATE_ARGS=()
+          if [[ "$GATE_EXPORTS" == "true" ]]; then
+            GATE_ARGS+=(--gate-exports)
+          fi
+
+          # --no-exit-code because the verdict belongs to deadcode-gate.py: knip
+          # exits 1 for ANY issue type it reports, including the ones that must
+          # not fail a library build.
+          "$KNIP" --reporter json --no-exit-code > "$RUNNER_TEMP/mq-knip.json"
+          python3 "$SCRIPTS/deadcode-gate.py" --tool knip \
+            --input "$RUNNER_TEMP/mq-knip.json" \
+            --package-dir "$DIR" \
+            ${GATE_ARGS[@]:+"${GATE_ARGS[@]}"} \
+            ${CHANGED_ARGS[@]:+"${CHANGED_ARGS[@]}"} || rc=$?
+
+        # === deptry ===========================================================
+        elif [[ "$TOOL" == "deptry" ]]; then
+          # The runner, resolved once: the tools run inside the PROJECT's
+          # environment or import-name mapping breaks. Measured in #39 —
+          # isolated, deptry false-positives on every package whose import name
+          # differs from its distribution name (beautifulsoup4 / bs4).
+          if [[ -f "$DIR/uv.lock" ]]; then
+            # --frozen, matching the `uv sync --frozen` the job already ran. A
+            # bare `uv run` may resolve and REWRITE uv.lock, and a gate that
+            # edits the lockfile it is gating is a gate that can make its own
+            # repo dirty.
+            DEPTRY=(uv run --frozen deptry)
+            probe() { (cd "$1" && uv run --frozen deptry --version) >/dev/null 2>&1; }
+          else
+            DEPTRY=(deptry)
+            probe() { command -v deptry >/dev/null 2>&1; }
+          fi
+          probe "$DIR" || missing "deptry is not installed in $DIR's environment (uv add --dev deptry, or add it to requirements-dev.txt)."
+
+          # PER PACKAGE, NEVER AT A WORKSPACE ROOT — #52's one condition, and
+          # the reason this is an enumeration rather than `deptry .`.
+          python3 "$SCRIPTS/deptry-targets.py" --dir "$DIR" --format tsv \
+            > "$RUNNER_TEMP/mq-deptry-targets.tsv"
+          if [[ ! -s "$RUNNER_TEMP/mq-deptry-targets.tsv" ]]; then
+            # Not clean. Nothing was examined, and those must never render the
+            # same way — that is #1, #43 and #70 in one sentence.
+            missing "no package under $DIR declares dependencies deptry can read (a pyproject.toml with [project] or [tool.poetry], or a requirements.txt)."
+          fi
+
+          while IFS=$'\t' read -r pkg roots excludes; do
+            # Normalised, and not for looks: this string becomes the prefix the
+            # ratchet matches against `git diff --name-only`, and git never
+            # writes `pkg/./file`. A stray `/.` here would silently make every
+            # finding look unchanged, which is a gate that passes for the wrong
+            # reason — the exact failure shape this repo keeps hitting.
+            full="$DIR/$pkg"
+            full="${full#./}"
+            full="${full%/.}"
+            echo "::group::deptry — $full"
+            ARGS=()
+            for e in $excludes; do ARGS+=(--extend-exclude "$e"); done
+            for r in $roots; do ARGS+=("$r"); done
+            # TRUNCATED FIRST, and this is load-bearing rather than tidiness.
+            # The knip path gets it free from `>`; here the tool writes the file
+            # itself, so a deptry that dies before writing — a crash, a manifest
+            # it cannot read — would leave the PREVIOUS package's findings on
+            # disk, and the gate would read them and blame this package. The
+            # exit-3 "did not really run" guard cannot fire, because the file is
+            # there. An empty file is what that guard is looking for.
+            : > "$RUNNER_TEMP/mq-deptry.json"
+            # `|| true` on the tool, never on the gate: deptry exits 1 on any
+            # finding, and which findings gate is deadcode-gate.py's call.
+            (cd "$full" && "${DEPTRY[@]}" ${ARGS[@]:+"${ARGS[@]}"} \
+              --json-output "$RUNNER_TEMP/mq-deptry.json") || true
+            python3 "$SCRIPTS/deadcode-gate.py" --tool deptry \
+              --input "$RUNNER_TEMP/mq-deptry.json" \
+              --package-dir "$full" \
+              ${CHANGED_ARGS[@]:+"${CHANGED_ARGS[@]}"} || rc=$?
+            echo "::endgroup::"
+          done < "$RUNNER_TEMP/mq-deptry-targets.tsv"
+
+        else
+          echo "::error::tool must be 'knip' or 'deptry', got '$TOOL'"
+          exit 1
+        fi
+
+        exit "$rc"

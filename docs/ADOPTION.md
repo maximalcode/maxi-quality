@@ -707,6 +707,89 @@ vulnerable dependency is vulnerable no matter which commit introduced it.
 
 A worked version of this is [`../examples/legacy-ratchet/`](../examples/legacy-ratchet/).
 
+`changed-only` ratchets the dead-code gate too, on the **results** rather than
+the inputs — neither knip nor deptry takes a file list, because reachability is
+a whole-graph question. Everything is reported; only findings in files the
+branch touched can fail the build.
+
+---
+
+## 6a. Dead code and unused dependencies
+
+Two tools, in the `typescript` and `python` jobs. Both need one thing from you
+and neither guesses when it is missing.
+
+**TypeScript — knip.**
+
+```bash
+npm i -D knip          # >=6.31.0. Below that is refused, not warned about
+```
+
+`adopt.sh` writes a `knip.json` stub. **Replace the entry points with your
+real ones.** A zero-config run on a non-default layout reports your *layout*
+rather than your defects, which is why a missing config is an error rather than
+a default-layout run.
+
+**Python — deptry.**
+
+```bash
+uv add --dev deptry    # or put it in requirements-dev.txt
+```
+
+That is all: it runs per package and inside your project's environment
+automatically, which are the two things that used to be your job. Running it at
+a workspace root measured 125 findings, 118 of them one first-party artifact,
+versus 3 at the right granularity; running it isolated false-positives on every
+package whose import name differs from its distribution name
+(`beautifulsoup4` / `bs4`).
+
+**Then turn it into a gate.** Until the tool is installed the job *warns and
+passes* — `v1` is a moving tag and it will not red an adopted repo overnight
+for a tool you had no reason to have. Once it is in:
+
+```yaml
+    with:
+      dead-code: require          # a missing tool is now a failure
+      dead-code-exports: true     # APPLICATIONS ONLY — see below
+```
+
+`dead-code-exports` gates unused exports and types. Leave it **off** in a
+published library: an export no in-repo code references is indistinguishable
+from public API there, and 19 of the 26 real-code findings in the evaluation
+sat in exactly that class.
+
+### Clearing the first run
+
+**Deletion is the fix.** knip can do most of it:
+
+```bash
+npx knip --fix                        # unused exports and dependencies
+npx knip --fix --allow-remove-files   # also deletes dead files
+```
+
+Same rule as the formatter: run it **once, alone, at adoption, and read the
+diff before committing.** The false-positive class is code reached from outside
+the module graph — codegen plugins invoked by non-npm tools, reflection — and a
+wrong deletion merges an outage. Real ones belong in `knip.json`'s
+`ignoreDependencies`, where they are scoped and greppable.
+
+**Never wire `--fix` into CI.** The gate detects; a human deletes.
+
+deptry has no auto-fix and needs none — its findings are one-line
+`pyproject.toml` edits. Make them by hand in one cleanup commit.
+
+The measured backlog is small: 6 true positives across two real monorepos in the
+evaluation, so one commit clears it and CI holds it at zero afterwards.
+
+### What this does not cover
+
+Unused **Python code** — as opposed to unused Python dependencies — is not
+checked. vulture was measured and declined with numbers: 120 findings over
+3.18 KLOC of real code, at least 100 of them pydantic model fields, **0**
+confirmed true positives. C#, Rust and Java get whatever their own analyzer sees
+inside a compilation unit and nothing file-level. The full table is
+[STATUS §4a](STATUS.md).
+
 ---
 
 ## 7. Narrowing the rules — `.maxi-quality.yml`

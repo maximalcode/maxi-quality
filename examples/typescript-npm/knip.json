@@ -1,0 +1,5 @@
+{
+  "entry": ["src/index.ts"],
+  "project": ["src/**/*.ts"],
+  "ignoreDependencies": ["@eslint/js", "typescript-eslint", "eslint-plugin-sonarjs"]
+}

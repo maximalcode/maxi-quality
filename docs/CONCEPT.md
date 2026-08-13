@@ -229,6 +229,31 @@ fires on future drift. Each config is proven by a fixture in `samples/format/`
 that is correct under *our* settings and wrong under the *tool's defaults*, so
 deleting a config turns a check red instead of leaving it quietly true.
 
+### 4b. Reachability — the one question the other gates do not ask
+
+Everything above answers *is this code wrong?* A file nobody imports compiles,
+type-checks, passes clippy and ships. So Layer 1 also carries **knip**
+(TypeScript) and **deptry** (Python), both measured in the tooling evaluation
+and adopted with conditions, and both delivered through `actions/deadcode`.
+
+It sits in Layer 1 rather than Layer 2 on purpose: Layer 2 runs once per repo
+from the root, and deptry measured 125 findings there against 3 per package.
+These tools are per-language and per-package, which is what Layer 1 already is.
+
+Three properties are worth fixing in this document rather than leaving in the
+action's comments, because each is a thing someone would otherwise "simplify":
+
+- **It is not an authorship detector.** There is no mechanical signature for
+  which code a model wrote. Every check names a falsifiable failure — an
+  unimported file, an undeclared dependency — and that framing is deliberate.
+- **The gating set is narrower than what the tools report.** Only the issue
+  types the evaluation actually measured may fail a build; the rest are printed
+  as advisory. Unused *exports* gate only in application code, because in a
+  published library an unreferenced export is public API.
+- **Two of five languages, and the table saying so lives in
+  `docs/STATUS.md` §4a.** Python dead *code* is uncovered because vulture was
+  measured and declined with numbers, not because nobody looked.
+
 ---
 
 ## 5. Layer 2 — cross-language umbrella (identical for every repo)

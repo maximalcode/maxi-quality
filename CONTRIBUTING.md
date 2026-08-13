@@ -307,6 +307,35 @@ twin (`configs/rust/settings.snapshot.json`) pins the **resolved** lint argv —
 `forbid=unsafe_code` versus `deny` is invisible to every fixture, and the
 snapshot is the only check that sees it.
 
+### Dead code and unused dependencies
+
+```bash
+npm run verify:knip          # expect 7 findings, non-zero exit
+npm run verify:knip:clean    # expect ZERO
+pip install -r samples/python/requirements-dev.txt -r samples/deptry/requirements.txt
+(cd samples/deptry && deptry src)            # expect DEP001 + DEP002
+(cd samples/deptry-clean && deptry src)      # expect ZERO
+```
+
+Three ablations carry this suite, and each exists because the obvious assertion
+proves nothing on its own:
+
+- `samples/knip-clean` passes — and passes just as happily with `knip.json`
+  moved aside unless its entry point is one knip would *not* find by default.
+  The fixture's entry is `src/clean.ts` for exactly that reason.
+- `samples/deptry-workspace` is clean **per package** and *not* clean scanned as
+  one tree. Without the second half, a fixture with nothing to find would pass
+  identically and `scripts/deptry-targets.py` would be unfalsifiable.
+- The gating set is asserted separately from detection. knip finds seven things
+  in `samples/knip`; only three of them may fail a build, and
+  `scripts/deadcode-gate.py` is what decides which — so CI asserts the split at
+  every setting a consumer can be in, including the `changed-only` ratchet in
+  both directions.
+
+The gating sets are deliberately narrower than what each tool reports: they hold
+exactly the issue types the evaluation measured. **Widening one needs a
+measurement, not an edit** — the same rule Rule 1 puts on the Semgrep cap.
+
 ### Layer 2 and the policy file
 
 ```bash

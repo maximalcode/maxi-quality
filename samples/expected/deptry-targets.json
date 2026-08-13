@@ -1,0 +1,17 @@
+[
+  {
+    "dir": ".",
+    "roots": ["."],
+    "extend_exclude": ["packages/api/", "packages/worker/"]
+  },
+  {
+    "dir": "packages/api",
+    "roots": ["."],
+    "extend_exclude": []
+  },
+  {
+    "dir": "packages/worker",
+    "roots": ["src"],
+    "extend_exclude": []
+  }
+]
