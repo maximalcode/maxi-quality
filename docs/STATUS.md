@@ -123,6 +123,11 @@ scripts/pom-region.py     inserts/refreshes/verifies the Java managed region in 
 
 docs/ADOPTION.md       how a project takes this on, per language
 docs/REFERENCE.md      every input, flag, exit code and rule id
+CONTEXT.md             the GLOSSARY, and nothing else — Consumer vs Adopter, the
+                       three tests that admit a language, Mechanism vs Finding
+                       change. Terms only; CONCEPT.md still holds the design
+docs/adr/              decisions that are hard to reverse, with the alternatives
+                       that lost. 0001 is the audience position (§1a)
 examples/              five copyable consumer repos — ts-npm, dotnet, python-uv,
                        mixed-monorepo, legacy-ratchet. NOT fixtures: CI asserts
                        each scans clean, is detected as the language it claims,

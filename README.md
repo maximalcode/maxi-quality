@@ -19,6 +19,50 @@ Free tools only: OSS analyzers plus the GitHub Actions free tier.
 
 ---
 
+## Before you adopt
+
+This repo is **public and genuinely adoptable, and supported for nobody.** Both
+halves are meant literally, and they are worth two minutes before you wire
+anything up.
+
+**The supported stack.** Inside it, things are expected to work and a failure is
+a bug worth reporting. Outside it, you are out of scope rather than broken:
+
+| | Supported |
+|---|---|
+| Languages | TypeScript · C# / .NET · Python · Rust · Java (**Maven only** — Gradle fails loud rather than skipping) |
+| Package managers | npm · pnpm · pip / uv · Cargo · Maven. **yarn and bun are a hard exit** |
+| CI | GitHub Actions. Nothing else is attempted |
+
+**What you are owed: the tag, and nothing else.** Issues and pull requests from
+outside carry no promise of a response, and no language or tool gets added
+because someone outside asks for it. What the tag promises:
+
+- A **new finding is not a breaking change.** New rules, analyzer bumps and
+  tightened configs land on `@v1` and can turn a green build red. That is the
+  product working — ratcheting up is the point — and `--changed-only` is how you
+  grandfather an existing backlog on day one.
+- A **mechanism change is breaking**, and gets a new major tag instead: an input
+  removed or renamed, a job renamed, detection behaviour altered, or anything
+  new you must have in your own repo.
+- **Do not SHA-pin `quality.yml`.** Your Scorecard will ask you to. The pinned
+  workflow text still resolves `actions/layer2@v1` one level down, so the pin
+  would look real and protect nothing. Pin a **`v1.0.x`** tag instead if you
+  need a ref that never moves.
+
+**What this does not do.** Stated because a gate that stays quiet about its
+edges gets trusted past them:
+
+- **No SARIF upload, no code-scanning integration.** Findings land in the job
+  log and on the PR diff.
+- **No preflight.** You cannot find out what Layer 1 will cost your repo without
+  running it — start with `--changed-only`.
+- **No `.pre-commit-hooks.yaml`.** The hook is installed by `adopt.sh --hooks`,
+  not consumed by the pre-commit framework.
+- **No judgement about whether code should exist.** See Limits.
+
+---
+
 ## Quick start
 
 ### A new repo
@@ -216,6 +260,18 @@ one language at a time, when someone has the week to spend on it.
   Java get whatever their compiler-integrated analyzer sees within a
   compilation unit and nothing file-level. The full table is in
   [STATUS §4](docs/STATUS.md).
+- **No gate here can tell you that correct, tested code should not exist**, and
+  that is the largest single category of what people mean by "AI slop": code
+  that is plausible, well-formed, locally correct and needed by nobody. Every
+  detector in this repo names a falsifiable defect — unreachable, undeclared,
+  untyped, unfinished. "Nobody needed this" is not falsifiable by a scanner, it
+  is a review judgement, and no amount of rules will make it one. What the
+  baseline buys you against it is indirect and still worth having: every
+  mechanical defect it catches is reviewer attention freed to spend on the
+  question a machine cannot answer. The evidence for the underlying premise is
+  itself thin and this repo says so with numbers —
+  [EVAL §2n](docs/EVAL-vs-oss-tools.md) grades the duplication and churn claims
+  as vendor telemetry and the dead-code claim as unmeasured by anyone.
 - **It defaults to warning, not failing, when the tool is absent.** `v1` is a
   moving tag, so a gate that arrived as a hard requirement would red every
   already-adopted repo the morning it shipped. `dead-code: require` is the
