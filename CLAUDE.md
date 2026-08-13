@@ -181,6 +181,20 @@ with no real consuming project are dead weight. They get written the day a real
 project needs them, not before. Python and Java clear that bar; Gradle does not
 yet.
 
+**"A real consuming project" is three tests, not one**, and they are named in
+[`CONTEXT.md`](CONTEXT.md): **detection proof** (does it fire on the bugs it
+claims?), **adoption-cost proof** (is switching it on survivable?), and
+**in-house demand** (is this language written in a repo the owner maintains?).
+Cite the one you mean. The fused phrase is how Java came to ship with its
+adoption cost unmeasured while the rule as written said it should not have —
+which was the right call and the wrong wording, and a wrong wording is how a
+right call gets overturned later.
+
+Only in-house demand admits a language. A fixture corpus proves detection and
+can never prove demand, so **nothing is added because an outsider asks for it** —
+see [ADR 0001](docs/adr/0001-public-adoptable-no-support-obligation.md) and
+`docs/CONCEPT.md` §1a.
+
 **SonarQube CE is DROPPED, not parked**, and the "≥3 consuming repos" trigger is
 void — repo count is not evidence. It was measured in
 `docs/EVAL-vs-sonarqube.md` and lost. Only new measured evidence reopens it; the

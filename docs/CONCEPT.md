@@ -10,9 +10,10 @@
 > repo's issue numbers, which start fresh at #1.
 > **Planned work** lives in the issue tracker, not in this document.
 
-A personal, reusable static-analysis baseline that makes every current and future
-project (TypeScript, C#/.NET, Python, Rust, Java) professional by default — free tools
-only, one-time setup, stamped onto new repos in minutes.
+A reusable static-analysis baseline that makes every current and future project
+(TypeScript, C#/.NET, Python, Rust, Java) professional by default — free tools
+only, one-time setup, stamped onto new repos in minutes. Public and adoptable by
+anyone; supported for nobody (§1a).
 
 **On CodeQL — measured 2026-08-02, and it is not wired in.** Publishing this
 repo made CodeQL free *for this repo*, which was a reason to measure it, not to
@@ -52,6 +53,38 @@ Full numbers in [EVAL-vs-oss-tools.md](EVAL-vs-oss-tools.md).
   deterministic).
 - No chasing 100% rule coverage on day one — start strict-but-adoptable,
   ratchet up.
+
+### 1a. Who this is for
+
+**Public and genuinely adoptable, supported for nobody.** Anyone may wire the
+baseline into their own repository and it will work. The only obligation owed
+to an Adopter is the **version contract** (§1b); issues and pull requests from
+outside carry no promise of a response.
+
+Two consequences that decide more of this repo than the goals above do:
+
+- **The supported stack is stated, not implied.** `README.md` names the
+  languages, package managers and CI host the baseline claims to work on.
+  Anything outside it is out of scope rather than broken. A narrow boundary is
+  fine; an unstated one is the dishonesty this exists to remove.
+- **In-house demand still admits a language.** Nothing is added because an
+  outsider needs it. See §9 for the three tests that phrase used to fuse.
+
+Recorded as [ADR 0001](adr/0001-public-adoptable-no-support-obligation.md), with
+the rejected alternatives.
+
+### 1b. The version contract
+
+The one promise. A **Finding change** — a new rule, an analyzer bump, a
+tightened config — may turn a green build red, and is deliberately **not**
+breaking: ratcheting up is the product, and `--changed-only` is how an Adopter
+grandfathers a backlog. A **Mechanism change** — an input removed or renamed, a
+job renamed, detection altered, anything new an Adopter must have in their own
+repo — **is** breaking, and gets a new major tag rather than riding the moving
+`v1`.
+
+No `v2` machinery exists and none is built until a breaking change needs one.
+That is the same rule as §9's: nothing speculative gets maintained.
 
 ---
 
@@ -337,6 +370,21 @@ The one rule that governs what gets added: **a config for a language with no
 real consuming project is dead weight.** It gets written the day a project needs
 it, not before.
 
+**"A real consuming project" was one phrase doing three jobs**, which is how
+Java shipped satisfying two of them while the rule as written said it should
+not have ([STATUS §5](STATUS.md)). The three, named separately in
+[CONTEXT.md](../CONTEXT.md) and cited rather than fused from here on:
+
+| Test | What it asks | What can satisfy it |
+|---|---|---|
+| **Detection proof** | does the config fire on the bugs it claims to catch? | planted findings in `samples/` with a committed manifest, or a Consumer's real code |
+| **Adoption-cost proof** | is switching it on survivable? | a Consumer turning it on and living with it — never a fixture built here |
+| **In-house demand** | is this language written in a repo the owner maintains? | nothing else; it is a taste judgment and no corpus substitutes for it |
+
+A language ships on all three. Shipping on two is allowed and has happened, but
+the missing one gets stated in `STATUS.md` and in `README.md`'s Limits rather
+than quietly assumed — an unmeasured cell is a result, not an omission.
+
 ---
 
 ## 10. Success criteria
@@ -346,6 +394,9 @@ it, not before.
 - The same Semgrep convention rule fires in both a TS and a C# sample.
 - Consumer A runs the baseline in CI without weakening any existing gate.
 - Zero spend: OSS tools + GitHub Actions free tier only.
+- An Adopter with no access to this repo's history can tell, from `README.md`
+  alone, whether their stack is supported and what `@v1` may do to their build
+  — **before** wiring anything up.
 
 ---
 
