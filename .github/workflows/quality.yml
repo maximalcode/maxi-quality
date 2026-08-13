@@ -73,7 +73,7 @@ on:
           input so a consumer can hold or advance it without waiting on this
           repo — but it has a PIN as a default, never "latest".
         type: string
-        default: '0.12.1'
+        default: '0.12.3'
       changed-only:
         description: >-
           Base ref for new-code-only Layer 2 (adoption ratchet, CONCEPT §8).
