@@ -24,7 +24,7 @@ jobs:
 | `python-version` | `3.12` | |
 | `rust-version` | `1.97.1` | Pinned toolchain for the `rust` job. Same argument as `uv-version` — hold or advance it without waiting on this repo, but the default is a **pin**, never `stable`: with `RUSTFLAGS=-Dwarnings`, a toolchain that adds a clippy lint is a breaking change |
 | `java-version` | `25` | Pinned JDK for the `java` job. A **pin** for the same reason `rust-version` is one, only more so: Error Prone reaches into javac internals that move between releases, and with `-Werror` in the compiler args a JDK that adds an `-Xlint` category is a breaking change |
-| `uv-version` | `0.12.1` | Pinned uv for lockfile-based Python projects. Exposed so a consumer can hold or advance it without waiting on this repo — but it has a **pin** as a default, never `latest` |
+| `uv-version` | `0.12.3` | Pinned uv for lockfile-based Python projects. Exposed so a consumer can hold or advance it without waiting on this repo — but it has a **pin** as a default, never `latest` |
 | `changed-only` | *(empty)* | Base ref for new-code-only Layer 2. Empty = full scan |
 | `licenses` | *(empty)* | Comma-separated SPDX allowlist. Anything outside it fails. **No default allowlist**, deliberately |
 | `annotate` | `true` | Render Semgrep findings on the pull-request diff, not only in the job log. Additive — emitted after the verdict, cannot change it |
@@ -70,7 +70,7 @@ Used directly when you want the umbrella without the language jobs.
 | `max-annotations` | `50` | Cap per run, omitted count always stated |
 | `semgrep-version` | `1.172.0` | |
 | `gitleaks-version` | `8.30.1` | |
-| `osv-scanner-version` | `v2.4.0` | |
+| `osv-scanner-version` | `v2.5.0` | |
 | `gitleaks-sha256`, `osv-scanner-sha256` | *(pinned)* | **A version is not a pin.** A git tag and a release asset are both mutable, and these binaries execute in every consumer's CI. Overriding a version without its digest fails loudly on purpose |
 
 Outputs: `semgrep`, `gitleaks`, `osv`, `licenses`, `sbom` — each the status line
