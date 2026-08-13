@@ -42,6 +42,25 @@ on:
     branches: [main, develop]
   pull_request:
 
+# Declared here rather than inherited from the repo setting, and that is the
+# point. The repo default is already read-only, so this changes nothing today —
+# it changes what happens the day someone flips that setting back, or forks
+# this repo without it. A workflow that relies on a setting it cannot see is
+# relying on something no reviewer of this file can check.
+#
+# Found by BOTH tools added in #61, independently, on their first run: CodeQL
+# raised actions/missing-workflow-permissions once per job (21 alerts) and
+# Scorecard scored Token-Permissions 0 on `no topLevel permission defined`.
+# That agreement is the argument for keeping them — the settings layer had no
+# fixtures, and this is the first thing it caught.
+#
+# `contents: read` is the whole requirement: every job here reads the tree,
+# runs analyzers over fixtures and asserts counts. Nothing in this file calls
+# the API or writes anything back. The one workflow that does need write is
+# release-tag.yml, which declares it locally.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -414,10 +433,12 @@ jobs:
               exit 1
             }
           done
-          # Side 2: the waived test idioms must stay silent.
-          for id in S1199 CA1822 S2325; do
+          # Side 2: the waived test idioms must stay silent. IDE1006 is in the
+          # list since #56 — tests/FixtureNaming.cs plants an un-prefixed
+          # fixture field under tests/, where the naming diagnostic is now off.
+          for id in S1199 CA1822 S2325 IDE1006; do
             if grep -q "error $id" <<<"$out"; then
-              echo "::error::$id fired in a Tests project — the #25 relaxation regressed"
+              echo "::error::$id fired in a Tests project — the #25/#56 relaxation regressed"
               exit 1
             fi
           done
@@ -825,6 +846,287 @@ jobs:
             exit 1
           fi
           echo 'OK: re-run is idempotent and an existing [lints] is left alone'
+
+  # #10 — Java Layer 1. Error Prone is the bug finder, NullAway the null-safety
+  # layer, spotless+palantir the formatter. Semgrep's Java support is good (the
+  # opposite of its Rust story), so the Java conventions are real Layer 2 rules
+  # and this job is Layer 1 only.
+  #
+  # The JDK and all four analyzer versions are PINNED to what consumers get —
+  # check-pins.sh asserts that stays true, because CI validating a different
+  # analyzer than consumers run is how the samples stop meaning what they claim
+  # (#13). Error Prone reaches into javac internals, so the finding set is
+  # JDK-specific in a way clippy's is not.
+  layer1-java:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      # The fixture poms carry a COPY of configs/java/pom-lints.xml (same shape
+      # as the sample .editorconfigs and the Rust [lints] block, and the same
+      # drift risk). scripts/pom-region.py is the generator, so `check` is the
+      # assertion that the three fixtures are byte-identical to what adopt.sh
+      # would write today.
+      - name: Fixture poms must carry configs/java verbatim
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for d in samples/java samples/java-clean samples/java-lint; do
+            python3 scripts/pom-region.py check --pom "$d/pom.xml" \
+              --fragment configs/java/pom-lints.xml
+          done
+          echo 'OK: all three fixture poms carry the shipped lint region verbatim'
+      # #8's pattern, Java edition, and here it covers more than usual: `-Werror`
+      # is invisible to a fixture whose findings are all ERROR-severity, the four
+      # pinned versions bake out no diagnostic until the day an upgrade adds a
+      # check, <style>AOSP</style> shows up only in the formatter's verdict, and
+      # <fork>true</fork> decides whether Error Prone runs AT ALL rather than
+      # what it reports. The snapshot reads Maven's own resolver, after Spring
+      # Boot's parent has had its say.
+      - name: The resolved Java settings must not change silently
+        shell: bash
+        run: python3 scripts/snapshot-java-settings.py --check
+      # NOT `working-directory:` — the manifests hold repo-relative paths, so
+      # check-expected.py has to run from the repo root. Maven reports ABSOLUTE
+      # paths (javac is forked), and the parser folds them back.
+      - name: Sample must fail with exactly the expected findings
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; out=$(cd samples/java && mvn -B --no-transfer-progress compile 2>&1) || rc=$?
+          echo "$out"
+          if [[ $rc -eq 0 ]]; then
+            echo '::error::samples/java compiled successfully — the config regressed'
+            exit 1
+          fi
+          printf '%s' "$out" | python3 scripts/check-expected.py --tool javac \
+            --input - --expected samples/expected/java.json
+      # Every enabled tier must be REPRESENTED, the same belt the 13 ruff
+      # families and the five clippy tiers get. Three things can switch off
+      # independently here and two of them look identical from outside when they
+      # do: Error Prone loaded at all, its WARNING tier gating, and NullAway
+      # escalated to ERROR.
+      - name: Every analyzer tier must be represented
+        shell: bash
+        run: |
+          set -uo pipefail
+          out=$(cd samples/java && mvn -B --no-transfer-progress compile 2>&1) || true
+          missing=()
+          for tier in ArrayEquals ReferenceEquality NullAway; do
+            grep -q "\[$tier\]" <<<"$out" || missing+=("$tier")
+          done
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::no finding from ${missing[*]} — that tier is enabled but unproven"
+            exit 1
+          fi
+          echo 'OK: Error Prone ERROR, Error Prone WARNING and NullAway all fire'
+      - name: Clean Java sample must COMPILE and TEST with zero findings
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; out=$(cd samples/java-clean && mvn -B --no-transfer-progress test 2>&1) || rc=$?
+          echo "$out"
+          if [[ $rc -ne 0 ]]; then
+            echo '::error::samples/java-clean was flagged — the baseline is over-strict. Fix the config, do not add @SuppressWarnings to the fixture.'
+            exit 1
+          fi
+          printf '%s' "$out" | python3 scripts/check-expected.py --tool javac \
+            --input - --expected samples/expected/java-clean.json
+      # --- the -Werror interaction, pinned from BOTH sides -------------------
+      #
+      # MEASURED 2026-08-09: a javac -Xlint warning ends the compile before
+      # Error Prone's pass runs, so every Error Prone and NullAway finding
+      # disappears from the output. The build stays RED, so this can never make
+      # a gate pass over unexamined code — but the finding LIST is short by
+      # however many the analyzer would have added, and a reader who does not
+      # know that is wrong about their own backlog.
+      #
+      # Nothing fixes it: no spelling of javac's should-stop policy, and
+      # <failOnWarning> is implemented BY ADDING -Werror. So it is pinned as a
+      # tested property instead of a footnote, which is also what stops somebody
+      # "fixing" it later by quietly dropping -Werror.
+      - name: A javac lint warning must gate, and must suppress the analyzer pass
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0; out=$(cd samples/java-lint && mvn -B --no-transfer-progress compile 2>&1) || rc=$?
+          echo "$out"
+          [[ $rc -ne 0 ]] || {
+            echo '::error::samples/java-lint compiled successfully — -Werror is no longer gating javac lint'
+            exit 1; }
+          grep -q 'warnings found and -Werror specified' <<<"$out" || {
+            echo '::error::the failure is not -Werror — something else broke in samples/java-lint'
+            exit 1; }
+          if grep -q '\[ReferenceEquality\]' <<<"$out"; then
+            echo '::error::Error Prone reported a finding alongside javac lint warnings. That is BETTER than the documented behaviour, which means the documentation is now wrong: re-measure, then update configs/java/pom-lints.xml, docs/STATUS.md §4 and samples/java-lint before deleting this check.'
+            exit 1
+          fi
+          printf '%s' "$out" | python3 scripts/check-expected.py --tool javac \
+            --input - --expected samples/expected/java-lint.json
+      # THE ABLATION, and it does double duty. Stripping -Werror must (a) turn
+      # the fixture GREEN, proving -Werror is what gates both javac lint and
+      # Error Prone's warning tier, and (b) make the Error Prone finding APPEAR,
+      # proving it was being SUPPRESSED above rather than merely absent. Without
+      # (b) the check above passes just as happily against an Error Prone that
+      # stopped working entirely.
+      - name: ...and stripping -Werror must free the analyzer AND stop gating
+        shell: bash
+        run: |
+          set -uo pipefail
+          rm -rf /tmp/ablate && cp -R samples/java-lint /tmp/ablate && rm -rf /tmp/ablate/target
+          python3 - <<'PY'
+          import re
+          p = '/tmp/ablate/pom.xml'
+          s = open(p).read()
+          out = re.sub(r'[ \t]*<arg>-Werror</arg>\n', '', s)
+          assert out != s, 'the -Werror arg is gone from the fixture pom already'
+          open(p, 'w').write(out)
+          PY
+          rc=0; out=$(cd /tmp/ablate && mvn -B --no-transfer-progress compile 2>&1) || rc=$?
+          echo "$out"
+          [[ $rc -eq 0 ]] || {
+            echo '::error::samples/java-lint still fails with -Werror removed, so that flag is not what gates it — the fixture is misformed in some other way and the check above proves nothing'
+            exit 1; }
+          grep -q '\[ReferenceEquality\]' <<<"$out" || {
+            echo '::error::the Error Prone finding did NOT appear with -Werror removed. It was absent rather than suppressed, which means Error Prone is not running on this fixture at all and the interaction check above is vacuous.'
+            exit 1; }
+          echo 'OK: -Werror gates both tiers, and is what suppresses the analyzer pass'
+      # --- the formatter -----------------------------------------------------
+      - name: Java fixtures must already be formatted
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for d in samples/java samples/java-clean samples/java-lint; do
+            (cd "$d" && mvn -B --no-transfer-progress spotless:check)
+          done
+      # THE ABLATION. Everything else in the spotless block is a default;
+      # <style>AOSP</style> is the one setting that is not (palantir-java-format
+      # ships PALANTIR, which wraps at 120). So the fixture is a file that is
+      # clean at 100 columns and rewrapped at 120 — the same width ablation the
+      # Prettier and ruff gates use, and the reason configs/editorconfig's
+      # max_line_length = 100 and this formatter agree rather than fighting.
+      - name: The AOSP style must be what decides the Java verdict
+        shell: bash
+        run: |
+          set -uo pipefail
+          rm -rf /tmp/fmt-java && cp -R samples/java-clean /tmp/fmt-java && rm -rf /tmp/fmt-java/target
+          cp samples/format/NeedsWidth100.java \
+            /tmp/fmt-java/src/main/java/dev/maximalcode/sample/NeedsWidth100.java
+          rc=0; (cd /tmp/fmt-java && mvn -B --no-transfer-progress spotless:check) >/dev/null 2>&1 || rc=$?
+          [[ $rc -eq 0 ]] || {
+            echo '::error::samples/format/NeedsWidth100.java is not clean under our config — the AOSP style regressed, or the fixture line drifted outside 101-120 chars'
+            exit 1; }
+          python3 - <<'PY'
+          p = '/tmp/fmt-java/pom.xml'
+          s = open(p).read()
+          out = s.replace('<style>AOSP</style>\n', '')
+          assert out != s, 'the AOSP style is gone from the fixture pom already'
+          open(p, 'w').write(out)
+          PY
+          rc=0; (cd /tmp/fmt-java && mvn -B --no-transfer-progress spotless:check) >/dev/null 2>&1 || rc=$?
+          [[ $rc -ne 0 ]] || {
+            echo '::error::the fixture is clean at palantir-java-format DEFAULTS too, so <style>AOSP</style> separates nothing. Either its long line no longer exceeds 100 chars, or palantir changed its default width.'
+            exit 1; }
+          echo 'OK: <style>AOSP</style> changes the verdict — the Java format gate is driven by the shipped config'
+      # --- adopt.sh equivalence, the Java half -------------------------------
+      # The JDK lives in THIS job, so the end-to-end claim does too: a fresh
+      # Maven project adopted by the script must gate identically, re-running
+      # must change nothing, and a pom that already configures the compiler
+      # plugin must be REFUSED rather than clobbered.
+      - name: A fresh Maven project adopted by the script gates identically
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm -rf /tmp/consumer-java
+          mkdir -p /tmp/consumer-java/src/main/java/demo
+          cat > /tmp/consumer-java/pom.xml <<'POM'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <project xmlns="http://maven.apache.org/POM/4.0.0">
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>demo</groupId>
+            <artifactId>consumer</artifactId>
+            <version>1.0</version>
+            <properties>
+              <maven.compiler.release>25</maven.compiler.release>
+              <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+            </properties>
+            <build>
+              <plugins>
+              </plugins>
+            </build>
+          </project>
+          POM
+          printf 'package demo;\n\npublic final class App {\n    private App() {}\n\n    public static int len(String s) {\n        return s.length();\n    }\n}\n' \
+            > /tmp/consumer-java/src/main/java/demo/App.java
+          ./scripts/adopt.sh /tmp/consumer-java --no-workflow
+          (cd /tmp/consumer-java && mvn -B --no-transfer-progress compile)
+          # ...and it must GATE, not merely build. A null dereference is the
+          # NullAway path specifically, which is the half that only works if
+          # ${project.groupId} resolved to something the sources live under.
+          printf 'package demo;\n\npublic final class Boom {\n    private Boom() {}\n\n    static int boom() {\n        String s = null;\n        return s.length();\n    }\n}\n' \
+            > /tmp/consumer-java/src/main/java/demo/Boom.java
+          rc=0; out=$(cd /tmp/consumer-java && mvn -B --no-transfer-progress compile 2>&1) || rc=$?
+          echo "$out"
+          [[ $rc -ne 0 ]] || { echo '::error::adopted repo did NOT gate on a null dereference'; exit 1; }
+          grep -q '\[NullAway\]' <<<"$out" || {
+            echo '::error::the adopted repo failed, but not on NullAway — AnnotatedPackages did not resolve to the source package, which is the silent failure configs/java warns about'
+            exit 1; }
+          echo 'OK: adopted project builds clean code and gates a null dereference'
+      - name: Java adoption is idempotent, and refuses rather than clobbering
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          before=$(sha256sum /tmp/consumer-java/pom.xml | cut -d' ' -f1)
+          ./scripts/adopt.sh /tmp/consumer-java --no-workflow > /tmp/java-rerun.log 2>&1
+          after=$(sha256sum /tmp/consumer-java/pom.xml | cut -d' ' -f1)
+          [[ "$before" == "$after" ]] || {
+            echo '::error::re-run modified pom.xml — the managed region is not idempotent, which makes every baseline bump a diff nobody asked for'; exit 1; }
+          n=$(grep -c 'maxi-quality:begin' /tmp/consumer-java/pom.xml)
+          [[ "$n" -eq 1 ]] || { echo "::error::the lint region was written $n times"; exit 1; }
+          # A pom that already configures maven-compiler-plugin: REFUSE and say
+          # why, never merge. Two declarations of one plugin in one POM is
+          # last-one-wins, so writing ours would silently delete a -Werror the
+          # consumer already had — the exact downgrade #10 warns about.
+          rm -rf /tmp/consumer-java-own
+          mkdir -p /tmp/consumer-java-own/src/main/java/demo
+          cat > /tmp/consumer-java-own/pom.xml <<'POM'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <project xmlns="http://maven.apache.org/POM/4.0.0">
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>demo</groupId>
+            <artifactId>own</artifactId>
+            <version>1.0</version>
+            <build>
+              <plugins>
+                <plugin>
+                  <groupId>org.apache.maven.plugins</groupId>
+                  <artifactId>maven-compiler-plugin</artifactId>
+                  <configuration>
+                    <compilerArgs>
+                      <arg>-Xlint:all,-processing,-serial</arg>
+                      <arg>-Werror</arg>
+                    </compilerArgs>
+                  </configuration>
+                </plugin>
+              </plugins>
+            </build>
+          </project>
+          POM
+          out=$(./scripts/adopt.sh /tmp/consumer-java-own --no-workflow 2>&1)
+          echo "$out"
+          grep -q 'already configures maven-compiler-plugin' <<<"$out" || {
+            echo '::error::adopt.sh did not warn about an existing maven-compiler-plugin declaration'; exit 1; }
+          if grep -q 'maxi-quality:begin' /tmp/consumer-java-own/pom.xml; then
+            echo '::error::adopt.sh wrote its region into a pom that already declares the compiler plugin — the consumer just lost their own compilerArgs'
+            exit 1
+          fi
+          grep -q '\-Werror' /tmp/consumer-java-own/pom.xml || {
+            echo '::error::the consumer -Werror floor is gone from the pom'; exit 1; }
+          echo 'OK: re-run is idempotent, and an existing compiler-plugin declaration is refused intact'
 
   # The ratchet (`--changed-only`) had NO test, and shipped broken: semgrep's
   # --baseline-commit resolves the ref against the git repo of its WORKING
@@ -1377,7 +1679,11 @@ jobs:
           need '--json-output=/repo/.maxi-quality-semgrep.json'
           # -w /repo is what made the docker path correct while native was not.
           need '-w /repo ghcr.io/gitleaks/gitleaks:latest git /repo'
-          need 'ghcr.io/google/osv-scanner:latest scan source --recursive /repo'
+          # --no-resolve is asserted rather than tolerated: it is what keeps a
+          # Maven pom from turning this gate into 100+ Maven Central requests
+          # and an HTTP 429 (STATUS §4), and it is exactly the kind of flag that
+          # gets dropped by someone tidying an argv line.
+          need 'ghcr.io/google/osv-scanner:latest scan source --recursive --no-resolve /repo'
           need 'scan source --recursive --licenses=MIT /repo'
           need 'scan source --recursive --all-packages --licenses'
           echo 'OK: all three ladders resolve to the documented docker commands'
@@ -1552,6 +1858,17 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.12'
+      # PyYAML, because the Rust and Java steps below parse the workflow file
+      # adopt.sh scaffolds. The runner image does not ship it, and this job is
+      # the only one that needed it without installing it — which is why the
+      # `rust:` assertion had never actually run.
+      - name: Install PyYAML
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -c 'import yaml' 2>/dev/null \
+            || python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
+          python3 -c 'import yaml'
       - name: Exit codes and dry-run honesty
         shell: bash
         run: |
@@ -1680,6 +1997,85 @@ jobs:
             exit 1
           fi
           echo 'OK: adopted Python repo gates at 14/14 and keeps inherited waivers'
+
+      # #70's upgrade path. A repo adopted BEFORE Rust moved into the reusable
+      # workflow still carries the scaffolded `rust:` job, and the reusable call
+      # now runs Rust itself — two clippy runs, the second one pinned to a
+      # toolchain that no longer moves. adopt.sh cannot rewrite a consumer's own
+      # workflow file (write_new leaves it alone, deliberately), so saying it
+      # out loud IS the fix, and an unsaid warning is no fix at all.
+      - name: Warns a pre-#70 consumer carrying the scaffolded rust job
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p /tmp/old-rust/.github/workflows /tmp/old-rust/src
+          printf '[package]\nname = "old"\nversion = "0.1.0"\n' > /tmp/old-rust/Cargo.toml
+          : > /tmp/old-rust/Cargo.lock
+          printf 'fn main() {}\n' > /tmp/old-rust/src/main.rs
+          # The workflow a pre-#70 adopt.sh wrote — and then WITHOUT the comment
+          # it used to carry, because the warning must key on the job rather
+          # than on a marker the tidiest consumers are likeliest to have
+          # deleted. Both shapes run clippy twice; both must be reported.
+          cat > /tmp/wf-marked.yml <<'WF'
+          name: quality
+          on: [push, pull_request]
+          jobs:
+            quality:
+              uses: maximalcode/maxi-quality/.github/workflows/quality.yml@v1
+            # Rust Layer 1 (maxi-quality). Toolchain and cargo-deny are PINNED.
+            rust:
+              runs-on: ubuntu-latest
+              steps:
+                - run: cargo clippy --all-targets --locked
+          WF
+          cat > /tmp/wf-reworded.yml <<'WF'
+          name: quality
+          on: [push, pull_request]
+          jobs:
+            quality:
+              uses: maximalcode/maxi-quality/.github/workflows/quality.yml@v1
+            rust:
+              runs-on: ubuntu-latest
+              steps:
+                - run: cargo clippy --all-targets --locked
+          WF
+          for variant in marked reworded; do
+            cp "/tmp/wf-$variant.yml" /tmp/old-rust/.github/workflows/quality.yml
+            before=$(sha256sum /tmp/old-rust/.github/workflows/quality.yml | cut -d' ' -f1)
+            out=$(./scripts/adopt.sh /tmp/old-rust 2>&1)
+            echo "$out"
+            grep -q "already declares a 'rust:' job of its own" <<<"$out" || {
+              echo "::error::[$variant] adopt.sh did not warn about the second rust job — a consumer would run clippy twice"
+              exit 1; }
+            after=$(sha256sum /tmp/old-rust/.github/workflows/quality.yml | cut -d' ' -f1)
+            [[ "$before" == "$after" ]] || {
+              echo "::error::[$variant] adopt.sh rewrote the consumer workflow — it must warn, not clobber"; exit 1; }
+            echo "  OK  $variant"
+          done
+          echo 'OK: a second rust job is reported with or without the old marker comment'
+
+      # A repo adopted TODAY gets the same six lines as every other language.
+      # This is the assertion that the scaffolded job is gone, not merely
+      # unused: a stray `rust:` here is #70 reopening itself.
+      - name: A fresh Rust adoption gets the plain six-line workflow
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p /tmp/new-rust/src
+          printf '[package]\nname = "new"\nversion = "0.1.0"\n' > /tmp/new-rust/Cargo.toml
+          : > /tmp/new-rust/Cargo.lock
+          printf 'fn main() {}\n' > /tmp/new-rust/src/main.rs
+          ./scripts/adopt.sh /tmp/new-rust >/dev/null
+          wf=/tmp/new-rust/.github/workflows/quality.yml
+          cat "$wf"
+          python3 -c "import sys, yaml; yaml.safe_load(open(sys.argv[1]))" "$wf"
+          if grep -qE '^\s+rust:' "$wf"; then
+            echo '::error::adopt.sh still scaffolds a rust job — it belongs in the reusable workflow now'
+            exit 1
+          fi
+          n=$(python3 -c "import sys, yaml; print(len(yaml.safe_load(open(sys.argv[1]))['jobs']))" "$wf")
+          [[ "$n" -eq 1 ]] || { echo "::error::expected exactly 1 job in a fresh adoption, got $n"; exit 1; }
+          echo 'OK: a Rust repo adopts the same six lines as every other language'
 
       - name: Idempotent, and never clobbers
         shell: bash
@@ -1944,8 +2340,8 @@ jobs:
           # can hard-fail. Try in order, then assert rather than continue with a
           # guard that would silently extract nothing.
           python3 -c 'import yaml' 2>/dev/null \
-            || python3 -m pip install --quiet pyyaml 2>/dev/null \
-            || python3 -m pip install --quiet --break-system-packages pyyaml
+            || python3 -m pip install --quiet 'pyyaml==6.0.3' 2>/dev/null \
+            || python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
           python3 -c 'import yaml'
 
           rm -rf /tmp/blocks && mkdir -p /tmp/blocks
@@ -2182,7 +2578,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           python3 -c 'import yaml' 2>/dev/null \
-            || python3 -m pip install --quiet --break-system-packages pyyaml
+            || python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
           python3 - <<'PY'
           import yaml
           wf = yaml.safe_load(open('.github/workflows/quality.yml'))
@@ -2249,10 +2645,129 @@ jobs:
           : > "$F/sln-nested/src/Api/Api.csproj"
           sln "$F/sln-nested/build/Sample.sln" '..\src\Api\Api.csproj'
 
+          # The XML solution format (#56). FORWARD slashes on purpose — that is
+          # what the .slnx tooling writes, and the .sln fixtures above already
+          # prove the backslash path through the shared quoted-csproj
+          # extraction. Consumer A is a real instance of this layout: before
+          # the glob learned *.slnx, detection fell back to loose csprojs.
+          slnx() {
+            local f="$1"; shift
+            { echo '<Solution>'
+              for p in "$@"; do
+                printf '  <Project Path="%s" />\n' "$p"
+              done
+              echo '</Solution>'
+            } > "$f"
+          }
+
+          mkdir -p "$F/slnx-full/src/Api" "$F/slnx-full/src/Data"
+          : > "$F/slnx-full/src/Api/Api.csproj"; : > "$F/slnx-full/src/Data/Data.csproj"
+          slnx "$F/slnx-full/Sample.slnx" 'src/Api/Api.csproj' 'src/Data/Data.csproj'
+
+          # The coverage cross-check must guard a .slnx exactly as it guards a
+          # .sln — an omitted project is never built, never analysed.
+          mkdir -p "$F/slnx-partial/src/Api" "$F/slnx-partial/src/Worker"
+          : > "$F/slnx-partial/src/Api/Api.csproj"; : > "$F/slnx-partial/src/Worker/Worker.csproj"
+          slnx "$F/slnx-partial/Sample.slnx" 'src/Api/Api.csproj'
+
           mkdir -p "$F/no-sln/src/A" "$F/no-sln/src/B"
           : > "$F/no-sln/src/A/A.csproj"; : > "$F/no-sln/src/B/B.csproj"
 
           mkdir -p "$F/py-dev"; : > "$F/py-dev/requirements-dev.txt"
+
+          # Rust (#70). A plain binary crate with its lockfile committed.
+          mkdir -p "$F/rust-bin"
+          printf '[package]\nname = "a"\n' > "$F/rust-bin/Cargo.toml"
+          : > "$F/rust-bin/Cargo.lock"
+
+          # A cargo workspace: only the ROOT carries Cargo.lock while every
+          # member carries a manifest — the same walk-up the TS fixture proves.
+          mkdir -p "$F/rust-ws/crates/a" "$F/rust-ws/crates/b"
+          printf '[workspace]\nmembers = ["crates/*"]\n' > "$F/rust-ws/Cargo.toml"
+          : > "$F/rust-ws/Cargo.lock"
+          printf '[package]\nname = "a"\n' > "$F/rust-ws/crates/a/Cargo.toml"
+          printf '[package]\nname = "b"\n' > "$F/rust-ws/crates/b/Cargo.toml"
+
+          # THE BUG SHAPE, one level down from #70 itself: a crate clippy
+          # cannot open, because `--locked` refuses to run without a lockfile.
+          mkdir -p "$F/rust-nolock"
+          printf '[package]\nname = "a"\n' > "$F/rust-nolock/Cargo.toml"
+
+          # A crate the workspace's `members` list omits. It sits under the
+          # root's Cargo.lock so it LOOKS covered, and `cargo clippy` at the
+          # root analyses members only — the sln-partial case above, in Cargo's
+          # spelling, and the reason this branch parses TOML rather than globs.
+          mkdir -p "$F/rust-orphan/crates/a" "$F/rust-orphan/crates/b"
+          printf '[workspace]\nmembers = ["crates/a"]\n' > "$F/rust-orphan/Cargo.toml"
+          : > "$F/rust-orphan/Cargo.lock"
+          printf '[package]\nname = "a"\n' > "$F/rust-orphan/crates/a/Cargo.toml"
+          printf '[package]\nname = "b"\n' > "$F/rust-orphan/crates/b/Cargo.toml"
+
+          # Cargo auto-promotes a path dependency inside the workspace
+          # directory to a member, so `members` never naming it is normal and
+          # flagging it would hard-fail a legitimate repo. Transitive on
+          # purpose: crates/a is a member, libs/util is only reachable through
+          # it.
+          mkdir -p "$F/rust-pathdep/crates/a" "$F/rust-pathdep/libs/util"
+          printf '[workspace]\nmembers = ["crates/a"]\n' > "$F/rust-pathdep/Cargo.toml"
+          : > "$F/rust-pathdep/Cargo.lock"
+          printf '[package]\nname = "a"\n\n[dependencies]\nutil = { path = "../../libs/util" }\n' \
+            > "$F/rust-pathdep/crates/a/Cargo.toml"
+          printf '[package]\nname = "util"\n' > "$F/rust-pathdep/libs/util/Cargo.toml"
+
+          # `exclude` is the consumer saying "not part of this build" — a
+          # deliberate statement, and the same class of answer as passing
+          # languages: without rust.
+          mkdir -p "$F/rust-excluded/crates/a" "$F/rust-excluded/vendor/old"
+          printf '[workspace]\nmembers = ["crates/a"]\nexclude = ["vendor/old"]\n' \
+            > "$F/rust-excluded/Cargo.toml"
+          : > "$F/rust-excluded/Cargo.lock"
+          printf '[package]\nname = "a"\n' > "$F/rust-excluded/crates/a/Cargo.toml"
+          printf '[package]\nname = "old"\n' > "$F/rust-excluded/vendor/old/Cargo.toml"
+
+          mkdir -p "$F/rust-nested/svc"
+          printf '[package]\nname = "a"\n' > "$F/rust-nested/svc/Cargo.toml"
+          : > "$F/rust-nested/svc/Cargo.lock"
+
+          # target/ holds manifests cargo vendored during a build. They are not
+          # the repo's code, and a matrix entry per vendored crate would be an
+          # analysis of somebody else's source.
+          mkdir -p "$F/rust-target/target/pkg"
+          printf '[package]\nname = "a"\n' > "$F/rust-target/Cargo.toml"
+          : > "$F/rust-target/Cargo.lock"
+          printf '[package]\nname = "v"\n' > "$F/rust-target/target/pkg/Cargo.toml"
+          : > "$F/rust-target/target/pkg/Cargo.lock"
+
+          # Java (#10). A single-module Maven project carrying the lint region.
+          mkdir -p "$F/mvn"
+          printf '<project><modelVersion>4.0.0</modelVersion><!-- maxi-quality:begin --><!-- maxi-quality:end --></project>\n' \
+            > "$F/mvn/pom.xml"
+
+          # An aggregator and its modules. Only the ROOT is a matrix unit:
+          # <build><plugins> is inherited by modules, and one entry per module
+          # would build the same reactor N times. The .sln-preference shape, in
+          # Maven's spelling.
+          mkdir -p "$F/mvn-multi/mod-a" "$F/mvn-multi/mod-b"
+          printf '<project><modelVersion>4.0.0</modelVersion><modules><module>mod-a</module><module>mod-b</module></modules><!-- maxi-quality:begin --><!-- maxi-quality:end --></project>\n' \
+            > "$F/mvn-multi/pom.xml"
+          printf '<project><modelVersion>4.0.0</modelVersion></project>\n' > "$F/mvn-multi/mod-a/pom.xml"
+          printf '<project><modelVersion>4.0.0</modelVersion></project>\n' > "$F/mvn-multi/mod-b/pom.xml"
+
+          # THE BUG SHAPE. A pom with no lint region builds perfectly and
+          # analyses nothing — `mvn compile` green over code Error Prone never
+          # opened. That is the whole failure this baseline exists to prevent,
+          # so it stops the run rather than reducing the scan.
+          mkdir -p "$F/mvn-unwired"
+          printf '<project><modelVersion>4.0.0</modelVersion></project>\n' > "$F/mvn-unwired/pom.xml"
+
+          # Gradle: v1 is Maven-only, and "no Java here" is a lie about a repo
+          # that plainly has some. Same class as the yarn lockfile above.
+          mkdir -p "$F/gradle"
+          : > "$F/gradle/build.gradle.kts"
+
+          mkdir -p "$F/mvn-nested/svc"
+          printf '<project><modelVersion>4.0.0</modelVersion><!-- maxi-quality:begin --><!-- maxi-quality:end --></project>\n' \
+            > "$F/mvn-nested/svc/pom.xml"
 
           run "$F/npm" auto
           eq 'npm rc' "$rc" 0
@@ -2292,6 +2807,14 @@ jobs:
           eq 'sln-nested rc' "$rc" 0
           eq 'sln-nested targets' "$(val dotnet_targets)" '["build/Sample.sln"]'
 
+          run "$F/slnx-full" auto
+          eq 'slnx-full rc' "$rc" 0
+          eq 'slnx-full targets' "$(val dotnet_targets)" '["Sample.slnx"]'
+
+          run "$F/slnx-partial" auto
+          eq 'slnx-partial rc' "$rc" 1
+          says 'slnx-partial' 'Worker.csproj'
+
           run "$F/no-sln" auto
           eq 'no-sln rc' "$rc" 0
           eq 'no-sln targets' "$(val dotnet_targets)" '["src/A/A.csproj","src/B/B.csproj"]'
@@ -2301,11 +2824,101 @@ jobs:
           eq 'py-dev has_python' "$(val has_python)" true
           eq 'py-dev python_dirs' "$(val python_dirs)" '["."]'
 
+          run "$F/rust-bin" auto
+          eq 'rust-bin rc' "$rc" 0
+          eq 'rust-bin rust_dirs' "$(val rust_dirs)" '["."]'
+          eq 'rust-bin has_rust' "$(val has_rust)" true
+
+          run "$F/rust-ws" auto
+          eq 'rust-ws rc' "$rc" 0
+          eq 'rust-ws rust_dirs' "$(val rust_dirs)" '["."]'
+
+          run "$F/rust-nolock" auto
+          eq 'rust-nolock rc' "$rc" 1
+          says 'rust-nolock' 'Cargo.lock'
+
+          # ...and it must stay escapable, or the fix is a new way to be stuck.
+          run "$F/rust-nolock" none
+          eq 'rust-nolock+none rc' "$rc" 0
+          eq 'rust-nolock+none has_rust' "$(val has_rust)" false
+          run "$F/rust-nolock" ts
+          eq 'rust-nolock+ts rc' "$rc" 0
+          eq 'rust-nolock+ts has_rust' "$(val has_rust)" false
+
+          run "$F/rust-orphan" auto
+          eq 'rust-orphan rc' "$rc" 1
+          says 'rust-orphan' 'crates/b'
+
+          run "$F/rust-pathdep" auto
+          eq 'rust-pathdep rc' "$rc" 0
+          eq 'rust-pathdep rust_dirs' "$(val rust_dirs)" '["."]'
+
+          run "$F/rust-excluded" auto
+          eq 'rust-excluded rc' "$rc" 0
+          eq 'rust-excluded rust_dirs' "$(val rust_dirs)" '["."]'
+
+          run "$F/rust-nested" auto
+          eq 'rust-nested rc' "$rc" 0
+          eq 'rust-nested rust_dirs' "$(val rust_dirs)" '["svc"]'
+
+          run "$F/rust-target" auto
+          eq 'rust-target rc' "$rc" 0
+          eq 'rust-target rust_dirs' "$(val rust_dirs)" '["."]'
+
+          # A repo with no Rust must not grow a Rust job.
+          run "$F/npm" auto
+          eq 'npm has_rust' "$(val has_rust)" false
+          eq 'npm rust_dirs' "$(val rust_dirs)" '[]'
+
+          run "$F/mvn" auto
+          eq 'mvn rc' "$rc" 0
+          eq 'mvn java_dirs' "$(val java_dirs)" '["."]'
+          eq 'mvn has_java' "$(val has_java)" true
+
+          run "$F/mvn-multi" auto
+          eq 'mvn-multi rc' "$rc" 0
+          eq 'mvn-multi java_dirs' "$(val java_dirs)" '["."]'
+
+          run "$F/mvn-nested" auto
+          eq 'mvn-nested rc' "$rc" 0
+          eq 'mvn-nested java_dirs' "$(val java_dirs)" '["svc"]'
+
+          run "$F/mvn-unwired" auto
+          eq 'mvn-unwired rc' "$rc" 1
+          says 'mvn-unwired' 'maxi-quality lint region'
+
+          # ...and it must stay escapable, or the fix is a new way to be stuck.
+          run "$F/mvn-unwired" none
+          eq 'mvn-unwired+none rc' "$rc" 0
+          eq 'mvn-unwired+none has_java' "$(val has_java)" false
+          run "$F/mvn-unwired" ts
+          eq 'mvn-unwired+ts rc' "$rc" 0
+          eq 'mvn-unwired+ts has_java' "$(val has_java)" false
+
+          run "$F/gradle" auto
+          eq 'gradle rc' "$rc" 1
+          says 'gradle' 'MAVEN-ONLY'
+
+          run "$F/gradle" none
+          eq 'gradle+none rc' "$rc" 0
+          eq 'gradle+none has_java' "$(val has_java)" false
+
+          # A repo with no Java must not grow a Java job.
+          run "$F/npm" auto
+          eq 'npm has_java' "$(val has_java)" false
+          eq 'npm java_dirs' "$(val java_dirs)" '[]'
+
           # And this repo itself, which is the workspace shape in miniature:
-          # a root lockfile with two sample package.json files under it.
+          # a root lockfile with two sample package.json files under it, plus
+          # the three crates — every one of which must carry its own lockfile,
+          # because that is exactly what this baseline now asks of consumers.
           run "$GITHUB_WORKSPACE" auto
           eq 'self rc' "$rc" 0
           eq 'self ts_dirs' "$(val ts_dirs)" '["."]'
+          eq 'self has_rust' "$(val has_rust)" true
+          eq 'self rust_dirs' "$(val rust_dirs)" '["examples/rust-cli","samples/rust","samples/rust-clean"]'
+          eq 'self has_java' "$(val has_java)" true
+          eq 'self java_dirs' "$(val java_dirs)" '["examples/java-maven","samples/java","samples/java-clean","samples/java-lint"]'
 
           echo 'OK: every detection fixture classified, and the two silent skips now fail loud'
 
@@ -2379,7 +2992,7 @@ jobs:
           set -Eeuo pipefail
           pipx install semgrep==1.172.0
           python3 -c 'import yaml' 2>/dev/null \
-            || python3 -m pip install --quiet --break-system-packages pyyaml
+            || python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
           python3 -c 'import yaml'
 
       - name: Every invalid policy is rejected, and none of them is a warning
@@ -2824,7 +3437,7 @@ jobs:
           set -Eeuo pipefail
           pipx install semgrep==1.172.0
           python3 -c 'import yaml' 2>/dev/null \
-            || python3 -m pip install --quiet --break-system-packages pyyaml
+            || python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
           python3 -c 'import yaml'
 
       - name: Every example is detected as the language it claims
@@ -2845,6 +3458,7 @@ jobs:
           expect dotnet          'C#/.NET'
           expect python-uv       'Python'
           expect rust-cli        'Rust'
+          expect java-maven      'Java (Maven)'
           expect mixed-monorepo  'TypeScript' 'C#/.NET'
           expect legacy-ratchet  'TypeScript'
 

@@ -1,0 +1,20 @@
+{
+  "tool": "javac",
+  "findings": [
+    {
+      "rule": "rawtypes",
+      "file": "samples/java-lint/src/main/java/dev/maximalcode/sample/JavacLint.java",
+      "line": 21
+    },
+    {
+      "rule": "rawtypes",
+      "file": "samples/java-lint/src/main/java/dev/maximalcode/sample/JavacLint.java",
+      "line": 22
+    },
+    {
+      "rule": "cast",
+      "file": "samples/java-lint/src/main/java/dev/maximalcode/sample/JavacLint.java",
+      "line": 27
+    }
+  ]
+}

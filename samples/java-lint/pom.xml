@@ -1,0 +1,225 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- THE SEVERITY-MECHANICS FIXTURE, and the one that pins a measured
+     interaction rather than a check.
+
+     MEASURED 2026-08-09, JDK 25 / maven-compiler-plugin 3.15.0: when javac's
+     own -Xlint produces a warning AND -Werror is set, the compile ends before
+     Error Prone's pass runs — so EVERY Error Prone and NullAway finding
+     disappears from the output. Twelve of them, in the run that found this. The
+     build is still red, so this can never make a gate pass over unexamined code
+     (a green build is one where Error Prone did run and found nothing), but a
+     reader who takes "4 warnings" as the whole story is wrong by twelve.
+
+     No spelling of the javac should-stop flag rescues it (FLOW, GENERATE, the
+     -XD form, both at once — all measured), and maven-compiler-plugin's <failOnWarning> is not
+     an alternative: it is implemented BY ADDING -Werror, so it fails the same
+     way under a different name.
+
+     So this fixture holds javac-lint bait and Error-Prone-WARNING bait side by
+     side, and ci.yml asserts both halves:
+
+       - with the shipped config: build FAILS, the javac lint findings are
+         present, and the Error Prone finding is ABSENT — the interaction,
+         pinned, so nobody "fixes" it by quietly dropping -Werror;
+       - with -Werror stripped: build PASSES and the Error Prone finding
+         APPEARS — which is what proves it was being suppressed rather than
+         merely being quiet, and that -Werror is what gates both tiers.
+
+     samples/java keeps the Error Prone and NullAway bait, alone, so its
+     manifest is deterministic. -->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>4.0.7</version>
+    <relativePath/>
+  </parent>
+
+  <!-- groupId IS the source package root. configs/java/pom-lints.xml passes
+       ${project.groupId} to NullAway's AnnotatedPackages, so the two agreeing
+       is what makes NullAway analyse this tree at all. -->
+  <groupId>dev.maximalcode.sample</groupId>
+  <artifactId>sample-java-lint</artifactId>
+  <version>0.0.1-SNAPSHOT</version>
+
+  <properties>
+    <java.version>25</java.version>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-jdbc</artifactId>
+    </dependency>
+    <!-- @PreAuthorize is the Spring idiom for the mutation-requires-authz
+         convention, so the negative control has to carry the real annotation
+         rather than a stand-in the rule was written around. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.h2database</groupId>
+      <artifactId>h2</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+          <!-- maxi-quality:begin — Java lint baseline. GENERATED, do not hand-edit.
+               Regenerate by re-running scripts/adopt.sh; everything between the begin and
+               end markers is replaced wholesale, and nothing outside them is touched.
+
+               This is a FRAGMENT, not a POM. It is the contents of a managed region that
+               adopt.sh inserts into the consumer's own <build><plugins>, because Maven has
+               no remote lint consumption — the same constraint that forces Rust's [lints]
+               into the consumer's own Cargo.toml. A parent POM is Maven's one real
+               inheritance mechanism and it is unavailable twice over here: publishing one
+               needs a registry (this baseline ships no artifacts), and a Spring Boot
+               consumer's single <parent> slot is already taken.
+
+               WHY <fork>true</fork> AND EIGHT -J FLAGS. Error Prone reaches into javac's
+               internals, which JDK 16+ does not export. Without these the build dies with
+
+                 IllegalAccessError: class com.google.errorprone.BaseErrorProneJavaCompiler
+                 cannot access class com.sun.tools.javac.api.BasicJavacTask
+
+               which reads as "Error Prone is broken" rather than "add some flags". The
+               usual fix is a SECOND copied file, .mvn/jvm.config, because the flags have
+               to reach the compiler's own JVM and an in-process javac inherits Maven's.
+               Measured 2026-08-09 on JDK 25 / Maven 3.9.16: forking javac and passing the
+               same flags with -J works, and keeps this to one file.
+
+               WHY THE VERSIONS ARE PINNED. With warnings promoted to errors, an analyzer
+               upgrade that adds a check is a breaking change (docs/STATUS.md §4, the same
+               reasoning as the Rust toolchain). scripts/check-pins.sh asserts these agree
+               with what CI validates — a baseline that gates consumers on an analyzer it
+               never ran itself is not a baseline. -->
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-compiler-plugin</artifactId>
+            <version>3.15.0</version>
+            <configuration>
+              <fork>true</fork>
+              <compilerArgs>
+                <!-- javac's own floor, and it is a floor rather than an addition: a
+                     consumer already running -Xlint/-Werror keeps exactly what they had.
+                     -processing and -serial are excluded because every Spring Boot build
+                     runs annotation processors and no service class is Serializable. -->
+                <arg>-Xlint:all,-processing,-serial</arg>
+                <!-- -Werror gates Error Prone's WARNING-severity checks as well as
+                     javac's own lint: both surface as `error: warnings found and -Werror
+                     specified`. It is also the floor a consumer arriving with
+                     -Xlint/-Werror already had, so adopting this baseline never lowers
+                     one.
+
+                     AND IT INTERACTS WITH ERROR PRONE. Measured 2026-08-09: when javac's
+                     own -Xlint produces a warning, the compile ends before Error Prone's
+                     pass runs, so every Error Prone and NullAway finding vanishes from
+                     the output — twelve of them in the run that found this. The build
+                     stays RED, so this cannot make a gate pass over unexamined code: a
+                     green build is by definition one where Error Prone ran and found
+                     nothing. What it costs is the finding LIST, and a reader who takes
+                     "4 warnings" for the whole story is wrong by twelve. Fix the lint
+                     warnings, re-run, and the analyzer's findings appear.
+
+                     Things that do not fix it, all measured rather than assumed: no
+                     spelling of javac's should-stop policy (FLOW, GENERATE, the -XD
+                     form, both at once), and <failOnWarning>, which is implemented BY
+                     ADDING -Werror and so fails identically under another name. It is
+                     therefore redundant here and deliberately absent.
+
+                     samples/java-lint pins the whole interaction from both sides. -->
+                <arg>-Werror</arg>
+                <!-- Error Prone's required javac policy. Without -XDcompilePolicy=simple
+                     the plugin is not run at all on some sources. -->
+                <arg>-XDcompilePolicy=simple</arg>
+                <arg>--should-stop=ifError=FLOW</arg>
+                <!-- NullAway defaults to WARNING. Wired without this line it reports a
+                     genuine null dereference and the build still goes green under
+                     anything less than -Werror — the ships-switched-off shape from
+                     STATUS §4, one language over. AnnotatedPackages is what tells
+                     NullAway which code is yours; with it empty NullAway analyses
+                     nothing while looking entirely healthy. ${project.groupId} is the
+                     self-configuring default because it is a PREFIX match and a Java
+                     project's base package is its groupId in the overwhelming majority
+                     of layouts. If yours is not, change this one value — and know that
+                     getting it wrong is silent, which is why samples/java plants a null
+                     dereference that must fire. -->
+                <arg>-Xplugin:ErrorProne -Xep:NullAway:ERROR -XepOpt:NullAway:AnnotatedPackages=${project.groupId}</arg>
+                <!-- The flags that make the four lines above possible on JDK 16+. -->
+                <arg>-J--add-exports=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED</arg>
+                <arg>-J--add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED</arg>
+                <arg>-J--add-exports=jdk.compiler/com.sun.tools.javac.main=ALL-UNNAMED</arg>
+                <arg>-J--add-exports=jdk.compiler/com.sun.tools.javac.model=ALL-UNNAMED</arg>
+                <arg>-J--add-exports=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED</arg>
+                <arg>-J--add-exports=jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED</arg>
+                <arg>-J--add-exports=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED</arg>
+                <arg>-J--add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED</arg>
+                <arg>-J--add-opens=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED</arg>
+                <arg>-J--add-opens=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED</arg>
+              </compilerArgs>
+              <annotationProcessorPaths>
+                <!-- NOTE FOR CONSUMERS WHO USE LOMBOK OR MAPSTRUCT: declaring
+                     annotationProcessorPaths at all turns OFF classpath processor
+                     discovery, so any processor you rely on must be listed here too.
+                     That is Maven's behaviour, not this baseline's, and it is the one
+                     way adopting this can break a build that was previously fine. -->
+                <path>
+                  <groupId>com.google.errorprone</groupId>
+                  <artifactId>error_prone_core</artifactId>
+                  <version>2.50.0</version>
+                </path>
+                <path>
+                  <groupId>com.uber.nullaway</groupId>
+                  <artifactId>nullaway</artifactId>
+                  <version>0.13.8</version>
+                </path>
+              </annotationProcessorPaths>
+            </configuration>
+          </plugin>
+          <!-- The formatter (CONCEPT §4a). Deliberately NOT bound to a lifecycle phase:
+               a contributor's `mvn test` should not fail on layout mid-refactor, and CI
+               is the gate. Same split as Rust's -Dwarnings living in the job rather than
+               in the manifest.
+
+                 mvn spotless:apply    # fix
+                 mvn spotless:check    # gate
+
+               Run apply ONCE, alone, at adoption, and put that commit in
+               .git-blame-ignore-revs. -->
+          <plugin>
+            <groupId>com.diffplug.spotless</groupId>
+            <artifactId>spotless-maven-plugin</artifactId>
+            <version>3.9.0</version>
+            <configuration>
+              <java>
+                <palantirJavaFormat>
+                  <version>2.97.0</version>
+                  <style>AOSP</style>
+                </palantirJavaFormat>
+                <removeUnusedImports/>
+                <trimTrailingWhitespace/>
+                <endWithNewline/>
+              </java>
+            </configuration>
+          </plugin>
+          <!-- maxi-quality:end -->
+    </plugins>
+  </build>
+</project>

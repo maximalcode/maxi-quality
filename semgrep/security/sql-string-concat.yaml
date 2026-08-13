@@ -158,3 +158,59 @@ rules:
                 ^"[^"]*\b(SELECT|INSERT|UPDATE|DELETE|WHERE|FROM)\b[^"]*"\s*\+
             - pattern-regex: |-
                 ^'[^']*\b(SELECT|INSERT|UPDATE|DELETE|WHERE|FROM)\b[^']*'\s*\+
+
+  # Java, added for issue #10. Same design as the TypeScript rule: a BOUND
+  # method name plus a regex on the argument, never a fixed list of patterns,
+  # because a fixed list is what let Prisma's two Unsafe methods through under
+  # a green tick (docs/STATUS.md §4).
+  #
+  # The entry points are Spring's JdbcTemplate/JdbcClient, JPA's
+  # createQuery/createNativeQuery and plain JDBC's Statement. NOT included:
+  # PreparedStatement, whose entire purpose is the parameterised form — flagging
+  # it would be a false positive on the fix this rule asks for.
+  #
+  # Only double quotes in the regex, and unlike the TypeScript rule that is
+  # CORRECT rather than an oversight: Java has no single-quoted string type
+  # ('x' is a char). Same reasoning as the C# branch above. Text blocks are
+  # covered by the concatenation form because a """...""" + id still ends in a
+  # quote followed by a plus.
+  - id: sql-string-concat-java
+    message: >-
+      SQL built by string concatenation — this is SQL injection. Bind the value
+      instead: JdbcClient .param(), JdbcTemplate's Object[] args, or
+      PreparedStatement placeholders.
+    severity: ERROR
+    languages: [java]
+    patterns:
+      - pattern-either:
+          - pattern: $DB.$METHOD($SQL, ...)
+          - pattern: $DB.$METHOD($SQL)
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: '^(sql|query|queryForObject|queryForList|queryForMap|queryForRowSet|update|batchUpdate|execute|executeQuery|executeUpdate|createQuery|createNativeQuery)$'
+      - metavariable-pattern:
+          metavariable: $SQL
+          patterns:
+            - pattern-regex: '"[^"]*\b(SELECT|INSERT|UPDATE|DELETE|WHERE|FROM)\b[^"]*"\s*\+'
+
+  # The builder form, one step away from the sink — the Java twin of
+  # sql-string-concat-builder-dotnet/-ts. StringBuilder is how a dynamic WHERE
+  # clause actually gets assembled in Java, and none of the sink patterns above
+  # can see it because the sink receives a variable.
+  #
+  # `pattern-not` on the parameter placeholder is what keeps this from firing on
+  # the SAFE form of the same builder: appending " AND name = ?" is exactly the
+  # fix being asked for.
+  - id: sql-string-concat-builder-java
+    message: >-
+      SQL assembled in a StringBuilder from a non-literal — the concatenated
+      value reaches the database as code. Append a placeholder ("?" or a named
+      parameter) and bind the value separately.
+    severity: ERROR
+    languages: [java]
+    patterns:
+      - pattern: $SB.append($PART)
+      - metavariable-regex:
+          metavariable: $SB
+          regex: '(?i).*(sql|query|where|clause|builder)\w*'
+      - pattern-not: $SB.append("...")

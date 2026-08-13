@@ -3,7 +3,7 @@
 Handover doc. Read [`CONCEPT.md`](CONCEPT.md) for *what this is*; read this for
 *what actually exists, what is proven, and what to do next.*
 
-**Last updated:** 2026-08-05 · **Branches:** `develop` (default, where work
+**Last updated:** 2026-08-09 · **Branches:** `develop` (default, where work
 lands) → `main` (release) · **Tags:** `v1` (moving, follows `main`) · `v1.0.x`
 (immutable — the newest is on
 [Releases](https://github.com/maximalcode/maxi-quality/releases))
@@ -24,6 +24,7 @@ lands) → `main` (release) · **Tags:** `v1` (moving, follows `main`) · `v1.0.
 > | **Consumer A** | a C# + TypeScript monorepo — the main .NET consumer |
 > | **Consumer B** | a TypeScript application — the outlier in §5 |
 > | **Consumer C** | a Python service — the source of the Ruff ruleset |
+> | **Consumer D** | a Java service — the trigger for `configs/java/` |
 >
 > This matters for reading §5: the value of that section is the *method* —
 > measure before deciding, publish the numbers that went against you — and that
@@ -52,8 +53,8 @@ Roslyn, Ruff + mypy) is per-language, on as errors, and has no per-finding
 grandfathering in any of the three — so adopting it is a cleanup sprint rather
 than a config change.
 
-TypeScript, C#/.NET and Python are shipped and verified. `samples/` is the test
-suite: every config is proven by an intentionally-bad fixture whose exact
+TypeScript, C#/.NET, Python, Rust and Java are shipped and verified. `samples/`
+is the test suite: every config is proven by an intentionally-bad fixture whose exact
 findings are asserted against a committed manifest, and by a clean fixture that
 must pass.
 
@@ -79,6 +80,9 @@ configs/dotnet/dotnet.editorconfig      C# severities + minimal style
 configs/python/ruff.toml                13 rule families, line-length 100, extend-able
 configs/python/mypy.ini                 mypy strict + warn_unreachable (COPY — mypy has no extend)
 configs/python/settings.snapshot.json   what ruff and mypy RESOLVE to — 344 rules, and `strict` expanded
+configs/java/pom-lints.xml              Error Prone + NullAway(ERROR) + Spotless(palantir AOSP), all pinned;
+                                        a MANAGED REGION merged into the consumer's own pom.xml
+configs/java/settings.snapshot.json      what Maven RESOLVES the two plugins to, after Spring Boot's parent
 
 semgrep/general/       todo-without-issue, catch-and-swallow, debug-print, sync-over-async
 semgrep/security/      sql-string-concat, command-injection, weak-crypto, hardcoded-secret
@@ -105,6 +109,11 @@ scripts/snapshot-eslint-rules.mjs  serialises the ENABLED rule set, so deleting 
 scripts/snapshot-tsconfig.mjs      the same idea for tsc --showConfig
 scripts/snapshot-msbuild-props.sh  ...for dotnet msbuild -getProperty
 scripts/snapshot-python-settings.py ...for ruff --show-settings and mypy's own resolver
+scripts/snapshot-java-settings.py  ...for `mvn help:effective-pom`
+scripts/pom-region.py     inserts/refreshes/verifies the Java managed region in a
+                          pom.xml. XML has no append, so the markers ARE the upgrade
+                          path; it REFUSES a pom that already configures the compiler
+                          plugin rather than silently dropping the args it has
 .gitleaks.toml            allowlists the deliberately-planted sample secrets
 
 docs/ADOPTION.md       how a project takes this on, per language
@@ -126,6 +135,12 @@ samples/dotnet-tests/     Layer 1 C# *Tests* sample — proves the #25 relaxatio
 samples/dotnet-clean/     negative control — must BUILD 0 errors / 0 warnings
 samples/python/           Layer 1 Python sample — ruff 14 errors, mypy 11 errors
 samples/python-clean/     negative control — must PASS ruff AND mypy, zero findings
+samples/java/             Layer 1 Java sample — Error Prone + NullAway, 8 findings
+samples/java-clean/       negative control — idiomatic Spring Boot 4 (records, JdbcClient,
+                          constructor injection, an integration-shaped test) at ZERO
+samples/java-lint/        the severity-mechanics fixture: proves -Werror gates javac's own
+                          -Xlint, and PINS the measured interaction where a lint warning
+                          suppresses the whole Error Prone pass (§4)
 samples/parse-errors/     C# semgrep CANNOT PARSE (#43), in two shapes: one
                           unparseable file beside a parseable one with a real
                           finding (a coverage gap, not a failure), and the
@@ -153,7 +168,7 @@ samples/expected/         the manifests: rule id + file + line per tool, so a
                           regression names the rule that stopped firing
 ```
 
-**Rule budget: 12 conventions, 28 rule ids — the cap is fully spent.** A 13th
+**Rule budget: 12 conventions, 40 rule ids — the cap is fully spent.** A 13th
 convention requires removing one or an explicit decision to raise the cap. The
 id count is higher than the convention count because Semgrep patterns are
 language-specific; splitting a convention per language is not new scope.
@@ -189,7 +204,7 @@ ruff format --check --config configs/python/ruff.toml samples/python samples/pyt
 dotnet format whitespace samples/dotnet-clean --verify-no-changes
                                          # expect exit 0 — WHITESPACE, not bare
                                          # `dotnet format`, which re-runs 622 analyzers
-./scripts/scan.sh                        # expect exit 1, 100 semgrep findings / 28 rule ids
+./scripts/scan.sh                        # expect exit 1, 130 semgrep findings / 40 rule ids
 
 # the policy file, both directions (samples/policy/)
 ./scripts/scan.sh samples/policy/warn --skip gitleaks --skip osv
@@ -234,6 +249,16 @@ committed fixture rather than a claim: `samples/typescript-clean`,
 `samples/dotnet-clean` and `samples/python-clean` are the correct counterparts
 of every planted bug, and CI asserts they pass with zero findings. A config that
 flags everything is as useless as one that flags nothing.
+
+Java re-verifies with a JDK 25 toolchain:
+
+```bash
+cd samples/java       && mvn -B compile      # expect failure, 8 findings
+cd ../java-clean      && mvn -B test         # expect exit 0, ZERO findings
+cd ../java-lint       && mvn -B compile      # expect failure on -Werror, 3 findings
+cd ../..
+python3 scripts/snapshot-java-settings.py --check
+```
 
 `samples/python` carries a second assertion beyond its count: CI checks that all
 13 selected Ruff families are actually represented in the findings. The count
@@ -306,6 +331,13 @@ Gitleaks v8.30.1 and OSV-Scanner v2 via Docker — nothing was installed globall
 | **A dead-code detector cannot tell a public surface from dead code** | Same evaluation, three costumes: vulture flags 4 findings on `samples/python-clean` because the fixture is library-shaped (public functions whose callers are outside the fixture, by design); knip's unused-export findings on a published library package are indistinguishable from public API (19 of its 26 real-code findings sit in that class); and no free C# tool even attempts unused *public* members — Roslynator's RCS1213 gates on `Accessibility.Private` in its own source, and even paid NDepend excludes public members by default. Structural, not tunable: external callers are invisible to a single-tree scan. Gate files and dependencies everywhere; gate exports only in application code. |
 | **A dependency checker has a designed granularity, and running it above that granularity measures the layout** | deptry at a Python monorepo root: 125 findings, 118 of them one first-party artifact (workspace packages declared as root dev-deps, imported as runtime code). The same tool per package: 3 findings, sane ones. The count did not describe the dependencies either time — at root it described the workspace shape. Same lesson class as "a fixture proves *an* error, never *which setting caused it*": a number needs its scope stated before it means anything. |
 | **Our own conventions mandate token-identical code, so a clone gate would fight the baseline itself** | The densest real duplication found in any consumer (101 clones over 21.4 KLOC of C#) classified as the repo's *required* per-mutation transaction/idempotency rails — the visible-at-every-site pattern `mutation-requires-authz` exists to keep visible. A duplication gate and this baseline's conventions give opposite verdicts on the same lines, the same two-halves-contradicting shape as `no-redundant-optional` vs `exactOptionalPropertyTypes`. The literature agrees from the other side: clones predict change-coupling, not defects (EVAL-vs-oss-tools §2n). |
+| **`-Werror` and Error Prone do not compose, and the failure is invisible** | Measured 2026-08-09, JDK 25 / maven-compiler-plugin 3.15.0, building the #10 fixtures. When javac's own `-Xlint` emits a warning AND `-Werror` is set, the compile ends **before Error Prone's pass runs** — so every Error Prone and NullAway finding disappears from the output. Twelve of them, in the run that found this, leaving four javac lint warnings looking like the whole story. Nothing fixes it: not `--should-stop=ifError=FLOW`, not `GENERATE`, not the `-XD` spelling, not both at once, and **not `<failOnWarning>`, which is implemented BY ADDING `-Werror`** and fails identically under another name. The gate is still SOUND — a green build is by definition one where Error Prone ran and found nothing, so this can never pass over unexamined code — but a red build's finding list can be short, which is a different and quieter kind of wrong. Pinned from both sides by `samples/java-lint`, and the CI job emits a `::warning::` naming it whenever it happens. **The general shape: "the build is red" and "the analysis ran" are separate claims, and a fixture that only checks the first cannot tell them apart.** |
+| **A name regex ported between languages silently loses coverage to naming conventions** | Same session. `hardcoded-secret-*` keys on the variable NAME, and the TypeScript/C#/Python rules match `connectionstring` because those languages spell it `connectionString`. Java spells a constant `CONNECTION_STRING`, so the ported regex missed it — and the one it missed was the **userinfo-URL bait**, the case that actually leaks a credential, while `API_TOKEN` fired beside it and made the rule look fine. Found by reading which fixtures fired rather than by counting them, which is the whole argument for a per-finding manifest. Fixed with `[_-]?` between the words. |
+| **An "identical" rule ported to a new language must be re-scored against that language's analyzer, not against the old rule** | The #10 overlap audit, measured by planting all five ambient-clock shapes and reading Error Prone's output: `new Date()` is already `[JavaUtilDate]`, `LocalDate.now()` and `LocalDateTime.now()` are already `[JavaTimeDefaultTimeZone]`, and `catch {}` is already `[EmptyCatch]` — all on by default. `Instant.now()` and `System.currentTimeMillis()` are covered by nothing. So `no-ambient-clock-java` matches exactly those two, and `catch-and-swallow-java` was **not written at all**. A Semgrep rule for something the compiler already fails the build over is not more coverage; it is one bug reported twice, which is how people learn to ignore one of the two reporters. |
+| **An XML config cannot be appended, so the delivery mechanism is part of the design** | Rust's `[lints]` block is `cat >> Cargo.toml`. Maven's has to land inside `<build><plugins>`, so adoption is an EDIT — and an edit a human redoes on every baseline bump is copy-paste-drift with a changelog. Hence `scripts/pom-region.py` and the `maxi-quality:begin`/`:end` markers: re-running rewrites the region and nothing else. It also has to REFUSE a pom that already declares `maven-compiler-plugin`, because two declarations of one plugin in one POM is not a merge — it is last-one-wins, so writing the baseline's would **silently delete a `-Werror` the consumer already had**, i.e. adoption would leave them weaker than before. |
+| **The insert path and the refresh path of the same generator must produce the same bytes** | Found by adopting a fresh repo twice, not by reading the code. `pom-region.py`'s insert cut the file at the `</plugins>` TAG rather than at the start of its line, so that line's indentation stayed in the prefix and the fragment's first line came out indented twice. The file looked fine — one comment a few columns too far right — and then the refresh path read that first line's whitespace as the region's indent and re-indented the whole block by it. Every run. `apply` immediately followed by `check` is now a CI assertion for exactly this. |
+| **A mature, universally-deployed analyzer can score zero** | SpotBugs at `effort=Max, threshold=Low` caught 4 of 8 planted Java findings and **0 that Error Prone did not already catch**, plus one false positive — `EI_EXPOSE_REP2` on **constructor injection**, the most universal pattern in the framework the consumer is built on. PMD at its default ruleset caught **0 of 8**, and its only finding was on the CLEAN fixture: `UnusedFormalParameter` for a `RowMapper`'s `rowNum`, a parameter Spring's own interface requires. Same shape as `p/security-audit` scoring 0 of 28 and then 0 of 103. Numbers in `EVAL-vs-oss-tools.md` §2p. |
+| **A dependency scanner that resolves manifests over the network is a gate with a third-party rate limit in it** | Measured 2026-08-09, osv-scanner v2.4.0, adding the Java layer. A `pom.xml` does not contain its dependency graph, so osv-scanner walks it by fetching every POM and BOM from Maven Central at scan time — over a hundred requests for one Spring Boot project. This repo's own scan died with **9 × HTTP 429 and exit 127**. `--no-resolve` turned it into exit 0 with **identical per-file package counts**, because resolution never completed before being throttled. Lockfiles are untouched by the flag; it only affects manifests, which here means Maven. **The cost is stated rather than buried:** a Maven project is scanned for its DIRECT dependencies only, and in the JVM ecosystem most vulnerabilities are transitive. Same trade-off as .NET without a `packages.lock.json` (4 findings vs 7 on the same project), and the same answer — the consumer's call, not something the scanner decides by being slow and flaky. A gate that goes red when a registry is busy is one people re-run until it passes, and then ignore. |
 
 ---
 
@@ -331,6 +363,30 @@ decision a reader actually has to make:
 | **Layer 1** C#, Consumer A | **197** (~120 after tuning) | fix them, on a repo *already* at 0 warnings under its own strict props |
 | **Layer 1** TS, Consumer A | **445** | fix them |
 | **Layer 1** TS, Consumer B | **4,902** | fix them |
+| **Layer 1** Java | *not measured against Consumer D — see below* | — |
+
+**The Java row is empty on purpose, and that is a reported result rather than a
+missing one.** Issue #10's definition of done asked for a first-run finding
+count against Consumer D, the way `configs/python/` was measured against
+Consumer C before it shipped. That did not happen: Consumer D's tree is private
+and stays outside this repo (CLAUDE.md §2), and nothing about it — not a path,
+not a class name, not a finding count that could be traced back — belongs in a
+public description of a baseline.
+
+What was measured instead is stated exactly: `configs/java/` was built and
+verified against **`samples/java-clean`, a representative Spring Boot 4 tree
+written here** — records, `JdbcClient` with bound parameters, constructor
+injection, an integration-shaped test — which passes at **zero findings**, and
+against `samples/java` and `samples/java-lint`, which fail with **8** and **3**
+asserted findings respectively. That answers "is the config over-strict on
+idiomatic modern Java?" and "does every enabled tier actually fire?". It does
+**not** answer "what does adopting this cost an existing Java codebase?", which
+is the question the four rows above answer for the other languages, and which
+only a run against real code can answer.
+
+So: the config is proven, the adoption cost is unmeasured, and this paragraph is
+here so the second fact is as visible as the first. Recording a fixture number in
+that column would have been the more comfortable option and a false one.
 
 Three things worth carrying forward, all of which are about *measuring*, not
 about any particular codebase:
@@ -367,6 +423,7 @@ someone reads the new rule and decides.
 | What | Mechanism | Cadence |
 |---|---|---|
 | ESLint toolchain, TypeScript | Dependabot, grouped | monthly |
+| Error Prone, NullAway, Spotless, palantir-java-format, maven-compiler-plugin | `scripts/check-pins.sh` (Maven Central has no releases API — it reads `maven-metadata.xml`) | weekly |
 | SonarAnalyzer, Roslynator | Dependabot, grouped | monthly |
 | Actions used by this repo | Dependabot, grouped | monthly |
 | Semgrep, Gitleaks, OSV-Scanner | `scripts/check-pins.sh` + weekly `pins` workflow | weekly |

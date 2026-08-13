@@ -1,11 +1,12 @@
 # maxi-quality
 
-Strict linting and security scanning for TypeScript, C#, Python and Rust,
+Strict linting and security scanning for TypeScript, C#, Python, Rust and Java,
 consumed from one repo instead of rebuilt in every project.
 
 [![ci](https://img.shields.io/github/actions/workflow/status/maximalcode/maxi-quality/ci.yml?branch=main&label=ci)](https://github.com/maximalcode/maxi-quality/actions/workflows/ci.yml)
 [![release](https://img.shields.io/github/v/tag/maximalcode/maxi-quality?filter=v1.*.*&label=release)](https://github.com/maximalcode/maxi-quality/tags)
 [![license](https://img.shields.io/github/license/maximalcode/maxi-quality)](LICENSE)
+[![openssf scorecard](https://api.scorecard.dev/projects/github.com/maximalcode/maxi-quality/badge)](https://scorecard.dev/viewer/?uri=github.com/maximalcode/maxi-quality)
 ![tools: free / OSS only](https://img.shields.io/badge/tools-free%20%2F%20OSS%20only-blue)
 
 **Who this is for:** you maintain more than one repo, and you want
@@ -89,6 +90,7 @@ flowchart LR
         T2["C#<br/>Roslyn + Sonar"]
         T3["Python<br/>Ruff + mypy"]
         T4["Rust<br/>clippy"]
+        T5["Java<br/>Error Prone"]
     end
 
     subgraph L2["Layer 2 — every repo, zero config"]
@@ -157,7 +159,8 @@ one language at a time, when someone has the week to spend on it.
 | C# / .NET | Roslyn + SonarAnalyzer + Roslynator, warnings as errors | [`configs/dotnet/`](configs/dotnet/) |
 | Python | Ruff, 13 rule families, plus mypy `strict` | [`configs/python/`](configs/python/) |
 | Rust | clippy `pedantic`, rustfmt, cargo-deny, `unsafe_code` forbidden | [`configs/rust/`](configs/rust/) |
-| Custom rules | Semgrep: 12 conventions, 28 rule ids | [`semgrep/`](semgrep/) |
+| Java | Error Prone + NullAway at ERROR, `-Xlint:all -Werror`, Spotless/palantir (AOSP). **Maven only** | [`configs/java/`](configs/java/) |
+| Custom rules | Semgrep: 12 conventions, 40 rule ids | [`semgrep/`](semgrep/) |
 | Secrets and dependencies | Gitleaks and OSV-Scanner behind one runner | [`scripts/scan.sh`](scripts/scan.sh) |
 | CI | reusable workflow, pinned by the `@v1` tag | [`quality.yml`](.github/workflows/quality.yml) |
 | PR feedback | findings annotated on the diff, on by default | [#40](https://github.com/maximalcode/maxi-quality/issues/40) |
@@ -188,8 +191,19 @@ one language at a time, when someone has the week to spend on it.
   planted TypeScript bugs, and no rule id for `no-floating-promises`
   ([the evaluation](docs/EVAL-vs-sonarqube.md)). A weekly report written into a
   GitHub issue replaced it.
-- **Java is not built.** No project needs it yet
+- **Java is Maven only, and Gradle fails loud rather than skipping.** Gradle
+  gets built when a Gradle consumer exists
   ([#10](https://github.com/maximalcode/maxi-quality/issues/10)).
+- **Java's adoption cost is unmeasured.** The config is proven against a
+  representative Spring Boot fixture — zero findings on idiomatic code, 8 on
+  planted bugs — but nobody has run it over an existing Java codebase and
+  counted. The other four languages have that number; this one does not yet
+  ([STATUS §5](docs/STATUS.md)).
+- **Adding Error Prone to a `-Werror` build costs you the finding list on a red
+  run.** A javac `-Xlint` warning ends the compile before the analyzer's pass,
+  so its findings are missing from that build. The gate stays sound — green
+  still means Error Prone ran — but the first run on an existing codebase can
+  look much smaller than it is ([STATUS §4](docs/STATUS.md)).
 - **Nine of ten other free tools were measured and declined.**
   [`docs/EVAL-vs-oss-tools.md`](docs/EVAL-vs-oss-tools.md) scores them against
   the 103 planted findings in `samples/`. Only `eslint-plugin-sonarjs` cleared
@@ -207,8 +221,10 @@ one language at a time, when someone has the week to spend on it.
 > is the intended state, and none of them was ever valid. `samples/rust/Cargo.lock`
 > pins a crate with a known RustSec advisory for the same reason, target-gated so
 > it never builds. Gitleaks needs no action here, since `.gitleaks.toml`
-> allowlists the directory automatically. Point other scanners away from
-> `samples/`. Details in [`SECURITY.md`](SECURITY.md) and
+> allowlists the directory automatically, and GitHub's own secret scanning is
+> told the same thing by
+> [`.github/secret_scanning.yml`](.github/secret_scanning.yml). Point other
+> scanners away from `samples/`. Details in [`SECURITY.md`](SECURITY.md) and
 > [`samples/semgrep/README.md`](samples/semgrep/README.md).
 
 ---

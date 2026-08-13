@@ -16,6 +16,7 @@ rules:
         - "*.js"
         - "*.mjs"
         - "*.cs"
+        - "*.java"
         - "*.py"
         - "*.pyi"
       exclude:

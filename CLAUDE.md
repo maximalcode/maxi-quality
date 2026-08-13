@@ -144,7 +144,7 @@ do not silently diverge from it.
 
 ## 4. Scope discipline
 
-Shipped and verified: **TypeScript, C#/.NET, Python and Rust.**
+Shipped and verified: **TypeScript, C#/.NET, Python, Rust and Java.**
 
 Already shipped, do not re-litigate: `quality.yml` + the `layer2` composite
 action, `adopt.sh` and `check-pins.sh`, the
@@ -161,12 +161,25 @@ is a strict *subset* — writing that would have downgraded the only consuming
 project. If a future session is tempted to trim it, that is the trap. Measure
 against Consumer C before narrowing anything.
 
-**Java has no consuming project yet.** Do not write Java configs speculatively —
-confirm which repo will consume them first. Tracked as an issue, not here.
+**Java shipped 2026-08-09 (#10), Maven only.** Error Prone + NullAway at ERROR
++ Spotless/palantir in AOSP style, delivered as a marker-delimited managed
+region in the consumer's own `pom.xml` (Maven has no remote lint consumption and
+XML has no append, so `scripts/pom-region.py` is the upgrade path). SpotBugs, PMD
+and Checkstyle were measured and DECLINED — `EVAL-vs-oss-tools.md` §2p. **Gradle
+is not built**: it gets written the day a Gradle consumer exists, and until then
+detection fails loud rather than skipping.
+
+Two things about it that are easy to lose. First, `-Werror` and Error Prone do
+not compose in one javac invocation — a lint warning suppresses the whole
+analyzer pass — and `samples/java-lint` pins that from both sides; do not
+"simplify" it away. Second, the adoption cost was **never measured against
+Consumer D**, only against a representative fixture built here, and STATUS §5
+says so explicitly. Do not quietly fill that cell with a fixture number.
 
 The rule that governs this has not changed: speculative configs for languages
 with no real consuming project are dead weight. They get written the day a real
-project needs them, not before. Python clears that bar; Java does not yet.
+project needs them, not before. Python and Java clear that bar; Gradle does not
+yet.
 
 **SonarQube CE is DROPPED, not parked**, and the "≥3 consuming repos" trigger is
 void — repo count is not evidence. It was measured in
@@ -187,7 +200,7 @@ Adding a 13th convention requires removing one, or an explicit decision from the
 user to raise the cap. A new rule is justified by *a real bug that slipped
 through*, never by "this would be nice to catch".
 
-Note the distinction: 12 **conventions**, currently 28 **rule ids**. Semgrep
+Note the distinction: 12 **conventions**, currently 40 **rule ids**. Semgrep
 patterns are language-specific, so one convention needs a separate id per
 language when the syntax differs. Splitting an existing convention into a
 per-language id is not new scope; inventing a new convention is.
@@ -205,7 +218,13 @@ per-language id is not new scope; inventing a new convention is.
   moves `v1` on a green push to it, so a merge to `main` is not a checkpoint —
   it ships to every consumer pinning `@v1`. Promoting `develop` to `main` is
   the user's decision, not yours; do not open or merge that PR unasked. Both
-  branches carry the same 20 required checks, admins included.
+  branches carry the same 22 required checks, admins included — one per job in
+  `ci.yml`, and that equality is the point. A job that runs but is not on the
+  required list reports and blocks nothing, which is indistinguishable from a
+  passing gate in the PR UI. This drifted once: `layer1-rust`, `layer1-java`,
+  `policy` and `examples` all shipped without being added, so the two newest
+  languages could not fail a merge. **Adding a job to `ci.yml` is not done until
+  it is a required context on both branches.**
 - **Tags gate the consumers.** Projects pin the baseline by tag (`@v1`), so an
   updated ruleset never silently breaks an old project. Do not tag until the
   step that the tag represents is actually verified working. The immutable
@@ -214,3 +233,28 @@ per-language id is not new scope; inventing a new convention is.
 - **`samples/` is the test suite.** Every config in `configs/` must be proven by
   an intentionally-bad sample that fails. If a sample stops failing, the config
   regressed — fix the config, do not weaken the sample.
+
+---
+
+## Agent skills
+
+Per-repo configuration for the engineering skills. These files are what the
+skills read; keep them in sync if the answers change.
+
+### Issue tracker
+
+GitHub Issues on `maximalcode/maxi-quality`, via the `gh` CLI. **The tracker is
+public and permanent** — §2's naming rules apply to every issue title, body and
+comment. See [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md).
+
+### Triage labels
+
+The five canonical roles, each label string equal to its name (`needs-triage`,
+`needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See
+[`docs/agents/triage-labels.md`](docs/agents/triage-labels.md).
+
+### Domain docs
+
+Single-context — `CONTEXT.md` + `docs/adr/` at the repo root, with
+`docs/CONCEPT.md` remaining the source of truth (§3). See
+[`docs/agents/domain.md`](docs/agents/domain.md).

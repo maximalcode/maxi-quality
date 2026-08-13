@@ -1,0 +1,45 @@
+{
+  "tool": "javac",
+  "findings": [
+    {
+      "rule": "ArrayEquals",
+      "file": "samples/java/src/main/java/dev/maximalcode/sample/ErrorProneErrors.java",
+      "line": 17
+    },
+    {
+      "rule": "SelfAssignment",
+      "file": "samples/java/src/main/java/dev/maximalcode/sample/ErrorProneErrors.java",
+      "line": 22
+    },
+    {
+      "rule": "ReturnValueIgnored",
+      "file": "samples/java/src/main/java/dev/maximalcode/sample/ErrorProneErrors.java",
+      "line": 28
+    },
+    {
+      "rule": "ReferenceEquality",
+      "file": "samples/java/src/main/java/dev/maximalcode/sample/ErrorProneWarnings.java",
+      "line": 21
+    },
+    {
+      "rule": "OperatorPrecedence",
+      "file": "samples/java/src/main/java/dev/maximalcode/sample/ErrorProneWarnings.java",
+      "line": 26
+    },
+    {
+      "rule": "NullAway",
+      "file": "samples/java/src/main/java/dev/maximalcode/sample/NullSafety.java",
+      "line": 23
+    },
+    {
+      "rule": "NullAway",
+      "file": "samples/java/src/main/java/dev/maximalcode/sample/NullSafety.java",
+      "line": 28
+    },
+    {
+      "rule": "NullAway",
+      "file": "samples/java/src/main/java/dev/maximalcode/sample/NullSafety.java",
+      "line": 33
+    }
+  ]
+}

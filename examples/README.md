@@ -11,7 +11,7 @@ be consumed remotely. If your repo is not new, start with
 | [`typescript-npm/`](typescript-npm/) | one TS package, npm | the 3-line `eslint.config.mjs`, the `tsconfig.json`, the lint script that makes `no-console` count |
 | [`dotnet/`](dotnet/) | one C# project | how little a consumer writes — `Directory.Build.props` does it all, no `.csproj` changes |
 | [`python-uv/`](python-uv/) | one Python package, uv | the `extend-` prefixes, which are load-bearing |
-| [`rust-cli/`](rust-cli/) | one Rust binary crate | the `[lints]` block in the consumer's own `Cargo.toml`, and the pinned-toolchain `rust` job beside the reusable call |
+| [`rust-cli/`](rust-cli/) | one Rust binary crate | the `[lints]` block in the consumer's own `Cargo.toml` — the one thing Cargo forces a copy of, and the only thing |
 | [`mixed-monorepo/`](mixed-monorepo/) | TS + C# side by side | pinning `languages:`, and a `.maxi-quality.yml` that disables and downgrades |
 | [`legacy-ratchet/`](legacy-ratchet/) | an existing repo nobody has linted | `changed-only` + `languages: none` — **start here if the repo is not new** |
 

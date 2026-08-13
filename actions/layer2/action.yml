@@ -78,7 +78,7 @@ inputs:
     default: '8.30.1'
   osv-scanner-version:
     description: 'Pinned OSV-Scanner version (with leading v).'
-    default: 'v2.4.0'
+    default: 'v2.5.0'
   # A VERSION IS NOT A PIN. A git tag and a release asset are both mutable —
   # that is the whole argument SECURITY.md makes about `uses:` tags, and it
   # applies just as well to a tarball fetched from a fixed release URL. These
@@ -96,7 +96,7 @@ inputs:
     default: '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb'
   osv-scanner-sha256:
     description: 'sha256 of osv-scanner_linux_amd64.'
-    default: '15314940c10d26af9c6649f150b8a47c1262e8fc7e17b1d1029b0e479e8ed8a0'
+    default: 'edcfc41d257db36148f065055655fe3fcfc434b0b423ea67468a84c207524e0c'
 
 outputs:
   # semgrep was the one tool with no output, which is backwards: it is the tool
@@ -150,9 +150,16 @@ runs:
         # policy silently could not be read. PyYAML is already present on the
         # standard runner images; PEP 668 marks the system environment as
         # externally managed, hence the third fallback.
+        #
+        # PINNED, and by the same argument this file already makes for semgrep
+        # below: a PyPI version binds to immutable artifacts, so the version IS
+        # the pin. That argument never covered PyYAML, because PyYAML had no
+        # version — it resolved to whatever PyPI served that morning, in every
+        # consumer's CI, twelve lines above a sha256 check. Caught by the
+        # repo's own Scorecard gate blocking a release (#87).
         python3 -c 'import yaml' 2>/dev/null \
-          || python3 -m pip install --quiet pyyaml 2>/dev/null \
-          || python3 -m pip install --quiet --break-system-packages pyyaml
+          || python3 -m pip install --quiet 'pyyaml==6.0.3' 2>/dev/null \
+          || python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
         python3 -c 'import yaml'
         echo "::endgroup::"
 

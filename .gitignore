@@ -6,7 +6,7 @@ node_modules/
 bin/
 obj/
 
-# Rust
+# Rust — and Maven, which reuses the name
 target/
 
 # OS / editor

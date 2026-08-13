@@ -125,3 +125,57 @@ rules:
           - metavariable-regex:
               metavariable: $CMD
               regex: '^[A-Za-z_][A-Za-z0-9_]*$'
+
+  # Java, added for issue #10. Runtime.exec(String) and a ProcessBuilder given
+  # `sh -c` are the two shapes that hand a whole command line to a shell; both
+  # have array-taking siblings that do not, which is the fix the message names.
+  #
+  # Only double quotes, for the same reason the C# and Java SQL rules give:
+  # Java has no single-quoted string type. Text blocks concatenate the same way.
+  - id: command-injection-java
+    message: >-
+      Shell command built by string concatenation — command injection. Use the
+      array forms (Runtime.exec(String[]) or new ProcessBuilder("cmd", arg))
+      so no shell ever parses the input.
+    severity: ERROR
+    languages: [java]
+    patterns:
+      - pattern-either:
+          - pattern: Runtime.getRuntime().exec($CMD, ...)
+          - pattern: $RT.exec($CMD, ...)
+          - pattern: new ProcessBuilder(..., $CMD)
+          - pattern: $PB.command(..., $CMD)
+      - metavariable-pattern:
+          metavariable: $CMD
+          patterns:
+            - pattern-regex: '"[^"]*"\s*\+'
+
+  # The taint half, exactly as in the two languages above: the interpolation is
+  # bound to a local one line up, so every pattern rule goes silent. Same
+  # measured limit too — semgrep OSS taint is INTRAPROCEDURAL, so
+  # `exec(buildCommand(dir))` stays quiet and QueryBuilder.java carries a
+  # fixture that documents the gap rather than papering over it.
+  #
+  # The metavariable-regex on the sink argument is the duplication control: a
+  # bare identifier only, so the inline form belongs to the rule above and is
+  # reported once.
+  - id: command-injection-indirect-java
+    mode: taint
+    message: >-
+      Shell command built by concatenation and passed to exec through a variable
+      — command injection. Use the array forms (Runtime.exec(String[]) or new
+      ProcessBuilder("cmd", arg)) so no shell ever parses the input.
+    severity: ERROR
+    languages: [java]
+    pattern-sources:
+      - pattern-regex: '"[^"]*"\s*\+'
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: Runtime.getRuntime().exec($CMD, ...)
+              - pattern: $RT.exec($CMD, ...)
+              - pattern: new ProcessBuilder(..., $CMD)
+              - pattern: $PB.command(..., $CMD)
+          - metavariable-regex:
+              metavariable: $CMD
+              regex: '^[A-Za-z_][A-Za-z0-9_]*$'

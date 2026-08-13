@@ -1,0 +1,75 @@
+# maxi-quality — CodeQL (issue #61), and why this is NOT a reversal of #23.
+#
+# #23 declined CodeQL for the BASELINE: it cannot run on a private repo at any
+# free tier, so it could gate this repo and never a consumer. Every consuming
+# project is private. That asymmetry is still the whole argument, and it is
+# untouched by this file — nothing here is offered to consumers, adopt.sh does
+# not scaffold it, and quality.yml does not call it.
+#
+# What #61 asks for is narrower and compatible: this repo is public, CodeQL is
+# free on it, and it was already MEASURED and scored well (EVAL-vs-oss-tools
+# §2h). Declining to hand a tool to consumers is not a reason to refuse it
+# where it is free — CLAUDE.md §2 permits public-only tooling once it has been
+# measured, and this is the case that clause was written for.
+#
+# ADVANCED SETUP, NOT DEFAULT SETUP — and that is the load-bearing choice.
+# GitHub's default setup has no path exclusions. Pointed at this repo it would
+# analyse samples/, which is deliberately broken code that CI asserts stays
+# broken, and every planted bug would become a standing code-scanning alert.
+# That is the same failure `.github/secret_scanning.yml` exists to prevent: a
+# security tab whose open findings are the test suite working is a security tab
+# nobody reads. A config file is the only way to say `paths-ignore`, and a
+# config file means advanced setup.
+#
+# Gates nothing, for the reason scorecard.yml gives: no `pull_request` trigger
+# and no required check. CodeQL here is a second opinion on the repo's own
+# source, not a promise made to anyone consuming it.
+name: codeql
+
+on:
+  schedule:
+    - cron: '17 5 * * 1'
+  push:
+    branches: [develop, main]
+
+permissions: read-all
+
+jobs:
+  analyze:
+    name: Analyze ${{ matrix.language }}
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # The three CodeQL detected in this tree. All INTERPRETED, which is
+        # what makes `paths-ignore` below actually work — CodeQL applies it to
+        # interpreted languages, and would not for a compiled one. The C# here
+        # is fixtures only and is covered by Roslyn under TreatWarningsAsErrors;
+        # Rust has no CodeQL support at all.
+        language: [actions, javascript-typescript, python]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
+        with:
+          languages: ${{ matrix.language }}
+          # THE REASON THIS WORKFLOW EXISTS RATHER THAN THE SETTINGS TOGGLE.
+          # samples/ is the test suite (CLAUDE.md §5): a sample that stops
+          # failing means a config regressed, so its bugs are permanent by
+          # design. Scanning them produces alerts that can only ever be
+          # dismissed, over and over, until the tab is noise.
+          config: |
+            paths-ignore:
+              - samples/**
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
+        with:
+          category: '/language:${{ matrix.language }}'

@@ -19,13 +19,21 @@ and each member opts in with two lines:
 workspace = true
 ```
 
-**The workflow here has a second job, and that is deliberate.** Layer 2 needs
-no Rust changes — Gitleaks is language-agnostic and OSV-Scanner reads
-`Cargo.lock` natively — so the reusable call covers it. But the lint config
-lives in *this* repo's manifest, so the `rust` job runs here too, with the
-toolchain and cargo-deny **pinned**: warnings are errors in CI
-(`RUSTFLAGS=-Dwarnings`), so an analyzer upgrade that adds lints is a breaking
-change, and a floating `stable` would ship one unannounced.
+**The workflow here is the same six lines as every other example**, and that is
+the point of #70. It used to carry a second, hand-stamped `rust` job, on the
+argument that the toolchain bump belonged in this repo's own diff — but a job
+`adopt.sh` writes into your repo only moves when someone re-runs `adopt.sh`,
+which is the copy-paste-drift this baseline exists to remove. The toolchain and
+cargo-deny are pinned in the reusable workflow now, and `rust-version` is the
+input if you need to hold one back. Warnings are still errors in CI only
+(`RUSTFLAGS=-Dwarnings`), so an analyzer upgrade that adds lints stays a
+breaking change rather than a Tuesday.
+
+**`Cargo.lock` is committed here because the gate requires it.** Everything runs
+`--locked`, which cannot run without a lockfile, so detection stops the run for
+a crate that has none rather than reporting "no Rust here" and going green. The
+gate itself is `cargo fmt --check`, `cargo clippy` and `cargo deny` — not your
+tests, the same split as the TypeScript and Python jobs.
 
 `rustfmt.toml` and `deny.toml` are genuine copies (neither tool has an extend
 mechanism) — regenerate them with `adopt.sh`, do not hand-edit. `deny.toml`

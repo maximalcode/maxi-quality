@@ -47,3 +47,41 @@ rules:
           - metavariable-regex:
               metavariable: $ALGO
               regex: (?i)^["'](md[245]|sha-?1|rc4[-a-z0-9]*|des(-[a-z0-9]+)*|3des[-a-z0-9]*)["']$
+
+  # Java, added for issue #10. A SEPARATE ID rather than three languages on the
+  # rule above, per docs/STATUS.md §4: a rule listing N languages needs every
+  # pattern to parse in all N, and `MD5.Create(...)` is not Java.
+  #
+  # The same two-branch shape as the TypeScript half, and for the same measured
+  # reason. The literal branch is what semgrep constant-propagates, so
+  # `String a = "MD5"; MessageDigest.getInstance(a);` matches it; a
+  # metavariable-regex sees the variable NAME and cannot. Deleting either one
+  # loses detections the rule already had.
+  #
+  # JCA algorithm names are case-insensitive and DES has several real spellings
+  # ("DES", "DESede", "DESede/CBC/PKCS5Padding"), which is exactly the evasion
+  # the TypeScript rule shipped open. The regex takes the transformation form
+  # into account because Cipher.getInstance takes algorithm/mode/padding in one
+  # string.
+  - id: weak-crypto-java
+    message: >-
+      MD5/SHA-1/DES/RC4 are broken for anything security-relevant. Use SHA-256+
+      for digests, AES-GCM for ciphers, and a password hash
+      (Argon2/bcrypt/PBKDF2) for passwords — never a raw digest.
+    severity: ERROR
+    languages: [java]
+    pattern-either:
+      - pattern: MessageDigest.getInstance("MD5", ...)
+      - pattern: MessageDigest.getInstance("SHA-1", ...)
+      - pattern: MessageDigest.getInstance("SHA1", ...)
+      - patterns:
+          - pattern-either:
+              - pattern: MessageDigest.getInstance($ALGO, ...)
+              - pattern: java.security.MessageDigest.getInstance($ALGO, ...)
+              - pattern: Cipher.getInstance($ALGO, ...)
+              - pattern: javax.crypto.Cipher.getInstance($ALGO, ...)
+              - pattern: KeyGenerator.getInstance($ALGO, ...)
+              - pattern: SecretKeyFactory.getInstance($ALGO, ...)
+          - metavariable-regex:
+              metavariable: $ALGO
+              regex: '(?i)^"(md[245]|sha-?1|rc4|arcfour|des|desede|3des|tripledes)([/-][^"]*)?"$'

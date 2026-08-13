@@ -355,12 +355,13 @@ be files on disk. So Rust follows the C# pattern — adopt-time copies, like
 cd <repo> && cargo generate-lockfile   # then COMMIT Cargo.lock
 ```
 
-That copies `rustfmt.toml` and `deny.toml`, appends the `[lints]` block to
+That copies `rustfmt.toml` and `deny.toml` and appends the `[lints]` block to
 your manifest (marker-guarded, so re-running never appends twice; a manifest
 that already has its own `[lints]` gets a skip and a warning, never a merge
-attempt), and scaffolds a `rust` CI job beside the reusable workflow call. On
-a workspace root the block arrives as `[workspace.lints]`, and each member
-opts in with two lines in its own manifest:
+attempt). The CI side is the plain six-line reusable call — the same one every
+other language gets. On a workspace root the block arrives as
+`[workspace.lints]`, and each member opts in with two lines in its own
+manifest:
 
 ```toml
 [lints]
@@ -372,20 +373,28 @@ tier that matches `strict-type-checked` and `mypy --strict` — plus a curated
 cherry-pick of nursery and cargo lints (each pick and each disable justified
 by a one-line comment in `configs/rust/lints.toml`), and
 `unsafe_code = "forbid"` as the default posture. Warnings become errors **in
-CI only**, via `RUSTFLAGS=-Dwarnings` in the scaffolded job: a contributor's
+CI only**, via `RUSTFLAGS=-Dwarnings` in the `rust` job: a contributor's
 local `cargo check` warns instead of walling them mid-refactor. There is no
 Semgrep here on purpose — its Rust support is experimental, and clippy *is*
 the conventions layer for Rust.
 
-**Four things to know:**
+**Five things to know:**
 
 - **The toolchain is pinned, and that is the contract.** With warnings
   promoted to errors, a clippy upgrade that adds lints is a breaking change
-  (the STATUS §4 argument), so the scaffolded job installs a pinned version,
-  never `stable`. Bump it deliberately, in its own commit.
-- **Commit `Cargo.lock`.** The scaffolded job runs everything `--locked` and
-  fails without one — deliberately. For a binary the lockfile is not hygiene:
-  it is the document cargo-deny and Layer 2's OSV-Scanner actually read.
+  (the STATUS §4 argument), so the job installs a pinned version, never
+  `stable`. It lives in the reusable workflow, and `rust-version` is the input
+  for a repo that needs to hold one back — bump it deliberately.
+- **Commit `Cargo.lock`, or detection stops the run.** The job runs everything
+  `--locked`, which cannot run without a lockfile, so a crate that has none is
+  a crate clippy would never open. Detection refuses it by name rather than
+  reporting "no Rust here" and going green (#70). For a binary the lockfile is
+  not hygiene anyway: it is the document cargo-deny and Layer 2's OSV-Scanner
+  actually read.
+- **The gate does not run your tests.** `cargo fmt --check`, `cargo clippy` and
+  `cargo deny` — the same split as the TypeScript and Python jobs, which lint
+  and type-check but never invoke a test runner. Keep `cargo test` in a job of
+  your own.
 - **`unsafe_code` is forbidden, not denied.** `forbid` is what a stray
   `#[allow(unsafe_code)]` cannot waive. A crate that genuinely needs FFI
   lowers it to `"deny"` in its own manifest and documents why — the same
@@ -394,6 +403,30 @@ the conventions layer for Rust.
   be noisy on first run. Waive a single site with `#[allow(clippy::...)]`
   and a written reason — scoped and greppable — rather than a global allow
   in the manifest.
+
+### Upgrading — if you adopted Rust before it joined the workflow
+
+**Delete the `rust:` job from your own `.github/workflows/quality.yml`.** Early
+Rust adopters got a whole pinned-toolchain job written into their repo, because
+Rust could not ride the reusable workflow yet. It can now (#70), and `@v1` moves
+on its own — so the moment this ships, a repo still carrying that job runs
+clippy **twice**: once from the baseline, once from a copy whose toolchain pin
+only moves when someone re-runs `adopt.sh`.
+
+Nothing can do this for you. `adopt.sh` will not rewrite a workflow file you
+own, so re-running it warns and stops; and the tag moving is what triggers the
+duplication in the first place, which reaches repos that never re-run anything.
+Hence this note.
+
+Two ways out, and do not leave both jobs in place:
+
+- **Keep the baseline's** — delete your `rust:` job. The six-line `quality:`
+  call covers Rust. Note it runs `cargo fmt --check`, `cargo clippy` and
+  `cargo deny` but **not** `cargo test`; if your old job ran tests, keep that
+  part in a job of your own.
+- **Keep your own** — pass a `languages:` input without `rust`
+  (`languages: ts,dotnet,python`, or `none` for Layer 2 only) so the baseline
+  stops running it.
 
 ### Formatting — `cargo fmt`
 
@@ -414,14 +447,121 @@ cargo-audit would (RustSec — so no second tool), `bans` warns on duplicate
 semver-incompatible versions, and the **licence allowlist ships empty** for
 the same reason the Layer 2 `licenses` input has no default: an allowlist is
 a per-repo policy call, and a default would gate wrongly somewhere on day
-one. The scaffolded job therefore runs `cargo deny check advisories bans`;
-add `licenses` to that line when the allowlist holds your policy.
+one. The `rust` job therefore runs `cargo deny check advisories bans`; add
+`licenses` to that line when the allowlist holds your policy.
 
 Layer 2 needs **zero Rust changes** — Gitleaks is language-agnostic and
 OSV-Scanner reads `Cargo.lock` natively. A Rust repo on the reusable workflow
 gets two advisory feeds (OSV aggregates RustSec); the overlap is deliberate,
 because cargo-deny also runs locally with no baseline machinery, which is
 what a first-commit adoption needs.
+
+---
+
+## 4c. Java (Maven) — Layer 1
+
+**`adopt.sh` does this for you.** Everything below is what it does and why, so
+that a hand merge is possible when it refuses.
+
+### What lands in your `pom.xml`, and why it is an edit rather than a file
+
+Maven has no remote lint consumption. Its one real inheritance mechanism is a
+parent POM, and that is unavailable twice over: publishing one needs a registry
+(this baseline ships no artifacts), and a Spring Boot project's single
+`<parent>` slot is already taken. So the config is a **copy** — the same
+constraint Cargo imposes on `[lints]`.
+
+Rust gets away with `cat >> Cargo.toml` because TOML appends. XML does not: the
+block has to land **inside `<build><plugins>`**. So it arrives as a
+marker-delimited managed region:
+
+```xml
+<!-- maxi-quality:begin — Java lint baseline. GENERATED, do not hand-edit. ... -->
+...
+<!-- maxi-quality:end -->
+```
+
+Re-running `adopt.sh` replaces everything between the markers and **nothing**
+outside them — your own plugins, properties, comments and formatting are
+untouched. That is the upgrade path; without it, every baseline bump would be a
+hand edit, which is copy-paste-drift with a changelog.
+
+Never hand-edit inside the markers. `scripts/pom-region.py check` is what CI
+uses to tell a stale region from a current one.
+
+### When `adopt.sh` refuses — and what to do
+
+If your `pom.xml` already configures `maven-compiler-plugin`, **nothing is
+written**. That is not caution, it is correctness: two declarations of one plugin
+in one POM is not a merge, it is last-one-wins, so writing the baseline's would
+**silently delete the `compilerArgs` you already had**. A repo arriving with
+`-Xlint:all -Werror` would come out of adoption *weaker* than it went in.
+
+Merge by hand instead — copy the `<compilerArgs>` and
+`<annotationProcessorPaths>` out of `configs/java/pom-lints.xml` into your
+existing declaration, keeping your own args, and add the spotless plugin beside
+it.
+
+### Three things that will bite, all measured
+
+1. **`-Werror` and Error Prone do not compose.** When javac's own `-Xlint`
+   produces a warning, the compile ends before Error Prone's pass runs, so its
+   findings are **missing from that build's output**. The build is still red —
+   a green build is by definition one where Error Prone ran and found nothing —
+   but your first run on an existing codebase may show four lint warnings and
+   hide forty analyzer findings behind them. Fix the lint warnings, re-run, and
+   the rest appear. Nothing fixes this: not any spelling of javac's should-stop
+   policy, and not `<failOnWarning>`, which is implemented by adding `-Werror`.
+   The CI job prints a `::warning::` naming it whenever it happens.
+2. **`annotationProcessorPaths` turns off classpath processor discovery.** If
+   you use Lombok or MapStruct they must be listed there too. That is Maven's
+   behaviour, not this baseline's, and it is the one way adopting this can break
+   a build that was previously fine.
+3. **NullAway is told which code is yours via `${project.groupId}`**, a prefix
+   match. If your sources do not live under your groupId, change that one value
+   — because getting it wrong means NullAway analyses **nothing** and says so
+   nowhere. `samples/java` plants a null dereference that must fire, which is how
+   this repo proves its own wiring rather than assuming it.
+
+### Formatting — `mvn spotless:apply`
+
+```bash
+mvn spotless:apply     # fix, once, alone
+mvn spotless:check     # the gate
+```
+
+palantir-java-format in **AOSP** style: 4-space indent at 100 columns, which is
+what the shared `.editorconfig` already declares for `*.java`. Deliberately not
+bound to a lifecycle phase — a contributor's `mvn test` should not fail on layout
+mid-refactor, and CI is the gate. Same split as Rust's `-Dwarnings` living in the
+job rather than in the manifest. Run `apply` once, alone, and put that commit in
+`.git-blame-ignore-revs`.
+
+### Scope: Maven only
+
+Gradle gets built when a Gradle consumer exists — the same just-in-time rule that
+produced this layer. Until then a `build.gradle[.kts]` with no `pom.xml` **stops
+the run** rather than skipping, because "no Java here" is a lie about a repo that
+plainly has some.
+
+Layer 2 needs **zero Java changes** — Gitleaks is language-agnostic and
+OSV-Scanner reads `pom.xml` natively. Unlike Rust, Semgrep supports Java well, so
+the conventions are real Layer 2 rules rather than being folded into the Layer 1
+analyzer.
+
+**One limit worth knowing: OSV-Scanner sees your DIRECT dependencies only.** A
+`pom.xml` does not contain its dependency graph, so resolving it means fetching
+every POM and BOM from Maven Central at scan time — over a hundred requests for
+one Spring Boot project, and Maven Central rate-limits them (measured: 9 × HTTP
+429 and a failed scan). `scan.sh` therefore passes `--no-resolve`: a gate that
+goes red when a registry is busy is one people re-run until it passes and then
+ignore.
+
+The trade-off is the same one .NET has without a `packages.lock.json`, and it
+has the same answer — it is yours to make, not this baseline's to make silently.
+If you want transitive coverage, run it yourself against a resolved tree
+(`mvn dependency:tree`, or `mvn dependency:list -DoutputFile=`) on whatever
+cadence suits you. That is a decision, not a chore this script should guess at.
 
 ---
 
@@ -739,7 +879,7 @@ standing report shows you the real set before you commit to one.
 Node 24 / npm 11 and .NET SDK 10 were used to verify. Anything reasonably recent
 should work; the TypeScript peer range above is the one real constraint. Rust
 needs no extra installs beyond rustup — clippy and rustfmt ship with the
-toolchain, and the scaffolded CI job installs its own pinned cargo-deny
+toolchain, and the baseline's `rust` job installs its own pinned cargo-deny
 (install the same version locally to match).
 
 Layer 2 tools are optional locally — `scan.sh` falls back to `uvx` (Semgrep) or
