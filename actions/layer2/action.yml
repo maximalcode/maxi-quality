@@ -150,9 +150,16 @@ runs:
         # policy silently could not be read. PyYAML is already present on the
         # standard runner images; PEP 668 marks the system environment as
         # externally managed, hence the third fallback.
+        #
+        # PINNED, and by the same argument this file already makes for semgrep
+        # below: a PyPI version binds to immutable artifacts, so the version IS
+        # the pin. That argument never covered PyYAML, because PyYAML had no
+        # version — it resolved to whatever PyPI served that morning, in every
+        # consumer's CI, twelve lines above a sha256 check. Caught by the
+        # repo's own Scorecard gate blocking a release (#87).
         python3 -c 'import yaml' 2>/dev/null \
-          || python3 -m pip install --quiet pyyaml 2>/dev/null \
-          || python3 -m pip install --quiet --break-system-packages pyyaml
+          || python3 -m pip install --quiet 'pyyaml==6.0.3' 2>/dev/null \
+          || python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
         python3 -c 'import yaml'
         echo "::endgroup::"
 

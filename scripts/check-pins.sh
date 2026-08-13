@@ -110,6 +110,34 @@ if [ "$CI_SEMGREP_COUNT" -ne 1 ]; then
   exit 2
 fi
 
+# PYYAML, in ci.yml AND the consumer-facing layer2 action. It is checked from
+# both ends for the same reason the rust pin below is: agreeing on a version is
+# worth nothing if some other line installs it unpinned.
+#
+# The unpinned form is the one that matters. `pip install pyyaml` resolved to
+# whatever PyPI served that morning, in every consumer's CI, twelve lines above
+# a sha256 check — and nothing here noticed, because there was no pin to compare
+# against. A guard that only validates pins it can find will always pass on the
+# install that has none.
+PYYAML_ALL="$(grep -hoE "pyyaml==[0-9.]+" "$CI" "$ACTION" | cut -d= -f3 | sort -u)"
+[ -n "$PYYAML_ALL" ] || die "could not read any pyyaml== pin from $CI or $ACTION"
+if [ "$(printf '%s\n' "$PYYAML_ALL" | grep -c .)" -ne 1 ]; then
+  printf '\033[31mFAIL\033[0m — more than one pyyaml version is pinned:\n'
+  printf '%s\n' "$PYYAML_ALL" | sed 's/^/  /'
+  exit 2
+fi
+PYYAML_PIN="$PYYAML_ALL"
+# An install with no version at all, anywhere in either file.
+UNPINNED_PYYAML="$(grep -nE "pip install[^|&]*pyyaml([^=]|$)" "$CI" "$ACTION" || true)"
+if [ -n "$UNPINNED_PYYAML" ]; then
+  printf '\033[31mFAIL\033[0m — pyyaml installed WITHOUT a version:\n'
+  printf '%s\n' "$UNPINNED_PYYAML" | sed 's/^/  /'
+  printf '\nA version is the pin for a PyPI package (actions/layer2/action.yml\n'
+  printf 'says so about semgrep). An unversioned install is not one, and it\n'
+  printf 'runs in every consumer CI.\n'
+  exit 2
+fi
+
 # THE RUST PAIR (#58, and #70 moved one half of it). The toolchain and
 # cargo-deny are pinned in TWO places: quality.yml's rust job is the one every
 # consumer actually runs, and ci.yml's layer1-rust job installs its own to
@@ -257,6 +285,7 @@ info "semgrep       $SCAN_SEMGREP   (scan.sh, uvx + docker fallbacks)"
 info "gitleaks      $GITLEAKS_PIN"
 info "osv-scanner   $OSV_PIN"
 info "uv            $UV_PIN   (quality.yml)"
+info "pyyaml        $PYYAML_PIN   (ci.yml + layer2 action, all sites)"
 info "rust          $RUST_PIN   (quality.yml)"
 info "rust          $CI_RUST   (ci.yml)"
 info "cargo-deny    $DENY_PIN   (quality.yml)"
