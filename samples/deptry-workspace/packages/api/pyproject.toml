@@ -1,0 +1,13 @@
+# A workspace MEMBER, flat layout. Its target is `.` with nothing to exclude —
+# no package is nested inside it.
+#
+# `requests` is declared here and nowhere near the root manifest, which is the
+# whole point of the fixture: scanned from the root this import is undeclared,
+# scanned from here it is fine.
+[project]
+name = "sample-deptry-ws-api"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = [
+    "requests>=2.34.2",
+]

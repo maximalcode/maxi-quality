@@ -1,0 +1,29 @@
+# The WORKSPACE ROOT of the deptry granularity fixture (#97).
+#
+# #52 adopted deptry with exactly one condition — per package, never at a
+# workspace root — because at a monorepo root it measured 125 findings, 118 of
+# them one first-party artifact, versus 3 on the member package (#39). This
+# directory is that shape in miniature, and CI asserts BOTH halves:
+#
+#   * enumerated per package (scripts/deptry-targets.py), every package is
+#     CLEAN — nothing here is actually wrong;
+#   * run naively as `deptry .` from this directory, it reports the members'
+#     dependencies as undeclared, because from up here they are.
+#
+# The second half is the ablation. Without it "the fixture passes" would be
+# indistinguishable from "the fixture has nothing to find", and the granularity
+# rule would be proving nothing.
+#
+# NOT a src layout, deliberately: that is what forces the target for this
+# package to be `.` with the member directories excluded, which is the
+# load-bearing half of the enumeration.
+[project]
+name = "sample-deptry-workspace"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = [
+    "click>=8.1",
+]
+
+[tool.uv.workspace]
+members = ["packages/*"]

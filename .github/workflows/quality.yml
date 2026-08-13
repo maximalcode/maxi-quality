@@ -77,9 +77,34 @@ on:
       changed-only:
         description: >-
           Base ref for new-code-only Layer 2 (adoption ratchet, CONCEPT §8).
-          Empty = full scan.
+          Empty = full scan. Also ratchets the dead-code gate below, on its
+          results rather than on its inputs — see actions/deadcode.
         type: string
         default: ''
+      dead-code:
+        description: >-
+          The dead-code and unused-dependency gate (#97): knip on TypeScript
+          packages, deptry on Python ones.
+
+          'auto' (default) runs each tool where the project has it installed
+          and says loudly in the log where it does not. 'require' turns a
+          missing tool into a failure — set it once adoption is done, so the
+          gate cannot go quiet again. 'off' skips it.
+
+          auto is the default because v1 is a MOVING TAG: 'require' would red
+          every already-adopted repo the morning this ships, for a tool they
+          have not installed yet.
+        type: string
+        default: 'auto'
+      dead-code-exports:
+        description: >-
+          Also gate unused exports and types (knip). APPLICATION CODE ONLY —
+          in a published library an export nothing in-repo references is
+          indistinguishable from public API, and 19 of the 26 real-code
+          findings in the evaluation sat in that class. Off by default for
+          that reason: an unfixable finding is how a gate gets deleted.
+        type: string
+        default: 'false'
       licenses:
         description: >-
           Comma-separated SPDX allowlist, e.g. "MIT,Apache-2.0,ISC". Any
@@ -613,6 +638,25 @@ jobs:
             npm run lint
           fi
 
+      # The gate that answers "should this code exist?" — every step above it
+      # answers "is this code wrong?". Measured and adopted in #51, and until
+      # #97 it ran only against this repo's own fixtures: adopt.sh wrote a
+      # knip.json into every adopted repo and then listed knip as OPTIONAL, so
+      # the layer reached no consumer at all.
+      #
+      # AFTER the lint, deliberately. A repo failing both should read the type
+      # errors first — knip's answer to "is this file dead" is worth less when
+      # the file does not compile.
+      - name: Dead code and unused dependencies (knip)
+        if: inputs.dead-code != 'off'
+        uses: maximalcode/maxi-quality/actions/deadcode@v1
+        with:
+          tool: knip
+          dir: ${{ matrix.dir }}
+          mode: ${{ inputs.dead-code }}
+          gate-exports: ${{ inputs.dead-code-exports }}
+          changed-only: ${{ inputs.changed-only }}
+
   dotnet:
     needs: detect
     if: needs.detect.outputs.has_dotnet == 'true'
@@ -735,6 +779,21 @@ jobs:
           fi
           ruff check .
           mypy .
+
+      # deptry's half of #97. Note what the action does with `dir`: it treats it
+      # as a scan ROOT and enumerates the packages under it, because the matrix
+      # value here is a LOCKFILE directory — in a uv or poetry workspace that is
+      # the workspace root, which is precisely the invocation #52 measured and
+      # rejected (125 findings, 118 of them one first-party artifact, versus 3
+      # at the granularity deptry is designed for).
+      - name: Unused and undeclared dependencies (deptry)
+        if: inputs.dead-code != 'off'
+        uses: maximalcode/maxi-quality/actions/deadcode@v1
+        with:
+          tool: deptry
+          dir: ${{ matrix.dir }}
+          mode: ${{ inputs.dead-code }}
+          changed-only: ${{ inputs.changed-only }}
 
   # Rust rides the reusable workflow like every other language (#70). It used to
   # be a job scripts/adopt.sh stamped into the CONSUMER's workflow file, on the

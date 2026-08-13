@@ -25,6 +25,8 @@
     "verify:ts:types:clean": "npm run typecheck --workspace @maximalcode/sample-typescript-clean",
     "verify:rust": "cd samples/rust && RUSTFLAGS=-Dwarnings cargo clippy --all-targets --locked",
     "verify:rust:clean": "cd samples/rust-clean && RUSTFLAGS=-Dwarnings cargo clippy --all-targets --locked",
+    "verify:knip": "cd samples/knip && ../../node_modules/.bin/knip",
+    "verify:knip:clean": "cd samples/knip-clean && ../../node_modules/.bin/knip",
     "verify:format": "prettier --config configs/typescript/prettier.config.mjs --check \"**/*.{ts,mts,cts,js,mjs,cjs}\"",
     "format": "prettier --config configs/typescript/prettier.config.mjs --write \"**/*.{ts,mts,cts,js,mjs,cjs}\""
   },

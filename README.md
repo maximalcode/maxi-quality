@@ -161,6 +161,7 @@ one language at a time, when someone has the week to spend on it.
 | Rust | clippy `pedantic`, rustfmt, cargo-deny, `unsafe_code` forbidden | [`configs/rust/`](configs/rust/) |
 | Java | Error Prone + NullAway at ERROR, `-Xlint:all -Werror`, Spotless/palantir (AOSP). **Maven only** | [`configs/java/`](configs/java/) |
 | Custom rules | Semgrep: 12 conventions, 40 rule ids | [`semgrep/`](semgrep/) |
+| Dead code and unused dependencies | knip (TypeScript) and deptry (Python), gating the measured issue types only | [`actions/deadcode/`](actions/deadcode/) |
 | Secrets and dependencies | Gitleaks and OSV-Scanner behind one runner | [`scripts/scan.sh`](scripts/scan.sh) |
 | CI | reusable workflow, pinned by the `@v1` tag | [`quality.yml`](.github/workflows/quality.yml) |
 | PR feedback | findings annotated on the diff, on by default | [#40](https://github.com/maximalcode/maxi-quality/issues/40) |
@@ -204,6 +205,21 @@ one language at a time, when someone has the week to spend on it.
   so its findings are missing from that build. The gate stays sound — green
   still means Error Prone ran — but the first run on an existing codebase can
   look much smaller than it is ([STATUS §4](docs/STATUS.md)).
+- **The dead-code gate is not an AI-slop detector, and reachability is only
+  covered in two of five languages.** knip answers "is this TypeScript file,
+  export or dependency reachable?" and deptry answers "is this Python
+  dependency used?" — both name a falsifiable failure, and neither says
+  anything about who wrote the code, because there is no mechanical signature
+  for that. Unused *Python code* is a hole this baseline states rather than
+  covers: vulture was measured and declined with numbers — 120 findings over
+  3.18 KLOC of real code, **0** of them confirmed true positives. C#, Rust and
+  Java get whatever their compiler-integrated analyzer sees within a
+  compilation unit and nothing file-level. The full table is in
+  [STATUS §4](docs/STATUS.md).
+- **It defaults to warning, not failing, when the tool is absent.** `v1` is a
+  moving tag, so a gate that arrived as a hard requirement would red every
+  already-adopted repo the morning it shipped. `dead-code: require` is the
+  line that makes it a gate, and adoption is not finished until it is set.
 - **Nine of ten other free tools were measured and declined.**
   [`docs/EVAL-vs-oss-tools.md`](docs/EVAL-vs-oss-tools.md) scores them against
   the 103 planted findings in `samples/`. Only `eslint-plugin-sonarjs` cleared
