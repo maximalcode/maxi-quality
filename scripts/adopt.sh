@@ -731,6 +731,10 @@ if [ "$HAS_RUST" -eq 1 ]; then
   printf '    8. OPTIONAL — licences: deny.toml ships an EMPTY allowlist, so the\n'
   printf '       licenses check is not in the CI gate. Fill the allowlist and add\n'
   printf '       licenses to the cargo deny check line when you have a policy.\n'
+  printf '    9. UNMAINTAINED crates gate only when YOU declared them. A\n'
+  printf '       transitive one is unfixable at the leaf, so deny.toml scopes it\n'
+  printf '       out — silently, not as a warning. List them on demand with:\n'
+  printf '       cargo deny check advisories --warn unmaintained\n'
 fi
 
 if [ "$HAS_JAVA" -eq 1 ]; then
