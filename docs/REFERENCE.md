@@ -25,7 +25,9 @@ jobs:
 | `rust-version` | `1.97.1` | Pinned toolchain for the `rust` job. Same argument as `uv-version` — hold or advance it without waiting on this repo, but the default is a **pin**, never `stable`: with `RUSTFLAGS=-Dwarnings`, a toolchain that adds a clippy lint is a breaking change |
 | `java-version` | `25` | Pinned JDK for the `java` job. A **pin** for the same reason `rust-version` is one, only more so: Error Prone reaches into javac internals that move between releases, and with `-Werror` in the compiler args a JDK that adds an `-Xlint` category is a breaking change |
 | `uv-version` | `0.12.3` | Pinned uv for lockfile-based Python projects. Exposed so a consumer can hold or advance it without waiting on this repo — but it has a **pin** as a default, never `latest` |
-| `changed-only` | *(empty)* | Base ref for new-code-only Layer 2. Empty = full scan |
+| `changed-only` | *(empty)* | Base ref for new-code-only Layer 2, and the ratchet for the dead-code gate. Empty = full scan |
+| `dead-code` | `auto` | knip on TypeScript packages, deptry on Python ones. `auto` runs each where the project has it installed and **warns loudly** where it does not; `require` makes a missing tool a failure; `off` skips it. See below for why the default is the soft one |
+| `dead-code-exports` | `false` | Also gate unused exports and types (knip). **Application code only** — in a published library an unreferenced export is public API |
 | `licenses` | *(empty)* | Comma-separated SPDX allowlist. Anything outside it fails. **No default allowlist**, deliberately |
 | `annotate` | `true` | Render Semgrep findings on the pull-request diff, not only in the job log. Additive — emitted after the verdict, cannot change it |
 | `max-annotations` | `50` | Cap per run. GitHub drops them past an undocumented limit; the omitted count is always stated |
@@ -51,6 +53,68 @@ every `pom.xml` would analyse the same tree once per module.
 The workflow also **outputs what it detected**, so a caller can assert detection
 actually fired. Without that, a run is green in two very different cases — the
 gate ran and passed, or every language job silently skipped.
+
+---
+
+## The dead-code gate — `actions/deadcode`
+
+Runs inside the `typescript` and `python` jobs. Two tools, each adopted with a
+measured condition attached, and the conditions are what this action encodes.
+
+| Tool | Language | Gates | Reports but does not gate |
+|---|---|---|---|
+| knip | TypeScript | `files`, `dependencies`, `unlisted` | `exports`, `types` (unless `dead-code-exports: true`), and every other issue type knip reports |
+| deptry | Python | `DEP001` (imported, not declared), `DEP002` (declared, not imported) | `DEP003`, `DEP004` |
+
+The gating sets are deliberately narrower than what each tool reports: they are
+exactly the issue types the evaluation measured. Widening one is a decision with
+a measurement attached, not an edit.
+
+**It is not an AI-slop detector.** There is no mechanical signature for model
+authorship, and every check here names a falsifiable failure instead. What the
+evaluation did observe is that every *other* gate in this baseline answers "is
+this code wrong?", and a file nobody imports compiles, type-checks, passes
+clippy and ships.
+
+### What it refuses to do
+
+| Situation | What happens |
+|---|---|
+| knip older than `6.31.0` | **Hard error, in every mode.** 5.64.3 reported signature-only types as unused exports; a gate that fails on a finding which is not real is one people learn to ignore |
+| No knip config in the package | **Hard error.** A zero-config run on a non-default layout reports your layout, not your defects. `adopt.sh` writes a `knip.json` stub; the entry points are yours to declare |
+| The tool is not installed | `auto` warns and passes · `require` fails |
+| No Python package under the directory declares dependencies | Same as above — never a clean scan. "Nothing was examined" and "nothing was found" must not render identically |
+| `changed-only` base ref cannot be resolved | **Hard error.** Gating everything would fail the build on the backlog the ratchet exists to grandfather; gating nothing would be a switched-off check. Both are wrong answers, so it stops |
+
+### Why the default is `auto`
+
+`v1` is a moving tag: a merge to `main` ships to every consumer pinning it. A
+gate that arrived as a hard requirement would red every already-adopted repo the
+morning it landed, for a tool they had no reason to have installed. So the
+default warns, `require` is the opt-out, and a green build under `auto` with the
+tool absent says nothing about dead code — which the warning states in those
+words.
+
+### The ratchet
+
+`changed-only` filters the **results**, not the inputs. Neither tool takes a
+file list — reachability is a whole-graph question — so the scan is always full,
+everything is reported, and only findings in files changed since the base ref can
+fail the build.
+
+The honest limit: deleting the last import of an untouched file makes that file
+dead without changing it, so under `changed-only` that finding is advisory. It is
+the trade-off Layer 2's `--baseline-commit` already makes, one graph edge further
+out.
+
+### Python granularity
+
+deptry runs **per package, never at a workspace root** — measured at a monorepo
+root it reported 125 findings, 118 of them one first-party artifact, versus 3 at
+the granularity it is designed for. `scripts/deptry-targets.py` enumerates the
+packages under the detected directory and excludes each package's nested
+packages from its own scan; `samples/deptry-workspace/` proves both halves,
+including the ablation that a naive root run is *not* clean.
 
 ---
 

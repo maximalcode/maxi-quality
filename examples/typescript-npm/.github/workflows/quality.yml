@@ -3,3 +3,19 @@ on: [push, pull_request]
 jobs:
   quality:
     uses: maximalcode/maxi-quality/.github/workflows/quality.yml@v1
+    with:
+      # A fully adopted APPLICATION, which is what makes both of these safe
+      # here and neither of them a default.
+      #
+      # require: the gate's default is 'auto', which warns instead of failing
+      # when knip is not installed — that softness exists so a moving `v1` tag
+      # cannot red an adopted repo overnight, not because a warning is good
+      # enough. Once knip is in devDependencies, this is the line that turns
+      # the warning back into a gate.
+      dead-code: require
+      # dead-code-exports: this package.json is `"private": true` — nothing
+      # here is published, so an export no in-repo code references is dead
+      # rather than public API. In a LIBRARY leave this off: 19 of the 26
+      # real-code findings in the evaluation were exactly that class, and
+      # gating them there ships a finding nobody can fix.
+      dead-code-exports: true

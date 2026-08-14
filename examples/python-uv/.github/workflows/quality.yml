@@ -3,3 +3,12 @@ on: [push, pull_request]
 jobs:
   quality:
     uses: maximalcode/maxi-quality/.github/workflows/quality.yml@v1
+    with:
+      # deptry is in this project's dev dependencies, so the gate can be a
+      # gate rather than the warning 'auto' would leave behind.
+      #
+      # There is no `dead-code-exports` equivalent for Python: deptry checks
+      # DEPENDENCIES, and unused Python code is a hole this baseline states
+      # rather than covers — vulture was measured and declined with numbers
+      # (docs/EVAL-vs-oss-tools.md §3f).
+      dead-code: require

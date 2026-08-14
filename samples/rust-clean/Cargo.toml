@@ -1,11 +1,30 @@
-# The clean Rust fixture (#58) — a fresh `cargo new` plus one unit test, with
-# the same [lints] block adopt.sh appends. Must pass the whole gate at 0/0.
+# The clean Rust fixture (#58) — a fresh `cargo new`, one unit test and one
+# third-party dependency, with the same [lints] block adopt.sh appends. Must
+# pass the whole gate at 0/0.
 
 [package]
 name = "sample-rust-clean"
 version = "0.1.0"
 edition = "2024"
 publish = false
+
+# THE DEPENDENCY IS THE POINT, and it is the half #105 was missing: with no
+# third-party crates at all, this fixture had no tree in which an unmaintained
+# advisory could appear, so `[advisories] unmaintained` was asserted by nobody
+# and a default change landed unnoticed in a real consumer instead.
+#
+# clap 2.34 is frozen upstream and pulls two crates that RustSec flags as
+# unmaintained (ansi_term, atty) — TRANSITIVELY, which is exactly the class
+# deny.toml scopes out with `unmaintained = "workspace"`. Under the tool
+# default ("all") this fixture FAILS, which is what makes it an assertion
+# rather than decoration; ci.yml checks both directions.
+#
+# Same target gate and same reason as samples/rust: the lockfile is
+# target-independent and the lockfile is all cargo-deny reads, so the tree is
+# visible to the supply-chain gate while Linux and macOS CI never download or
+# build it.
+[target.'cfg(windows)'.dependencies]
+clap = "=2.34.0"
 
 # maxi-quality — Rust lint baseline (clippy + rustc lints), issue #58.
 #

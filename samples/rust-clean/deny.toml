@@ -20,11 +20,43 @@
 targets = []
 
 [advisories]
-# The version-2 defaults are already the right posture: a RustSec advisory is
-# an ERROR, unmaintained transitive crates warn. `yanked` defaults to warn and
-# is raised — a yanked crate was pulled by its own author, usually for a
-# soundness or security reason that never got an advisory id; a warning nobody
-# reads is not a posture.
+# A RustSec VULNERABILITY is an error, and deny.toml has no knob to lower it —
+# the right posture, and the version-2 default.
+#
+# `unmaintained` is a different KIND of signal: a trend, not an incident, and
+# usually there is nothing to do about it this week. It is also NOT a lint
+# level, which is the trap this key sets — under cargo-deny 0.20 it selects
+# WHICH unmaintained advisories get reported, and everything reported is an
+# error. The values are "all" (the default), "workspace", "transitive" and
+# "none"; there is no "warn", and writing one fails config deserialisation,
+# which takes every other check down with it.
+#
+# So the choice is where the error lands, and "workspace" lands it on the
+# crates this repo actually picked. A transitive unmaintained crate is someone
+# else's decision: it cannot be fixed at the leaf, it is the same handful of
+# crates for everyone on the same framework, and gating on it means every
+# consumer re-litigates the same waiver list. The default ("all") fails a real
+# Tauri tree on day one — 17 findings, 0 vulnerabilities, measured in #105.
+#
+# The cost is real and worth naming: transitive ones go SILENT, not "warn".
+# Deliberate, and the same argument `yanked` makes below — a warning nobody
+# reads is not a posture. `cargo deny check advisories --warn unmaintained`
+# lists them on demand without gating.
+#
+# This is not an invented posture: "workspace" is what cargo-deny already
+# ships as the DEFAULT for `unsound`, the sibling key below. The two now
+# agree, and both are written down instead of inherited — which is the actual
+# lesson of #105. A key left to a tool default is a key that changes when the
+# tool does, under a comment that still claims the old behaviour.
+unmaintained = "workspace"
+# Already the default; set explicitly so a future default change arrives as a
+# snapshot diff rather than as a consumer's red CI. Same scope, same reason:
+# an unsoundness in a crate this repo picked is actionable, one four levels
+# down is not.
+unsound = "workspace"
+# `yanked` defaults to warn and is raised — a yanked crate was pulled by its
+# own author, usually for a soundness or security reason that never got an
+# advisory id; a warning nobody reads is not a posture.
 yanked = "deny"
 # Waivers go here, each with a written reason — same rule as an ESLint
 # disable. Scoped and greppable beats invisible:

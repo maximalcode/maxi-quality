@@ -1,0 +1,37 @@
+# The twin of samples/rust/osv-scanner.toml, for the fixture that must PASS.
+#
+# Cargo.lock here pins clap 2.34 ON PURPOSE (#105): its tree carries crates
+# RustSec flags as unmaintained, TRANSITIVELY, which is the exact class
+# deny.toml scopes out with `unmaintained = "workspace"`. Without a real
+# dependency tree this fixture could not assert that posture at all — the gap
+# that let a tool default change land in a consumer instead of in CI.
+#
+# So this file exists because OSV and cargo-deny disagree, deliberately. OSV
+# carries RustSec's INFORMATIONAL advisories (unmaintained, unsound) next to
+# vulnerabilities and has no per-class scope, so the repo's own self-scan sees
+# what the baseline's Rust gate is designed not to gate on. These are waivers
+# for a FIXTURE, not a posture for consumers; deny.toml is where the posture
+# is argued, and none of these crates is ever compiled (cfg(windows) gate).
+#
+# Every id below must stay INFORMATIONAL. A vulnerability appearing in this
+# tree is a real finding — bump or drop the dependency, do not add it here.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2021-0139"
+reason = "unmaintained (ansi_term), transitive via clap 2.34 — the scoped-out class this fixture exists to assert; never compiled (cfg(windows) gate)"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0375"
+reason = "unmaintained (atty), transitive via clap 2.34 — same; never compiled (cfg(windows) gate)"
+
+# Unsound rather than unmaintained, and Windows-only: a potential unaligned
+# read. `[advisories] unsound = "workspace"` scopes it out for the same reason
+# — it is four levels down and unfixable at the leaf — and the cfg(windows)
+# gate means no CI run here ever builds the affected code.
+[[IgnoredVulns]]
+id = "RUSTSEC-2021-0145"
+reason = "unsound (atty), transitive via clap 2.34; never compiled (cfg(windows) gate)"
+
+[[IgnoredVulns]]
+id = "GHSA-g98v-hv3f-hcfr"
+reason = "alias of RUSTSEC-2021-0145"

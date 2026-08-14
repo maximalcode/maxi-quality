@@ -1,6 +1,8 @@
 {
   "deny": {
     "advisories.ignore": [],
+    "advisories.unmaintained": "workspace",
+    "advisories.unsound": "workspace",
     "advisories.yanked": "deny",
     "bans.multiple-versions": "warn",
     "bans.wildcards": "allow",

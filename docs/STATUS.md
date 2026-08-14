@@ -104,6 +104,11 @@ scripts/check-pins.sh     bump policy (#13): pin consistency + upstream drift
 scripts/quality-report.py renders the standing-report issue body (no network)
 scripts/coverage.py       coverage ratchet: lcov + Cobertura vs a committed floor
 scripts/check-expected.py diffs a tool's JSON output against a committed manifest
+scripts/deadcode-gate.py  turns knip/deptry output into a VERDICT: which issue types
+                          may fail a build, and the changed-only ratchet applied to
+                          the results (neither tool takes a file list)
+scripts/deptry-targets.py enumerates deptry's per-package targets — #52's one
+                          condition, encoded rather than written down
 scripts/snapshot-eslint-rules.mjs  serialises the ENABLED rule set, so deleting a
                           rule no fixture triggers still fails CI
 scripts/snapshot-tsconfig.mjs      the same idea for tsc --showConfig
@@ -118,12 +123,20 @@ scripts/pom-region.py     inserts/refreshes/verifies the Java managed region in 
 
 docs/ADOPTION.md       how a project takes this on, per language
 docs/REFERENCE.md      every input, flag, exit code and rule id
+CONTEXT.md             the GLOSSARY, and nothing else — Consumer vs Adopter, the
+                       three tests that admit a language, Mechanism vs Finding
+                       change. Terms only; CONCEPT.md still holds the design
+docs/adr/              decisions that are hard to reverse, with the alternatives
+                       that lost. 0001 is the audience position (§1a)
 examples/              five copyable consumer repos — ts-npm, dotnet, python-uv,
                        mixed-monorepo, legacy-ratchet. NOT fixtures: CI asserts
                        each scans clean, is detected as the language it claims,
                        and that any policy file in it actually resolves
 
 actions/layer2/        the Layer 2 gate — how the rules reach a consumer
+actions/deadcode/      knip and deptry inside the Layer 1 jobs (#97) — the same
+                       delivery vehicle, carrying scripts/ to a runner that only
+                       checked out the consumer
 actions/report-issue/  upserts the standing report issue; outputs its number
 actions/coverage/      the coverage ratchet
 
@@ -151,6 +164,17 @@ samples/format/           the formatter's suite (#42) — two misformatted files
                           three ABLATIONS, each correct under our settings and wrong
                           under the tool's own defaults, so deleting a format config
                           turns a check red instead of leaving it quietly true
+samples/knip/             the dead-code bait — orphan file, unused exports/types,
+                          an unused and an unlisted dependency
+samples/knip-clean/       negative control — must PASS, and an ABLATION proves it
+                          is the knip.json that makes it pass, not knip's defaults
+samples/deptry/           the dependency bait — DEP001 + DEP002, plus the
+                          import-name != package-name control (bs4)
+samples/deptry-clean/     negative control — deptry refuses to run without a
+                          manifest, so this one has its own
+samples/deptry-workspace/ the GRANULARITY fixture (#97): clean per package, and
+                          NOT clean scanned as one tree — that ablation is what
+                          makes scripts/deptry-targets.py prove anything
 samples/semgrep/          Layer 2 sample — outside both projects on purpose
 samples/guards/           the fetch-and-execute shapes ci.yml's supply-chain guard
                           must catch, and the verified downloads it must not (#3)
@@ -338,6 +362,34 @@ Gitleaks v8.30.1 and OSV-Scanner v2 via Docker — nothing was installed globall
 | **The insert path and the refresh path of the same generator must produce the same bytes** | Found by adopting a fresh repo twice, not by reading the code. `pom-region.py`'s insert cut the file at the `</plugins>` TAG rather than at the start of its line, so that line's indentation stayed in the prefix and the fragment's first line came out indented twice. The file looked fine — one comment a few columns too far right — and then the refresh path read that first line's whitespace as the region's indent and re-indented the whole block by it. Every run. `apply` immediately followed by `check` is now a CI assertion for exactly this. |
 | **A mature, universally-deployed analyzer can score zero** | SpotBugs at `effort=Max, threshold=Low` caught 4 of 8 planted Java findings and **0 that Error Prone did not already catch**, plus one false positive — `EI_EXPOSE_REP2` on **constructor injection**, the most universal pattern in the framework the consumer is built on. PMD at its default ruleset caught **0 of 8**, and its only finding was on the CLEAN fixture: `UnusedFormalParameter` for a `RowMapper`'s `rowNum`, a parameter Spring's own interface requires. Same shape as `p/security-audit` scoring 0 of 28 and then 0 of 103. Numbers in `EVAL-vs-oss-tools.md` §2p. |
 | **A dependency scanner that resolves manifests over the network is a gate with a third-party rate limit in it** | Measured 2026-08-09, osv-scanner v2.4.0, adding the Java layer. A `pom.xml` does not contain its dependency graph, so osv-scanner walks it by fetching every POM and BOM from Maven Central at scan time — over a hundred requests for one Spring Boot project. This repo's own scan died with **9 × HTTP 429 and exit 127**. `--no-resolve` turned it into exit 0 with **identical per-file package counts**, because resolution never completed before being throttled. Lockfiles are untouched by the flag; it only affects manifests, which here means Maven. **The cost is stated rather than buried:** a Maven project is scanned for its DIRECT dependencies only, and in the JVM ecosystem most vulnerabilities are transitive. Same trade-off as .NET without a `packages.lock.json` (4 findings vs 7 on the same project), and the same answer — the consumer's call, not something the scanner decides by being slow and flaky. A gate that goes red when a registry is busy is one people re-run until it passes, and then ignore. |
+
+### 4a. What "dead code" actually covers, and where it does not
+
+Added with the dead-code gate (#97) because a gate that runs in two of five
+languages will otherwise be read as covering all five. Nothing below is a
+promise about future work — it is the current state, stated.
+
+| Language | Unused within a compilation unit | Unused at file / public-API level |
+|---|---|---|
+| TypeScript | ESLint (`no-unused-vars` and friends) | **knip** — files, unused/unlisted dependencies, and exports when `dead-code-exports` is on |
+| Python | Ruff `F401`/`F841` | dependencies via **deptry**; dead **code**: nothing |
+| C# | Roslyn `IDE0051`, Sonar `S1144` | nothing |
+| Rust | `dead_code` (clippy) | nothing |
+| Java | Error Prone, partially | nothing |
+
+**Python dead code is the loudest hole and it is not an oversight.** vulture was
+measured in #39 and declined with numbers: 4 findings on `samples/python-clean`
+— a fixture whose whole job is to be clean — and 120 over 3.18 KLOC of a real
+consumer, at least 100 of them pydantic model fields, with **0 confirmed true
+positives**. At `--min-confidence 100` it found nothing anywhere. Do not
+re-litigate it without a new tool or new evidence;
+`docs/EVAL-vs-oss-tools.md` §3f holds the standing answer.
+
+**Two further limits worth stating in the same breath.** The gate defaults to
+`dead-code: auto`, which warns rather than fails when the tool is not installed
+— so a green run under the default says nothing about a package that never ran
+it. And under `changed-only`, deleting the last import of an untouched file
+makes that file dead without changing it, so the finding is advisory that run.
 
 ---
 

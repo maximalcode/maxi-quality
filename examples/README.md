@@ -8,9 +8,9 @@ be consumed remotely. If your repo is not new, start with
 
 | Example | Shape | Shows |
 |---|---|---|
-| [`typescript-npm/`](typescript-npm/) | one TS package, npm | the 3-line `eslint.config.mjs`, the `tsconfig.json`, the lint script that makes `no-console` count |
+| [`typescript-npm/`](typescript-npm/) | one TS package, npm | the 3-line `eslint.config.mjs`, the `tsconfig.json`, the lint script that makes `no-console` count, and a **fully adopted** dead-code gate — `knip.json`, `dead-code: require`, `dead-code-exports: true` |
 | [`dotnet/`](dotnet/) | one C# project | how little a consumer writes — `Directory.Build.props` does it all, no `.csproj` changes |
-| [`python-uv/`](python-uv/) | one Python package, uv | the `extend-` prefixes, which are load-bearing |
+| [`python-uv/`](python-uv/) | one Python package, uv | the `extend-` prefixes, which are load-bearing, and `deptry` as a dev dependency with `dead-code: require` |
 | [`rust-cli/`](rust-cli/) | one Rust binary crate | the `[lints]` block in the consumer's own `Cargo.toml` — the one thing Cargo forces a copy of, and the only thing |
 | [`mixed-monorepo/`](mixed-monorepo/) | TS + C# side by side | pinning `languages:`, and a `.maxi-quality.yml` that disables and downgrades |
 | [`legacy-ratchet/`](legacy-ratchet/) | an existing repo nobody has linted | `changed-only` + `languages: none` — **start here if the repo is not new** |
