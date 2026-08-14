@@ -9,10 +9,10 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
-# Two baits live behind a target gate CI never compiles for. The LOCKFILE is
-# target-independent, so both still land in Cargo.lock — which is all
+# Three baits live behind a target gate CI never compiles for. The LOCKFILE is
+# target-independent, so all of them still land in Cargo.lock — which is all
 # cargo-deny reads — while `cargo clippy` / `cargo test` on Linux and macOS
-# never download or build either of them. Keeps CI fast, and never builds a
+# never download or build any of them. Keeps CI fast, and never builds a
 # known-vulnerable crate.
 [target.'cfg(windows)'.dependencies]
 # cargo pick: wildcard_dependencies — "whatever the registry serves today".
@@ -21,6 +21,13 @@ either = "*"
 # SmallVec::insert_many, fixed in 1.6.1. Pinned with `=` so the lock entry
 # stays on the vulnerable version.
 smallvec = "=1.6.0"
+# cargo-deny advisories bait, the unmaintained half (#105): RUSTSEC-2024-0370,
+# proc-macro-error's maintainer unreachable, no safe upgrade. Declared DIRECTLY
+# and deliberately — `[advisories] unmaintained = "workspace"` scopes the error
+# to crates this manifest picked itself, so a direct one must still fail. Being
+# behind a cfg() gate does not make it transitive, and that is worth pinning:
+# the scope is about who chose the crate, not about what gets built.
+proc-macro-error = "=1.0.4"
 
 # maxi-quality — Rust lint baseline (clippy + rustc lints), issue #58.
 #

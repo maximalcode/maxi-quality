@@ -1,12 +1,19 @@
 # The .gitleaks.toml of this fixture (SECURITY.md). Cargo.lock here pins
-# smallvec 1.6.0 ON PURPOSE: it is the bait for the cargo-deny advisories gate,
-# asserted by id in ci.yml, and target-gated so no CI run ever builds it. This
-# file keeps the repo's own OSV self-scan honest about everywhere else —
-# osv-scanner loads it automatically for lockfiles in this directory, and the
-# scoped ignore never leaves the fixture.
+# smallvec 1.6.0 and proc-macro-error 1.0.4 ON PURPOSE: they are the baits for
+# the cargo-deny advisories gate, asserted by id in ci.yml, and target-gated so
+# no CI run ever builds them. This file keeps the repo's own OSV self-scan
+# honest about everywhere else — osv-scanner loads it automatically for
+# lockfiles in this directory, and the scoped ignore never leaves the fixture.
 #
-# If this entry ever suppresses anything beyond the planted advisory, that is
-# a real finding being hidden — the reason field is the contract.
+# OSV and cargo-deny disagree here, and the disagreement is the reason this
+# file needs entries at all: OSV carries RustSec's INFORMATIONAL advisories
+# (unmaintained, unsound) alongside vulnerabilities and has no equivalent of
+# cargo-deny's per-class scope, so what one tool scopes out the other reports.
+# Waiving them here is a statement about a fixture, not a posture for
+# consumers — see deny.toml for that.
+#
+# If these entries ever suppress anything beyond the planted advisories, that
+# is a real finding being hidden — the reason field is the contract.
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2021-0003"
@@ -21,3 +28,9 @@ reason = "alias of RUSTSEC-2021-0003"
 [[IgnoredVulns]]
 id = "CVE-2021-25900"
 reason = "alias of RUSTSEC-2021-0003"
+
+# The unmaintained bait (#105). No aliases in OSV as of 2026-08-14; if one
+# appears, osv-scanner names it in the run and it gets added here.
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0370"
+reason = "planted bait for the cargo-deny unmaintained gate (proc-macro-error, declared directly); never compiled (cfg(windows) gate)"

@@ -1084,7 +1084,7 @@ jobs:
       # The advisory bait sits behind a cfg(windows) gate, so Linux CI never
       # downloads or builds it — but the LOCKFILE is target-independent, and
       # the lockfile is all cargo-deny reads.
-      - name: Dirty lockfile must fail advisories with the known RUSTSEC id
+      - name: Dirty lockfile must fail advisories on both planted RUSTSEC ids
         shell: bash
         run: |
           set -uo pipefail
@@ -1095,9 +1095,17 @@ jobs:
             exit 1
           fi
           grep -q 'RUSTSEC-2021-0003' <<<"$out" || {
-            echo '::error::the failure is not the planted advisory (RUSTSEC-2021-0003, smallvec 1.6.0) — something else broke'
+            echo '::error::the failure is not the planted vulnerability (RUSTSEC-2021-0003, smallvec 1.6.0) — something else broke'
             exit 1; }
-          echo 'OK: the planted advisory is what fails the check'
+          # The unmaintained half (#105). `[advisories] unmaintained =
+          # "workspace"` narrows WHICH unmaintained advisories are reported;
+          # it does not switch the class off, so a crate this manifest picked
+          # itself must still fail — including behind a cfg() gate, since the
+          # scope is about who chose the crate, not about what gets built.
+          grep -q 'RUSTSEC-2024-0370' <<<"$out" || {
+            echo '::error::the planted unmaintained crate (RUSTSEC-2024-0370, proc-macro-error) no longer fails — a DIRECT unmaintained dependency must still gate'
+            exit 1; }
+          echo 'OK: both planted advisories fail the check'
       - name: Clean lockfile must pass advisories and bans
         shell: bash
         run: |
@@ -1107,6 +1115,30 @@ jobs:
           [[ $rc -eq 0 ]] || {
             echo '::error::samples/rust-clean was flagged by cargo-deny — the posture is over-strict or the DB fetch failed'
             exit 1; }
+      # A clean pass proves nothing unless the tree it passed on actually
+      # contains the thing being scoped out — the gap #105 was found through.
+      # Same config, one key flipped back to the tool default: it must FAIL,
+      # and fail as `unmaintained`. Without this, the key could be set to
+      # "none" or the dependency could vanish and the step above stays green.
+      - name: The clean fixture must only pass because of the unmaintained scope
+        shell: bash
+        run: |
+          set -uo pipefail
+          sed 's/^unmaintained = "workspace"/unmaintained = "all"/' \
+            samples/rust-clean/deny.toml > /tmp/deny-unmaintained-all.toml
+          grep -q '^unmaintained = "all"' /tmp/deny-unmaintained-all.toml || {
+            echo '::error::could not flip [advisories] unmaintained in the fixture config — the key moved, or is no longer set explicitly'
+            exit 1; }
+          rc=0; out=$(cd samples/rust-clean && cargo deny \
+            --config /tmp/deny-unmaintained-all.toml check advisories 2>&1) || rc=$?
+          echo "$out"
+          [[ $rc -ne 0 ]] || {
+            echo '::error::samples/rust-clean passed with unmaintained = "all" — its dependency tree no longer carries a transitive unmaintained crate, so the clean pass above asserts nothing'
+            exit 1; }
+          grep -q 'error\[unmaintained\]' <<<"$out" || {
+            echo '::error::the clean fixture failed at unmaintained = "all", but not on an unmaintained advisory — something else broke'
+            exit 1; }
+          echo 'OK: the clean fixture carries transitive unmaintained crates, and only the workspace scope lets it pass'
       - name: Clean sample tests must pass
         shell: bash
         run: |

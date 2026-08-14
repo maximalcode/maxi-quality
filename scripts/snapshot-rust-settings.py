@@ -121,6 +121,12 @@ def deny_settings() -> dict:
     adv = data.get("advisories", {})
     bans = data.get("bans", {})
     return {
+        # `unmaintained` is snapshotted BECAUSE it was not: the key was absent,
+        # the comment claimed a posture the tool no longer had, and nothing
+        # compared the two (#105). A key left to a tool default is a key that
+        # changes when the tool does, silently.
+        "advisories.unmaintained": adv.get("unmaintained"),
+        "advisories.unsound": adv.get("unsound"),
         "advisories.yanked": adv.get("yanked"),
         "advisories.ignore": adv.get("ignore"),
         "bans.multiple-versions": bans.get("multiple-versions"),
