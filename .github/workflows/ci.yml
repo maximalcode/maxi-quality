@@ -2090,11 +2090,17 @@ jobs:
           echo "pinned osv-scanner: $V"
           # The digest comes out of the action too, for the same reason the
           # version does: a second copy of a pin is a second thing to forget.
+          #
+          # Read from the action's PLATFORM TABLE rather than an input default.
+          # The asset is platform-specific and so is its digest, so there is no
+          # single "the sha256 of osv-scanner" left to read — and this job runs
+          # on ubuntu-latest, so it wants the Linux/X64 row specifically.
           S=$(awk '
-                /^  osv-scanner-sha256:/ { f = 1; next }
-                f && /default:/ { gsub(/.*default: *'"'"'/, ""); gsub(/'"'"'.*/, ""); print; exit }
+                /^          Linux\/X64\)$/ { f = 1; next }
+                f && /OSV_PIN=/ { gsub(/.*OSV_PIN="/, ""); gsub(/".*/, ""); print; exit }
+                f && /^          ;;$/ { exit }
               ' actions/layer2/action.yml)
-          [[ -n "$S" ]] || { echo '::error::could not read the pinned osv-scanner sha256'; exit 1; }
+          [[ -n "$S" ]] || { echo '::error::could not read the pinned Linux/X64 osv-scanner sha256'; exit 1; }
           curl -sSfL -o /tmp/osv-scanner \
             "https://github.com/google/osv-scanner/releases/download/${V}/osv-scanner_linux_amd64"
           # A release asset at a fixed tag is mutable — the same argument
@@ -2769,8 +2775,26 @@ jobs:
           shellcheck -s bash "${files[@]}"
           echo "OK: ${#files[@]} shipped scripts are shellcheck-clean"
 
+  # Runs on BOTH platforms the action claims to support, because "supported"
+  # is a claim about installed tools and shell builtins, and those are exactly
+  # what differs: macOS has no `sha256sum`, no pipx on a self-hosted box, no
+  # passwordless sudo to assume, and a different release asset (and therefore a
+  # different digest) for gitleaks and osv-scanner. A platform table nothing
+  # exercises is a platform table that is wrong the first time someone needs it.
+  #
+  # macos-latest is arm64, which is the row a self-hosted Apple-silicon runner
+  # takes — the case this support was added for. Standard runners are free on
+  # a public repo, so the second leg costs nothing but wall time.
+  #
+  # The expected finding set is asserted identically on both: semgrep's rules
+  # are platform-independent, so a count that moves between legs is a bug in
+  # the install path, not a fact about the OS.
   layer2:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
