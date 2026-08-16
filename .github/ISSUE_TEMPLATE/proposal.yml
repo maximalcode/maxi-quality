@@ -1,0 +1,74 @@
+name: Proposal — convention, tool, or language
+description: Propose adding or replacing something. Read the admission bar first — it is strict on purpose.
+labels: ["needs-triage", "enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **The admission bar**, so you can decide whether to spend your time
+        ([CONTRIBUTING.md](https://github.com/maximalcode/maxi-quality/blob/develop/CONTRIBUTING.md)
+        has the long form):
+
+        - **Conventions are capped at 12, and the budget is fully spent.** A
+          thirteenth means removing one. A new convention is justified by *a
+          real bug that slipped through* — never by "this would be nice to
+          catch". A per-language split of an existing convention is not new
+          scope and does not touch the cap.
+        - **Tools are measured before they are adopted.** Free/OSS only, run
+          against `samples/` and reported with numbers first. Nine of ten
+          candidates have been declined; one was adopted — both outcomes are
+          normal.
+        - **Only in-house demand admits a language**
+          ([ADR 0001](https://github.com/maximalcode/maxi-quality/blob/develop/docs/adr/0001-public-adoptable-no-support-obligation.md)).
+          A fixture corpus can prove detection, never demand, so no language is
+          added because someone outside asks for it. Language requests are
+          closed with that standing answer — no hard feelings, and the ADR
+          explains why.
+
+        **This tracker is public and permanent.** No private repository names,
+        paths, or pasted private source — use synthetic snippets.
+  - type: dropdown
+    id: type
+    attributes:
+      label: What kind of proposal?
+      options:
+        - New convention (says which of the 12 it replaces)
+        - Per-language split of an existing convention
+        - New tool
+        - New language
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: The evidence
+      description: >-
+        For a convention: the real bug that slipped through (incident, PR, or
+        outage — described synthetically). For a tool: what it catches that the
+        current baseline provably does not. For a language: which in-house repo
+        writes it.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: The proposal
+      description: What you propose, concretely. A rule sketch, a tool name and config, or the split you have in mind.
+    validations:
+      required: true
+  - type: input
+    id: replaces
+    attributes:
+      label: If a new convention — which one does it replace, and why is it better?
+    validations:
+      required: false
+  - type: checkboxes
+    id: acknowledgements
+    attributes:
+      label: Checks
+      options:
+        - label: I have read the admission bar above.
+          required: true
+        - label: This proposal contains no private repository names, file paths, or pasted private source.
+          required: true

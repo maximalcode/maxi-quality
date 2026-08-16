@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: What this repo is
+    url: https://github.com/maximalcode/maxi-quality/blob/develop/docs/CONCEPT.md
+    about: CONCEPT.md — the source of truth for what this baseline is and is not.
+  - name: The support boundary
+    url: https://github.com/maximalcode/maxi-quality/blob/develop/docs/adr/0001-public-adoptable-no-support-obligation.md
+    about: Public and adoptable, with no support obligation — what is owed to adopters and what is not.
