@@ -2508,6 +2508,55 @@ jobs:
           fi
           echo 'OK: every third-party action is pinned to a commit SHA'
 
+      # Issue forms fail SILENTLY: a malformed one is not a red check anywhere,
+      # it is an error banner on the new-issue page that only a stranger trying
+      # to file sees. actionlint does not read them. So parse them here, and
+      # assert the two things that make them worth having — every form carries
+      # the public-tracker warning, and every label it auto-applies exists.
+      - name: Issue forms must parse, warn about the public tracker, and use real labels
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import sys, pathlib, yaml
+
+          d = pathlib.Path(".github/ISSUE_TEMPLATE")
+          forms = sorted(p for p in d.glob("*.yml") if p.name != "config.yml")
+          if not forms:
+              sys.exit("::error::no issue forms found in .github/ISSUE_TEMPLATE/")
+
+          known = {"needs-triage", "needs-info", "ready-for-agent",
+                   "ready-for-human", "wontfix", "bug", "enhancement",
+                   "documentation", "question", "eval", "adoption"}
+          bad = 0
+          for p in [*forms, d / "config.yml"]:
+              try:
+                  doc = yaml.safe_load(p.read_text())
+              except yaml.YAMLError as e:
+                  print(f"::error::{p} is not valid YAML: {e}")
+                  bad = 1
+                  continue
+              if p.name == "config.yml":
+                  continue
+              for field in ("name", "description", "body"):
+                  if not doc.get(field):
+                      print(f"::error::{p} is missing required field: {field}")
+                      bad = 1
+              # §2: this tracker is public and permanent, and a stranger filing
+              # an issue has not read CLAUDE.md. The warning has to be ON the form.
+              text = p.read_text()
+              if "public and permanent" not in text:
+                  print(f"::error::{p} does not warn that the tracker is public and permanent")
+                  bad = 1
+              for lab in doc.get("labels", []):
+                  if lab not in known:
+                      print(f"::error::{p} auto-applies unknown label: {lab}")
+                      bad = 1
+              print(f"  OK  {p.name}")
+          sys.exit(bad)
+          PY
+          echo 'OK: every issue form parses, warns, and uses labels that exist'
+
       # The hole the check above left open for months: it matches `uses:` lines,
       # and a pipe is not a `uses:` line. So quality.yml could — and did — carry
       #
