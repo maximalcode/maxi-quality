@@ -40,6 +40,24 @@ on:
           wants secrets/vulns/conventions gated before taking on Layer 1.
         type: string
         default: 'auto'
+      runner:
+        description: >-
+          The `runs-on` label for every job in this workflow. Default
+          'ubuntu-latest'.
+
+          Exists because a consumer on a private repo pays for GitHub-hosted
+          minutes, and when that quota runs out an ubuntu-latest job does not
+          run slowly — it does not start at all, and the gate goes dark. Point
+          this at a self-hosted label ('self-hosted') and the gate keeps
+          running on hardware the consumer already owns.
+
+          A single label, not a JSON array: a self-hosted runner is registered
+          per-repository, so 'self-hosted' already selects only that repo's own
+          machines. Layer 2 supports Linux/X64, macOS/ARM64 and macOS/X64 (see
+          the platform table in actions/layer2); anything else fails loudly
+          rather than downloading an unpinned binary.
+        type: string
+        default: 'ubuntu-latest'
       node-version:
         type: string
         default: '24'
@@ -160,7 +178,7 @@ on:
 
 jobs:
   detect:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     outputs:
       ts_dirs: ${{ steps.scan.outputs.ts_dirs }}
       dotnet_targets: ${{ steps.scan.outputs.dotnet_targets }}
@@ -608,7 +626,7 @@ jobs:
   typescript:
     needs: detect
     if: needs.detect.outputs.has_ts == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     strategy:
       fail-fast: false
       matrix:
@@ -660,7 +678,7 @@ jobs:
   dotnet:
     needs: detect
     if: needs.detect.outputs.has_dotnet == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     strategy:
       fail-fast: false
       matrix:
@@ -699,7 +717,7 @@ jobs:
   python:
     needs: detect
     if: needs.detect.outputs.has_python == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     strategy:
       fail-fast: false
       matrix:
@@ -810,7 +828,7 @@ jobs:
   rust:
     needs: detect
     if: needs.detect.outputs.has_rust == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     strategy:
       fail-fast: false
       matrix:
@@ -890,7 +908,7 @@ jobs:
   java:
     needs: detect
     if: needs.detect.outputs.has_java == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     strategy:
       fail-fast: false
       matrix:
@@ -945,7 +963,7 @@ jobs:
         run: mvn -B --no-transfer-progress spotless:check
 
   layer2:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
