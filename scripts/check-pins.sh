@@ -228,6 +228,24 @@ grep -q 'semgrep==[$]SEMGREP_PIN' "$SCAN" \
 grep -q 'returntocorp/semgrep:[$]SEMGREP_PIN' "$SCAN" \
   || die "$SCAN sets SEMGREP_PIN but no longer passes it to docker — the pin is decorative"
 
+# THE INTERPRETER IS A PIN TOO (#131). Pinning semgrep while installing it with
+# whatever python3 the host happens to have is what took Layer 2 down on a stock
+# macOS runner: the pinned version was simply uninstallable there, and the job
+# failed in three seconds having scanned nothing. Both halves of the fix carry
+# the interpreter version, and both say "bump them together" in a comment — so
+# the two are read back here, because an unasserted "bump them together" is the
+# same two-sources-of-truth bug this whole script exists to catch.
+INSTALLER="$BASELINE/scripts/install-semgrep.sh"
+[ -f "$INSTALLER" ] || die "missing $INSTALLER — the semgrep install ladder"
+INSTALL_PY="$(sed -n 's/^PINNED_PYTHON="\([0-9.]*\)".*/\1/p' "$INSTALLER" | head -1)"
+SCAN_PY="$(sed -n 's/^UVX_PYTHON="\([0-9.]*\)".*/\1/p' "$SCAN" | head -1)"
+[ -n "$INSTALL_PY" ] || die "could not read PINNED_PYTHON from $INSTALLER"
+[ -n "$SCAN_PY" ] || die "could not read UVX_PYTHON from $SCAN"
+grep -q 'uv tool install --python "[$]PINNED_PYTHON"' "$INSTALLER" \
+  || die "$INSTALLER sets PINNED_PYTHON but no longer passes it to uv — the pin is decorative"
+grep -q 'uvx --python "[$]UVX_PYTHON"' "$SCAN" \
+  || die "$SCAN sets UVX_PYTHON but no longer passes it to uvx — the pin is decorative"
+
 # --- THE JAVA PINS (#10) -----------------------------------------------------
 #
 # Four analyzer versions live in configs/java/pom-lints.xml — the file consumers
@@ -373,6 +391,20 @@ if [ "$SEMGREP_PIN" != "$CI_SEMGREP" ] || [ "$SEMGREP_PIN" != "$SCAN_SEMGREP" ];
   exit 2
 fi
 info "semgrep pins agree across all three files"
+
+# --- consistency: and the interpreter that installs it (#131) ----------------
+# Same argument one layer down. If CI installs the pin on 3.12 while a local
+# scan runs it on whatever uvx picked, the two can differ in the only way that
+# has ever mattered here — whether the pinned version is installable at all.
+if [ "$INSTALL_PY" != "$SCAN_PY" ]; then
+  printf '\033[31mFAIL\033[0m — semgrep interpreter pins disagree:\n'
+  printf '  scripts/install-semgrep.sh : Python %s  (what CI installs the pin with)\n' "$INSTALL_PY"
+  printf '  scripts/scan.sh            : Python %s  (what a local scan runs it on)\n' "$SCAN_PY"
+  printf '\nA pinned tool installed by an unpinned interpreter is a pin plus a hope\n'
+  printf 'about the host. Set both to the same version.\n'
+  exit 2
+fi
+info "semgrep interpreter pinned to Python $INSTALL_PY in both files"
 
 # --- consistency: the Rust pair, same rule, same severity --------------------
 if [ "$RUST_PIN" != "$CI_RUST" ] || [ "$DENY_PIN" != "$CI_DENY" ] \

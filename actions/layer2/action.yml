@@ -174,37 +174,38 @@ runs:
         python3 -c 'import yaml'
         echo "::endgroup::"
 
-        echo "::group::Install semgrep $SEMGREP_VERSION"
-        # pipx resolves from PyPI, where a version binds to immutable artifacts,
-        # so the version IS the pin here. The two GitHub release downloads below
-        # are the ones that need a digest.
-        #
-        # pipx ships on the standard runner images but not on a self-hosted
-        # macOS runner, where the Python is whatever the machine has. Bootstrap
-        # it rather than failing: `pip install --user pipx` is the documented
-        # install path, and PEP 668 marks a Homebrew/system Python's environment
-        # as externally managed, hence the same fallback PyYAML needs above.
-        if ! command -v pipx >/dev/null; then
-          python3 -m pip install --quiet --user pipx 2>/dev/null \
-            || python3 -m pip install --quiet --user --break-system-packages pipx
-          PATH="$(python3 -m site --user-base)/bin:$PATH"
-          export PATH
-          echo "$(python3 -m site --user-base)/bin" >> "$GITHUB_PATH"
-        fi
-        pipx install "semgrep==$SEMGREP_VERSION"
-        echo "::endgroup::"
-
         # WHERE THE BINARIES GO. Not `sudo install` into /usr/local/bin: a
         # self-hosted runner is a real machine with a real user, and there is no
         # reason to assume that user has passwordless sudo — nor to leave this
         # action's tools installed system-wide on it afterwards. RUNNER_TEMP is
         # per-job and writable everywhere, and GITHUB_PATH puts it on PATH for
         # every later step.
+        #
+        # This block sits ABOVE the semgrep install because semgrep now lands
+        # here too, rather than wherever pipx's default bin dir happened to be.
         TOOL_BIN="${RUNNER_TEMP}/maxi-quality-bin"
         mkdir -p "$TOOL_BIN"
         echo "$TOOL_BIN" >> "$GITHUB_PATH"
         PATH="$TOOL_BIN:$PATH"
         export PATH
+
+        echo "::group::Install semgrep $SEMGREP_VERSION"
+        # pipx resolves from PyPI, where a version binds to immutable artifacts,
+        # so the version IS the pin here. The two GitHub release downloads below
+        # are the ones that need a digest.
+        #
+        # THE INTERPRETER IS PART OF THE PIN. This used to be a bare
+        # `pipx install "semgrep==$SEMGREP_VERSION"` against the ambient
+        # python3, which is 3.9.6 on a stock macOS runner and cannot install a
+        # semgrep that requires >= 3.10 — the whole job died in three seconds
+        # having scanned nothing (#131). scripts/install-semgrep.sh owns the
+        # ladder (uv with a fetched interpreter → pipx on a checked one → a
+        # one-line failure naming both versions) and is unit-tested against a
+        # shim PATH, because no runner this repo can rent has a Python old
+        # enough to reproduce the bug.
+        "${GITHUB_ACTION_PATH}/../../scripts/install-semgrep.sh" \
+          "$SEMGREP_VERSION" "$TOOL_BIN"
+        echo "::endgroup::"
 
         # macOS has no `sha256sum` — it ships `shasum`. Both read the same
         # "<digest>  <path>" line on stdin with -c, so only the command differs.
