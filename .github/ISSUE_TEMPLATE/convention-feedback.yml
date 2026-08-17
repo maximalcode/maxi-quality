@@ -1,0 +1,95 @@
+name: Convention feedback
+description: A rule fired on correct code, missed a real bug, or its message misled you.
+labels: ["needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This tracker is public and permanent.** Everything you write here is
+        public the moment you submit it, and GitHub keeps an edit history, so
+        there is no cleanup pass. Do not paste code, file paths, or names from
+        a private repository — reproduce the problem with a **synthetic
+        snippet** instead. Counts and measurements are welcome; they identify
+        nobody.
+
+        False positives and false negatives are the evidence this repo runs on
+        ([CONTRIBUTING.md](https://github.com/maximalcode/maxi-quality/blob/develop/CONTRIBUTING.md),
+        Rule 2), so thank you for taking the time.
+  - type: dropdown
+    id: convention
+    attributes:
+      label: Which convention?
+      description: The 12 conventions, plus the other gates the baseline runs.
+      options:
+        - catch-and-swallow
+        - command-injection
+        - debug-print-left-behind
+        - hardcoded-secret
+        - mutation-requires-authz
+        - no-ambient-clock
+        - no-float-for-money
+        - no-permission-denied-for-invisible-resource
+        - sql-string-concat
+        - sync-over-async
+        - todo-without-issue
+        - weak-crypto
+        - a Layer 1 tool (typescript-eslint / Roslyn / Ruff+mypy / clippy / Error Prone)
+        - Gitleaks or OSV-Scanner
+        - not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of problem?
+      options:
+        - False positive — it fired on correct code
+        - False negative — a real bug got through
+        - The escape hatch in the message did not clear the finding
+        - The message or docs misled me
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: language
+    attributes:
+      label: Language
+      options:
+        - TypeScript
+        - C#
+        - Python
+        - Rust
+        - Java
+        - Other / not language-specific
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: >-
+        A synthetic snippet that reproduces it, what the rule did, and what you
+        expected. For a false positive, explain why the code is correct as
+        written. For a false negative, show the bug the rule claims to catch.
+      placeholder: |
+        ```ts
+        // synthetic — not from a private repo
+        ```
+        Expected: ...
+        Actual: ...
+    validations:
+      required: true
+  - type: input
+    id: rule-id
+    attributes:
+      label: Rule id, if known
+      description: e.g. `sql-string-concat-ts` — the finding output prints it.
+    validations:
+      required: false
+  - type: checkboxes
+    id: public-check
+    attributes:
+      label: Public-tracker check
+      options:
+        - label: This report contains no private repository names, file paths, or pasted private source.
+          required: true
