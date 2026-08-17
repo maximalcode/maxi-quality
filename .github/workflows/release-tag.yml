@@ -84,6 +84,11 @@ jobs:
     # originate from this repository, so a PR-triggered run can never reach the
     # tag move. The head_repository check is belt and braces, and says the
     # intent out loud for whoever edits this next.
+    #
+    # This condition is the PRIMARY control and it is not the only one. Since
+    # #133 the job also never checks out the untrusted commit at all, so a
+    # loosened filter here does not put a stranger's tree on the runner. See the
+    # checkout step.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
@@ -93,10 +98,31 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          # The exact commit ci validated — NOT whatever main happens to be by
-          # the time this job starts. If another merge landed in between, that
-          # merge's own ci run moves the tag again.
-          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+          # NO `ref:`, DELIBERATELY — do not add one back. See #133.
+          #
+          # This used to check out `workflow_run.head_sha`, which is the commit
+          # that woke the job and therefore the one piece of input here that a
+          # stranger can influence. The job never needed it: every step below is
+          # git plumbing over refs and objects, and not one of them reads a file
+          # out of the working tree. So the checkout materialised an untrusted
+          # commit on a runner holding a credential that can move the v1 tag,
+          # and bought nothing for it.
+          #
+          # Both clauses of the `if:` above are about WHO WOKE THE WORKFLOW.
+          # Neither is about what gets written to disk. Checking out this repo's
+          # own default branch instead is the layer underneath them, and it is
+          # the layer that survives either filter being loosened later — which
+          # the comment above already names as the failure mode that matters.
+          #
+          # WHAT THIS DOES NOT CHANGE. The tag is still created from $SHA — the
+          # exact commit ci validated, NOT whatever main happens to be by the
+          # time this job starts. If another merge landed in between, that
+          # merge's own ci run moves the tag again. That invariant lives in the
+          # `git tag` call below and never depended on the checkout: a commit is
+          # named by its SHA, and naming one does not require standing on it.
+          #
+          # fetch-depth 0 because the guards below need the full graph, not a
+          # working copy.
           fetch-depth: 0
 
       - name: Move v1 to the verified commit
@@ -126,6 +152,23 @@ jobs:
           # both guards above are about who woke the workflow, and neither is
           # about what it is being pointed at.
           git fetch --no-tags --quiet origin main
+
+          # The checkout no longer materialises $SHA (#133), so assert the
+          # object is present before reasoning about it. Fetching main brings it
+          # in whenever it is on main, which is exactly what the next guard
+          # requires — so this only ever fires when that guard was going to fail
+          # anyway. It is here to separate two failures that reported
+          # identically: `merge-base --is-ancestor` on an object this clone does
+          # not have exits 128 with `fatal: Not a valid commit name` on stderr
+          # and then, because `if !` does not trip errexit, falls into the
+          # `is not on main` branch below. "Not on main" and "not in this
+          # repository" are different problems and the second one is the
+          # interesting one — it means something fetched less than expected.
+          if ! git cat-file -e "${SHA}^{commit}" 2>/dev/null; then
+            echo "::error::${SHA} is not a commit reachable from main — refusing to move v1. Promote develop to main first, or dispatch this workflow with --ref main."
+            exit 1
+          fi
+
           if ! git merge-base --is-ancestor "$SHA" origin/main; then
             echo "::error::${SHA} is not on main — refusing to move v1. Promote develop to main first, or dispatch this workflow with --ref main."
             exit 1
