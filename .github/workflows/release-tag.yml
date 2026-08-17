@@ -37,8 +37,14 @@ on:
   # relied on it, since a workflow_run trigger cannot be tested from a PR.
   workflow_dispatch:
 
+# Read-only at the top, write scoped to the one job that needs it — the shape
+# scorecard.yml and codeql.yml already use, and the one ci.yml was moved to in
+# #65. This file declared `contents: write` at the top level until #134, which
+# handed every job in it the ability to write to the repository. There is one
+# job today; the point is that the next one added does not silently inherit the
+# credential that moves the tag every consumer pins.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-tag
@@ -46,6 +52,10 @@ concurrency:
 
 jobs:
   move-v1:
+    # The one write in this workflow, and the reason it exists: `git push` of
+    # the v1 tag, in the step below.
+    permissions:
+      contents: write
     # THE TAG-HIJACK GATE. Read this before touching the condition.
     #
     # `workflow_run` runs in the context of the BASE repo with the permissions
