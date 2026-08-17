@@ -2060,6 +2060,159 @@ jobs:
           [[ $rc -eq 2 ]] || { echo "::error::--require-tools should exit 2 when a tool is missing, got $rc"; exit 1; }
           echo 'OK: missing tools skip loudly, and --require-tools turns that into a failure'
 
+  # The semgrep install ladder (#131).
+  #
+  # Layer 2 pinned semgrep and then installed it with the AMBIENT python3. On
+  # ubuntu-latest that is >= 3.11 and nothing ever fired; on a stock macOS
+  # self-hosted runner it is 3.9.6, semgrep >= 1.137.0 needs >= 3.10, and the
+  # job died in three seconds having scanned nothing.
+  #
+  # WHY SHIMS RATHER THAN A REAL OLD PYTHON: no runner this repo can rent has
+  # an inadequate interpreter — a GitHub macOS image ships 3.12+ — so the only
+  # honest way to hold the regression is to fake the host. Same shim-PATH
+  # pattern `tool-resolution` uses above. The real install path is covered by
+  # the layer2 job, which runs the action end to end on both platforms.
+  semgrep-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: A too-old interpreter must fail with ONE line, not a pip wall
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          VER=$(sed -n 's/^SEMGREP_PIN="\([0-9.]*\)".*/\1/p' scripts/scan.sh | head -1)
+          [[ -n "$VER" ]] || { echo '::error::could not read SEMGREP_PIN'; exit 1; }
+
+          S=/tmp/shim-old; rm -rf "$S"; mkdir -p "$S"
+          # A python3 that reports 3.9.6 and records any attempt to use it as an
+          # installer. Apple's interpreter, as it presents on a stock macOS box.
+          cat > "$S/python3" <<'SH'
+          #!/usr/bin/env bash
+          [[ "$1" == "-V" ]] && echo "Python 3.9.6" && exit 0
+          echo "used as installer: $*" >> /tmp/old-python-used.log
+          exit 0
+          SH
+          chmod +x "$S/python3"
+          : > /tmp/old-python-used.log
+
+          rc=0
+          env PATH="$S:/usr/bin:/bin" ./scripts/install-semgrep.sh "$VER" /tmp/b1 \
+            > /tmp/old.log 2>&1 || rc=$?
+          cat /tmp/old.log
+          [[ $rc -ne 0 ]] || { echo '::error::an inadequate interpreter was accepted'; exit 1; }
+          # The message is the fix as much as the ladder is: the old failure
+          # buried "requires >= 3.10" under every semgrep release ever published.
+          grep -q "requires Python >= 3.10" /tmp/old.log || {
+            echo '::error::failure does not name the required version'; exit 1; }
+          grep -q "3.9.6" /tmp/old.log || {
+            echo '::error::failure does not name the version actually found'; exit 1; }
+          [[ $(grep -c . /tmp/old.log) -le 2 ]] || {
+            echo '::error::failure is more than the one line it promises'; exit 1; }
+          # And it must not have TRIED — a pip invocation here is the 400-line
+          # wall coming back.
+          [[ ! -s /tmp/old-python-used.log ]] || {
+            echo '::error::attempted an install with the inadequate interpreter'; exit 1; }
+          echo 'OK: a 3.9 host fails in one line, before pip is ever reached'
+
+      - name: uv installs the pin on a FETCHED interpreter, not the host's
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          VER=$(sed -n 's/^SEMGREP_PIN="\([0-9.]*\)".*/\1/p' scripts/scan.sh | head -1)
+          PY=$(sed -n 's/^PINNED_PYTHON="\([0-9.]*\)".*/\1/p' scripts/install-semgrep.sh | head -1)
+          S=/tmp/shim-uv; rm -rf "$S"; mkdir -p "$S"
+          cat > "$S/python3" <<'SH'
+          #!/usr/bin/env bash
+          [[ "$1" == "-V" ]] && echo "Python 3.9.6" && exit 0
+          exit 0
+          SH
+          # The uv shim records its argv and stages a semgrep that reports the
+          # version it was asked for, so the script's own verification runs.
+          cat > "$S/uv" <<'SH'
+          #!/usr/bin/env bash
+          echo "UV: $* | bin=$UV_TOOL_BIN_DIR dl=$UV_PYTHON_DOWNLOADS" >> /tmp/uv.log
+          for a in "$@"; do case "$a" in semgrep==*) v="${a#semgrep==}";; esac; done
+          printf '#!/usr/bin/env bash\necho %s\n' "$v" > "$UV_TOOL_BIN_DIR/semgrep"
+          chmod +x "$UV_TOOL_BIN_DIR/semgrep"
+          SH
+          chmod +x "$S/python3" "$S/uv"; : > /tmp/uv.log
+
+          env PATH="$S:/usr/bin:/bin" ./scripts/install-semgrep.sh "$VER" /tmp/b2
+          cat /tmp/uv.log
+          # THE PINNED INTERPRETER IS READ BACK FROM THE SCRIPT, not written out
+          # here — a hardcoded copy is the same two-sources-of-truth bug the pin
+          # itself has, and check-pins.sh already holds it against scan.sh.
+          grep -q -- "--python $PY" /tmp/uv.log || {
+            echo "::error::uv was not given the pinned interpreter ($PY)"; exit 1; }
+          grep -q "semgrep==$VER" /tmp/uv.log || {
+            echo '::error::uv was not given the pinned semgrep'; exit 1; }
+          grep -q "bin=/tmp/b2" /tmp/uv.log || {
+            echo '::error::semgrep was not installed into the bin dir the action controls'; exit 1; }
+          # Explicit, because a machine-level uv.toml can turn downloads off and
+          # a fallback that depends on host config is the bug being fixed.
+          grep -q "dl=automatic" /tmp/uv.log || {
+            echo '::error::UV_PYTHON_DOWNLOADS was not set explicitly'; exit 1; }
+          echo "OK: uv fetches Python $PY regardless of the host's 3.9"
+
+      - name: Without uv, pipx gets a CHECKED interpreter — and a wrong version still fails
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          VER=$(sed -n 's/^SEMGREP_PIN="\([0-9.]*\)".*/\1/p' scripts/scan.sh | head -1)
+          S=/tmp/shim-pipx; rm -rf "$S"; mkdir -p "$S"
+          # The self-hosted macOS shape after someone installs a newer Python
+          # but leaves /usr/bin/python3 as the default: both exist, and the
+          # ladder has to pick the one that can actually satisfy the pin.
+          cat > "$S/python3" <<'SH'
+          #!/usr/bin/env bash
+          [[ "$1" == "-V" ]] && echo "Python 3.9.6" && exit 0
+          exit 0
+          SH
+          cat > "$S/python3.12" <<'SH'
+          #!/usr/bin/env bash
+          [[ "$1" == "-V" ]] && echo "Python 3.12.7" && exit 0
+          exit 0
+          SH
+          cat > "$S/pipx" <<'SH'
+          #!/usr/bin/env bash
+          echo "PIPX: $* | bin=$PIPX_BIN_DIR" >> /tmp/pipx.log
+          for a in "$@"; do case "$a" in semgrep==*) v="${a#semgrep==}";; esac; done
+          printf '#!/usr/bin/env bash\necho %s\n' "$v" > "$PIPX_BIN_DIR/semgrep"
+          chmod +x "$PIPX_BIN_DIR/semgrep"
+          SH
+          chmod +x "$S/python3" "$S/python3.12" "$S/pipx"; : > /tmp/pipx.log
+
+          env PATH="$S:/usr/bin:/bin" ./scripts/install-semgrep.sh "$VER" /tmp/b3
+          cat /tmp/pipx.log
+          grep -q -- "--python python3.12" /tmp/pipx.log || {
+            echo '::error::pipx inherited the ambient interpreter instead of the adequate one'; exit 1; }
+          grep -q "bin=/tmp/b3" /tmp/pipx.log || {
+            echo '::error::pipx did not install into the bin dir the action controls'; exit 1; }
+
+          # An installer that "succeeds" on the wrong version is the failure the
+          # pin exists to prevent, and it would otherwise surface as rules that
+          # quietly stopped existing.
+          W=/tmp/shim-wrong; rm -rf "$W"; mkdir -p "$W"
+          cat > "$W/python3" <<'SH'
+          #!/usr/bin/env bash
+          [[ "$1" == "-V" ]] && echo "Python 3.12.7" && exit 0
+          exit 0
+          SH
+          cat > "$W/uv" <<'SH'
+          #!/usr/bin/env bash
+          printf '#!/usr/bin/env bash\necho 1.136.0\n' > "$UV_TOOL_BIN_DIR/semgrep"
+          chmod +x "$UV_TOOL_BIN_DIR/semgrep"
+          SH
+          chmod +x "$W/python3" "$W/uv"
+          rc=0
+          env PATH="$W:/usr/bin:/bin" ./scripts/install-semgrep.sh "$VER" /tmp/b4 \
+            > /tmp/wrong.log 2>&1 || rc=$?
+          cat /tmp/wrong.log
+          [[ $rc -ne 0 ]] || { echo '::error::a semgrep other than the pin was accepted'; exit 1; }
+          grep -q "expected '$VER'" /tmp/wrong.log || {
+            echo '::error::verification failure does not name the expected version'; exit 1; }
+          echo 'OK: pipx gets a checked interpreter, and an off-pin install is refused'
+
   # SBOM + licence gate, against this repo's own real dependency tree.
   #
   # The assertion that earns its keep is "the SBOM carries licence data". Bare
