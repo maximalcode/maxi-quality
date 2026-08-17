@@ -15,6 +15,13 @@
 > still holds for the appended sections: the slop corpus was built outside the
 > repo, and nothing was wired in.
 >
+> **Appended 2026-08-18 (issue #109), §2q, §3g and §4c — verdict:** adopt
+> **one rule** of **one** new tool — dependency-cruiser `no-circular`,
+> default-on, wiring behind its own follow-up issue. The "analysis only" line
+> above still holds: the probe corpus was built outside the repo, the shipped
+> fixtures were scanned in place with the working tree verified clean
+> afterwards, and nothing was wired in.
+>
 > Companion to [`EVAL-vs-sonarqube.md`](EVAL-vs-sonarqube.md), which asked
 > whether a Sonar **server** should replace this baseline. This one asks the
 > broader question: of everything free and mature in the field, what is worth
@@ -935,6 +942,137 @@ two tools with a view on the same lines is the argument that section exists to
 end. Spotless owns layout; Error Prone owns bugs; there is no third question for
 Checkstyle to answer that this baseline wants answered.
 
+### 2q. dependency-cruiser `no-circular` — the crash class nothing sees (#109)
+
+Issue #109 claimed a specific hole: an ES-module import cycle whose members read
+each other's bindings at evaluation time crashes at runtime, it is a property of
+the module **graph**, and nothing in the TypeScript layer can see a graph. The
+claim was not taken on trust — it is the first thing below that gets measured.
+
+**Corpus.** Five hand-built cases outside the repo, with a manifest written
+before the first tool ran, each marked softball or adversarial and each carrying
+the verdict it had to produce:
+
+| | Shape | Under `node` | Must fire? |
+|---|---|---|:--:|
+| **A** | two modules reading each other's bindings at evaluation time | **crashes** | yes — softball |
+| **B** | `import type` **both ways** | fine, edges erased | **no** — adversarial, the stated kill condition |
+| **C** | cycle whose imports are read only inside function bodies | fine | yes, by the graph — adversarial |
+| **D** | a clean DAG | fine | no — negative control |
+| **E** | a type imported with **value syntax**, no `verbatimModuleSyntax` | fine, tsc elides it | **no** — added after B, see below |
+
+**Three controls, because the issue's premise is itself a claim.** On all five
+cases `tsc --noEmit` against the shipped strict base reports **0 diagnostics**,
+and the shipped ESLint layer — typescript-eslint `strict-type-checked` +
+`eslint-plugin-sonarjs`, unmodified — reports **0 findings**. Only case A
+crashes, with `ReferenceError: Cannot access 'aLabel' before initialization`.
+The hole is real and it is total: the entire existing TypeScript layer passes a
+file that cannot survive being imported.
+
+| Case | `no-circular` | Modules / dependencies seen |
+|---|---|---|
+| A | **fires**, cycle named | 3 / 3 |
+| B | **silent** | 3 / **0** |
+| C | fires | 3 / 3 |
+| D | silent | 3 / 2 |
+| E | **silent** | 2 / **0** |
+
+"Cycle named" is the issue's wording and it is literal — the reporter prints the
+path, not just the offending file:
+
+```
+  error no-circular: src/tdz/a.ts →
+      src/tdz/b.ts →
+      src/tdz/a.ts
+```
+
+Cases A–D are one tree of 12 modules; case E is a second tree of 2, because it
+needs a tsconfig without `verbatimModuleSyntax` and that cannot coexist with the
+shipped strict base in one project.
+
+**The kill condition is cleared, and not by luck.** Case B's edges are not
+merely un-flagged, they are **absent from the graph** — dependency-cruiser reads
+the tsconfig and never records a type-only edge at all. Case E was added *after*
+B came back silent, to answer the question B raises but cannot settle: does that
+silence depend on `verbatimModuleSyntax`, which this baseline mandates and a
+mid-adoption consumer may not yet have? It does not. Without
+`verbatimModuleSyntax`, a type imported with value syntax is elided by tsc, and
+the tool uses the compiler's own knowledge of that rather than the import
+syntax. A consumer adopting this gate before the type layer gets the same
+answer as one adopting it after.
+
+**Ablation.** With the one rule removed and everything else held constant, the
+four-case tree cruises an identical graph — 12 modules, 8 dependencies — and
+reports **0 violations**. Both findings are attributable to `no-circular` and to
+nothing adjacent.
+
+**Over-strictness.** 0 findings on **every `.ts` file this repo ships** — one
+pass over `configs/`, `samples/` and `scripts/`, 55 modules and 29 dependencies
+cruised. That includes all five TypeScript fixtures
+(`samples/typescript{,-clean,-strict}`, `samples/knip{,-clean}`) and the three
+further sample directories that carry TypeScript for other gates
+(`samples/format`, `samples/policy`, `samples/semgrep`).
+
+**The known-violations baseline: verified, with one gap the docs do not
+mention.** The issue flagged this as research-claimed and told the next session
+to check it, which was the right instinct — it is real and it is native.
+`depcruise-baseline` writes `.dependency-cruiser-known-violations.json`;
+`--ignore-known` then exits 0 and prints `2 known violations ignored` rather
+than hiding them. The property that matters was tested directly: with the
+baseline in place, a **newly introduced** cycle still fails, exit 1. So
+day-one adoption on a legacy tree is a generated file, not a cleanup sprint.
+
+The gap: when a baselined cycle is **fixed**, the ignored count silently drops
+from 2 to 1 and nothing says the entry is now dead. A stale entry re-permits
+that exact cycle if it ever returns. Upstream's documentation does not address
+stale entries at all, and separately warns that the file format and command
+ergonomics "might still shift a bit" without a major version bump. Both are
+costs charged to this tool's verdict, and both point the same way: the baseline
+needs an external ratchet, the way the deptry gate already ratchets.
+
+**Real code — and the measurement trap that nearly produced a fake zero.** The
+first run over Consumer A's TypeScript workspace reported 0 cycles over 465
+dependencies. It was worthless. With dependency-cruiser's usual
+`doNotFollow: node_modules`, every import of a workspace-internal package
+resolves into `node_modules` and is pruned — **85 dependency edges across 84
+modules came back `couldNotResolve`, and the cross-package graph was entirely
+invisible**. A monorepo scanned that way measures each package alone and reports
+a zero it never looked for. Configured to follow workspace links into their real
+sources and nothing else, the same tree resolves **0 unresolved edges** and
+**66 cross-package edges**. This is §2m's 27.19% row wearing different clothes:
+the number changed because the denominator was wrong, not because the code did.
+
+| Corpus + scope | Modules / deps | Cross-pkg edges | Findings | Density |
+|---|---|---|---|---|
+| Consumer A TS workspace, non-test `.ts/.tsx` (no `node_modules`/`dist`/`.d.ts`), 30,618 lines / 129 files | 185 / 504 | 66 | **0** | **0.00/KLOC** |
+| Consumer B TS monorepo, same scope rule, 16,591 lines / 161 files | 191 / 293 | 2 | **0** | **0.00/KLOC** |
+| **both, 47,209 non-test lines** | **376 / 797** | **68** | **0** | **0.00/KLOC** |
+
+**The zeros are real zeros, not a dead config.** The exact configuration used on
+the consumers, pointed back at the probe corpus, fires on every cycle in it —
+cases A and C plus the one added for the baseline probe below. Both consumer
+working trees were verified unmodified after every run.
+
+**Cost.** 1.5 MB, 18 runtime dependencies, MIT, a standalone Node CLI that
+touches no network — it passes §0's private-consumer test outright. It declares
+**no `typescript` dependency or peer** at all, detecting the compiler at runtime
+instead, which avoids the trap `eslint-plugin-sonarjs` walked into (§3a: a hard
+`typescript` dependency that will conflict the day a consumer moves to 6.1).
+One full cross-package scan of Consumer A's workspace takes **1.01 s**.
+
+**And the third way this tool can report a zero it never earned.** Runtime
+detection has a floor: dependency-cruiser wants `typescript >=2.0.0 <7.0.0`, and
+with no compatible compiler resolvable it does not fail — it prints
+`0 modules, 0 dependencies cruised`, exits **0**, and mentions the missing
+transpiler in a footnote. That is measured, because it is how this evaluation's
+first run went: the tool was invoked in a directory where it could not resolve
+the compiler, and reported a clean scan of nothing. Upstream states TS 7 support
+"will follow when its API is published and stable", and STATUS §4 already tracks
+TS 7 as the thing blocking Layer 1 TypeScript adoption elsewhere. So a wired-in
+gate must assert the module count it expects, not merely the exit code — the
+same lesson as `-Werror` suppressing Error Prone (STATUS §4): **"the gate is
+green" and "the analysis ran" are separate claims.**
+
 ## 3. Verdict
 
 ### 3a. Adopt: one plugin, conditionally
@@ -1077,6 +1215,94 @@ convention; the measurement is banked here either way, and per CLAUDE.md §4
 that widening is an explicit owner decision, not something this evaluation
 implements.
 
+### 3g. Adopt: dependency-cruiser, one rule, conditionally (2026-08-18, issue #109)
+
+> **`dependency-cruiser@18.2.0`, the `no-circular` rule and nothing else,
+> default-on, with workspace-following resolution as part of the shipped config
+> rather than an option.**
+
+**Wiring is a separate issue, per the knip and deptry precedent.** This section
+decides *whether*, on the evidence in §2q; the fixture, the npm scripts, the CI
+job and the required contexts on both branches are that issue's work.
+
+**All three admission tests, named individually as CONTEXT.md requires.**
+*Detection proof:* the controls table in §2q — a file that crashes under `node`
+while `tsc` and the full ESLint layer both report zero. *Adoption-cost proof:*
+0 findings over 47,209 non-test lines across both TypeScript consumers, so
+adoption is a config file and no consumer has anything to clean up first.
+*In-house demand:* satisfied before this evaluation started and unchanged by it
+— TypeScript is the largest consumer surface, two of the consuming repos are
+built on it, and the issue recorded that when it was filed. Only the first two
+were open questions, which is why §2q spends its length there.
+
+The four conditions are each measured, not precautionary:
+
+- **`no-circular` only — not the `--init` recommended preset.** Every number in
+  §2q was taken with exactly one rule loaded, and the ablation proves the
+  findings belong to it. The rest of the preset is unmeasured, and an unmeasured
+  ruleset arriving as a side effect of adopting a measured one is how a gate
+  starts reporting things nobody chose.
+- **The config must follow workspace links.** This is not tuning, it is the
+  difference between a gate and a decoration: with the conventional
+  `doNotFollow: node_modules`, Consumer A's cross-package graph vanished
+  entirely — 85 unresolved edges, 66 edges never looked at, and a clean bill of
+  health that meant nothing. A shipped config that can report zero without
+  having scanned anything is worse than no config.
+- **The baseline is documented, not used.** Both consumers start green, so no
+  grandfathering file is needed today. When one is, §2q's stale-entry gap means
+  it needs an external ratchet — a regenerate-and-diff, the shape the deptry
+  gate already has.
+- **The gate must assert its module count, not just its exit code.** Two
+  distinct configurations in §2q produced an exit-0 "clean" run over a graph the
+  tool never built — a pruned `node_modules` and an unresolvable compiler. Both
+  are silent by design, and a green check that means "nothing was scanned" is
+  the one failure this baseline has already been bitten by twice
+  (`--changed-only`, `-Werror` vs Error Prone).
+
+**What makes it clear the bar that nine other candidates did not.** Every
+decline in §3c and §3f failed on *noise*: vulture at 37.7/KLOC and flagging the
+clean fixture, PMD scoring 0 of 8 while flagging clean code, SpotBugs adding a
+second tool for **0** marginal catch. None of those failure modes is present
+here. The marginal catch is total — a crashing file that `tsc` and the full
+ESLint layer both pass — and the cost side is 0 findings on 47,209 lines of
+real TypeScript, 0 on every `.ts` file this repo ships, 0 on both adversarial
+type-only cases, in 1.01 s.
+
+**The honest objection, stated plainly: there are no confirmed true positives on
+real code.** knip was adopted on 6 verified TPs, deptry on 1, SonarJS on five
+bug classes with a real-code noise run behind it. This has none — both
+consumers are cycle-free today, so nothing it would have caught has actually
+slipped through. That is the same shape as Ruff `C90`, which §3f **declined**
+with the words "zero cost, zero noise — and zero findings".
+
+Three things separate the two, and they are why this one lands the other way:
+
+1. **`C90` is a threshold on a continuous metric; this is a binary structural
+   property with a demonstrated fatal consequence.** §2n's literature denies
+   complexity metrics any predictive claim beyond length. No literature is
+   needed here: case A crashes, in this document, at a named line.
+2. **The existing layer already covers what `C90` would have caught, and covers
+   none of this.** `C90` overlapped a ruleset measured against the consumer's
+   own thirteen families. `no-circular` overlaps nothing — measured, twice, at
+   0 findings from both `tsc` and ESLint on a file that cannot be imported.
+3. **The cost of installing it is monotonically increasing.** Cycles accrete one
+   import at a time and the crash surfaces later, elsewhere, in someone else's
+   change. Today both consumers are at zero and adoption is a config file;
+   every year that is not true, adoption is a baseline file and an argument.
+
+**What would reverse this.** A consumer tree where the rule fires on cycles that
+are all benign and none removable — the case-C class at volume, which would make
+this a gate that forbids working code. That is the measurement to take before
+adding a third TypeScript consumer, not after. Repo count, popularity and "every
+big project bans cycles" remain not evidence.
+
+**And the one number to re-take at wiring time.** 0.00/KLOC is a *today* number
+on two codebases. If the fixture in the wiring issue is the only thing that ever
+fails this gate, that is the expected outcome and not a defect — but it also
+means the gate's whole value is the tripwire, so the fixture had better prove
+both directions properly, and the clean control had better keep the type-only
+cases in it.
+
 ---
 
 ## 4. What was run, and where
@@ -1155,3 +1381,60 @@ aggregates is deliberately unpublished.
 - [Roslyn IDE0051](https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/style-rules/ide0051) · [Roslynator RCS1213 source](https://github.com/dotnet/roslynator/blob/main/src/Analyzers/CSharp/Analysis/UnusedMember/UnusedMemberAnalyzer.cs) · [PublicApiAnalyzers help](https://github.com/dotnet/roslyn-analyzers/blob/main/src/PublicApiAnalyzers/PublicApiAnalyzers.Help.md) · [NDepend dead-code rule](https://www.ndepend.com/docs/detect-and-remove-dead-code) · [ReSharper CLT / InspectCode](https://www.jetbrains.com/help/resharper/ReSharper_Command_Line_Tools.html) — the §2o gap
 - [Ruff C901](https://docs.astral.sh/ruff/rules/complex-structure/) · [mccabe max-complexity default 10](https://docs.astral.sh/ruff/settings/#lint_mccabe_max-complexity)
 - §2n literature: [Juergens et al. 2009](https://dl.acm.org/doi/10.1109/ICSE.2009.5070547) · [Göde & Koschke 2011](https://ieeexplore.ieee.org/document/6032470) · [Rahman, Bird & Devanbu 2012](https://link.springer.com/article/10.1007/s10664-011-9195-3) · [Kapser & Godfrey 2008](https://link.springer.com/article/10.1007/s10664-008-9076-6) · [Sajnani et al. 2014](https://ieeexplore.ieee.org/document/6975632/) · [Saini et al. 2018](https://link.springer.com/article/10.1007/s10664-017-9572-7) · [Shepperd 1988](https://digital-library.theiet.org/doi/10.1049/sej.1988.0003) · [Jay et al. 2009](https://content.scirp.org/pdf/jsea20090300001_74742661.pdf) · [Herraiz & Hassan 2010](https://www.oreilly.com/library/view/making-software/9780596808310/ch08.html) · [Landman et al. 2016](https://onlinelibrary.wiley.com/doi/abs/10.1002/smr.1760) · [Campbell, Cognitive Complexity](https://www.sonarsource.com/docs/CognitiveComplexity.pdf) · [Muñoz Barón et al. 2020](https://arxiv.org/abs/2007.12520) · [Lavazza et al. 2023](https://www.sciencedirect.com/science/article/abs/pii/S0164121222002370) · [GitClear 2025](https://www.gitclear.com/ai_assistant_code_quality_2025_research) · [Pearce et al. 2022](https://www.computer.org/csdl/proceedings-article/sp/2022/131600a980/1FlQxERjKCs) · [Perry et al. 2023](https://arxiv.org/abs/2211.03622) · [METR 2025](https://arxiv.org/abs/2507.09089) · [He et al. 2025](https://arxiv.org/pdf/2511.04427) · [Uplevel 2024](https://uplevelteam.com/blog/ai-for-developer-productivity) · [DORA 2024 via Google Cloud](https://cloud.google.com/devops/state-of-devops)
+
+---
+
+### 4c. Provenance for §2q and §3g (2026-08-18, issue #109)
+
+Same machine as §4; Node 24.18.1. **Tool version:** dependency-cruiser 18.2.0
+(MIT, 1.5 MB, 18 runtime dependencies, `engines: node ^22||^24||>=26`, no
+`typescript` dependency or peer — it detects the compiler at runtime). Every
+run in §2q, the probe scans and both consumer scans alike, resolved
+**TypeScript 6.0.3** — the version this repo pins, and the version both
+TypeScript consumers had installed on the day of measurement. Since the tool's
+graph accuracy depends on which compiler it finds, that is recorded here rather
+than assumed: a rerun resolving a different compiler is a different measurement.
+
+**The probe corpus lives outside the repository** (scratch space): five cases
+plus a manifest, written before the first tool ran, each case marked softball or
+adversarial with its required verdict recorded up front. Two cases are later
+additions and are recorded as such rather than back-dated — case E, after case B
+returned silent, to test whether that silence survives without
+`verbatimModuleSyntax`; and a sixth cycle added to the case-A tree solely to
+test whether a baselined run still fails on something new. The shipped files
+were scanned **in place** with the rule config held outside the repo — one pass
+over `configs/`, `samples/` and `scripts/`, which is every `.ts` file this repo
+ships — and `git status --porcelain` was verified clean afterwards. Nothing in
+`configs/`, `semgrep/`, `scripts/` or `samples/` was changed to produce §2q.
+
+**Baseline controls re-run 2026-08-18:** `verify:ts` → 14 errors ·
+`verify:ts:clean` → 0 · `verify:ts:types` → 12 diagnostics ·
+`verify:knip:clean` → clean.
+
+**Controls run on every case:** `tsc --noEmit` against
+`configs/typescript/tsconfig.strict.json` → 0 diagnostics; the shipped
+`configs/typescript/eslint.config.mjs` → 0 findings; `node` on the emitted
+JavaScript → case A only, `ReferenceError: Cannot access 'aLabel' before
+initialization`. Ablation held resolution, tsconfig and exclusions constant and
+removed only the rule.
+
+**Baseline probe:** `depcruise-baseline` writes
+`.dependency-cruiser-known-violations.json` (2 entries); `--ignore-known` →
+exit 0, "2 known violations ignored"; a newly added cycle with that baseline in
+place → exit 1; a baselined cycle repaired → ignored count 2 → 1, with no
+stale-entry warning.
+
+**Real-code scans:** the file-selection rule and line counts sit in the §2q
+table rows themselves. Counts were taken from the JSON reporter, never console
+output (§5 of STATUS.md, standing lesson). The first configuration's
+`couldNotResolve` count is reported in §2q because a scan that resolves nothing
+reports zero, and that near-miss is the more useful half of the measurement.
+Both consumer working trees were verified unmodified after every run. Per the
+pseudonym rule, no package name, scope, path or finding detail from either
+consumer appears here — the aggregates are the whole publishable result, and a
+zero de-anonymises nobody.
+
+**External sources** (checked 2026-08-18):
+
+- [dependency-cruiser CLI — known violations](https://github.com/sverweij/dependency-cruiser/blob/main/doc/cli.md) — `--ignore-known` / `--no-ignore-known`, `depcruise-baseline`, the default `.dependency-cruiser-known-violations.json` filename, and the stated caveat that the file format and command ergonomics "might still shift a bit" without a major version bump. Stale or no-longer-valid entries are not addressed by the documentation.
+- [dependency-cruiser rules reference](https://github.com/sverweij/dependency-cruiser/blob/main/doc/rules-reference.md) — `to.circular`, `dependencyTypes`, and the resolution options that decide whether workspace-internal packages enter the graph
