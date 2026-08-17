@@ -73,6 +73,14 @@ BASELINE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # check-pins.sh now asserts all THREE agree. Bump them together or it fails.
 SEMGREP_PIN="1.172.0"
 
+# AND THE INTERPRETER IS PINNED WITH IT. A bare `uvx semgrep==<pin>` resolves an
+# interpreter from the host, which is the same undeclared ambient dependency
+# that made CI unable to install this pin at all on a stock macOS runner (#131,
+# scripts/install-semgrep.sh). uv fetches this version rather than hoping the
+# machine has it, so a local scan and CI agree on the interpreter as well as on
+# the tool. Same 3.12 install-semgrep.sh uses — bump them together.
+UVX_PYTHON="3.12"
+
 # --- argument parsing --------------------------------------------------------
 TARGET=""
 CHANGED_ONLY=0
@@ -203,8 +211,8 @@ resolve_tool() {
   fi
 
   if [[ "$uvx_pkg" != "-" ]] && have uvx; then
-    info "$bin not installed; running via uvx"
-    RESOLVED_CMD=(uvx "$uvx_pkg")
+    info "$bin not installed; running via uvx on Python $UVX_PYTHON"
+    RESOLVED_CMD=(uvx --python "$UVX_PYTHON" "$uvx_pkg")
     RESOLVED_ROOT="$TARGET"
     return 0
   fi
