@@ -2084,6 +2084,16 @@ jobs:
           [[ -n "$VER" ]] || { echo '::error::could not read SEMGREP_PIN'; exit 1; }
 
           S=/tmp/shim-old; rm -rf "$S"; mkdir -p "$S"
+          # A HERMETIC PATH, and it is the whole test rather than tidiness.
+          # /usr/bin on a GitHub runner holds a real python3.12: leave it on
+          # PATH and the ladder finds an adequate interpreter, installs happily,
+          # and this step passes while asserting nothing — the premise it exists
+          # to set up (a host with NO adequate interpreter) silently never held.
+          # It passes on macOS either way, which is exactly how a test like this
+          # rots. Only the utilities install-semgrep.sh actually uses are linked.
+          for u in bash env mkdir head cat chmod grep sed; do
+            ln -sf "$(command -v "$u")" "$S/$u"
+          done
           # A python3 that reports 3.9.6 and records any attempt to use it as an
           # installer. Apple's interpreter, as it presents on a stock macOS box.
           cat > "$S/python3" <<'SH'
@@ -2096,7 +2106,7 @@ jobs:
           : > /tmp/old-python-used.log
 
           rc=0
-          env PATH="$S:/usr/bin:/bin" ./scripts/install-semgrep.sh "$VER" /tmp/b1 \
+          env PATH="$S" ./scripts/install-semgrep.sh "$VER" /tmp/b1 \
             > /tmp/old.log 2>&1 || rc=$?
           cat /tmp/old.log
           [[ $rc -ne 0 ]] || { echo '::error::an inadequate interpreter was accepted'; exit 1; }
@@ -2121,6 +2131,9 @@ jobs:
           VER=$(sed -n 's/^SEMGREP_PIN="\([0-9.]*\)".*/\1/p' scripts/scan.sh | head -1)
           PY=$(sed -n 's/^PINNED_PYTHON="\([0-9.]*\)".*/\1/p' scripts/install-semgrep.sh | head -1)
           S=/tmp/shim-uv; rm -rf "$S"; mkdir -p "$S"
+          for u in bash env mkdir head cat chmod grep sed; do
+            ln -sf "$(command -v "$u")" "$S/$u"
+          done
           cat > "$S/python3" <<'SH'
           #!/usr/bin/env bash
           [[ "$1" == "-V" ]] && echo "Python 3.9.6" && exit 0
@@ -2137,7 +2150,7 @@ jobs:
           SH
           chmod +x "$S/python3" "$S/uv"; : > /tmp/uv.log
 
-          env PATH="$S:/usr/bin:/bin" ./scripts/install-semgrep.sh "$VER" /tmp/b2
+          env PATH="$S" ./scripts/install-semgrep.sh "$VER" /tmp/b2
           cat /tmp/uv.log
           # THE PINNED INTERPRETER IS READ BACK FROM THE SCRIPT, not written out
           # here — a hardcoded copy is the same two-sources-of-truth bug the pin
@@ -2160,6 +2173,9 @@ jobs:
           set -Eeuo pipefail
           VER=$(sed -n 's/^SEMGREP_PIN="\([0-9.]*\)".*/\1/p' scripts/scan.sh | head -1)
           S=/tmp/shim-pipx; rm -rf "$S"; mkdir -p "$S"
+          for u in bash env mkdir head cat chmod grep sed; do
+            ln -sf "$(command -v "$u")" "$S/$u"
+          done
           # The self-hosted macOS shape after someone installs a newer Python
           # but leaves /usr/bin/python3 as the default: both exist, and the
           # ladder has to pick the one that can actually satisfy the pin.
@@ -2182,7 +2198,7 @@ jobs:
           SH
           chmod +x "$S/python3" "$S/python3.12" "$S/pipx"; : > /tmp/pipx.log
 
-          env PATH="$S:/usr/bin:/bin" ./scripts/install-semgrep.sh "$VER" /tmp/b3
+          env PATH="$S" ./scripts/install-semgrep.sh "$VER" /tmp/b3
           cat /tmp/pipx.log
           grep -q -- "--python python3.12" /tmp/pipx.log || {
             echo '::error::pipx inherited the ambient interpreter instead of the adequate one'; exit 1; }
@@ -2193,6 +2209,9 @@ jobs:
           # pin exists to prevent, and it would otherwise surface as rules that
           # quietly stopped existing.
           W=/tmp/shim-wrong; rm -rf "$W"; mkdir -p "$W"
+          for u in bash env mkdir head cat chmod grep sed; do
+            ln -sf "$(command -v "$u")" "$W/$u"
+          done
           cat > "$W/python3" <<'SH'
           #!/usr/bin/env bash
           [[ "$1" == "-V" ]] && echo "Python 3.12.7" && exit 0
@@ -2205,7 +2224,7 @@ jobs:
           SH
           chmod +x "$W/python3" "$W/uv"
           rc=0
-          env PATH="$W:/usr/bin:/bin" ./scripts/install-semgrep.sh "$VER" /tmp/b4 \
+          env PATH="$W" ./scripts/install-semgrep.sh "$VER" /tmp/b4 \
             > /tmp/wrong.log 2>&1 || rc=$?
           cat /tmp/wrong.log
           [[ $rc -ne 0 ]] || { echo '::error::a semgrep other than the pin was accepted'; exit 1; }
