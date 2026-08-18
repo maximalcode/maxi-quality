@@ -9,6 +9,10 @@
 > stayed private (CLAUDE.md §2). They record what was decided and when. They are
 > **not** this repo's issue numbers — the public tracker starts fresh at #1, so
 > any overlap is coincidence.
+>
+> **2026-08-18:** detection is settled and is not re-run. A separate
+> **presentation-layer** eval is pre-registered under the milestone *sonarqube —
+> presentation layer, measured*; §1b carries the hosting note.
 
 This answers one question: *is hand-rolling this baseline better than just
 running free SonarQube?* Everything asserted about Sonar's edition boundaries
@@ -95,6 +99,15 @@ with a database is a real recurring tax — call it 1–2 h/month plus the
 occasional bad migration.** The baseline's equivalent tax is ~0, and its
 `--require-tools` flag means the failure mode is a loud skip rather than silent
 non-coverage.
+
+> **Superseded 2026-08-18 — the hosting premise, not the conclusion.** This
+> section costed a server that did not exist, so every figure here was
+> hypothetical. A self-hosted instance exists now, which makes the presentation
+> layer measurable rather than theoretical. It changes **none** of §1c, §1d, §1f
+> or §1g — those are analysis-capability gaps invariant to hardware. The
+> monthly-upgrade, no-LTA, no-backport tax is unchanged too: an instance gives
+> that cost a home, it does not reduce it. Quantifying it is Q4 of the
+> pre-registered eval.
 
 ### 1c. Branch and PR analysis — this is decisive
 

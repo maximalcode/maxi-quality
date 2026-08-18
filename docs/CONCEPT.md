@@ -321,6 +321,13 @@ trigger is **void**. Reaching three consumers is not a reason to build it; only
 new evidence would be. Full measurement in
 [`EVAL-vs-sonarqube.md`](EVAL-vs-sonarqube.md).
 
+**Re-opened for the presentation layer only, 2026-08-18.** Detection is settled
+and is not re-run — the 1-of-8 result above stands. What is being measured is
+the layer §11 substitutes for: dashboard, new-code period, report import and
+connected-mode editor findings, under the milestone *sonarqube — presentation
+layer, measured*. The standing answer stays **no** until that eval reports
+numbers against a bar written before it ran.
+
 ---
 
 ## 7. The reusable CI workflow
