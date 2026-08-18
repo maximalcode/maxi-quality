@@ -1939,6 +1939,136 @@ jobs:
           fi
           echo 'OK: a missing report is an error'
 
+  # Patch coverage — the number the aggregate ratchet cannot see (#112, #123).
+  #
+  # samples/coverage/patch is a change that adds an entirely untested function
+  # to a well-covered repo. This job asserts that the aggregate ratchet PASSES
+  # it. That reads backwards and is the point: a fixture that failed the
+  # aggregate would prove nothing about changed lines, and the first way this
+  # evidence rots is somebody "fixing" the fixture until the ratchet goes red.
+  #
+  # It also runs the pinned diff-cover against the identical input. Two
+  # independent implementations agreeing with a hand-count is what
+  # docs/EVAL-vs-diff-cover.md rests on, and a decision recorded from a run
+  # nobody repeats is a claim, not evidence.
+  patch-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Both implementations, both formats, against the hand-count
+        shell: bash
+        run: scripts/patch-coverage-demo.sh
+
+      - name: The defect itself — a green aggregate over 0.00% changed lines
+        shell: bash
+        run: |
+          set -uo pipefail
+          F=samples/coverage/patch/floor.json
+
+          for report in lcov.info cobertura.xml; do
+            out=$(python3 scripts/coverage.py --report "samples/coverage/patch/$report" \
+                    --floor-file "$F" --diff-file samples/coverage/patch/changed.diff 2>/dev/null)
+            rc=$?
+            [[ "$rc" == "0" ]] || {
+              echo "::error::the ratchet exited $rc on $report — the fixture must PASS the aggregate"; exit 1; }
+            # status=ok and coverage=94.95 are the step above's job — it runs
+            # first in this job and stops it dead. What is asserted here is the
+            # machine-readable half the demo does not read: the exact keys the
+            # composite action will hand to $GITHUB_OUTPUT.
+            grep -qx 'patch_coverage=0.00' <<<"$out" || {
+              echo "::error::$report reported the wrong patch number"; echo "$out"; exit 1; }
+            grep -qx 'patch_lines_found=4' <<<"$out" || {
+              echo "::error::$report measured the wrong number of changed lines"; echo "$out"; exit 1; }
+          done
+          echo 'OK: the aggregate is green, the four lines it added are untested, both formats say so'
+
+      - name: Nothing measurable is n/a — never 0%, never 100%
+        shell: bash
+        run: |
+          set -uo pipefail
+          F=samples/coverage/patch/floor.json
+          patch() {
+            python3 scripts/coverage.py --report samples/coverage/patch/lcov.info \
+              --floor-file "$F" --diff-file "$1" 2>/dev/null | sed -n 's/^patch_coverage=//p'
+          }
+
+          # A docs-only change, and a change that added nothing at all. Both
+          # have zero measurable added lines, and a percentage is not an answer
+          # to a question with no denominator: 0% gates on something no test can
+          # fix, 100% gates on a lie. Either one gets the gate switched off.
+          for diff in samples/coverage/patch/docs-only.diff /dev/null; do
+            got=$(patch "$diff")
+            [[ "$got" == "n/a" ]] || {
+              echo "::error::$diff reported patch_coverage=$got, expected n/a"; exit 1; }
+          done
+
+          # And the covered case still computes, so `n/a` is not just what this
+          # script always says.
+          got=$(patch samples/coverage/patch/partial.diff)
+          [[ "$got" == "33.33" ]] || {
+            echo "::error::the partially-covered diff reported $got, expected 33.33"; exit 1; }
+          echo 'OK: no denominator is n/a, and a real denominator still divides'
+
+      - name: A diff that cannot be parsed is an error, not a passing gate
+        shell: bash
+        run: |
+          set -uo pipefail
+          run() {
+            python3 scripts/coverage.py --report samples/coverage/patch/lcov.info \
+              --floor-file samples/coverage/patch/floor.json --diff-file "$1" >/dev/null 2>&1
+            echo $?
+          }
+
+          [[ "$(run /does/not/exist.diff)" == "3" ]] || {
+            echo '::error::a missing diff did not error'; exit 1; }
+
+          printf '+++ b/x.ts\n@@ this is not a hunk header @@\n+const a = 1;\n' > /tmp/bad.diff
+          [[ "$(run /tmp/bad.diff)" == "3" ]] || {
+            echo '::error::an unparseable hunk header was accepted — every added line would silently vanish'; exit 1; }
+
+          # A hunk holding fewer lines than it declared is a truncated diff. Its
+          # missing added lines would otherwise be counted as "not added at
+          # all", which reads as a smaller denominator and a better score.
+          printf '+++ b/x.ts\n@@ -1,2 +1,9 @@\n+const a = 1;\n' > /tmp/short.diff
+          [[ "$(run /tmp/short.diff)" == "3" ]] || {
+            echo '::error::a hunk shorter than its header was accepted'; exit 1; }
+
+          # And the ambiguity that makes the hunk lengths necessary: a change
+          # adding a line that begins with `++` emits `+++ x`, which is a file
+          # header by prefix and an added line by position. Both of these lines
+          # are line 62-63 of the fixture, which the report measures at 0 hits.
+          {
+            printf 'diff --git a/samples/coverage/patch/src/rollup.ts b/samples/coverage/patch/src/rollup.ts\n'
+            printf -- '--- a/samples/coverage/patch/src/rollup.ts\n+++ b/samples/coverage/patch/src/rollup.ts\n'
+            printf '@@ -62,2 +62,4 @@\n+++ marker\n+const x = 1;\n'
+            printf ' export function medianAbsoluteDeviation(values: readonly number[]): number {\n'
+            printf '   const middle = percentile(values, 50);\n'
+          } > /tmp/plusplus.diff
+          got=$(python3 scripts/coverage.py --report samples/coverage/patch/lcov.info \
+                  --floor-file samples/coverage/patch/floor.json \
+                  --diff-file /tmp/plusplus.diff 2>/dev/null | sed -n 's/^patch_lines_found=//p')
+          [[ "$got" == "2" ]] || {
+            echo "::error::a diff adding a ++ line measured $got added lines, expected 2"; exit 1; }
+          echo 'OK: an unreadable diff errors instead of reporting a number for it'
+
+      - name: The ratchet output is unchanged when no diff is passed
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # The composite action parses this stdout into $GITHUB_OUTPUT. Every
+          # consumer on @v1 runs without --diff-file, and must see exactly what
+          # it saw before patch coverage existed.
+          out=$(python3 scripts/coverage.py --report samples/coverage/patch/lcov.info \
+                  --floor-file samples/coverage/patch/floor.json 2>/dev/null)
+          if grep -q '^patch_' <<<"$out"; then
+            echo '::error::patch_* outputs appeared without --diff-file'; echo "$out"; exit 1
+          fi
+          diff <(printf 'coverage=94.95\nfloor=95.00\nlines_hit=7600\nlines_found=8004\nraised=false\nstatus=ok\n') \
+               <(printf '%s\n' "$out") || {
+            echo '::error::the ratchet output changed shape'; exit 1; }
+          echo 'OK: without --diff-file the output is byte-for-byte what it was'
+
   # The three tool ladders are now ONE function. This job is what stops them
   # drifting apart again — the last time they did, the docker path set semgrep's
   # working directory and the native path did not, so `--changed-only` reported
