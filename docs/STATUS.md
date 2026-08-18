@@ -102,7 +102,10 @@ hooks/pre-commit          OPT-IN hook (#40): gitleaks on the staged diff, semgre
                           `adopt.sh --hooks`; bash 3.2, because macOS
 scripts/check-pins.sh     bump policy (#13): pin consistency + upstream drift
 scripts/quality-report.py renders the standing-report issue body (no network)
-scripts/coverage.py       coverage ratchet: lcov + Cobertura vs a committed floor
+scripts/coverage.py       coverage ratchet: lcov + Cobertura vs a committed floor,
+                          and --diff-file: coverage of the lines a diff ADDED,
+                          which the aggregate cannot see (#112). Reports it;
+                          does not gate on it
 scripts/check-expected.py diffs a tool's JSON output against a committed manifest
 scripts/deadcode-gate.py  turns knip/deptry output into a VERDICT: which issue types
                           may fail a build, and the changed-only ratchet applied to
@@ -251,6 +254,10 @@ python3 scripts/coverage.py --report samples/coverage/lcov.info \
         --floor-file /tmp/f.json         # expect coverage=65.00
 python3 scripts/coverage.py --report samples/coverage/cobertura.xml \
         --floor-file /tmp/f.json         # expect coverage=75.00
+./scripts/patch-coverage-demo.sh         # expect exit 0: the aggregate ratchet
+                                         # green on samples/coverage/patch while
+                                         # its four added lines measure 0.00%,
+                                         # from two implementations (needs pip)
 python3 scripts/quality-report.py --json /tmp/semgrep.json --date 2026-01-01 \
         --sbom samples/sbom/cyclonedx.json   # expect MIT 2 / Apache-2.0 1 /
                                              # "MIT OR Apache-2.0" 1 / UNKNOWN 2

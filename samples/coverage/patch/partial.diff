@@ -1,0 +1,31 @@
+diff --git a/samples/coverage/patch/src/rollup.ts b/samples/coverage/patch/src/rollup.ts
+index 5555555..2222222 100644
+--- a/samples/coverage/patch/src/rollup.ts
++++ b/samples/coverage/patch/src/rollup.ts
+@@ -47,8 +47,8 @@
+   if (samples.length === 0) {
+     return 0;
+   }
+-  let failed = 0;
+-  return samples.reduce((n, s) => (s.ok ? n : n + 1), failed) / samples.length;
++  const failed = samples.filter((sample) => !sample.ok).length;
++  return failed / samples.length;
+ }
+ 
+ export function slowest(samples: readonly Sample[], limit: number): Sample[] {
+@@ -56,6 +56,15 @@
+   return ordered.slice(0, limit);
+ }
+ 
++/**
++ * Added by the fixture change: computes the median absolute deviation.
++ */
++export function medianAbsoluteDeviation(values: readonly number[]): number {
++  const middle = percentile(values, 50);
++  const spread = values.map((value) => Math.abs(value - middle));
++  return percentile(spread, 50);
++}
++
+ export function rollup(samples: readonly Sample[]): Rollup {
+   const durations = samples.map((sample) => sample.ms);
+   return {

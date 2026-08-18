@@ -119,6 +119,13 @@ wearing the costume of rigour:
 - **`eslint-plugin-sonarjs` was measured and ADOPTED** (#11) — five bug classes
   typescript-eslint has no rule for, zero findings on the clean fixtures. Nine
   of ten candidates were declined; one was not.
+- **`diff-cover` tied on detection and was still not adopted as a dependency**
+  (#123, `docs/EVAL-vs-diff-cover.md`). It agrees with `scripts/coverage.py`
+  line for line on `samples/coverage/patch`, and lost on what it costs to hold:
+  six packages and a PyPI install on every consumer's gate, and it cannot read
+  lcov and Cobertura in one run — which is the shape of Consumer A. It stays as
+  the cross-check CI runs against our own number. A tie on detection is decided
+  by cost, not by preference for our own code.
 
 **One correction to a claim this file used to make.** It said the free Semgrep
 registry "ships no C# rules". That is true of **`p/security-audit` specifically**
