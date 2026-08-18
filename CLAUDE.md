@@ -128,6 +128,15 @@ rules and `p/csharp` is a 27-rule C# pack (`EVAL-vs-oss-tools.md` §2d). Neither
 changes the verdict, and both are worth stating correctly, because a wrong
 reason for a right decision is how the decision gets overturned later.
 
+**Infrastructure artifacts follow the same rule as consumer identity.** The
+presentation-layer eval commits compose and scanner config so the run is
+reproducible. Those artifacts carry **placeholder hosts and no credentials**,
+runs are against `samples/` only, and no consumer repo is scanned, connected or
+named. The deployment itself — real hostnames, tokens, which repos are wired,
+backup and restore — is **not published here**. The recipe is public; the
+deployment is not. §2 has always covered *who the consumers are*; this covers
+*where the analysis runs*, which the pseudonym rules do not reach.
+
 **Free/OSS only still holds.** Public makes branch protection free, which is the
 one thing that was genuinely blocked on spend. It does not relax §5.
 

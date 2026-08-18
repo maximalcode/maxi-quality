@@ -235,7 +235,9 @@ one language at a time, when someone has the week to spend on it.
 - **There is no dashboard.** SonarQube CE was measured and dropped: 1 of 8
   planted TypeScript bugs, and no rule id for `no-floating-promises`
   ([the evaluation](docs/EVAL-vs-sonarqube.md)). A weekly report written into a
-  GitHub issue replaced it.
+  GitHub issue replaced it. Detection is settled; whether a presentation layer
+  is worth adding is being measured separately, and until it reports, the
+  answer is still no.
 - **Java is Maven only, and Gradle fails loud rather than skipping.** Gradle
   gets built when a Gradle consumer exists
   ([#10](https://github.com/maximalcode/maxi-quality/issues/10)).
