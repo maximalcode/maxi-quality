@@ -312,7 +312,7 @@ one language at a time, when someone has the week to spend on it.
 | look up an input, flag or rule id | [`docs/REFERENCE.md`](docs/REFERENCE.md) |
 | know why it is shaped this way | [`docs/CONCEPT.md`](docs/CONCEPT.md) |
 | see what is proven, and what it cost | [`docs/STATUS.md`](docs/STATUS.md) |
-| check the tool choices against the field | [`docs/EVAL-vs-oss-tools.md`](docs/EVAL-vs-oss-tools.md) · [`docs/EVAL-vs-sonarqube.md`](docs/EVAL-vs-sonarqube.md) |
+| check the tool choices against the field | [`docs/EVAL-vs-oss-tools.md`](docs/EVAL-vs-oss-tools.md) · [`docs/EVAL-vs-sonarqube.md`](docs/EVAL-vs-sonarqube.md) · [`docs/EVAL-vs-diff-cover.md`](docs/EVAL-vs-diff-cover.md) |
 | change something here | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 
 Anything still to be built lives in the

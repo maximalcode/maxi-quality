@@ -192,7 +192,8 @@ maxi-quality/
 └── scripts/
     ├── adopt.sh                  # bootstrap a repo: detect languages, copy stubs
     ├── check-pins.sh             # bump policy: pin consistency + upstream drift
-    ├── coverage.py               # coverage ratchet (§12) — lcov + Cobertura
+    ├── coverage.py               # coverage ratchet (§12) — lcov + Cobertura,
+    │                             #   plus --diff-file patch coverage
     ├── policy.py                 # resolve a consumer's .maxi-quality.yml (§13)
     ├── quality-report.py         # renders the standing report body (§11)
     └── scan.sh                   # run full Layer 2 locally (semgrep+gitleaks+osv)
@@ -455,6 +456,18 @@ question: *did this change make it worse?*
 - A broken coverage run, a missing report and an unparseable floor are all
   **errors**, never passes. Each one otherwise turns the ratchet permanently
   green, which is the shape of every gate bug this repo has actually hit.
+- **The aggregate cannot see a new untested function**, and that is not fixable
+  by tuning it: four uncovered lines against 8,000 move the number by 0.05pp,
+  inside the tolerance that exists so refactors do not fire it.
+  `samples/coverage/patch` is that change, committed, with the ratchet green on
+  it. `--diff-file` reports the number that does see it — the added lines of a
+  unified diff intersected with the per-line hits the reports already carry.
+  It reports; it does not gate. Building that rather than depending on
+  `diff-cover` was decided by running both against the fixture:
+  [`EVAL-vs-diff-cover.md`](EVAL-vs-diff-cover.md).
+- **No measurable changed lines is `n/a`.** Not 0%, which gates on something no
+  test can fix, and not 100%, which gates on a lie. A docs-only PR has no
+  denominator, and a percentage is not an answer to that question.
 
 ---
 
