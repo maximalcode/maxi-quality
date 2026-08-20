@@ -2426,7 +2426,17 @@ jobs:
             bad.("actions/coverage gets #{key}=#{got.inspect}, which does not carry #{want.source}") \
               unless got =~ want
           end
-          puts 'OK: if: guards the input, and all four inputs reach the action'
+          # The default is stated in six documents. Only two places make it
+          # BEHAVE, and if those two disagree a consumer's gate silently sits
+          # at a bar nobody wrote down.
+          w = YAML.load_file('.github/workflows/quality.yml')['on'] ||
+              YAML.load_file('.github/workflows/quality.yml')[true]
+          wf = w['workflow_call']['inputs']['coverage-patch-threshold']['default'].to_s
+          act = YAML.load_file('actions/coverage/action.yml')['inputs']['patch-threshold']['default'].to_s
+          bad.("quality.yml defaults the patch bar to #{wf.inspect} and the action to #{act.inspect}") \
+            unless wf == act
+          puts "OK: if: guards the input, all four inputs reach the action, " \
+               "and both defaults are #{wf}"
           RUBY
           ruby /tmp/wiring.rb
 
@@ -3157,8 +3167,11 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+          # examples/ is in the roots because examples/README.md calls that
+          # directory "the correct thing to copy" — an unpinned action there is
+          # this guard teaching the opposite of what it enforces.
           bad=$(grep -rhoE 'uses: [A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[A-Za-z0-9._-]+' \
-                  .github/workflows/ actions/ \
+                  .github/workflows/ actions/ examples/ \
                 | grep -vE '@[0-9a-f]{40}' \
                 | grep -vE '^uses: maximalcode/' \
                 | sort -u || true)
@@ -3513,10 +3526,19 @@ jobs:
                                 .read_text())["jobs"]
           contexts = 0
           for name, job in jobs.items():
+              matrix = (job.get("strategy") or {}).get("matrix") or {}
+              # include/exclude change the leg count in ways a product of list
+              # lengths cannot express — include adds legs, exclude removes
+              # them, and an include-only matrix would count as 1. Nothing here
+              # uses either, so this refuses rather than guessing: a silent
+              # miscount is the exact drift this guard exists to catch.
+              if "include" in matrix or "exclude" in matrix:
+                  sys.exit(f"::error::job '{name}' uses a matrix include/exclude, "
+                           "which this counter cannot expand — teach it how "
+                           "before adding one")
               legs = 1
-              for key, values in ((job.get("strategy") or {}).get("matrix")
-                                  or {}).items():
-                  if key not in ("include", "exclude") and isinstance(values, list):
+              for values in matrix.values():
+                  if isinstance(values, list):
                       legs *= len(values)
               contexts += legs
 
@@ -4796,6 +4818,16 @@ jobs:
               exit 1; }
             n=$((n + 1))
           done
+          # ...and the prose count has to be right too, in both places that
+          # state one. "Seven complete consumer repos" above a table of six is
+          # how the java-maven row went missing without anything going red.
+          words=(zero one two three four five six seven eight nine ten)
+          word="${words[$n]:-$n}"
+          for f in README.md examples/README.md; do
+            grep -qiF "$word complete consumer repos" "$f" || {
+              echo "::error::$f does not say '$word complete consumer repos', and there are $n"
+              exit 1; }
+          done
           [[ "$n" -ge 5 ]] || {
             echo "::error::found only $n examples — this guard stopped guarding"; exit 1; }
-          echo "OK: all $n examples appear in examples/README.md"
+          echo "OK: all $n examples appear in examples/README.md, and both indexes say $word"

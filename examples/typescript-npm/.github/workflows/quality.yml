@@ -8,13 +8,20 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      # SHA-pinned, tag in the comment, because that is what this baseline
+      # gates other repos for. A tag is mutable: whoever controls `@v7` can
+      # repoint it, and that code then runs here with your GITHUB_TOKEN.
+      # Dependabot still bumps these — it reads the trailing comment.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: '24'
+      # `npm ci` needs a lockfile, and YOUR repo has one. This directory does
+      # not: nothing here is ever installed, which is also why there is no
+      # node_modules to review.
       - run: npm ci
       - run: npm test
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           # This name is what `coverage-report:` below refers to. The files
           # INSIDE it are found by content, so their path and filename do not

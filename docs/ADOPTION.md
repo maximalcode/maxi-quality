@@ -813,11 +813,13 @@ OSV-Scanner are deliberately not configurable.
 
 ---
 
-## 8. Coverage — a ratchet, not a threshold
+## 8. Coverage — a ratchet on the repo, a threshold on the diff
 
-A fixed threshold is unusable on an existing repo. Below where you already are it
-gates nothing; above it, every PR is red until someone does a coverage sprint.
-Both end with the number being ignored.
+A fixed threshold is unusable on an existing **repo**. Below where you already
+are it gates nothing; above it, every PR is red until someone does a coverage
+sprint. Both end with the number being ignored. On the lines a change **adds**
+the same argument runs the other way, which is why there are two numbers here
+and not one.
 
 So the gate asks the only question that is always answerable: **did this change
 make it worse?** The floor is whatever the repo already achieves, it lives in a
@@ -851,9 +853,9 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: pnpm test --coverage.reporter=lcov   # or your own test command
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage
           path: coverage/
@@ -865,6 +867,12 @@ jobs:
     with:
       coverage-report: coverage
 ```
+
+The two third-party actions are SHA-pinned with the tag in a comment, which is
+the form this baseline gates other repos for and therefore the form it prints
+here. A tag is mutable — whoever controls `@v7` can repoint it, and that code
+runs in your CI with your token. Dependabot reads the trailing comment and
+bumps them anyway.
 
 Report files are found inside the artifact **by content**, so it does not matter
 where in it they sit or what they are called. With `coverage-report` unset there

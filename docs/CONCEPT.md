@@ -433,7 +433,7 @@ Constraints that are not negotiable here:
 
 ---
 
-## 12. Coverage — a ratchet, not a threshold
+## 12. Coverage — a ratchet on the repo, a threshold on the diff
 
 A fixed threshold on an existing repo either sits below where you already are
 (gating nothing) or above it (every PR red until someone does a coverage sprint).
