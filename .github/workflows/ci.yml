@@ -2113,9 +2113,16 @@ jobs:
         run: |
           set -uo pipefail
           F=samples/coverage/patch
+          # `msg=$(failing-command)` aborts under the runner's `bash -e`, which
+          # `set -uo pipefail` does not switch off — the step would die before
+          # asserting anything. The `|| rc=$?` puts it in a tested context, and
+          # the exit code is worth asserting anyway.
+          rc=0
           msg=$(python3 scripts/coverage.py --report $F/lcov.info \
                   --floor-file $F/floor.json --diff-file $F/changed.diff \
-                  --patch-threshold 50 2>&1 >/dev/null)
+                  --patch-threshold 50 2>&1 >/dev/null) || rc=$?
+          [[ "$rc" == '1' ]] || {
+            echo "::error::the red patch gate exited $rc, expected 1"; exit 1; }
 
           # The aggregate must still be GREEN in the same run. This pairing is
           # the whole of #112: if the ratchet ever goes red here the fixture has
