@@ -54,6 +54,22 @@ inputs:
       'true' rewrites the floor file when coverage improved. It does NOT
       commit — that is the consumer's decision, not this action's.
     default: 'false'
+  patch-threshold:
+    description: >-
+      Minimum coverage, in percent, of the lines this change ADDS. The
+      aggregate ratchet cannot see a new untested function inside a large
+      well-covered repo; this is the number that can. '0' switches the gate off
+      and keeps the measurement. Requires the base ref to be fetchable — see
+      base-ref.
+    default: '50'
+  base-ref:
+    description: >-
+      Branch or commit the changed lines are measured against. Empty means
+      "the pull request's base", which is what the patch gate is for. On an
+      event with no base (a push) the patch gate reports that it did not run
+      rather than passing quietly. A base that is NAMED but cannot be resolved
+      is an error, never an empty diff.
+    default: ''
 
 outputs:
   coverage:
@@ -68,6 +84,16 @@ outputs:
   raised:
     description: "'true' when the floor file was rewritten."
     value: ${{ steps.ratchet.outputs.raised }}
+  patch-coverage:
+    description: >-
+      Coverage of the added lines, percent to 2dp, or 'n/a' when the change
+      added no measurable lines. Never 0 or 100 for the n/a case.
+    value: ${{ steps.ratchet.outputs.patch_coverage }}
+  patch-status:
+    description: >-
+      'ok' | 'below' | 'off' | 'n/a' | 'no-base'. Pair it with patch-coverage
+      to tell a gate that passed from one that never ran.
+    value: ${{ steps.ratchet.outputs.patch_status }}
 
 runs:
   using: composite
@@ -80,6 +106,9 @@ runs:
         FLOOR_FILE: ${{ inputs.floor-file }}
         TOLERANCE: ${{ inputs.tolerance }}
         RAISE: ${{ inputs.raise }}
+        PATCH_THRESHOLD: ${{ inputs.patch-threshold }}
+        BASE_REF: ${{ inputs.base-ref }}
+        GH_BASE_REF: ${{ github.base_ref }}
       run: |
         set -Eeuo pipefail
 
@@ -139,6 +168,61 @@ runs:
           ARGS+=(--write)
         fi
 
+        # ---- patch coverage: the lines this change ADDED -------------------
+        #
+        # THE RULE THIS BLOCK EXISTS FOR: a base that is NAMED but cannot be
+        # resolved must be an ERROR. An unresolvable base yields an empty diff,
+        # an empty diff has no measurable added lines, and "no measurable added
+        # lines" reports not-applicable and exits 0 — so a broken checkout would
+        # render as a passing patch gate, run after run. That is the exact shape
+        # of failure this milestone exists to remove.
+        #
+        # Not having a base at all is a different thing and is NOT an error: on
+        # a push there is no pull request to diff against. That case says so out
+        # loud (patch_status=no-base) instead of passing quietly.
+        PATCH_ARGS=()
+        PATCH_STATUS_OVERRIDE=""
+
+        if [[ "$PATCH_THRESHOLD" == "0" ]]; then
+          echo "patch gate: off (patch-threshold: 0). The aggregate ratchet still runs."
+          PATCH_STATUS_OVERRIDE="off"
+        else
+          REF="$BASE_REF"
+          [[ -n "$REF" ]] || REF="$GH_BASE_REF"
+
+          if [[ -z "$REF" ]]; then
+            echo "::notice::patch coverage did not run: this event has no base ref to diff against, so there are no 'changed lines'. The aggregate ratchet still gated this run."
+            PATCH_STATUS_OVERRIDE="no-base"
+          else
+            # One fetch attempt, then assert. A shallow checkout (the default
+            # fetch-depth: 1) does not contain the base, and the fix is either
+            # fetch-depth: 0 on the consumer's checkout or this fetch working.
+            if ! git rev-parse --verify --quiet "${REF}^{commit}" >/dev/null; then
+              git fetch --no-tags --quiet origin "+${REF}:${REF}" 2>/dev/null || true
+            fi
+
+            BASE_COMMIT="$(git rev-parse --verify --quiet "${REF}^{commit}" || true)"
+            [[ -n "$BASE_COMMIT" ]] || BASE_COMMIT="$(git rev-parse --verify --quiet "origin/${REF}^{commit}" || true)"
+
+            if [[ -z "$BASE_COMMIT" ]]; then
+              echo "::error::patch coverage: base ref '${REF}' cannot be resolved in this checkout, so the changed lines cannot be determined. This is an error and not an empty diff, because an empty diff would report not-applicable and pass. Fix the checkout: actions/checkout with fetch-depth: 0, or fetch the base branch before this step."
+              exit 1
+            fi
+
+            MERGE_BASE="$(git merge-base HEAD "$BASE_COMMIT" 2>/dev/null || true)"
+            if [[ -z "$MERGE_BASE" ]]; then
+              echo "::error::patch coverage: '${REF}' resolved to ${BASE_COMMIT} but shares no history with HEAD, so there is no merge base to diff from. A shallow checkout is the usual cause; use fetch-depth: 0."
+              exit 1
+            fi
+
+            git diff "$MERGE_BASE" HEAD > "$RUNNER_TEMP/patch.diff"
+            PATCH_ARGS+=(--diff-file "$RUNNER_TEMP/patch.diff" --patch-threshold "$PATCH_THRESHOLD")
+            echo "patch gate: changed lines vs ${REF} (merge base ${MERGE_BASE:0:12}), bar ${PATCH_THRESHOLD}%"
+          fi
+        fi
+
+        ARGS+=("${PATCH_ARGS[@]+"${PATCH_ARGS[@]}"}")
+
         rc=0
         python3 "${GITHUB_ACTION_PATH}/../../scripts/coverage.py" "${ARGS[@]}" \
           > "$RUNNER_TEMP/coverage.out" 2> "$RUNNER_TEMP/coverage.msg" || rc=$?
@@ -146,6 +230,15 @@ runs:
         # The script prints key=value on stdout precisely so this is a copy,
         # not a parse.
         cat "$RUNNER_TEMP/coverage.out" >> "$GITHUB_OUTPUT"
+        # The script only emits patch_* when it was given a diff. When it was
+        # not, the outputs still have to exist and still have to say WHY, or a
+        # caller cannot tell a patch gate that passed from one that never ran.
+        if [[ -n "$PATCH_STATUS_OVERRIDE" ]]; then
+          {
+            echo "patch_coverage=n/a"
+            echo "patch_status=$PATCH_STATUS_OVERRIDE"
+          } >> "$GITHUB_OUTPUT"
+        fi
         cat "$RUNNER_TEMP/coverage.msg"
 
         {
