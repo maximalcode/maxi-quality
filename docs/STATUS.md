@@ -104,8 +104,9 @@ scripts/check-pins.sh     bump policy (#13): pin consistency + upstream drift
 scripts/quality-report.py renders the standing-report issue body (no network)
 scripts/coverage.py       coverage ratchet: lcov + Cobertura vs a committed floor,
                           and --diff-file: coverage of the lines a diff ADDED,
-                          which the aggregate cannot see (#112). Reports it;
-                          does not gate on it
+                          which the aggregate cannot see (#112). Both GATE —
+                          --patch-threshold defaults to 50, and 0 keeps the
+                          measurement without the gate
 scripts/check-expected.py diffs a tool's JSON output against a committed manifest
 scripts/deadcode-gate.py  turns knip/deptry output into a VERDICT: which issue types
                           may fail a build, and the changed-only ratchet applied to
@@ -141,7 +142,8 @@ actions/deadcode/      knip and deptry inside the Layer 1 jobs (#97) — the sam
                        delivery vehicle, carrying scripts/ to a runner that only
                        checked out the consumer
 actions/report-issue/  upserts the standing report issue; outputs its number
-actions/coverage/      the coverage ratchet
+actions/coverage/      the coverage gate: the aggregate ratchet, and a fixed
+                       threshold on the lines a change ADDS
 
 samples/typescript/       Layer 1 TS sample — `npm run lint` must fail (14 findings)
 samples/typescript-clean/ negative control — must PASS with zero findings
@@ -338,6 +340,7 @@ Gitleaks v8.30.1 and OSV-Scanner v2 via Docker — nothing was installed globall
 | **osv-scanner will not create its output directory** | It exits **127** with `failed to create output file`, which reads as "the tool is broken" rather than "make the folder". `scan.sh` `mkdir -p`s the parent. |
 | **The licence gate has no default allowlist** | Measured on this repo's own tree, a plausible one flags `SonarAnalyzer.CSharp` and `typing-extensions` as *non-standard* and `pathspec` as MPL-2.0. First-party workspace packages resolve to `UNKNOWN` and trip any allowlist too. A default would be wrong for someone on day one; the inventory is on by default instead. |
 | **Coverage: root attributes beat counting `<line>`** | coverlet emits one `<class>` per **type**, so a file holding two types lists its lines twice and an element count inflates. `samples/coverage/cobertura.xml` encodes exactly that shape — if it ever reports 66.67 instead of 75.00, the parser started counting elements. |
+| **A CI job that is not a required context is indistinguishable from a passing one** | It runs, it reports, and the PR merges anyway. This drifted **twice**: first `layer1-rust`, `layer1-java`, `policy` and `examples`, so the two newest languages could not fail a merge; then `patch-coverage` and `coverage-input`, so the coverage gate could not fail one either — both times within days of the jobs shipping. The protection API needs admin rights CI does not have, so it cannot self-check; what CI *can* assert is the written count, and `workflow-lint` now fails when the number in `CLAUDE.md`/`CONTRIBUTING.md` stops matching `ci.yml`. Count **contexts, not jobs** — `layer2` is a two-leg matrix, so 25 jobs make 26 contexts, and "one per job" was already off by one before anything drifted. |
 | **A zero-line coverage report is not 100%** | It is a broken test run. Recording it as a floor would raise the floor to 100 and brick the consumer's gate permanently. Same class: an unparseable floor file must never be read as "no floor yet", which silently restarts the ratchet at whatever today happens to be. |
 | **actionlint does not read `actions/*/action.yml`** | It lints workflows only — so the composite actions, the part every consumer actually executes, had **no** shell linting at all. That is the same gap the report action shipped broken through. `ci.yml` now extracts each bash `run:` body and shellchecks it. |
 | **`${{ }}` inside a `run:` body is textual substitution** | It happens before bash parses the script, so an input carrying a quote stops being a value and becomes code. Every composite action now passes inputs via `env:`, and CI fails if a new one does not. |
@@ -553,7 +556,7 @@ What shipped instead, all at zero cost:
 |---|---|
 | **SHA-pinned third-party actions** (#47) | Every action was on a mutable tag. Whoever controls `actions/checkout@v7` can repoint it, and that code runs in every consumer's CI with their token. CI guard added, since reviewers do not reliably notice `@v7`. Annotated tags dereference to a tag object, not a commit — resolve `.object.sha` and then dereference. |
 | **SBOM + licence gate** | Both from osv-scanner, already installed and pinned. See §4 for the three ways this silently produces a useless artifact. |
-| **Coverage ratchet** | The gate had no notion of tests at all. Ratchet not threshold; CONCEPT §12 for why the floor is a committed file and not a cache. |
+| **Coverage ratchet** | The gate had no notion of tests at all. Ratchet not threshold on the aggregate; CONCEPT §12 for why the floor is a committed file and not a cache. The added lines are the exception and take a fixed bar (#112) — they are new, so "you are already below it" cannot be true of them. |
 | **Composite actions are now linted** | actionlint reads workflows only. The composite actions — the part consumers execute — had no shell linting, which is the same gap `actions/report-issue` shipped broken through. |
 | **Inputs pass through `env:`, not `${{ }}`** | `${{ }}` is substituted into the script text before bash parses it. Low exposure here (inputs come from a caller's workflow, not a PR title), but a baseline that gates other repos' supply chains should not model the pattern it exists to catch. |
 | **`GITHUB_ACTION_PATH` references are checked** | Moving a script breaks every consumer at runtime, in a workflow nothing here executes, with a "no such file" pointing at a path on someone else's runner. |

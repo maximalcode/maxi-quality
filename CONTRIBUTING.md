@@ -20,7 +20,7 @@ incident, the PR, or the outage. It is never justified by "this would be nice to
 catch". If your rule is genuinely better than one of the twelve, say which one it
 replaces and why.
 
-Note the distinction: **12 conventions, currently 28 rule ids.** Semgrep patterns
+Note the distinction: **12 conventions, currently 40 rule ids.** Semgrep patterns
 are language-specific, so one convention needs a separate id per language when
 the syntax differs. Splitting an existing convention into a per-language id is
 not new scope. Inventing a new convention is.
@@ -88,7 +88,7 @@ So the flow is:
 
 `develop` is the default branch, so `gh pr create` and the web UI already target
 it — you should not have to change the base. Both branches carry the same
-protection: 20 required checks, admins included, branch must be up to date, no
+protection: 26 required checks, admins included, branch must be up to date, no
 force-pushes, no direct commits.
 
 Promoting `develop` to `main` is a maintainer decision, because it is where the
@@ -339,7 +339,7 @@ measurement, not an edit** — the same rule Rule 1 puts on the Semgrep cap.
 ### Layer 2 and the policy file
 
 ```bash
-./scripts/scan.sh          # expect exit 1, 100 findings across all 28 rule ids
+./scripts/scan.sh          # expect exit 1, 130 findings across all 40 rule ids
 ```
 
 Each Semgrep sample carries **negative controls** that must stay silent, so the

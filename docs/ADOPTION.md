@@ -813,16 +813,29 @@ OSV-Scanner are deliberately not configurable.
 
 ---
 
-## 8. Coverage — a ratchet, not a threshold
+## 8. Coverage — a ratchet on the repo, a threshold on the diff
 
-A fixed threshold is unusable on an existing repo. Below where you already are it
-gates nothing; above it, every PR is red until someone does a coverage sprint.
-Both end with the number being ignored.
+A fixed threshold is unusable on an existing **repo**. Below where you already
+are it gates nothing; above it, every PR is red until someone does a coverage
+sprint. Both end with the number being ignored. On the lines a change **adds**
+the same argument runs the other way, which is why there are two numbers here
+and not one.
 
 So the gate asks the only question that is always answerable: **did this change
 make it worse?** The floor is whatever the repo already achieves, it lives in a
 committed file, and it only ever goes up. Same shape as `--changed-only`:
 grandfather the backlog, refuse to grow it.
+
+**There is a threshold, and it is on the new lines only.** The paragraph above
+is about the *aggregate*, and the aggregate has a blind spot big enough to drive
+a release through: one entirely untested function added to a large well-covered
+repo moves the number by rounding error, so the ratchet stays green over exactly
+the code nobody tested. The lines a change **adds** are a different case
+altogether — they are new, so "you are already below it" cannot be true of them,
+and a fixed bar is sound there for the same reason it is unusable on the whole
+repo. Both run from the same report and the same one line of wiring: the
+aggregate ratchets, the added lines have to clear `coverage-patch-threshold`
+(default **50**; `0` keeps the measurement and drops the gate).
 
 The consumer runs its own tests — this baseline cannot drive a test suite that
 needs services, fixtures and a database, and every attempt to guess a "standard"
@@ -840,9 +853,9 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: pnpm test --coverage.reporter=lcov   # or your own test command
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage
           path: coverage/
@@ -855,6 +868,12 @@ jobs:
       coverage-report: coverage
 ```
 
+The two third-party actions are SHA-pinned with the tag in a comment, which is
+the form this baseline gates other repos for and therefore the form it prints
+here. A tag is mutable — whoever controls `@v7` can repoint it, and that code
+runs in your CI with your token. Dependabot reads the trailing comment and
+bumps them anyway.
+
 Report files are found inside the artifact **by content**, so it does not matter
 where in it they sit or what they are called. With `coverage-report` unset there
 is no coverage job at all — nothing changes for a repo that has not opted in.
@@ -862,6 +881,14 @@ is no coverage job at all — nothing changes for a repo that has not opted in.
 Two knobs, both optional: `coverage-patch-threshold` (default `50`, the minimum
 coverage of the lines a change ADDS — `0` keeps the measurement and drops the
 gate) and `coverage-floor-file` (default `.maxi-quality/coverage.json`).
+
+A change with **no measurable added lines** — a docs-only PR, a pure deletion —
+reports `n/a` and gates nothing. Never 0%, which would gate on something no test
+can fix, and never 100%, which would be a lie about a question with no
+denominator.
+
+Copyable, and asserted by CI:
+[`examples/typescript-npm/`](../examples/typescript-npm/).
 
 **Or call the action directly**, if you are not using the reusable workflow:
 

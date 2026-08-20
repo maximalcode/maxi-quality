@@ -2426,7 +2426,17 @@ jobs:
             bad.("actions/coverage gets #{key}=#{got.inspect}, which does not carry #{want.source}") \
               unless got =~ want
           end
-          puts 'OK: if: guards the input, and all four inputs reach the action'
+          # The default is stated in six documents. Only two places make it
+          # BEHAVE, and if those two disagree a consumer's gate silently sits
+          # at a bar nobody wrote down.
+          w = YAML.load_file('.github/workflows/quality.yml')['on'] ||
+              YAML.load_file('.github/workflows/quality.yml')[true]
+          wf = w['workflow_call']['inputs']['coverage-patch-threshold']['default'].to_s
+          act = YAML.load_file('actions/coverage/action.yml')['inputs']['patch-threshold']['default'].to_s
+          bad.("quality.yml defaults the patch bar to #{wf.inspect} and the action to #{act.inspect}") \
+            unless wf == act
+          puts "OK: if: guards the input, all four inputs reach the action, " \
+               "and both defaults are #{wf}"
           RUBY
           ruby /tmp/wiring.rb
 
@@ -3157,8 +3167,11 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+          # examples/ is in the roots because examples/README.md calls that
+          # directory "the correct thing to copy" — an unpinned action there is
+          # this guard teaching the opposite of what it enforces.
           bad=$(grep -rhoE 'uses: [A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[A-Za-z0-9._-]+' \
-                  .github/workflows/ actions/ \
+                  .github/workflows/ actions/ examples/ \
                 | grep -vE '@[0-9a-f]{40}' \
                 | grep -vE '^uses: maximalcode/' \
                 | sort -u || true)
@@ -3486,6 +3499,71 @@ jobs:
             echo '::error::found no scripts/*.sh — this guard stopped guarding'; exit 1; }
           shellcheck -s bash "${files[@]}"
           echo "OK: ${#files[@]} shipped scripts are shellcheck-clean"
+
+      # CLAUDE.md: "a job that runs but is not on the required list reports and
+      # blocks nothing, which is indistinguishable from a passing gate in the PR
+      # UI." That has now drifted twice — four jobs the first time, this
+      # milestone's own two the second — and both times the tell was a written
+      # count nobody recomputed.
+      #
+      # The required list itself cannot be read from here: the branch-protection
+      # API needs admin rights, and this job's token is read-only by design. So
+      # what is asserted is the half that IS reachable — the number written in
+      # the docs must equal the number of contexts ci.yml produces. It does not
+      # prove the contexts are set; it makes adding a job collide with the
+      # sentence that says to set them.
+      #
+      # Contexts, not jobs: `layer2` is a two-leg matrix, so the two counts
+      # differ by one, and "one per job" was the wording that hid that.
+      - name: The documented required-check count must match ci.yml
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import re, sys, pathlib, yaml
+
+          jobs = yaml.safe_load(pathlib.Path(".github/workflows/ci.yml")
+                                .read_text())["jobs"]
+          contexts = 0
+          for name, job in jobs.items():
+              matrix = (job.get("strategy") or {}).get("matrix") or {}
+              # include/exclude change the leg count in ways a product of list
+              # lengths cannot express — include adds legs, exclude removes
+              # them, and an include-only matrix would count as 1. Nothing here
+              # uses either, so this refuses rather than guessing: a silent
+              # miscount is the exact drift this guard exists to catch.
+              if "include" in matrix or "exclude" in matrix:
+                  sys.exit(f"::error::job '{name}' uses a matrix include/exclude, "
+                           "which this counter cannot expand — teach it how "
+                           "before adding one")
+              legs = 1
+              for values in matrix.values():
+                  if isinstance(values, list):
+                      legs *= len(values)
+              contexts += legs
+
+          # Two documents state the number, for two audiences. Both are checked,
+          # because a contributor reading only CONTRIBUTING.md and an agent
+          # reading only CLAUDE.md must not be told different things.
+          bad = 0
+          for doc in ("CLAUDE.md", "CONTRIBUTING.md"):
+              found = re.findall(r"(\d+) required checks",
+                                 pathlib.Path(doc).read_text())
+              if not found:
+                  print(f"::error::{doc} no longer states a required-check "
+                        "count — this guard stopped guarding")
+                  bad = 1
+              elif any(int(n) != contexts for n in found):
+                  print(f"::error::{doc} says {', '.join(found)} required "
+                        f"checks; ci.yml produces {contexts} contexts from "
+                        f"{len(jobs)} jobs. Update the docs AND add the missing "
+                        "context to branch protection on develop AND main.")
+                  bad = 1
+          if not bad:
+              print(f"OK: {contexts} contexts from {len(jobs)} jobs, "
+                    "and both documents agree")
+          sys.exit(bad)
+          PY
 
   # Runs on BOTH platforms the action claims to support, because "supported"
   # is a claim about installed tools and shell builtins, and those are exactly
@@ -4630,3 +4708,126 @@ jobs:
           need examples/python-uv/pyproject.toml 'deptry'
           need examples/python-uv/.github/workflows/quality.yml 'dead-code: require'
           echo 'OK: both adopted examples declare the tool and require the gate'
+
+      # #75's last acceptance box: "an example under examples/ that CI asserts."
+      # The gate itself is tested to death in coverage-ratchet, coverage-action,
+      # patch-coverage and coverage-input — what none of those can test is the
+      # thing a consumer actually gets wrong, because it lives in THEIR file:
+      # the artifact hand-off, which is two names that have to match and one
+      # `needs:` edge with no other reason to exist.
+      #
+      # Structural, not executed. This repo cannot run a green `quality.yml`
+      # against its own tree — `samples/` is deliberately broken, so Layer 2
+      # fails by design, and `continue-on-error` is not accepted on a
+      # reusable-workflow call. So the example is asserted the way a reviewer
+      # would read it, which is also how a reader copies it.
+      - name: The coverage example wires the artifact hand-off end to end
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import pathlib, sys, yaml
+
+          BASE = yaml.safe_load(
+              pathlib.Path(".github/workflows/quality.yml").read_text())
+          KNOWN = set(BASE[True]["workflow_call"]["inputs"])
+
+          bad = []
+          wired = []
+          for path in sorted(pathlib.Path("examples").glob(
+                  "*/.github/workflows/quality.yml")):
+              doc = yaml.safe_load(path.read_text())
+              jobs = doc["jobs"]
+
+              # Every input an example sets must still EXIST. An example is
+              # documentation people copy, so a renamed input here is a
+              # consumer's first run exiting on an unknown key.
+              for job in jobs.values():
+                  for key in (job.get("with") or {}):
+                      if key not in KNOWN:
+                          bad.append(f"{path}: sets '{key}', which quality.yml "
+                                     "has no input for")
+
+              for name, job in jobs.items():
+                  artifact = (job.get("with") or {}).get("coverage-report")
+                  if not artifact:
+                      continue
+                  wired.append(path)
+
+                  # The `needs:` edge. Without it the gate can start before the
+                  # upload finishes and fails on a missing artifact — the wrong
+                  # error, for the right reason, and the reader blames coverage.
+                  needs = job.get("needs") or []
+                  needs = [needs] if isinstance(needs, str) else needs
+                  if not needs:
+                      bad.append(f"{path}: job '{name}' sets coverage-report "
+                                 "with no `needs:` — the artifact may not exist "
+                                 "yet when it runs")
+
+                  # ...and the edge has to point at the job that actually
+                  # uploads THAT artifact name. Two names matching by luck is
+                  # the failure this catches.
+                  uploaders = {
+                      dep for dep in needs
+                      for step in (jobs.get(dep) or {}).get("steps", [])
+                      if str(step.get("uses", "")).startswith(
+                          "actions/upload-artifact@")
+                      and (step.get("with") or {}).get("name") == artifact
+                  }
+                  if not uploaders:
+                      bad.append(
+                          f"{path}: job '{name}' waits on {needs or 'nothing'}, "
+                          f"none of which uploads an artifact named "
+                          f"'{artifact}'")
+
+                  # The bootstrap. A copied example whose first run fails on a
+                  # missing floor, with nothing in the file saying that is
+                  # expected, reads as a broken baseline.
+                  if "coverage-raise" not in path.read_text():
+                      bad.append(f"{path}: wires coverage but never mentions "
+                                 "coverage-raise — a reader's first run fails "
+                                 "on the missing floor with no way out")
+
+          if not wired:
+              bad.append("no example wires coverage-report — this guard "
+                         "stopped guarding (#75)")
+
+          for line in bad:
+              print(f"::error::{line}")
+          if not bad:
+              print(f"OK: {len(wired)} coverage example(s), artifact hand-off "
+                    "and bootstrap intact; every example input still exists")
+          sys.exit(1 if bad else 0)
+          PY
+
+      # examples/README.md is the index a reader lands on, and it drifted:
+      # java-maven shipped, CI asserted it, and the table never gained a row —
+      # so the one example for the newest language was invisible to anyone not
+      # running `ls`.
+      - name: Every example appears in the examples index
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          index=$(cat examples/README.md)
+          n=0
+          for d in examples/*/; do
+            [[ -f "$d/README.md" ]] || continue
+            name=$(basename "$d")
+            grep -qF "\`$name/\`" <<<"$index" || {
+              echo "::error::examples/$name is asserted by CI and has no row in examples/README.md"
+              exit 1; }
+            n=$((n + 1))
+          done
+          # ...and the prose count has to be right too, in both places that
+          # state one. "Seven complete consumer repos" above a table of six is
+          # how the java-maven row went missing without anything going red.
+          words=(zero one two three four five six seven eight nine ten)
+          word="${words[$n]:-$n}"
+          for f in README.md examples/README.md; do
+            grep -qiF "$word complete consumer repos" "$f" || {
+              echo "::error::$f does not say '$word complete consumer repos', and there are $n"
+              exit 1; }
+          done
+          [[ "$n" -ge 5 ]] || {
+            echo "::error::found only $n examples — this guard stopped guarding"; exit 1; }
+          echo "OK: all $n examples appear in examples/README.md, and both indexes say $word"
