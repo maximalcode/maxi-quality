@@ -8,7 +8,10 @@ It is the reason a second number is needed, and it is issue #112 made
 reproducible.
 
 Everything below is hand-counted. `scripts/patch-coverage-demo.sh` checks both
-implementations against these numbers, not against each other.
+implementations against these numbers, not against each other, and the
+`patch-coverage` job in `ci.yml` checks the gate's verdicts against the same
+table — including a two-commit git history built from `changed.diff`, so that
+`git diff`'s own output is measured and not only the committed `.diff` files.
 
 ## The change
 
@@ -48,22 +51,31 @@ same on a repo that ran `--write` after every single merge.
 half of the ratio: counting a comment as uncovered would put a floor under the
 score that no test could lift.
 
-## The other three inputs
+## The other four inputs
 
-| file             | what it is | measured added lines | covered |
-| ---------------- | ---------- | -------------------: | ------: |
-| `changed.diff`   | the defect above | 4 | 0 |
-| `partial.diff`   | the same function, plus two rewritten lines that *are* covered (50–51) | 6 | 2 |
-| `docs-only.diff` | a change to this README | 0 | — |
-| `/dev/null`      | a change that added nothing | 0 | — |
+| file             | what it is | measured added lines | covered | patch % |
+| ---------------- | ---------- | -------------------: | ------: | ------: |
+| `changed.diff`   | the defect above | 4 | 0 | 0.00 |
+| `partial.diff`   | the same function, plus two rewritten lines that *are* covered (50–51) | 6 | 2 | 33.33 |
+| `majority.diff`  | adds `mean` (lines 29–33): three covered lines and the one uncovered empty-input guard | 4 | 3 | 75.00 |
+| `docs-only.diff` | a change to this README | 0 | — | n/a |
+| `/dev/null`      | a change that added nothing | 0 | — | n/a |
 
 `partial.diff` is not decoration. Against `changed.diff` alone, an
 implementation that returns 0% unconditionally passes every check — the
 fixture would prove the tool runs, not that it computes. 2 of 6 is the case
 that separates them.
 
-The last two must report **not applicable**. Not 0%, which gates on something
-nobody can fix, and not 100%, which gates on a lie.
+`majority.diff` is the case the GATE needs (#127), and it is the only input
+here that sits **above** the default bar. Without it, every gate assertion
+would be "red at 50%", which a gate hard-coded to fail would also satisfy. At
+75.00% it passes at the default 50, fails at 80, and passes at exactly 75 —
+that last one pins `>=` rather than `>`, so a repo sitting precisely on its
+threshold does not go red for a reason no test can fix.
+
+`docs-only.diff` and `/dev/null` must report **not applicable**. Not 0%, which
+gates on something nobody can fix, and not 100%, which gates on a lie. Neither
+may ever fail a run, whatever the bar is set to.
 
 ## Why the reports look like this
 
