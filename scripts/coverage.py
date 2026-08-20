@@ -56,11 +56,38 @@ Zero measurable changed lines is NOT 100% and not 0%, it is `n/a`. A docs-only
 PR reporting 0% gates on nothing anyone can fix; one reporting 100% gates on a
 lie. Both are how a patch gate gets switched off in week two.
 
-This step MEASURES. Nothing here fails a build on the patch number.
+`--diff-file` alone only MEASURES. Gating it is `--patch-threshold`, below.
+
+GATING THE PATCH NUMBER (--patch-threshold)
+
+`--patch-threshold N` fails the run when coverage of the added lines is below N
+percent. It needs `--diff-file`: a threshold with no diff would gate nothing
+while looking like a gate.
+
+WHY A FIXED THRESHOLD HERE, WHEN THE AGGREGATE GETS A RATCHET
+
+Read the ratchet argument at the top again before assuming this contradicts it.
+That argument is about an EXISTING codebase: a fixed bar there is either below
+where the repo already sits, gating nothing, or above it, and every PR is red
+until someone runs a coverage sprint.
+
+Neither failure mode exists for changed lines. Lines a PR just added have no
+backlog to grandfather and no history to be unfair about — the author is
+writing them right now, and "test what you just wrote" is answerable on every
+PR, including the first one. The two numbers get two different shapes on
+purpose. It is the same argument, applied where it points the other way.
+
+The default bar is 50, not 100. At 100 every defensive guard and every
+unreachable branch is a blocker, and a gate that cannot be satisfied honestly
+gets satisfied dishonestly. `0` switches the gate off and keeps the number.
+
+NOT APPLICABLE IS NOT A FAILURE. A diff with no measurable added lines cannot
+be below any bar. It reports n/a and exits 0 — see the paragraph above.
 
 Reads lcov and Cobertura. Does no network I/O and never writes unless asked.
 
-Exit codes: 0 at or above the floor · 1 coverage dropped · 3 usage/parse error
+Exit codes: 0 every gate passed · 1 a gate failed (the aggregate dropped, or
+the patch number is below the bar) · 3 usage/parse error
 """
 
 from __future__ import annotations
@@ -227,6 +254,9 @@ class PatchResult(NamedTuple):
     found: int
     hit: int
     unmeasured: list[str]
+    # {path: uncovered added line numbers}. The gate has to name the lines to
+    # write a test for; "patch coverage 43%" alone is an unactionable red X.
+    misses: dict[str, list[int]]
 
 
 def parse_diff(text: str) -> dict[str, set[int]]:
@@ -372,17 +402,20 @@ def measure_changed_lines(changed: dict[str, set[int]], reports: list[Report]) -
 
     found = hit = 0
     unmeasured: list[str] = []
+    misses: dict[str, list[int]] = {}
     for path in sorted(changed):
         match = match_report_path(path, merged)
         if match is None:
             unmeasured.append(path)
             continue
-        for number in changed[path]:
+        for number in sorted(changed[path]):
             if number in merged[match]:
                 found += 1
                 if merged[match][number] > 0:
                     hit += 1
-    return PatchResult(found, hit, unmeasured)
+                else:
+                    misses.setdefault(path, []).append(number)
+    return PatchResult(found, hit, unmeasured, misses)
 
 
 def read_diff(path: str) -> dict[str, set[int]]:
@@ -398,6 +431,45 @@ def read_diff(path: str) -> dict[str, set[int]]:
     except OSError as exc:
         raise ParseError(f"cannot read diff {path}: {exc}") from exc
     return parse_diff(text)
+
+
+def format_ranges(numbers: list[int]) -> str:
+    """Collapse [62, 63, 64, 65] to '62-65'.
+
+    A gate that prints four hundred line numbers one per comma does not get
+    read, and an unread failure message is the same as no message.
+    """
+    out: list[str] = []
+    start = prev = None
+    for number in sorted(numbers):
+        if start is None:
+            start = prev = number
+        elif number == prev + 1:
+            prev = number
+        else:
+            out.append(str(start) if start == prev else f"{start}-{prev}")
+            start = prev = number
+    if start is not None:
+        out.append(str(start) if start == prev else f"{start}-{prev}")
+    return ", ".join(out)
+
+
+def patch_gate_message(patch: PatchResult, threshold: float) -> str:
+    """Why the patch gate failed, and which lines to write a test for."""
+    pct = 100.0 * patch.hit / patch.found
+    lines = [
+        f"PATCH COVERAGE BELOW THE BAR: {pct:.2f}% of the lines this change "
+        f"adds are covered ({patch.hit} of {patch.found}), and the bar is "
+        f"{threshold:.2f}%.",
+        "  Untested lines this change added:",
+    ]
+    for path in sorted(patch.misses):
+        lines.append(f"    {path}: {format_ranges(patch.misses[path])}")
+    lines.append(
+        "  Write a test that reaches them, or lower patch-threshold in the "
+        "workflow and say why in the PR."
+    )
+    return "\n".join(lines)
 
 
 def patch_message(changed: dict[str, set[int]], patch: PatchResult) -> str:
@@ -480,6 +552,15 @@ def main() -> int:
         "separate step.",
     )
     ap.add_argument(
+        "--patch-threshold",
+        type=float,
+        metavar="PCT",
+        help="Fail when coverage of the lines --diff-file ADDS is below PCT "
+        "percent. 0 disables the gate and keeps the measurement. Requires "
+        "--diff-file. Unlike the floor this is a fixed bar, and the module "
+        "docstring says why the two numbers get different shapes.",
+    )
+    ap.add_argument(
         "--tolerance",
         type=float,
         default=0.1,
@@ -502,6 +583,19 @@ def main() -> int:
         "nothing and reports ok forever.",
     )
     args = ap.parse_args()
+
+    # A threshold with no diff would measure nothing, compare nothing, and pass
+    # every run — while reading, in the workflow file, exactly like a gate. That
+    # is the failure shape this whole milestone exists to remove, so it is a
+    # usage error rather than a quiet no-op.
+    if args.patch_threshold is not None and not args.diff_file:
+        print(
+            "error: --patch-threshold needs --diff-file. Without a diff there "
+            "are no changed lines to measure, so the gate would pass "
+            "everything while looking like a gate.",
+            file=sys.stderr,
+        )
+        return 3
 
     try:
         reports = [read_report(p) for p in args.report]
@@ -591,6 +685,7 @@ def main() -> int:
     print(f"raised={'true' if raised else 'false'}")
     print(f"status={'drop' if rc else 'ok'}")
 
+    patch_status = "n/a"
     if changed is not None:
         patch = measure_changed_lines(changed, reports)
         if patch.found:
@@ -598,6 +693,23 @@ def main() -> int:
         else:
             # NOT 0.00 and not 100.00. See the module docstring.
             print("patch_coverage=n/a")
+
+        if not patch.found:
+            # Nothing measurable was added, so no bar can be missed. A docs-only
+            # PR is not a coverage failure, and reporting it as one is how a
+            # patch gate gets switched off in week two.
+            patch_status = "n/a"
+        elif args.patch_threshold is None or args.patch_threshold <= 0:
+            patch_status = "off"
+        elif 100.0 * patch.hit / patch.found + 1e-9 < args.patch_threshold:
+            # The epsilon is for the boundary: a change measured at exactly the
+            # bar passes it. `>=`, not `>`, and float noise must not decide it.
+            patch_status = "below"
+            rc = 1
+        else:
+            patch_status = "ok"
+
+        print(f"patch_status={patch_status}")
         print(f"patch_lines_found={patch.found}")
         print(f"patch_lines_hit={patch.hit}")
         print(f"patch_files_changed={len(changed)}")
@@ -606,6 +718,10 @@ def main() -> int:
     print(msg, file=sys.stderr)
     if changed is not None:
         print(patch_message(changed, patch), file=sys.stderr)
+        if patch_status == "below":
+            print(
+                patch_gate_message(patch, args.patch_threshold), file=sys.stderr
+            )
     return rc
 
 

@@ -2069,6 +2069,180 @@ jobs:
             echo '::error::the ratchet output changed shape'; exit 1; }
           echo 'OK: without --diff-file the output is byte-for-byte what it was'
 
+      # ---- the gate (#127) -------------------------------------------------
+      #
+      # Everything above MEASURES. These assert that the number now FAILS a run,
+      # and — the part that matters more — that it fails only when it should.
+      - name: The bar decides, and the boundary passes
+        shell: bash
+        run: |
+          set -uo pipefail
+          F=samples/coverage/patch
+          rc() {
+            python3 scripts/coverage.py --report $F/lcov.info \
+              --floor-file $F/floor.json "$@" >/dev/null 2>&1; echo $?
+          }
+          want() { # description, expected-rc, args...
+            d="$1"; e="$2"; shift 2
+            got=$(rc "$@")
+            [[ "$got" == "$e" ]] || {
+              echo "::error::$d — exit $got, expected $e"; exit 1; }
+          }
+
+          # 0 of 4 covered. The defect, now red.
+          want '0% at the default bar'   1 --diff-file $F/changed.diff  --patch-threshold 50
+          # 2 of 6 = 33.33%.
+          want '33% at the default bar'  1 --diff-file $F/partial.diff  --patch-threshold 50
+          # 3 of 4 = 75.00%. Above the default, below 80.
+          want '75% at the default bar'  0 --diff-file $F/majority.diff --patch-threshold 50
+          want '75% at an 80 bar'        1 --diff-file $F/majority.diff --patch-threshold 80
+          # Exactly at the bar passes: >=, not >. If this ever flips, a repo
+          # sitting precisely on its threshold goes red for no reason it can fix.
+          want '75% at a 75 bar'         0 --diff-file $F/majority.diff --patch-threshold 75
+          # 0 keeps the measurement and switches the gate off.
+          want '0% with the gate off'    0 --diff-file $F/changed.diff  --patch-threshold 0
+          # Nothing measurable added: not 0%, not 100%, not a failure.
+          want 'docs-only at a bar'      0 --diff-file $F/docs-only.diff --patch-threshold 50
+          want 'empty diff at a bar'     0 --diff-file /dev/null         --patch-threshold 50
+          # A bar with no diff would pass everything while looking like a gate.
+          want 'a bar with no diff'      3 --patch-threshold 50
+          echo 'OK: the bar fires below it, holds at it, and never fires on n/a'
+
+      - name: A red patch gate has to say which lines to test
+        shell: bash
+        run: |
+          set -uo pipefail
+          F=samples/coverage/patch
+          # `msg=$(failing-command)` aborts under the runner's `bash -e`, which
+          # `set -uo pipefail` does not switch off — the step would die before
+          # asserting anything. The `|| rc=$?` puts it in a tested context, and
+          # the exit code is worth asserting anyway.
+          rc=0
+          msg=$(python3 scripts/coverage.py --report $F/lcov.info \
+                  --floor-file $F/floor.json --diff-file $F/changed.diff \
+                  --patch-threshold 50 2>&1 >/dev/null) || rc=$?
+          [[ "$rc" == '1' ]] || {
+            echo "::error::the red patch gate exited $rc, expected 1"; exit 1; }
+
+          # The aggregate must still be GREEN in the same run. This pairing is
+          # the whole of #112: if the ratchet ever goes red here the fixture has
+          # been broken and the gate is no longer proving anything.
+          grep -q 'coverage held at 94.95%' <<<"$msg" || {
+            echo '::error::the aggregate did not stay green — the fixture regressed'
+            printf '%s\n' "$msg"; exit 1; }
+
+          for want in 'PATCH COVERAGE BELOW THE BAR' '0.00%' 'bar is 50.00%' \
+                      'src/rollup.ts: 62-65'; do
+            grep -qF "$want" <<<"$msg" || {
+              echo "::error::the failure message never says: $want"
+              printf '%s\n' "$msg"; exit 1; }
+          done
+          echo 'OK: green aggregate, red patch, and the exact lines named'
+
+      # ---- through the action, against a real git history -------------------
+      #
+      # The steps above hand the script a committed .diff. This one builds an
+      # actual two-commit history whose diff IS that fixture change, so the
+      # action's own base-ref resolution and `git diff` are what produce the
+      # changed lines — the part no committed fixture can exercise.
+      - name: Build a repo whose history is the fixture change
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          R=/tmp/patchrepo; rm -rf $R; mkdir -p $R/samples/coverage/patch/src
+          cp samples/coverage/patch/src/rollup.ts $R/samples/coverage/patch/src/
+          cd $R
+          git init -q . && git config user.email t@t && git config user.name t
+          # Reverse the fixture change to get the "before" tree.
+          git apply -R "$GITHUB_WORKSPACE/samples/coverage/patch/changed.diff"
+          git add -A && git commit -qm 'well-covered module'
+          git branch -q base-branch
+          git apply "$GITHUB_WORKSPACE/samples/coverage/patch/changed.diff"
+          git add -A && git commit -qm 'add a function no test calls'
+          # grep -v '^+++' rather than '^+[^+]': the change ends with a blank
+          # added line, which the second form silently drops. Off by one against
+          # the hand-count in the fixture README is exactly the kind of drift
+          # this assertion exists to catch, so it must count what that README
+          # counts.
+          added=$(git diff base-branch HEAD | grep '^+' | grep -cv '^+++' || true)
+          [[ "$added" == '9' ]] || {
+            echo "::error::the built history adds $added lines, expected 9"; exit 1; }
+          echo 'OK: two commits, and their diff is the fixture change'
+
+      - name: A real git diff measures the same as the committed fixture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          F="$GITHUB_WORKSPACE/samples/coverage/patch"
+          cd /tmp/patchrepo
+          # git's own output, not a hand-written .diff. If the two ever
+          # disagree, the committed fixtures have drifted from what git
+          # actually produces and every number above is measuring the wrong
+          # thing.
+          git diff base-branch HEAD > /tmp/real.diff
+          rc=0
+          out=$(python3 "$GITHUB_WORKSPACE/scripts/coverage.py" \
+                  --report "$F/lcov.info" --floor-file "$F/floor.json" \
+                  --diff-file /tmp/real.diff --patch-threshold 50 2>/dev/null) || rc=$?
+          [[ "$rc" == '1' ]] || {
+            echo "::error::a real git diff of the fixture change exited $rc, expected 1"
+            printf '%s\n' "$out"; exit 1; }
+          grep -q '^patch_coverage=0.00' <<<"$out" || {
+            echo '::error::a real git diff measured something other than 0.00%'
+            printf '%s\n' "$out"; exit 1; }
+          grep -q '^status=ok' <<<"$out" || {
+            echo '::error::the aggregate went red on the real diff'
+            printf '%s\n' "$out"; exit 1; }
+          echo 'OK: git diff and the committed fixture measure identically'
+
+      # ---- the action's own half: resolving the base ------------------------
+      #
+      # Both cases below are event-independent on purpose. A test whose outcome
+      # depends on whether CI happened to run from a push or a pull request is
+      # a test that reports something different on the two branches.
+      - id: badbase
+        uses: ./actions/coverage
+        continue-on-error: true
+        with:
+          report: samples/coverage/patch/lcov.info
+          floor-file: samples/coverage/patch/floor.json
+          base-ref: no-such-ref-anywhere
+      - name: A named base that cannot be resolved must fail, not pass empty
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.badbase.outcome }}
+          STATUS: ${{ steps.badbase.outputs.patch-status }}
+        run: |
+          set -Eeuo pipefail
+          # An unresolvable base yields an empty diff; an empty diff has no
+          # measurable added lines; no measurable added lines reports
+          # not-applicable and exits 0. So a broken checkout would render as a
+          # passing patch gate, run after run, and nothing would ever say so.
+          if [[ "$OUTCOME" != 'failure' ]]; then
+            echo "::error::an unresolvable base ref gave outcome '$OUTCOME' and patch-status '$STATUS' — a broken checkout must not read as a passing gate"
+            exit 1
+          fi
+          echo 'OK: a base that cannot be resolved is an error'
+
+      - id: gateoff
+        uses: ./actions/coverage
+        with:
+          report: samples/coverage/patch/lcov.info
+          floor-file: samples/coverage/patch/floor.json
+          patch-threshold: '0'
+      - name: patch-threshold 0 keeps the ratchet and drops the gate
+        shell: bash
+        env:
+          STATUS: ${{ steps.gateoff.outputs.patch-status }}
+          COVERAGE: ${{ steps.gateoff.outputs.coverage }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$STATUS" == 'off' ]] || {
+            echo "::error::patch-status was '$STATUS', expected 'off'"; exit 1; }
+          [[ "$COVERAGE" == '94.95' ]] || {
+            echo "::error::the aggregate reported $COVERAGE with the gate off"; exit 1; }
+          echo 'OK: 0 disables the gate and the ratchet still ran'
+
   # The three tool ladders are now ONE function. This job is what stops them
   # drifting apart again — the last time they did, the docker path set semgrep's
   # working directory and the native path did not, so `--changed-only` reported
