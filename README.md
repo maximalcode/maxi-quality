@@ -211,11 +211,11 @@ one language at a time, when someone has the week to spend on it.
 | PR feedback | findings annotated on the diff, on by default | [#40](https://github.com/maximalcode/maxi-quality/issues/40) |
 | Per-repo policy | disable or downgrade rules, exclude paths, add your own | `.maxi-quality.yml` |
 | Pre-commit hook | opt-in, runs on staged content, `--no-verify` always works | `adopt.sh --hooks` |
-| Coverage ratchet | remembers the number and refuses to let it fall | [`actions/coverage/`](actions/coverage/) |
+| Coverage | a ratchet on the whole repo, plus a threshold on the lines a change adds. One line once your test job uploads a report | [ADOPTION §8](docs/ADOPTION.md#8-coverage--a-ratchet-not-a-threshold) |
 | SBOM and licence gate | both from OSV-Scanner; the SBOM never gates | [`docs/REFERENCE.md`](docs/REFERENCE.md) |
 | Formatting | Prettier, `ruff format`, `dotnet format whitespace`, gated in CI | [#42](https://github.com/maximalcode/maxi-quality/issues/42) |
 | Editor defaults | one shared `.editorconfig` | [`configs/editorconfig`](configs/editorconfig) |
-| Copyable examples | six complete consumer repos, each asserted by CI | [`examples/`](examples/) |
+| Copyable examples | seven complete consumer repos, each asserted by CI | [`examples/`](examples/) |
 | Test suite | planted-bug samples per language; a sample that stops failing means the config regressed | [`samples/`](samples/) |
 
 ---

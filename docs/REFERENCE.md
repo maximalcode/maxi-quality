@@ -31,6 +31,11 @@ jobs:
 | `licenses` | *(empty)* | Comma-separated SPDX allowlist. Anything outside it fails. **No default allowlist**, deliberately |
 | `annotate` | `true` | Render Semgrep findings on the pull-request diff, not only in the job log. Additive — emitted after the verdict, cannot change it |
 | `max-annotations` | `50` | Cap per run. GitHub drops them past an undocumented limit; the omitted count is always stated |
+| `runner` | `ubuntu-latest` | The `runs-on` label for every job. Point it at `self-hosted` when GitHub-hosted minutes are the thing that can make the gate go dark |
+| `coverage-report` | *(empty)* | **Name of an artifact** uploaded earlier in the same run. Set it and the coverage gate runs — the aggregate ratchet plus the patch gate. Empty means there is no coverage job in the graph at all. Requires `needs:` from your test job |
+| `coverage-floor-file` | `.maxi-quality/coverage.json` | The committed floor, in **your** repo |
+| `coverage-patch-threshold` | `50` | Minimum coverage of the lines the change **adds**. `0` keeps the measurement and drops the gate |
+| `coverage-raise` | `false` | One-time bootstrap: record the floor instead of demanding one, and print the file to commit. It does **not** commit for you |
 
 Detection **fails loud rather than skipping**: a `package.json` with no lockfile
 at or above it, a `.csproj` no solution references, or a `Cargo.toml` with no
@@ -410,12 +415,29 @@ homegrown ones it cannot fingerprint, by matching the variable **name** instead.
 
 ## The coverage action — `actions/coverage`
 
+Two gates, one action. The **aggregate ratchet** asks *did this change make it
+worse?* The **patch gate** asks *are the lines this change added tested?* — the
+question the aggregate structurally cannot answer, because one new untested
+function inside a large well-covered repo moves the aggregate by rounding error.
+
 | Input | Default | What it does |
 |---|---|---|
 | `report` | *(required)* | One or more paths/globs. lcov and Cobertura, detected **by content, not filename** |
+| `floor-file` | `.maxi-quality/coverage.json` | The committed floor the aggregate is compared against |
+| `tolerance` | `0.1` | Percentage points of slack on the aggregate, for rounding noise between runs |
 | `raise` | `false` | Rewrite the floor file when coverage improved. Does **not** commit it |
+| `patch-threshold` | `50` | Minimum coverage of the added lines. `0` keeps the measurement and drops the gate |
+| `base-ref` | *(empty)* | What the change is measured against. Empty auto-detects the PR base. A shallow checkout is deepened rather than reported as "no base" |
 
-Outputs: `coverage`, `floor` (`none` when there was none), `raised`.
+Outputs: `coverage`, `floor` (`none` when there was none), `raised`,
+`patch-coverage`, `patch-status`.
+
+`patch-status` is the one to read: `ok`, `below`, `off` (threshold `0`), `n/a`
+(nothing measurable changed) or `no-base` (the base could not be resolved).
+
+**A change with no measurable added lines is `n/a`, never 0% and never 100%.** A
+docs-only PR has no denominator, and a percentage is not an answer to that
+question: 0% gates on something no test can fix, 100% gates on a lie.
 
 Four things are errors rather than passes, because each one turns the ratchet
 permanently green: zero measurable lines, a missing report, an unparseable floor,

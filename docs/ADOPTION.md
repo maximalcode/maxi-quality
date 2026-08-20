@@ -824,6 +824,17 @@ make it worse?** The floor is whatever the repo already achieves, it lives in a
 committed file, and it only ever goes up. Same shape as `--changed-only`:
 grandfather the backlog, refuse to grow it.
 
+**There is a threshold, and it is on the new lines only.** The paragraph above
+is about the *aggregate*, and the aggregate has a blind spot big enough to drive
+a release through: one entirely untested function added to a large well-covered
+repo moves the number by rounding error, so the ratchet stays green over exactly
+the code nobody tested. The lines a change **adds** are a different case
+altogether — they are new, so "you are already below it" cannot be true of them,
+and a fixed bar is sound there for the same reason it is unusable on the whole
+repo. Both run from the same report and the same one line of wiring: the
+aggregate ratchets, the added lines have to clear `coverage-patch-threshold`
+(default **50**; `0` keeps the measurement and drops the gate).
+
 The consumer runs its own tests — this baseline cannot drive a test suite that
 needs services, fixtures and a database, and every attempt to guess a "standard"
 test command produces a gate that is skipped or wrong. It runs the part that is
@@ -840,9 +851,9 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - run: pnpm test --coverage.reporter=lcov   # or your own test command
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: coverage
           path: coverage/
@@ -862,6 +873,14 @@ is no coverage job at all — nothing changes for a repo that has not opted in.
 Two knobs, both optional: `coverage-patch-threshold` (default `50`, the minimum
 coverage of the lines a change ADDS — `0` keeps the measurement and drops the
 gate) and `coverage-floor-file` (default `.maxi-quality/coverage.json`).
+
+A change with **no measurable added lines** — a docs-only PR, a pure deletion —
+reports `n/a` and gates nothing. Never 0%, which would gate on something no test
+can fix, and never 100%, which would be a lie about a question with no
+denominator.
+
+Copyable, and asserted by CI:
+[`examples/typescript-npm/`](../examples/typescript-npm/).
 
 **Or call the action directly**, if you are not using the reusable workflow:
 

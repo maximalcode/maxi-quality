@@ -462,9 +462,15 @@ question: *did this change make it worse?*
   `samples/coverage/patch` is that change, committed, with the ratchet green on
   it. `--diff-file` reports the number that does see it — the added lines of a
   unified diff intersected with the per-line hits the reports already carry.
-  It reports; it does not gate. Building that rather than depending on
-  `diff-cover` was decided by running both against the fixture:
+  Building that rather than depending on `diff-cover` was decided by running
+  both against the fixture:
   [`EVAL-vs-diff-cover.md`](EVAL-vs-diff-cover.md).
+- **The added lines are the one place a fixed threshold is right**, and it is
+  the same argument as the section title, not an exception to it. A bar on the
+  aggregate fails because the repo is already wherever it is; added lines have
+  no "already", so `coverage-patch-threshold` is a plain number (default 50,
+  `0` measures without gating). The ratchet grandfathers the backlog; the
+  threshold refuses to grow it — the same pair as `--changed-only`.
 - **No measurable changed lines is `n/a`.** Not 0%, which gates on something no
   test can fix, and not 100%, which gates on a lie. A docs-only PR has no
   denominator, and a percentage is not an answer to that question.
