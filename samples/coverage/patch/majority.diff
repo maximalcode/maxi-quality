@@ -16,3 +16,8 @@ index 6666666..2222222 100644
  export function percentile(values: readonly number[], p: number): number {
    if (values.length === 0) {
      return 0;
+@@ -58,0 +62,4 @@
++export function medianAbsoluteDeviation(values: readonly number[]): number {
++  const mid = median(values);
++  return median(values.map((v) => Math.abs(v - mid)));
++}
