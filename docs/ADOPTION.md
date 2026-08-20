@@ -827,7 +827,43 @@ grandfather the backlog, refuse to grow it.
 The consumer runs its own tests — this baseline cannot drive a test suite that
 needs services, fixtures and a database, and every attempt to guess a "standard"
 test command produces a gate that is skipped or wrong. It runs the part that is
-genuinely shared:
+genuinely shared.
+
+**If you already call `quality.yml`, it is one line.** Your test job uploads the
+report as an artifact; you name that artifact:
+
+```yaml
+# .github/workflows/quality.yml — in YOUR repo
+name: quality
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: pnpm test --coverage.reporter=lcov   # or your own test command
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+
+  quality:
+    needs: test          # <-- REQUIRED. Without it the gate can start before
+                         #     the upload finishes and find no artifact.
+    uses: maximalcode/maxi-quality/.github/workflows/quality.yml@v1
+    with:
+      coverage-report: coverage
+```
+
+Report files are found inside the artifact **by content**, so it does not matter
+where in it they sit or what they are called. With `coverage-report` unset there
+is no coverage job at all — nothing changes for a repo that has not opted in.
+
+Two knobs, both optional: `coverage-patch-threshold` (default `50`, the minimum
+coverage of the lines a change ADDS — `0` keeps the measurement and drops the
+gate) and `coverage-floor-file` (default `.maxi-quality/coverage.json`).
+
+**Or call the action directly**, if you are not using the reusable workflow:
 
 ```yaml
       - run: pnpm test --coverage.reporter=lcov     # or dotnet test --collect:"XPlat Code Coverage"
@@ -838,11 +874,18 @@ genuinely shared:
             **/coverage.cobertura.xml
 ```
 
-**One-time setup: record a floor.** Run it once with `raise: 'true'` and commit
-the `.maxi-quality/coverage.json` it writes. Until that file exists the step
+**One-time setup: record a floor.** Until the floor file exists the step
 **fails** — a ratchet with nothing to compare against reports ok at any coverage
 at all, and that is what the snippet above silently did before, because `raise`
 defaults to false and nothing else ever wrote the file.
+
+Through `quality.yml`: add `coverage-raise: 'true'`, push, and the run prints
+the file under **RECORDED FLOOR** in the log and the job summary. Commit that as
+`.maxi-quality/coverage.json` and remove the input. Calling the action directly:
+run it once with `raise: 'true'` and commit the file it writes.
+
+Either way it does not commit for you — that is a write to your default branch,
+and this baseline does not take that permission on your behalf.
 
 lcov and Cobertura are both accepted, detected **by content, not by filename** —
 `coverage.xml`, `cobertura.xml`, `lcov.info` and `coverage.info` are all in
