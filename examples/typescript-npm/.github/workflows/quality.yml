@@ -1,7 +1,33 @@
 name: quality
 on: [push, pull_request]
 jobs:
+  # YOUR job. The baseline never runs your tests (CONCEPT §12) — it cannot know
+  # what services, fixtures or database a suite needs, and every guess at a
+  # "standard" test command produces a gate that is skipped or wrong. The only
+  # thing this job owes the coverage gate is an uploaded report.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - run: npm ci
+      - run: npm test
+      - uses: actions/upload-artifact@v7
+        with:
+          # This name is what `coverage-report:` below refers to. The files
+          # INSIDE it are found by content, so their path and filename do not
+          # matter — lcov and Cobertura are both recognised wherever they sit.
+          name: coverage
+          path: coverage/
+
   quality:
+    # REQUIRED once coverage-report is set, and easy to leave out because
+    # nothing else here needs it: without this edge the gate can start before
+    # the upload finishes, and then it fails on a missing artifact rather than
+    # on coverage.
+    needs: test
     uses: maximalcode/maxi-quality/.github/workflows/quality.yml@v1
     with:
       # A fully adopted APPLICATION, which is what makes both of these safe
@@ -19,3 +45,19 @@ jobs:
       # real-code findings in the evaluation were exactly that class, and
       # gating them there ships a finding nobody can fix.
       dead-code-exports: true
+      # The whole coverage gate, in one line: the aggregate ratchet (did this
+      # change make it worse?) plus the patch gate over the lines the change
+      # ADDS, which is the one the ratchet cannot see.
+      coverage-report: coverage
+      # Optional. Default 50 — the minimum coverage of the added lines. '0'
+      # keeps the measurement and drops the gate.
+      # coverage-patch-threshold: '80'
+      #
+      # FIRST RUN ONLY, and it is deliberately not committed here. Until
+      # .maxi-quality/coverage.json exists the gate FAILS — a ratchet with
+      # nothing to compare against reports ok at any coverage at all. Uncomment
+      # the line below, push once, commit what the log prints under RECORDED
+      # FLOOR, then remove it again. It does not commit for you: that is a write
+      # to your default branch, and this baseline does not take that permission
+      # on your behalf.
+      # coverage-raise: 'true'

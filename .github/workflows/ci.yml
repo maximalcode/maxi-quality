@@ -4686,3 +4686,116 @@ jobs:
           need examples/python-uv/pyproject.toml 'deptry'
           need examples/python-uv/.github/workflows/quality.yml 'dead-code: require'
           echo 'OK: both adopted examples declare the tool and require the gate'
+
+      # #75's last acceptance box: "an example under examples/ that CI asserts."
+      # The gate itself is tested to death in coverage-ratchet, coverage-action,
+      # patch-coverage and coverage-input — what none of those can test is the
+      # thing a consumer actually gets wrong, because it lives in THEIR file:
+      # the artifact hand-off, which is two names that have to match and one
+      # `needs:` edge with no other reason to exist.
+      #
+      # Structural, not executed. This repo cannot run a green `quality.yml`
+      # against its own tree — `samples/` is deliberately broken, so Layer 2
+      # fails by design, and `continue-on-error` is not accepted on a
+      # reusable-workflow call. So the example is asserted the way a reviewer
+      # would read it, which is also how a reader copies it.
+      - name: The coverage example wires the artifact hand-off end to end
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import pathlib, sys, yaml
+
+          BASE = yaml.safe_load(
+              pathlib.Path(".github/workflows/quality.yml").read_text())
+          KNOWN = set(BASE[True]["workflow_call"]["inputs"])
+
+          bad = []
+          wired = []
+          for path in sorted(pathlib.Path("examples").glob(
+                  "*/.github/workflows/quality.yml")):
+              doc = yaml.safe_load(path.read_text())
+              jobs = doc["jobs"]
+
+              # Every input an example sets must still EXIST. An example is
+              # documentation people copy, so a renamed input here is a
+              # consumer's first run exiting on an unknown key.
+              for job in jobs.values():
+                  for key in (job.get("with") or {}):
+                      if key not in KNOWN:
+                          bad.append(f"{path}: sets '{key}', which quality.yml "
+                                     "has no input for")
+
+              for name, job in jobs.items():
+                  artifact = (job.get("with") or {}).get("coverage-report")
+                  if not artifact:
+                      continue
+                  wired.append(path)
+
+                  # The `needs:` edge. Without it the gate can start before the
+                  # upload finishes and fails on a missing artifact — the wrong
+                  # error, for the right reason, and the reader blames coverage.
+                  needs = job.get("needs") or []
+                  needs = [needs] if isinstance(needs, str) else needs
+                  if not needs:
+                      bad.append(f"{path}: job '{name}' sets coverage-report "
+                                 "with no `needs:` — the artifact may not exist "
+                                 "yet when it runs")
+
+                  # ...and the edge has to point at the job that actually
+                  # uploads THAT artifact name. Two names matching by luck is
+                  # the failure this catches.
+                  uploaders = {
+                      dep for dep in needs
+                      for step in (jobs.get(dep) or {}).get("steps", [])
+                      if str(step.get("uses", "")).startswith(
+                          "actions/upload-artifact@")
+                      and (step.get("with") or {}).get("name") == artifact
+                  }
+                  if not uploaders:
+                      bad.append(
+                          f"{path}: job '{name}' waits on {needs or 'nothing'}, "
+                          f"none of which uploads an artifact named "
+                          f"'{artifact}'")
+
+                  # The bootstrap. A copied example whose first run fails on a
+                  # missing floor, with nothing in the file saying that is
+                  # expected, reads as a broken baseline.
+                  if "coverage-raise" not in path.read_text():
+                      bad.append(f"{path}: wires coverage but never mentions "
+                                 "coverage-raise — a reader's first run fails "
+                                 "on the missing floor with no way out")
+
+          if not wired:
+              bad.append("no example wires coverage-report — this guard "
+                         "stopped guarding (#75)")
+
+          for line in bad:
+              print(f"::error::{line}")
+          if not bad:
+              print(f"OK: {len(wired)} coverage example(s), artifact hand-off "
+                    "and bootstrap intact; every example input still exists")
+          sys.exit(1 if bad else 0)
+          PY
+
+      # examples/README.md is the index a reader lands on, and it drifted:
+      # java-maven shipped, CI asserted it, and the table never gained a row —
+      # so the one example for the newest language was invisible to anyone not
+      # running `ls`.
+      - name: Every example appears in the examples index
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          index=$(cat examples/README.md)
+          n=0
+          for d in examples/*/; do
+            [[ -f "$d/README.md" ]] || continue
+            name=$(basename "$d")
+            grep -qF "\`$name/\`" <<<"$index" || {
+              echo "::error::examples/$name is asserted by CI and has no row in examples/README.md"
+              exit 1; }
+            n=$((n + 1))
+          done
+          [[ "$n" -ge 5 ]] || {
+            echo "::error::found only $n examples — this guard stopped guarding"; exit 1; }
+          echo "OK: all $n examples appear in examples/README.md"
