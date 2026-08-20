@@ -2243,6 +2243,193 @@ jobs:
             echo "::error::the aggregate reported $COVERAGE with the gate off"; exit 1; }
           echo 'OK: 0 disables the gate and the ratchet still ran'
 
+  # quality.yml's coverage-report input (#124).
+  #
+  # WHY THIS DOES NOT CALL quality.yml. It cannot. This repo's tree is
+  # deliberately full of planted bugs, so Layer 2 fails on it BY DESIGN — the
+  # layer2 job above runs with continue-on-error and asserts the scan goes red.
+  # A `uses: ./.github/workflows/quality.yml` job therefore always fails here,
+  # and GitHub does not support continue-on-error on a reusable-workflow call,
+  # so it could never be a green check. Measured, not assumed: the first attempt
+  # ran, and both calls failed on layer2 with 130 findings from samples/.
+  #
+  # So the coverage job is tested two ways that together cover what a call would
+  # have, and #128 owns the true end-to-end once it can be run against a tree
+  # that is not this one:
+  #
+  #   1. its shell bodies are EXTRACTED from quality.yml by step name and run
+  #      here, so there is no copy to drift;
+  #   2. its wiring — the `if:` and the `with:` mapping — is asserted
+  #      structurally, which is what catches "plumbed but never reaches the
+  #      action".
+  coverage-input:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Extract the coverage job's own step bodies
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ruby -ryaml -e '
+            d = YAML.load_file(".github/workflows/quality.yml")
+            steps = d["jobs"]["coverage"]["steps"]
+            {
+              "Find the reports inside the artifact" => "/tmp/find.sh",
+              "A missing floor must say exactly how to record one" => "/tmp/floor.sh",
+            }.each do |name, out|
+              st = steps.find { |x| x["name"] == name }
+              abort "no step named #{name}" if st.nil?
+              File.write(out, st["run"])
+            end
+          '
+          [[ -s /tmp/find.sh && -s /tmp/floor.sh ]]
+          echo 'OK: extracted by step name, so this cannot test a stale copy'
+
+      # A real round trip, because "the artifact hand-off works" is the one
+      # claim a local directory cannot make.
+      - name: Upload a report the way a consumer's test job does
+        run: |
+          mkdir -p /tmp/up/coverage/nested
+          cp samples/coverage/patch/lcov.info /tmp/up/coverage/nested/
+          cp samples/coverage/patch/cobertura.xml /tmp/up/coverage/
+          echo 'not a report' > /tmp/up/coverage/notes.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-coverage
+          path: /tmp/up
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: e2e-coverage
+          path: /tmp/down
+
+      - name: Reports are found by content, wherever they sit
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export GITHUB_OUTPUT=/tmp/find.out; : > "$GITHUB_OUTPUT"
+          DIR=/tmp/down ARTIFACT=e2e-coverage bash /tmp/find.sh
+          # Both reports, neither the .txt — nested and root, two formats.
+          grep -q 'nested/lcov.info' /tmp/find.out || {
+            echo '::error::the nested lcov was not found'; cat /tmp/find.out; exit 1; }
+          grep -q 'cobertura.xml' /tmp/find.out || {
+            echo '::error::the cobertura report was not found'; cat /tmp/find.out; exit 1; }
+          if grep -q 'notes.txt' /tmp/find.out; then
+            echo '::error::a non-report file was passed to the action as a report'
+            cat /tmp/find.out; exit 1
+          fi
+          echo 'OK: two formats, one nested, and the plain text left out'
+
+      - name: An artifact holding no report is an error, not a pass
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p /tmp/empty-art && echo hi > /tmp/empty-art/notes.txt
+          export GITHUB_OUTPUT=/tmp/empty.out; : > "$GITHUB_OUTPUT"
+          rc=0
+          DIR=/tmp/empty-art ARTIFACT=e2e-coverage bash /tmp/find.sh >/tmp/empty.log 2>&1 || rc=$?
+          [[ "$rc" != '0' ]] || {
+            echo '::error::an artifact with no coverage report passed'; exit 1; }
+          grep -q "e2e-coverage" /tmp/empty.log || {
+            echo '::error::the failure never named the artifact it looked in'
+            cat /tmp/empty.log; exit 1; }
+          echo 'OK: an empty artifact fails, naming itself'
+
+      # #75's third question: a first run must not look like a broken gate.
+      - name: A missing floor prints the bootstrap, verbatim and followable
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          FLOOR_FILE=/tmp/no-such-floor.json bash /tmp/floor.sh >/tmp/floor.log 2>&1 || rc=$?
+          [[ "$rc" != '0' ]] || {
+            echo '::error::a missing floor passed — the ratchet compared against nothing'; exit 1; }
+          for want in "coverage-raise: 'true'" 'RECORDED FLOOR' '/tmp/no-such-floor.json'; do
+            grep -qF "$want" /tmp/floor.log || {
+              echo "::error::the bootstrap never says: $want"; cat /tmp/floor.log; exit 1; }
+          done
+          # And the way out has to actually work.
+          echo '{"line": 95.00}' > /tmp/real-floor.json
+          FLOOR_FILE=/tmp/real-floor.json bash /tmp/floor.sh >/dev/null || {
+            echo '::error::following the instruction still failed'; exit 1; }
+          echo 'OK: the bootstrap names the input, and following it clears it'
+
+      # The gate itself, over the reports discovery just produced.
+      #
+      # The floor is written HERE rather than left absent: without it the action
+      # fails on --require-floor, the step still goes red, and the assertion
+      # below would pass for entirely the wrong reason.
+      - name: A floor the downloaded report cannot meet
+        run: |
+          echo '{"line": 99.00}' > /tmp/high-floor.json
+      - id: red
+        uses: ./actions/coverage
+        continue-on-error: true
+        with:
+          report: |
+            /tmp/down/coverage/nested/lcov.info
+          floor-file: /tmp/high-floor.json
+          patch-threshold: '0'
+      - name: The discovered report is what actually gets gated
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.red.outcome }}
+          COVERAGE: ${{ steps.red.outputs.coverage }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$COVERAGE" == '94.95' ]] || {
+            echo "::error::the downloaded artifact measured $COVERAGE, expected 94.95 — the wrong file was gated"; exit 1; }
+          [[ "$OUTCOME" == 'failure' ]] || {
+            echo '::error::94.95% against a 99% floor passed'; exit 1; }
+          echo 'OK: the artifact round trip ends in a real verdict'
+
+      # What a call would have caught and these cannot: that the job is wired to
+      # the inputs at all.
+      - name: The job's wiring is what the inputs say
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # A quoted heredoc: no shell escaping, and — deliberately — the
+          # expected values are matched as expression NAMES rather than written
+          # out as literal interpolations, because actionlint parses any it
+          # finds in a run block against THIS workflow's context, where
+          # quality.yml's inputs do not exist.
+          cat > /tmp/wiring.rb <<'RUBY'
+          require 'yaml'
+          j = YAML.load_file('.github/workflows/quality.yml')['jobs']['coverage']
+          bad = ->(m) { STDERR.puts "::error::#{m}"; exit 1 }
+
+          # With the input unset there must be no coverage job AT ALL. A job
+          # that merely skipped would still appear as a new box in every
+          # adopted consumer's PR checks the morning v1 moves.
+          cond = j['if'].to_s
+          bad.("the coverage job if: is #{cond.inspect}, not a guard on the input") \
+            unless cond.include?('inputs.coverage-report') && cond.include?('!=')
+
+          dl = j['steps'].find { |s| s['uses'].to_s.include?('download-artifact') }
+          bad.('no download-artifact step') if dl.nil?
+          bad.("the download step takes name=#{dl['with']['name'].inspect}, not the input") \
+            unless dl['with']['name'].to_s =~ /inputs\.coverage-report/
+
+          cov = j['steps'].find { |s| s['uses'].to_s.include?('actions/coverage') }
+          bad.('no step calls actions/coverage') if cov.nil?
+
+          # "plumbed but never reaches the action" is the failure a call would
+          # have caught; this is what catches it without one.
+          {
+            'report'          => /steps\.find\.outputs\.reports/,
+            'floor-file'      => /inputs\.coverage-floor-file/,
+            'patch-threshold' => /inputs\.coverage-patch-threshold/,
+            'raise'           => /inputs\.coverage-raise/,
+          }.each do |key, want|
+            got = cov['with'][key].to_s
+            bad.("actions/coverage gets #{key}=#{got.inspect}, which does not carry #{want.source}") \
+              unless got =~ want
+          end
+          puts 'OK: if: guards the input, and all four inputs reach the action'
+          RUBY
+          ruby /tmp/wiring.rb
+
   # The three tool ladders are now ONE function. This job is what stops them
   # drifting apart again — the last time they did, the docker path set semgrep's
   # working directory and the native path did not, so `--changed-only` reported
