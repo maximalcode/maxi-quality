@@ -3487,6 +3487,62 @@ jobs:
           shellcheck -s bash "${files[@]}"
           echo "OK: ${#files[@]} shipped scripts are shellcheck-clean"
 
+      # CLAUDE.md: "a job that runs but is not on the required list reports and
+      # blocks nothing, which is indistinguishable from a passing gate in the PR
+      # UI." That has now drifted twice — four jobs the first time, this
+      # milestone's own two the second — and both times the tell was a written
+      # count nobody recomputed.
+      #
+      # The required list itself cannot be read from here: the branch-protection
+      # API needs admin rights, and this job's token is read-only by design. So
+      # what is asserted is the half that IS reachable — the number written in
+      # the docs must equal the number of contexts ci.yml produces. It does not
+      # prove the contexts are set; it makes adding a job collide with the
+      # sentence that says to set them.
+      #
+      # Contexts, not jobs: `layer2` is a two-leg matrix, so the two counts
+      # differ by one, and "one per job" was the wording that hid that.
+      - name: The documented required-check count must match ci.yml
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import re, sys, pathlib, yaml
+
+          jobs = yaml.safe_load(pathlib.Path(".github/workflows/ci.yml")
+                                .read_text())["jobs"]
+          contexts = 0
+          for name, job in jobs.items():
+              legs = 1
+              for key, values in ((job.get("strategy") or {}).get("matrix")
+                                  or {}).items():
+                  if key not in ("include", "exclude") and isinstance(values, list):
+                      legs *= len(values)
+              contexts += legs
+
+          # Two documents state the number, for two audiences. Both are checked,
+          # because a contributor reading only CONTRIBUTING.md and an agent
+          # reading only CLAUDE.md must not be told different things.
+          bad = 0
+          for doc in ("CLAUDE.md", "CONTRIBUTING.md"):
+              found = re.findall(r"(\d+) required checks",
+                                 pathlib.Path(doc).read_text())
+              if not found:
+                  print(f"::error::{doc} no longer states a required-check "
+                        "count — this guard stopped guarding")
+                  bad = 1
+              elif any(int(n) != contexts for n in found):
+                  print(f"::error::{doc} says {', '.join(found)} required "
+                        f"checks; ci.yml produces {contexts} contexts from "
+                        f"{len(jobs)} jobs. Update the docs AND add the missing "
+                        "context to branch protection on develop AND main.")
+                  bad = 1
+          if not bad:
+              print(f"OK: {contexts} contexts from {len(jobs)} jobs, "
+                    "and both documents agree")
+          sys.exit(bad)
+          PY
+
   # Runs on BOTH platforms the action claims to support, because "supported"
   # is a claim about installed tools and shell builtins, and those are exactly
   # what differs: macOS has no `sha256sum`, no pipx on a self-hosted box, no
