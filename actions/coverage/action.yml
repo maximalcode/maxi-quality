@@ -59,8 +59,9 @@ inputs:
       Minimum coverage, in percent, of the lines this change ADDS. The
       aggregate ratchet cannot see a new untested function inside a large
       well-covered repo; this is the number that can. '0' switches the gate off
-      and keeps the measurement. Requires the base ref to be fetchable — see
-      base-ref.
+      and keeps the measurement. Needs history back to the merge base: the
+      action deepens a shallow clone itself, and fetch-depth: 0 on the
+      consumer's checkout avoids that work entirely.
     default: '50'
   base-ref:
     description: >-
@@ -194,24 +195,48 @@ runs:
             echo "::notice::patch coverage did not run: this event has no base ref to diff against, so there are no 'changed lines'. The aggregate ratchet still gated this run."
             PATCH_STATUS_OVERRIDE="no-base"
           else
-            # One fetch attempt, then assert. A shallow checkout (the default
-            # fetch-depth: 1) does not contain the base, and the fix is either
-            # fetch-depth: 0 on the consumer's checkout or this fetch working.
-            if ! git rev-parse --verify --quiet "${REF}^{commit}" >/dev/null; then
-              git fetch --no-tags --quiet origin "+${REF}:${REF}" 2>/dev/null || true
+            # actions/checkout defaults to fetch-depth: 1, so on a normal
+            # consumer the base commit is not merely unfetched — the common
+            # ANCESTOR is absent, and `git merge-base` fails even after the ref
+            # itself resolves. Erroring there would mean the default
+            # configuration of the default checkout fails on the day this ships,
+            # for every consumer at once. So the action repairs what it can, and
+            # only then insists.
+            BASE_COMMIT=""
+            MERGE_BASE=""
+            resolve_base() {
+              BASE_COMMIT="$(git rev-parse --verify --quiet "${REF}^{commit}" \
+                || git rev-parse --verify --quiet "origin/${REF}^{commit}" || true)"
+              [[ -n "$BASE_COMMIT" ]] || return 1
+              MERGE_BASE="$(git merge-base HEAD "$BASE_COMMIT" 2>/dev/null || true)"
+              [[ -n "$MERGE_BASE" ]]
+            }
+
+            if ! resolve_base; then
+              git fetch --no-tags --quiet origin \
+                "+${REF}:refs/remotes/origin/${REF}" 2>/dev/null || true
+              resolve_base || true
             fi
 
-            BASE_COMMIT="$(git rev-parse --verify --quiet "${REF}^{commit}" || true)"
-            [[ -n "$BASE_COMMIT" ]] || BASE_COMMIT="$(git rev-parse --verify --quiet "origin/${REF}^{commit}" || true)"
+            # Still nothing, and the clone is shallow: deepen, then unshallow.
+            # --deepen first because --unshallow on a large repo is the
+            # expensive option and is rarely the one that is needed.
+            if [[ -z "$MERGE_BASE" && -f "$(git rev-parse --git-dir)/shallow" ]]; then
+              git fetch --no-tags --quiet --deepen=200 origin 2>/dev/null || true
+              resolve_base || true
+              if [[ -z "$MERGE_BASE" ]]; then
+                git fetch --no-tags --quiet --unshallow origin 2>/dev/null || true
+                resolve_base || true
+              fi
+            fi
 
             if [[ -z "$BASE_COMMIT" ]]; then
               echo "::error::patch coverage: base ref '${REF}' cannot be resolved in this checkout, so the changed lines cannot be determined. This is an error and not an empty diff, because an empty diff would report not-applicable and pass. Fix the checkout: actions/checkout with fetch-depth: 0, or fetch the base branch before this step."
               exit 1
             fi
 
-            MERGE_BASE="$(git merge-base HEAD "$BASE_COMMIT" 2>/dev/null || true)"
             if [[ -z "$MERGE_BASE" ]]; then
-              echo "::error::patch coverage: '${REF}' resolved to ${BASE_COMMIT} but shares no history with HEAD, so there is no merge base to diff from. A shallow checkout is the usual cause; use fetch-depth: 0."
+              echo "::error::patch coverage: '${REF}' resolved to ${BASE_COMMIT} but shares no history with HEAD even after deepening this clone, so there is no merge base to diff from. Set fetch-depth: 0 on actions/checkout, or set patch-threshold: 0 to run the aggregate ratchet alone."
               exit 1
             fi
 
