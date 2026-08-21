@@ -297,10 +297,11 @@ that the settings were never able to fix.
 
 ---
 
-## 7. Which keys are pinned by a fixture, and which are not
+## 7. How strong each key is, in four categories
 
 No key in this directory is proven by a sample, because none can be — that is
-§0's whole problem and the reason `scripts/check-editor-contract.py` exists.
+this whole directory's problem, and the reason
+`scripts/check-editor-contract.py` exists at all.
 So "how strong is this key" has four honest answers, and they are not
 interchangeable:
 

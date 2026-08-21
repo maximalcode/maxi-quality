@@ -218,6 +218,21 @@ for fname, key, want in divergences:
     elif doc[key] != want:
         bad(f"{fname} sets {key} to {doc[key]!r}, README §1 says {want!r}")
 
+# --- every section this directory cites must exist --------------------------
+# A dangling "§N" is how a doc rots without anyone noticing: the sentence still
+# reads fine and points at nothing. Caught a real one (§0) the first time it ran.
+headings = {int(m) for m in re.findall(r"^## (\d+)\.", readme, re.M)}
+cited = set()
+for q in sorted(D.iterdir()):
+    if q.suffix not in (".md", ".json"): continue
+    for m in re.findall(r"\u00a7(\d+)", q.read_text()):
+        if int(m) not in headings:
+            bad(f"{q} cites README \u00a7{m}, which is not a section")
+        cited.add(int(m))
+if not headings:
+    bad("configs/editor/README.md has no numbered sections — this guard "
+        "stopped guarding")
+
 # --- G3: every expectation manifest is named in §3's table ------------------
 # Scoped to §3, not to the whole file: a filename mentioned in passing anywhere
 # else is not the same as a row in the table step 3 diffs against.

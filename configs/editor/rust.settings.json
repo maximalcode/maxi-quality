@@ -20,7 +20,7 @@
   // HONEST LABEL: pinned to match the gate's argv, NOT proven by a fixture.
   // All 8 findings in samples/expected/clippy.json are in src/main.rs, so
   // samples/rust would produce the same set with or without this key. See
-  // README §7 for the two keys in this contract with that status.
+  // README §7, category (c).
   "rust-analyzer.check.allTargets": true,
 
   // ...and `--locked`, the other flag in the gate's invocation. It makes a
