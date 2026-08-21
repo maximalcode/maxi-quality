@@ -38,6 +38,12 @@ Plus the shape-guard the rest of this repo uses: a language that ships a config
 must have a fragment, so the next language cannot arrive with the editor
 contract silently not covering it.
 
+And since #126 the fragments are no longer only copied by hand —
+`scripts/editor-settings.py` composes them into a consumer's `.vscode/` files.
+That adds a second way for this contract to rot quietly: a template row the
+composer has no rule for, or a composer rule for a row that no longer exists.
+Neither is visible in a diff of either file alone, so both are asserted here.
+
 Reads only committed files. Does no network I/O and writes nothing.
 
 Exit codes: 0 the contract holds - 1 it drifted
@@ -254,6 +260,92 @@ for m in re.findall(r"samples/expected/([A-Za-z0-9._-]+\.json)", s3):
 # arbitrary minimum would only add slack.
 if not manifests:
     bad("samples/expected/ is empty — this guard stopped guarding")
+
+# --- G7: the composer and the templates must agree -------------------------
+# scripts/editor-settings.py turns these templates into a consumer's .vscode/
+# files, which means it carries a table saying which detected language earns
+# each extension row. A table beside the data it describes drifts from it — so
+# it is checked in both directions rather than trusted, and the composer is run
+# once here on every language, because a splitter that mangles a fragment
+# produces a plausible file nobody would look twice at.
+import importlib.util
+
+# The docstring above promises this script WRITES NOTHING, and importing a
+# module by path is enough to make CPython drop a __pycache__ directory into
+# scripts/. Turned off rather than gitignored: a guard that dirties the tree it
+# is checking is a guard people learn to run with `git checkout .` afterwards.
+sys.dont_write_bytecode = True
+
+spec = importlib.util.spec_from_file_location(
+    "editor_settings", pathlib.Path("scripts/editor-settings.py"))
+compose = importlib.util.module_from_spec(spec)
+try:
+    spec.loader.exec_module(compose)
+except Exception as e:            # noqa: BLE001 - reported, not swallowed
+    bad(f"scripts/editor-settings.py does not import: {e}")
+    compose = None
+
+if compose is not None and ext is not None:
+    if set(compose.FRAGMENTS) != langs:
+        bad("scripts/editor-settings.py's FRAGMENTS map covers "
+            f"{sorted(compose.FRAGMENTS)}, configs/ ships {sorted(langs)} — "
+            "adopt.sh --editor would write nothing for the difference")
+    for lang, fname in compose.FRAGMENTS.items():
+        if not (D / fname).exists():
+            bad(f"editor-settings.py maps {lang} to {fname}, which does not exist")
+
+    for key, table, name in ((("recommendations"), compose.RECOMMENDATIONS,
+                              "RECOMMENDATIONS"),
+                             ("unwantedRecommendations", compose.UNWANTED,
+                              "UNWANTED")):
+        listed = set(ext.get(key, []))
+        for ident in sorted(listed - set(table)):
+            bad(f"extensions.json lists {ident} under {key}, and "
+                f"editor-settings.py's {name} has no rule for it — "
+                "adopt.sh --editor would refuse to compose")
+        for ident in sorted(set(table) - listed):
+            bad(f"editor-settings.py's {name} has a rule for {ident}, which "
+                "extensions.json no longer lists")
+        for ident, rule in sorted(table.items()):
+            if rule not in (compose.ALWAYS, compose.PRETTIER,
+                            compose.NOT_PORTABLE) and rule not in langs:
+                bad(f"{name}[{ident}] is gated on {rule!r}, which is not a "
+                    "language configs/ ships")
+
+    # The prettier gate names two keys in typescript.settings.json. If either is
+    # renamed, the gate silently stops gating and a repo with no prettier config
+    # gets format-on-save against Prettier's defaults — the exact failure
+    # extensions.json's own comment says step 2 must prevent.
+    try:
+        ts_keys = {k for _, k, _ in
+                   compose.object_entries((D / "typescript.settings.json").read_text())}
+    except Exception as e:        # noqa: BLE001
+        ts_keys = set()
+        bad(f"editor-settings.py cannot split typescript.settings.json: {e}")
+    for k in compose.PRETTIER_KEYS:
+        if k not in ts_keys:
+            bad(f"editor-settings.py gates {k!r} on the prettier config, but "
+                "typescript.settings.json no longer has that key")
+
+    # Compose every language once. Cheap, and it is the only place the splitter
+    # itself is exercised against all six fragments at their current shape.
+    try:
+        composed = compose.compose_settings(list(compose.FRAGMENTS), prettier=True)
+        doc = compose.parse(composed)
+    except Exception as e:        # noqa: BLE001
+        doc = {}
+        bad(f"editor-settings.py cannot compose all languages: {e}")
+    for fname in sorted(compose.FRAGMENTS.values()):
+        for _, key, _ in compose.object_entries((D / fname).read_text()):
+            if key not in doc:
+                bad(f"{key} is in {fname} but not in the composed settings — "
+                    "adopt.sh --editor would drop it silently")
+    # Never the semgrep fragment: its rule paths resolve only inside a checkout
+    # of this repo (README §5, issue #153), so composing it into a consumer's
+    # tree would point the extension at nothing.
+    if "semgrep.scan.onlyGitDirty" in doc:
+        bad("the composed settings include the semgrep fragment — its rule "
+            "paths do not exist in a consumer's tree (README §5)")
 
 if fail:
     for f in fail: print(f"::error::{f}")
