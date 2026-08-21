@@ -1,0 +1,84 @@
+{
+  // maxi-quality — the shared extension recommendation list.
+  //
+  // Copy into .vscode/extensions.json. This is the FULL list; a consumer's
+  // tree should carry only the rows for languages it actually has, which is
+  // the composition step 2 (`adopt.sh --editor`, #126) will do. adopt.sh does
+  // not write this file yet.
+  //
+  // Every id below is the publisher.name from that extension's own published
+  // manifest. See ./README.md for the verified divergence each one needs a
+  // settings line for.
+
+  "recommendations": [
+    // Always. adopt.sh writes .editorconfig into every tree it touches, and
+    // this is the only thing that makes VS Code read it. Without it the C#
+    // formatting rules in configs/dotnet/dotnet.editorconfig are inert in the
+    // editor for every non-C# file, which is what layer1-dotnet's
+    // MissingFinalNewline.cs fixture pins from the CI side.
+    "EditorConfig.EditorConfig",
+
+    // TypeScript — layer1-typescript (eslint + tsc).
+    "dbaeumer.vscode-eslint",
+    // OPTIONAL, and only if the repo took the prettier half: adopt.sh prints
+    // the prettier install as an OPTIONAL step, so a tree can legitimately
+    // have no prettier.config.mjs. Recommending the extension where the config
+    // is absent formats against Prettier's defaults, not this baseline's —
+    // strictly worse than not recommending it. Step 2 must gate this row on
+    // the config file existing.
+    "esbenp.prettier-vscode",
+
+    // Python — layer1-python (ruff + mypy). ms-python.python is not optional
+    // here: `importStrategy: fromEnvironment` resolves against the interpreter
+    // that extension selects, so without it the mypy pin below has nothing to
+    // point at.
+    "ms-python.python",
+    // Ruff — the lint AND format halves of layer1-python's Python gate; the
+    // same binary runs `ruff check` and `ruff format --check`.
+    "charliermarsh.ruff",
+    // mypy is a separate extension from ms-python.python, and installing the
+    // Python extension alone gives no mypy diagnostics at all.
+    "ms-python.mypy-type-checker",
+
+    // Rust — layer1-rust (clippy + rustfmt). rust-analyzer is both.
+    "rust-lang.rust-analyzer",
+
+    // C# — layer1-dotnet. The BASE extension, deliberately. See
+    // unwantedRecommendations below; this is not an oversight.
+    "ms-dotnettools.csharp",
+
+    // Java — layer1-java, PARTIALLY. This extension cannot show the Error
+    // Prone / NullAway findings the Java gate is built on; see README §4.
+    // It is recommended for the build wiring and navigation, not for parity.
+    "redhat.java",
+
+    // Semgrep — layer2. Needs a local copy of the rules to be useful; see
+    // README §5, which is the largest named gap in this contract.
+    "Semgrep.semgrep"
+  ],
+
+  // THE LICENSING TRAP, and the reason this key is not empty.
+  //
+  // C# Dev Kit is the extension VS Code's own C# onboarding steers users to,
+  // and its licence is NOT the MIT/permissive terms the rest of this list
+  // carries. It is licensed as part of Visual Studio: free for individuals and
+  // for commercial teams up to 5 users, but an organisation with more than 250
+  // PCs OR more than $1M annual revenue needs a paid Visual Studio
+  // subscription regardless of team size.
+  //
+  // This baseline's whole premise is zero spend (CLAUDE.md §5). Recommending
+  // Dev Kit would put a paid-subscription requirement inside a free baseline,
+  // triggered by a threshold most adopters cannot see themselves crossing.
+  // The base ms-dotnettools.csharp extension is not affected: its manifest
+  // declares no dependency or extension pack on csdevkit, so recommending the
+  // base alone is coherent rather than a half-install.
+  //
+  // Listing it as UNWANTED rather than merely omitting it is the point: VS
+  // Code surfaces Dev Kit on its own, so silence here is not a decision the
+  // adopter ever sees.
+  "unwantedRecommendations": [
+    // The paid-subscription trap described directly above. Named here so VS
+    // Code stops offering it, rather than merely left out of the list above.
+    "ms-dotnettools.csdevkit"
+  ]
+}

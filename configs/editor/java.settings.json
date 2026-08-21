@@ -1,0 +1,44 @@
+{
+  // maxi-quality — Java editor settings, against layer1-java.
+  //
+  // READ README §4 BEFORE COPYING THIS. Java is the one language here where
+  // the contract cannot deliver parity: the gate is built on Error Prone and
+  // NullAway, which are javac plugins, and redhat.java produces its Problems
+  // entries with the Eclipse compiler (ECJ). There is no setting that routes
+  // Error Prone into the Problems panel. This file therefore pins what CAN be
+  // made honest, and deliberately switches off a source of findings the gate
+  // does not produce.
+
+  // NOT a parity pin — an ANTI-parity pin, and the one judgement call in this
+  // contract. JDT's null analysis is not NullAway: different inference,
+  // different annotations, different findings. Left at its default
+  // ("interactive") it prompts to enable itself and then reports nulls
+  // layer1-java never asserts, while still missing the NullAway findings
+  // samples/expected/java.json does assert. A Problems panel that is wrong in
+  // both directions is worse than one that is quiet, and step 3's parity run
+  // would have to carry an unbounded exclusion list to measure anything.
+  // Reversible: a team that wants JDT's null analysis for its own sake should
+  // set this back to "interactive" and accept that it is outside the contract.
+  "java.compile.nullAnalysis.mode": "disabled",
+
+  // adopt.sh writes the lint configuration into the consumer's own pom.xml as
+  // a marker-delimited region (scripts/pom-region.py), and layer1-java asserts
+  // all three fixture poms carry it verbatim. The extension's default here is
+  // "interactive" — it waits for a click before re-reading a changed pom — so
+  // after an adopt.sh run or an upgrade the editor is working from the old
+  // build configuration until someone notices. "automatic" is what makes the
+  // pom the editor reads and the pom Maven reads the same file.
+  "java.configuration.updateBuildConfiguration": "automatic",
+
+  // DELIBERATELY ABSENT: java.format.settings.url. configs/java/pom-lints.xml
+  // formats with Spotless running palantir-java-format in AOSP style. That
+  // key takes an Eclipse formatter profile XML, which is a different formatter
+  // with different output — pointing it anywhere would make format-on-save
+  // fight `mvn spotless:check`. Format with `mvn spotless:apply`; see
+  // README §4.
+  "[java]": {
+    // Off on purpose, for the reason directly above. This is the only language
+    // fragment here that turns format-on-save OFF, and it is not an oversight.
+    "editor.formatOnSave": false
+  }
+}
