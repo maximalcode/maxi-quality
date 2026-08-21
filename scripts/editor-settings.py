@@ -348,7 +348,23 @@ def compose_extensions(languages, prettier):
 
 
 # --- delta ------------------------------------------------------------------
-def show_delta(kind, existing, composed):
+def _render(value, indent):
+    """A value, in full. NEVER elided.
+
+    An earlier version truncated at 60 characters, which read fine for the
+    settings file and quietly gutted the other one: extensions.json's whole
+    content is one long array, so a conflict there printed
+    `+ "recommendations": ["Editor...` and named not one extension. A delta that
+    does not say what it withheld is a refusal with no remedy attached.
+    """
+    flat = json.dumps(value)
+    if len(flat) <= 58 and "\n" not in flat:
+        return " " + flat
+    body = json.dumps(value, indent=2).splitlines()
+    return "\n" + "\n".join(indent + line for line in body)
+
+
+def show_delta(existing, composed):
     """Print, key by key, what composing would have added. Never writes."""
     want = parse(composed)
     try:
@@ -363,16 +379,12 @@ def show_delta(kind, existing, composed):
         print("     listed as new — compare by hand)")
         have = {}
     for key, value in want.items():
-        rendered = json.dumps(value)
-        if len(rendered) > 60:
-            rendered = rendered[:57] + "..."
         if key not in have:
-            print(f"    + {json.dumps(key)}: {rendered}")
+            print(f"    + {json.dumps(key)}:{_render(value, '        ')}")
         elif have[key] != value:
-            cur = json.dumps(have[key])
-            if len(cur) > 40:
-                cur = cur[:37] + "..."
-            print(f"    ~ {json.dumps(key)}: {cur}  ->  {rendered}")
+            print(f"    ~ {json.dumps(key)}:")
+            print(f"        yours:{_render(have[key], '          ')}")
+            print(f"        ours: {_render(value, '          ')}")
         else:
             print(f"    = {json.dumps(key)}: already matches")
     print()
@@ -414,7 +426,7 @@ def main(argv):
             composed = (compose_settings(languages, args.prettier)
                         if args.kind == "settings"
                         else compose_extensions(languages, args.prettier))
-            show_delta(args.kind, args.existing, composed)
+            show_delta(args.existing, composed)
             return 0
         out = (compose_settings(languages, args.prettier)
                if args.command == "settings"

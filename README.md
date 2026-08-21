@@ -215,7 +215,7 @@ one language at a time, when someone has the week to spend on it.
 | SBOM and licence gate | both from OSV-Scanner; the SBOM never gates | [`docs/REFERENCE.md`](docs/REFERENCE.md) |
 | Formatting | Prettier, `ruff format`, `dotnet format whitespace`, gated in CI | [#42](https://github.com/maximalcode/maxi-quality/issues/42) |
 | Editor defaults | one shared `.editorconfig` | [`configs/editorconfig`](configs/editorconfig) |
-| Editor parity | the settings that make the official extensions show what CI shows, written for the languages you actually have | `adopt.sh --editor` |
+| Editor parity | `adopt.sh --editor` writes the settings that make the official extensions show what CI shows, for the languages you actually have | [`configs/editor/`](configs/editor/) |
 | Copyable examples | seven complete consumer repos, each asserted by CI | [`examples/`](examples/) |
 | Test suite | planted-bug samples per language; a sample that stops failing means the config regressed | [`samples/`](samples/) |
 

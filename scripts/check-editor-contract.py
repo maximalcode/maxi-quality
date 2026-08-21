@@ -312,6 +312,22 @@ if compose is not None and ext is not None:
                 bad(f"{name}[{ident}] is gated on {rule!r}, which is not a "
                     "language configs/ ships")
 
+    # A sixth language reaches the composer only if adopt.sh also names it.
+    # The FRAGMENTS check above keeps the composer in step with configs/; this
+    # keeps adopt.sh in step with the composer, which is the half a new language
+    # would otherwise miss in silence — detection would find the language, and
+    # its fragment would simply never be composed into anything.
+    adopt = pathlib.Path("scripts/adopt.sh").read_text()
+    named = set(re.findall(r'EDITOR_LANGS,([a-z]+)"', adopt))
+    for lang in sorted(set(compose.FRAGMENTS) - named):
+        bad(f"scripts/adopt.sh never adds {lang!r} to EDITOR_LANGS, so "
+            f"configs/editor/{compose.FRAGMENTS[lang]} would never reach a "
+            "consumer's tree")
+    for lang in sorted(named - set(compose.FRAGMENTS)):
+        bad(f"scripts/adopt.sh passes {lang!r} to editor-settings.py, which has "
+            "no fragment for it — --editor would fail on every repo with that "
+            "language")
+
     # The prettier gate names two keys in typescript.settings.json. If either is
     # renamed, the gate silently stops gating and a repo with no prettier config
     # gets format-on-save against Prettier's defaults — the exact failure

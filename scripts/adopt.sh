@@ -636,10 +636,12 @@ if [ "$WANT_EDITOR" -eq 1 ]; then
   # rather than recommended-and-caveated.
   #
   # Declared empty, and every expansion below uses the ${arr[@]+"${arr[@]}"}
-  # form: under `set -u` bash 3.2 — which is what macOS ships, and macos-latest
-  # is a supported runner here — treats an EMPTY array as an unbound variable.
-  # Plain "${PRETTIER_ARGS[@]}" aborts the script on every repo that has no
-  # prettier config, which is most of them.
+  # form: under `set -u`, bash 3.2 treats an EMPTY array as an unbound variable,
+  # so plain "${PRETTIER_ARGS[@]}" aborts on every repo that has no prettier
+  # config — which is most of them. CI runs this on ubuntu and would never see
+  # it; this script is run by a person on their own machine, and /bin/bash on
+  # macOS is still 3.2. Same reason hooks/pre-commit is written for 3.2.
+  # Found by running it there, not by reading the manual.
   PRETTIER_ARGS=()
   if [ "$HAS_TS" -eq 1 ]; then
     for f in prettier.config.mjs prettier.config.js prettier.config.cjs \

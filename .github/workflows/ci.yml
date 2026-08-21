@@ -3283,6 +3283,49 @@ jobs:
             echo '::error::a conflict on settings.json also skipped extensions.json'; exit 1; }
           echo 'OK: refused, byte-identical, delta printed in full, exit 5'
 
+      - name: A conflict on extensions.json names every extension, not an ellipsis
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # The settings delta above is one key per line and reads fine. The
+          # extensions file is the opposite shape — its whole content is one
+          # long array — so an elided value there would print
+          # `+ "recommendations": ["Editor...` and name not one extension. A
+          # refusal that does not say what it withheld is a refusal with no
+          # remedy attached, so it is asserted separately rather than assumed to
+          # follow from the settings case.
+          rm -rf /tmp/ed-extconf && mkdir -p /tmp/ed-extconf/.vscode
+          printf '{"name":"demo"}\n' > /tmp/ed-extconf/package.json
+          printf '[project]\nname = "demo"\nversion = "0.1.0"\n' > /tmp/ed-extconf/pyproject.toml
+          printf '{"recommendations":["dbaeumer.vscode-eslint"]}\n' \
+            > /tmp/ed-extconf/.vscode/extensions.json
+          before=$(sha256sum /tmp/ed-extconf/.vscode/extensions.json | cut -d' ' -f1)
+          rc=0
+          ./scripts/adopt.sh /tmp/ed-extconf --no-workflow --editor > /tmp/ed-extconf.log 2>&1 || rc=$?
+          cat /tmp/ed-extconf.log
+          [[ $rc -eq 5 ]] || { echo "::error::a refused extensions.json must exit 5, got $rc"; exit 1; }
+          after=$(sha256sum /tmp/ed-extconf/.vscode/extensions.json | cut -d' ' -f1)
+          [[ "$before" == "$after" ]] || {
+            echo '::error::--editor rewrote an extensions.json that already existed'; exit 1; }
+          python3 scripts/editor-settings.py extensions --languages typescript,python > /tmp/ed-want-ext.json
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "/tmp")
+          import jsonc
+          log = open("/tmp/ed-extconf.log").read()
+          want = jsonc.load("/tmp/ed-want-ext.json")
+          missing = [i for i in want["recommendations"] if i not in log]
+          for i in missing:
+              print(f"::error::the printed delta never names {i} — an elided "
+                    "value is a refusal with no remedy attached")
+          sys.exit(1 if missing else 0)
+          PY
+          # And the file with no conflict still gets written. A refusal on one
+          # is not a reason to abandon the other, in either direction.
+          [[ -f /tmp/ed-extconf/.vscode/settings.json ]] || {
+            echo '::error::a conflict on extensions.json also skipped settings.json'; exit 1; }
+          echo 'OK: every withheld extension is named, and settings.json was still written'
+
       - name: Only --force overwrites, and only --editor writes .vscode at all
         shell: bash
         run: |
