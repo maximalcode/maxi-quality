@@ -1,0 +1,6 @@
+{
+  "tool": "mypy",
+  "findings": [
+    { "rule": "no-any-return", "file": "samples/python/src/bad_strict.py", "line": 30 }
+  ]
+}

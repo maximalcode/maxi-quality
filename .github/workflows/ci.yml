@@ -2876,6 +2876,15 @@ jobs:
       - name: The editor contract must still say what it claims
         shell: bash
         run: python3 scripts/check-editor-contract.py
+      # #121 — the parity run itself needs a human at a VS Code, but the
+      # arithmetic done on what they paste does not. The sample exemption above
+      # covers what the settings do INSIDE an editor and nothing else, so the
+      # differ gets an ordinary fixture corpus. A step in this job rather than a
+      # job of its own: it needs no toolchain, and a new context would have to
+      # be added to branch protection on both branches to gate anything.
+      - name: The parity differ must still compute the cells it claims
+        shell: bash
+        run: python3 scripts/editor-parity.py selftest
 
   # #11 — adopt.sh, proven end-to-end rather than by reading it. The assertion
   # that matters is not "it copied some files", it is "a repo adopted by the

@@ -1,0 +1,1 @@
+error: §3 row 'Everything' names its sample as 'every file we ship', which is neither a `path` nor 'the whole tree' — teach rebase() how to anchor it before adding such a row

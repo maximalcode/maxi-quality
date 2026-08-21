@@ -1,0 +1,12 @@
+sample=samples/python
+tool=mypy
+condition=with
+expected=1
+shown=1
+missing=0
+extra=0
+demoted=0
+unidentified=0
+outside=0
+excluded=0
+verdict=PARITY

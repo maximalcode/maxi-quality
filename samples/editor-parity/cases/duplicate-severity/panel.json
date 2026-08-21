@@ -1,0 +1,26 @@
+[
+	{
+		"resource": "/checkout/samples/rust/src/main.rs",
+		"code": { "value": "clippy::or_fun_call", "target": null },
+		"severity": 8, "source": "rust-analyzer", "message": "a",
+		"startLineNumber": 19, "startColumn": 9
+	},
+	{
+		"resource": "/checkout/samples/rust/src/main.rs",
+		"code": { "value": "unsafe_code", "target": null },
+		"severity": 8, "source": "rust-analyzer", "message": "b",
+		"startLineNumber": 30, "startColumn": 5
+	},
+	{
+		"resource": "/checkout/samples/rust/src/main.rs",
+		"code": { "value": "unsafe_code", "target": null },
+		"severity": 4, "source": "a second extension reporting the same line", "message": "b",
+		"startLineNumber": 30, "startColumn": 5
+	},
+	{
+		"resource": "/checkout/samples/rust/src/main.rs",
+		"code": { "value": "clippy::junk", "target": null },
+		"severity": 4, "source": "rust-analyzer", "message": "an extra, as a warning",
+		"startLineNumber": 99, "startColumn": 1
+	}
+]

@@ -1,0 +1,3 @@
+  MISSING       NullAway                                     samples/java/src/main/java/dev/maximalcode/sample/NullAwayErrors.java:12
+  EXCLUDED(§3)  JDT null analysis                            /checkout/samples/java/src/main/java/dev/maximalcode/sample/NullAwayErrors.java:12
+  EXCLUDED(§3)  JDT null analysis                            /checkout/samples/java/src/main/java/dev/maximalcode/sample/NullAwayErrors.java:20

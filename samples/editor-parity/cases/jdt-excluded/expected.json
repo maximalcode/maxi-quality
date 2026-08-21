@@ -1,0 +1,6 @@
+{
+  "tool": "javac",
+  "findings": [
+    { "rule": "NullAway", "file": "samples/java/src/main/java/dev/maximalcode/sample/NullAwayErrors.java", "line": 12 }
+  ]
+}

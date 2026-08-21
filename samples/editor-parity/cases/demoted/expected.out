@@ -1,0 +1,12 @@
+sample=samples/rust
+tool=clippy
+condition=with
+expected=2
+shown=2
+missing=0
+extra=0
+demoted=1
+unidentified=0
+outside=0
+excluded=0
+verdict=DIVERGES

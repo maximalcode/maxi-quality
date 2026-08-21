@@ -1,0 +1,49 @@
+[
+  {
+    "resource": "/checkout/samples/rust/src/main.rs",
+    "owner": "rustc",
+    "code": {
+      "value": "clippy::or_fun_call",
+      "target": {
+        "$mid": 1,
+        "path": "/rust-clippy/master/index.html",
+        "scheme": "https",
+        "authority": "rust-lang.github.io",
+        "fragment": "or_fun_call"
+      }
+    },
+    "severity": 8,
+    "message": "use of `unwrap_or` followed by a function call",
+    "source": "rust-analyzer",
+    "startLineNumber": 19,
+    "startColumn": 9,
+    "endLineNumber": 19,
+    "endColumn": 41
+  },
+  {
+    "resource": "/checkout/samples/rust/src/main.rs",
+    "owner": "rustc",
+    "code": {
+      "value": "unsafe_code",
+      "target": null
+    },
+    "severity": 8,
+    "message": "usage of an `unsafe` block",
+    "source": "rust-analyzer",
+    "startLineNumber": 30,
+    "startColumn": 5,
+    "endLineNumber": 32,
+    "endColumn": 6
+  },
+  {
+    "resource": "/checkout/samples/rust/src/main.rs",
+    "owner": "rustc",
+    "severity": 8,
+    "message": "a diagnostic whose extension published no code",
+    "source": "rust-analyzer",
+    "startLineNumber": 88,
+    "startColumn": 9,
+    "endLineNumber": 19,
+    "endColumn": 41
+  }
+]

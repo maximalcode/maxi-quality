@@ -1,0 +1,7 @@
+{
+  "tool": "clippy",
+  "findings": [
+    { "rule": "clippy::or_fun_call", "file": "src/main.rs", "line": 19 },
+    { "rule": "unsafe_code", "file": "src/main.rs", "line": 30 }
+  ]
+}

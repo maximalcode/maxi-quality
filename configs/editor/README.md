@@ -378,7 +378,13 @@ not, which is why the TypeScript fragment marks its pair OPTIONAL.
   capture — at the default there is no clippy lint at all, so the contrast is
   total.
 - **The five-pair parity run and its ablation** — [#121], the step after
-  `adopt.sh --editor`, and what §3's table exists to serve.
+  `adopt.sh --editor`, and what §3's table exists to serve. Its protocol, its
+  exclusions and the bar it decides are pre-registered in
+  [`docs/EVAL-editor-parity.md`], which is where the matrix lands as a dated
+  section. `scripts/editor-parity.py` computes each cell from a pasted
+  Problems-panel dump and names the un-run ones rather than omitting them: the
+  observing needs a person at a window, the diffing does not, and §3's twenty
+  manifests do not all share a path base.
 
 ---
 
@@ -434,3 +440,4 @@ unrecoverable thing this feature could do.
 [#151]: https://github.com/maximalcode/maxi-quality/issues/151
 [#153]: https://github.com/maximalcode/maxi-quality/issues/153
 [ADR 0002]: ../../docs/adr/0002-no-in-editor-semgrep-parity.md
+[`docs/EVAL-editor-parity.md`]: ../../docs/EVAL-editor-parity.md

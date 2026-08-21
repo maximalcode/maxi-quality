@@ -1,0 +1,12 @@
+sample=samples/java
+tool=javac
+condition=with
+expected=1
+shown=0
+missing=1
+extra=0
+demoted=0
+unidentified=0
+outside=0
+excluded=2
+verdict=DIVERGES
