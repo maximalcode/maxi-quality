@@ -246,11 +246,12 @@ one language at a time, when someone has the week to spend on it.
   only the file in the active tab; rust-analyzer runs `cargo check`, so not one
   clippy lint appears; the C# extension reports analyzer findings for open
   files only; and VS Code type-checks with the TypeScript it ships rather than
-  the one in your `node_modules`. Six divergences, each one settings line —
-  [`configs/editor/`](configs/editor/) is the frozen contract that closes them,
-  and Java is the one language where nothing closes it (Error Prone is a javac
-  plugin; the extension uses the Eclipse compiler). Nothing writes these files
-  for you yet
+  the one in your `node_modules`. Six divergences —
+  [`configs/editor/`](configs/editor/) is the frozen contract, and it does not
+  close all of them evenly: most are one settings line, the TypeScript one
+  still needs you to accept the workspace-compiler prompt once, and Java has no
+  in-editor parity at all (Error Prone is a javac plugin; the extension uses
+  the Eclipse compiler). Nothing writes these files for you yet
   ([#126](https://github.com/maximalcode/maxi-quality/issues/126)).
 - **Java is Maven only, and Gradle fails loud rather than skipping.** Gradle
   gets built when a Gradle consumer exists

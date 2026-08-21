@@ -17,9 +17,16 @@ Four things this refuses to let happen quietly:
      is a settings file cargo-culted from a blog post. So the NEAREST PRECEDING
      NON-BLANK line of every setting id must be a comment — which also means
      one comment block cannot cover two adjacent keys.
+
+     Stated precisely, because a guard that overstates itself is worse than
+     none: this checks a comment is PRESENT, never that it names a real CI
+     behaviour. The second half is a review job and is not mechanisable.
   2. A verified divergence silently dropped, or a value edited away from what
-     README.md §1 records. The doc and the templates are two statements of the
-     same fact and they must not drift.
+     README.md §1 records. §1's "contract values" block is the SOURCE — this
+     script parses it rather than carrying its own copy, so the doc and the
+     templates cannot drift apart in either direction. An earlier version kept
+     the values as a constant here, which pinned script-to-template and left
+     the doc free to say anything.
   3. C# Dev Kit recommended. It is a licensing trap for exactly the audience a
      free baseline serves (README.md §2), and VS Code offers it unprompted, so
      merely omitting it is not a decision the adopter ever sees.
@@ -68,6 +75,35 @@ def split_comments(text):
         out.append(c); i += 1
     return "".join(out)
 
+def mask_strings(text):
+    """Blank every string's CONTENTS, keeping the quotes and the length.
+
+    The structural pass below counts braces to track nesting depth, and a brace
+    inside a VALUE would miscount it — "${workspaceFolder}" only survives
+    because its pair happens to balance. Masking first means the depth counter
+    reads structure and never data.
+    """
+    out, i, n = [], 0, len(text)
+    in_str = esc = False
+    while i < n:
+        c = text[i]
+        if in_str:
+            if esc:
+                esc = False; out.append("x")
+            elif c == "\\":
+                esc = True; out.append("x")
+            elif c == '"':
+                in_str = False; out.append(c)
+            else:
+                out.append("\n" if c == "\n" else "x")
+        else:
+            out.append(c)
+            if c == '"':
+                in_str = True
+        i += 1
+    return "".join(out)
+
+
 def load(path):
     raw = path.read_text()
     try:
@@ -81,7 +117,7 @@ def load(path):
 # key that encloses them. extensions.json's array ELEMENTS are the unit there,
 # so they are checked at depth 2 as well.
 def check_annotations(path, raw, extra_depth=()):
-    stripped = split_comments(raw).split("\n")
+    stripped = mask_strings(split_comments(raw)).split("\n")
     lines = raw.split("\n")
     depth = 0
     for i, sl in enumerate(stripped):
@@ -102,7 +138,8 @@ def check_annotations(path, raw, extra_depth=()):
         while j >= 0 and not lines[j].strip():
             j -= 1
         if j < 0 or not lines[j].strip().startswith("//"):
-            bad(f"{path}:{i+1}: {body[:48]} has no justification comment above it")
+            bad(f"{path}:{i+1}: {lines[i].strip()[:48]} has no "
+                "justification comment above it")
 
 # --- run -------------------------------------------------------------------
 frags = sorted(D.glob("*.settings.json"))
@@ -136,41 +173,76 @@ if ext is not None:
     if "ms-dotnettools.csdevkit" in rec:
         bad("extensions.json RECOMMENDS C# Dev Kit — that is the licensing trap")
 
-# G4: each verified divergence must survive in the fragment that closes it
-DIVERGENCES = [
-    ("semgrep.settings.json", "semgrep.scan.onlyGitDirty", False),
-    ("python.settings.json",  "mypy-type-checker.importStrategy", "fromEnvironment"),
-    ("python.settings.json",  "mypy-type-checker.reportingScope", "workspace"),
-    ("rust.settings.json",    "rust-analyzer.check.command", "clippy"),
-    ("dotnet.settings.json",  "dotnet.backgroundAnalysis.analyzerDiagnosticsScope", "fullSolution"),
-    ("typescript.settings.json", "typescript.tsdk", "node_modules/typescript/lib"),
-]
-for fname, key, want in DIVERGENCES:
-    _, doc = load(D / fname)
+readme = (D / "README.md").read_text()
+
+# --- G4: the doc is the SOURCE, and the fragments must agree with it --------
+# The values used to be a constant in this file, which pinned script<->template
+# and could not see the doc drift at all — README §1 could be edited to say
+# anything and this exited 0. Now §1's "The contract values, in one place" block
+# IS the constant: one statement of the fact, checked against the templates in
+# both directions.
+section = readme.split("### The contract values, in one place", 1)
+if len(section) != 2:
+    bad("configs/editor/README.md no longer has the 'contract values' block — "
+        "this guard has nothing to check the fragments against")
+    divergences = []
+else:
+    block = section[1].split("```")[1]
+    divergences = []
+    for line in block.strip().splitlines():
+        m = re.match(r"^(\S+\.settings\.json)\s+(\S+)\s*=\s*(.+?)\s*$", line)
+        if not m:
+            bad(f"unparseable line in the contract-values block: {line!r}")
+            continue
+        try:
+            want = json.loads(m.group(3))
+        except json.JSONDecodeError:
+            bad(f"contract-values block: {m.group(3)!r} is not a JSON value")
+            continue
+        divergences.append((m.group(1), m.group(2), want))
+
+if len(divergences) < 6:
+    bad(f"the contract-values block lists only {len(divergences)} settings — "
+        "README §1 documents six verified divergences, so this guard stopped "
+        "guarding")
+
+for fname, key, want in divergences:
+    target = D / fname
+    if not target.exists():
+        bad(f"the contract-values block names {fname}, which does not exist")
+        continue
+    _, doc = load(target)
     if doc is None: continue
     if key not in doc:
-        bad(f"{fname} no longer sets {key} — a verified divergence (README §1) "
-            "was dropped without the doc changing")
+        bad(f"{fname} no longer sets {key} — README §1 says it must")
     elif doc[key] != want:
         bad(f"{fname} sets {key} to {doc[key]!r}, README §1 says {want!r}")
 
-# G3: every committed expectation manifest is named in the contract doc
-readme = (D / "README.md").read_text()
-manifests = sorted(p.name for p in pathlib.Path("samples/expected").glob("*.json"))
+# --- G3: every expectation manifest is named in §3's table ------------------
+# Scoped to §3, not to the whole file: a filename mentioned in passing anywhere
+# else is not the same as a row in the table step 3 diffs against.
+try:
+    s3 = readme.split("## 3. The authoritative expectation source", 1)[1].split("\n## ", 1)[0]
+except IndexError:
+    s3 = ""
+    bad("configs/editor/README.md has no §3 — the expectation-source table is gone")
+manifests = sorted(q.name for q in pathlib.Path("samples/expected").glob("*.json"))
 for m in manifests:
-    if m not in readme:
-        bad(f"samples/expected/{m} is not named in configs/editor/README.md — "
-            "step 3 would measure parity against a manifest the contract "
-            "does not know exists")
-for m in re.findall(r"samples/expected/([A-Za-z0-9._-]+\.json)", readme):
+    if m not in s3:
+        bad(f"samples/expected/{m} is not named in README §3 — step 3 would "
+            "measure parity against a manifest the contract does not know exists")
+for m in re.findall(r"samples/expected/([A-Za-z0-9._-]+\.json)", s3):
     if m not in manifests:
-        bad(f"configs/editor/README.md names samples/expected/{m}, which does not exist")
-if len(manifests) < 15:
-    bad(f"found only {len(manifests)} manifests — this guard stopped guarding")
+        bad(f"README §3 names samples/expected/{m}, which does not exist")
+# No numeric floor here on purpose: the check above is BIDIRECTIONAL, so a
+# deleted manifest fails as "README §3 names X, which does not exist". An
+# arbitrary minimum would only add slack.
+if not manifests:
+    bad("samples/expected/ is empty — this guard stopped guarding")
 
 if fail:
     for f in fail: print(f"::error::{f}")
     sys.exit(1)
-print(f"OK: {len(frags)} fragments annotated, {len(DIVERGENCES)} verified "
-      f"divergences still pinned, C# Dev Kit excluded, all {len(manifests)} "
-      "expectation manifests named in the contract")
+print(f"OK: {len(frags)} fragments annotated, {len(divergences)} contract "
+      f"values agree with README §1, C# Dev Kit excluded, all {len(manifests)} "
+      "expectation manifests named in README §3")

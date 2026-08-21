@@ -33,6 +33,7 @@
   // than the one layer1-python asserts 13 rule families against.
   "ruff.importStrategy": "fromEnvironment",
 
+  // The extension defaults to "editorFirst", which lets `ruff.lint.args` and
   // friends override the config FILE. CI reads only the file: adopt.sh writes
   // a one-line ruff.toml that extends the copied ruff.base.toml, and
   // layer1-python runs `ruff check` / `ruff format --check --config

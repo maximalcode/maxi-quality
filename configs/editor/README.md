@@ -53,7 +53,7 @@ and it is still open — see §8.
 |---|---|---|---|
 | 1 | The Semgrep extension defaults `onlyGitDirty: true` — it scans the uncommitted diff, not the window CI scans | **VERIFIED** | `semgrep.scan.onlyGitDirty`, type boolean, **default `true`**. The extension's own docs put it plainly: it displays "findings for lines that have changed since the last commit", and is "On by default". |
 | 2 | The mypy extension defaults `importStrategy: useBundled` — a bundled mypy, not this repo's pin | **VERIFIED** | `mypy-type-checker.importStrategy`, enum `["useBundled", "fromEnvironment"]`, **default `"useBundled"`**. |
-| 3 | rust-analyzer runs `cargo check` unless told `check.command: clippy` — pedantic/nursery lints invisible in-editor | **VERIFIED** | `rust-analyzer.check.command`, **default `"check"`**. `cargo check` emits compiler diagnostics and no clippy lint at all, so the whole of `configs/rust/lints.toml` is invisible at the default. |
+| 3 | rust-analyzer runs `cargo check` unless told `check.command: clippy` — pedantic/nursery lints invisible in-editor | **VERIFIED** | `rust-analyzer.check.command`, **default `"check"`**. That is what the manifest proves: the default is not `clippy`. The consequence — `cargo check` runs the compiler's own check pass and never loads the clippy driver, so the whole of `configs/rust/lints.toml` is invisible — is a fact about cargo rather than about the manifest, and it is the one behavioural step in this table. |
 | 4 | The base C# extension, not C# Dev Kit — Dev Kit's licence gates on paid VS subscriptions | **VERIFIED** | Dev Kit is licensed under the Visual Studio terms: free for individuals and for commercial teams **up to 5 users**; 6+ needs a Visual Studio Professional (or higher) subscription; an organisation over **250 PCs or $1M annual revenue** needs a paid subscription regardless of team size. Separately confirmed from the base extension's manifest: `ms-dotnettools.csharp` declares **no** `extensionDependencies` or `extensionPack` on `csdevkit`, so recommending the base alone is a coherent install and not a half-configured one. |
 
 Four for four. None was refuted, and each is one settings line — except #4,
@@ -74,12 +74,40 @@ For mypy, #6 is not merely "shows less". mypy is a whole-program checker, so a
 per-file scope can report a *different* result for the same line, not a subset
 of the same one.
 
-### One non-divergence, recorded so it is not re-investigated
+### The non-divergences, recorded so they are not re-investigated
 
-`ruff.importStrategy` already defaults to `"fromEnvironment"` — the good value.
-It is pinned anyway, and the fragment says why: it is precisely the failure
-mode row #2 describes, it is one global user setting away, and a default that
-is currently right is not the same as a default that is guaranteed.
+Six keys in this directory are pinned at a value that is **already the
+extension's default**. None of them is a divergence, and listing them is the
+point — the next reader should not have to re-derive which keys are load-bearing
+and which are defensive:
+
+| Key | Default, and why it is pinned anyway |
+|---|---|
+| `ruff.importStrategy` | `"fromEnvironment"` — precisely the failure mode row #2 describes, one global user setting away. A default that is currently right is not a default that is guaranteed. |
+| `mypy-type-checker.cwd` | `"${workspaceFolder}"` — the discovery that makes the copied `mypy.ini` at the repo root readable at all. |
+| `dotnet.server.useOmnisharp` | `false` — the switch between two entirely different language servers; the OmniSharp one cannot show this gate's findings. |
+| `semgrep.ignoreCliVersion` | `false` — findings *and* parse errors differ between Semgrep versions. |
+| `semgrep.scan.pro_intrafile` | `false` — account-gated; this baseline is free/OSS only. |
+| `semgrep.scan.secrets` | `false` — same, and `layer2` already runs gitleaks. |
+
+### The contract values, in one place
+
+**This block is the source.** `scripts/check-editor-contract.py` parses it and
+asserts every fragment agrees — so the divergence facts live here once, rather
+than in the doc and in the script and in the templates, where only one pairing
+could ever be guarded. Editing a value here without editing the fragment fails
+CI, and so does the reverse.
+
+```
+semgrep.settings.json      semgrep.scan.onlyGitDirty                          = false
+python.settings.json       mypy-type-checker.importStrategy                   = "fromEnvironment"
+python.settings.json       mypy-type-checker.reportingScope                   = "workspace"
+rust.settings.json         rust-analyzer.check.command                        = "clippy"
+dotnet.settings.json       dotnet.backgroundAnalysis.analyzerDiagnosticsScope = "fullSolution"
+dotnet.settings.json       dotnet.backgroundAnalysis.compilerDiagnosticsScope = "fullSolution"
+typescript.settings.json   typescript.tsdk                                    = "node_modules/typescript/lib"
+typescript.settings.json   typescript.enablePromptUseWorkspaceTsdk            = true
+```
 
 ---
 
@@ -123,12 +151,19 @@ none is listed as one — the reasoning is in that script's docstring.
 | Python | `samples/python` | mypy | `samples/expected/mypy.json` | `layer1-python` |
 | Python | `samples/deptry` | deptry | `samples/expected/deptry.json` | `layer1-python` |
 | Python | `samples/deptry-clean` | deptry | `samples/expected/deptry-clean.json` | `layer1-python` |
+| Python | `samples/python-clean` | Ruff, mypy | **no manifest** — the assertion is *zero findings*, by exit code | `layer1-python` |
 | Rust | `samples/rust` | clippy | `samples/expected/clippy.json` | `layer1-rust` |
 | Rust | `samples/rust-clean` | clippy | `samples/expected/clippy-clean.json` | `layer1-rust` |
 | Java | `samples/java` | javac (Error Prone, NullAway) | `samples/expected/java.json` | `layer1-java` |
 | Java | `samples/java-clean` | javac | `samples/expected/java-clean.json` | `layer1-java` |
 | Java | `samples/java-lint` | javac (`-Xlint` / `-Werror`) | `samples/expected/java-lint.json` | `layer1-java` |
 | Semgrep (all languages) | the whole tree | Semgrep | `samples/expected/semgrep.json` | `layer2`, `layer2-counts` |
+
+`samples/python-clean` is the one clean half with no manifest — every other
+language's is a committed finding set, and this one is an exit code. It is a
+row rather than an exclusion because "the Problems panel is empty" is a
+perfectly measurable parity claim; it just is not a set diff. Step 3 has to
+treat it as its own kind of assertion.
 
 ### The rows that are deliberately not in that table
 
@@ -244,20 +279,37 @@ that the settings were never able to fix.
 
 ## 7. Which keys are pinned by a fixture, and which are not
 
-Most keys here pin something a sample proves: turn the key off and a named
-manifest stops matching. Two do not, and they are labelled in place rather than
-left to look identical to the rest:
+No key in this directory is proven by a sample, because none can be — that is
+§0's whole problem and the reason `scripts/check-editor-contract.py` exists.
+So "how strong is this key" has four honest answers, and they are not
+interchangeable:
 
-- `rust-analyzer.check.allTargets` — pinned to match `layer1-rust`'s
-  `--all-targets`. All 8 findings in `samples/expected/clippy.json` are in
-  `src/main.rs`, so `samples/rust` produces the same set either way. Matching
-  the gate's argv is the justification; a fixture is not.
-- `semgrep.scan.exclude` — ships empty. It is the slot a repo's
-  `paths.exclude` entries go into by hand, and nothing generates it, so there
-  is nothing to prove yet.
+**a. Closes a verified divergence.** The eight settings in §1's contract-values
+block. Each one is backed by a published default that demonstrably differs from
+what CI does, so switching it off provably changes what the editor reports.
+These are the load-bearing keys.
 
-Everything else in this directory either changes a finding set on an existing
-sample or is a recommendation rather than a setting.
+**b. Pinned defensively at a value that is already the default.** The six in
+§1's non-divergence table. They change nothing today; they stop a global user
+setting or a future default flip from reintroducing a divergence.
+
+**c. Pinned to match the gate's argv, with no fixture separating it.**
+`rust-analyzer.check.allTargets` — `layer1-rust` passes `--all-targets`, but all
+8 findings in `samples/expected/clippy.json` are in `src/main.rs`, so
+`samples/rust` produces the same set either way. Matching the argv is the
+justification; a fixture is not. `rust-analyzer.check.extraArgs` is the same
+shape.
+
+**d. Reaches nothing measurable at all.** Every key in
+[`java.settings.json`](java.settings.json), for the reason in §4 — the gate's
+findings cannot enter the Problems panel, so no setting there can be checked
+against them. And `semgrep.scan.exclude`, which ships empty: it is the slot a
+repo's `paths.exclude` entries go into by hand, and nothing generates it.
+
+The formatter routing keys (`editor.defaultFormatter`, `editor.formatOnSave`)
+are category **a** where the repo took the formatter — `layer1-typescript`,
+`layer1-python` and `layer1-rust` all gate a `--check` — and inert where it did
+not, which is why the TypeScript fragment marks its pair OPTIONAL.
 
 ---
 

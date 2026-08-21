@@ -273,6 +273,15 @@ per-language id is not new scope; inventing a new convention is.
   an intentionally-bad sample that fails. If a sample stops failing, the config
   regressed — fix the config, do not weaken the sample.
 
+  **One documented exception, and it is the only one: `configs/editor/`.** A
+  `.vscode/settings.json` cannot be exercised here — there is no headless VS
+  Code — so no sample can fail without it. That is exactly the shape this rule
+  exists to catch, so the exception is paid for rather than granted:
+  `scripts/check-editor-contract.py` asserts the contract's internal
+  consistency instead, and `configs/editor/README.md` §1 states what evidence
+  each claim in it does and does not rest on. Do not read this as a precedent —
+  a new config that could have a sample and does not is still a violation.
+
 ---
 
 ## Agent skills
