@@ -335,11 +335,13 @@ not, which is why the TypeScript fragment marks its pair OPTIONAL.
 
 ## 8. Still open
 
-- **The demo moment.** [#120] asks for a side-by-side for one language:
-  Problems panel with these settings against the committed expectation, and
-  the same window at the defaults showing the divergence. It needs an editor
-  and a human at it; §1 says exactly what evidence the verdicts above do and
-  do not rest on.
+- **The demo moment, and live confirmation of all six rows** — [#151]. [#120]
+  asks for a side-by-side for one language: Problems panel with these settings
+  against the committed expectation, and the same window at the defaults
+  showing the divergence. It needs an editor and a human at it; §1 says exactly
+  what evidence the verdicts above do and do not rest on. Rust is the pair to
+  capture — at the default there is no clippy lint at all, so the contrast is
+  total.
 - **`adopt.sh --editor`** — [#126].
 - **The five-pair parity run and its ablation** — the step after that, which
   is what §3's table exists to serve.
@@ -348,3 +350,4 @@ not, which is why the TypeScript fragment marks its pair OPTIONAL.
 [#120]: https://github.com/maximalcode/maxi-quality/issues/120
 [#126]: https://github.com/maximalcode/maxi-quality/issues/126
 [#129]: https://github.com/maximalcode/maxi-quality/issues/129
+[#151]: https://github.com/maximalcode/maxi-quality/issues/151
