@@ -10,10 +10,12 @@ This directory is the frozen contract for closing that gap: one settings
 fragment per language, plus the shared extension list, every key annotated with
 the CI behaviour it pins.
 
-**Nothing here is written into a consumer's tree yet.** `adopt.sh` does not
-know about this directory ([#120] ships the contract, [#126] ships
-`adopt.sh --editor`, and the five-pair parity run that measures whether it
-worked is [#129]'s successor step). Copy the fragments by hand until then.
+**`adopt.sh --editor` writes these into a consumer's tree** ([#126]) — opt-in,
+composed for the languages detection actually found, and never over a
+`.vscode/` file that already exists. [§9](#9-what-adoptsh---editor-writes) is
+the exact list of what it writes and what it holds back. Copying the fragments
+by hand still works and is the only way to get the two rows `--editor`
+deliberately does not write.
 
 | File | Against |
 |---|---|
@@ -276,9 +278,17 @@ nothing local for the extension to point at.
 
 [`semgrep.settings.json`](semgrep.settings.json) is therefore written for a
 checkout of **this** repository — which is the tree step 3's parity run
-measures, so it is the right thing to freeze now. Making it portable is step
-2's problem ([#126]), and the two candidate resolutions both have a cost worth
-stating before someone picks one casually:
+measures, so it is the right thing to freeze now.
+
+**Step 2 did not resolve this; it stopped writing it.** `adopt.sh --editor`
+composes neither this fragment nor the `Semgrep.semgrep` recommendation into a
+consumer's tree, because both halves diverge: the fragment would name paths
+that do not resolve, and the extension installed without it leaves
+`scan.configuration` at its default `[]`, which scans with whatever the Semgrep
+CLI is configured for — findings no gate here produces. So a consumer gets
+Semgrep at PR time and nothing while typing, which is at least not misleading.
+Choosing an actual resolution is [#153], and the two candidates both carry a
+cost worth stating before someone picks one casually:
 
 - **Ship a copy of the rules into the consumer's tree.** Gives the extension
   local paths. Adds a twelve-file copy to the drift surface — the same failure
@@ -359,12 +369,59 @@ not, which is why the TypeScript fragment marks its pair OPTIONAL.
   what evidence the verdicts above do and do not rest on. Rust is the pair to
   capture — at the default there is no clippy lint at all, so the contrast is
   total.
-- **`adopt.sh --editor`** — [#126].
-- **The five-pair parity run and its ablation** — the step after that, which
-  is what §3's table exists to serve.
+- **Whether the Semgrep settings can be made portable at all** — [#153]. §5
+  states the gap and the three candidate answers; [#126] shipped the honest
+  interim, which is to write neither the fragment nor the extension row.
+- **The five-pair parity run and its ablation** — [#121], the step after
+  `adopt.sh --editor`, and what §3's table exists to serve.
+
+---
+
+## 9. What `adopt.sh --editor` writes
+
+Opt-in, and it is the first thing this baseline writes that **gates nothing** —
+which is why it is behind a flag rather than part of a normal adoption.
+
+```
+adopt.sh --editor        composes .vscode/settings.json + .vscode/extensions.json
+```
+
+`scripts/editor-settings.py` does the composing. It works on the JSONC **text**
+rather than parsing and re-dumping, so every justification comment above every
+key survives into the consumer's file byte for byte. That is not decoration:
+the opening claim of this document is that a settings line whose reason lives
+somewhere else is a settings line nobody dares delete, and a `json.dump` would
+have produced exactly that file.
+
+**What it writes**
+
+| What | Rule |
+|---|---|
+| Fragments | only for the languages detection found — a TypeScript-and-Python repo gets no `rust-analyzer.*`, no `dotnet.*`, no `java.*` |
+| Extension rows | the same filtering, plus `EditorConfig.EditorConfig` always |
+| `unwantedRecommendations` | the C# Dev Kit row (§2), and only where C# was detected |
+| The prettier rows | the `esbenp.prettier-vscode` recommendation and the `[typescript]` / `[typescriptreact]` blocks, **only if the target already has a prettier config**. adopt.sh's prettier step is OPTIONAL, and the extension with no config formats at Prettier's default width against a gate that pins 100 — worse than no formatter routing at all |
+
+**What it holds back, and why**
+
+- **The Semgrep fragment and the `Semgrep.semgrep` row** — §5. Both halves
+  diverge in a consumer's tree, so neither is written and the file it does
+  write says so. [#153] decides whether that can change.
+
+**What it will not do**
+
+It never merges. If `.vscode/settings.json` or `.vscode/extensions.json`
+already exists, nothing is written to that file, the delta it would have
+applied is printed key by key, and the run exits **5** — everything else in the
+adoption still happened. `--force` overwrites, which is a decision a human
+makes on purpose. Silently clobbering someone's editor configuration is the one
+unrecoverable thing this feature could do.
+
+---
 
 [#111]: https://github.com/maximalcode/maxi-quality/issues/111
 [#120]: https://github.com/maximalcode/maxi-quality/issues/120
+[#121]: https://github.com/maximalcode/maxi-quality/issues/121
 [#126]: https://github.com/maximalcode/maxi-quality/issues/126
-[#129]: https://github.com/maximalcode/maxi-quality/issues/129
 [#151]: https://github.com/maximalcode/maxi-quality/issues/151
+[#153]: https://github.com/maximalcode/maxi-quality/issues/153

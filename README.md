@@ -215,7 +215,7 @@ one language at a time, when someone has the week to spend on it.
 | SBOM and licence gate | both from OSV-Scanner; the SBOM never gates | [`docs/REFERENCE.md`](docs/REFERENCE.md) |
 | Formatting | Prettier, `ruff format`, `dotnet format whitespace`, gated in CI | [#42](https://github.com/maximalcode/maxi-quality/issues/42) |
 | Editor defaults | one shared `.editorconfig` | [`configs/editorconfig`](configs/editorconfig) |
-| Editor parity | the settings that make the official extensions show what CI shows. Frozen as a contract; **not written into your tree yet** | [`configs/editor/`](configs/editor/) |
+| Editor parity | the settings that make the official extensions show what CI shows, written for the languages you actually have | `adopt.sh --editor` |
 | Copyable examples | seven complete consumer repos, each asserted by CI | [`examples/`](examples/) |
 | Test suite | planted-bug samples per language; a sample that stops failing means the config regressed | [`samples/`](samples/) |
 
@@ -251,8 +251,11 @@ one language at a time, when someone has the week to spend on it.
   close all of them evenly: most are one settings line, the TypeScript one
   still needs you to accept the workspace-compiler prompt once, and Java has no
   in-editor parity at all (Error Prone is a javac plugin; the extension uses
-  the Eclipse compiler). Nothing writes these files for you yet
-  ([#126](https://github.com/maximalcode/maxi-quality/issues/126)).
+  the Eclipse compiler). `adopt.sh --editor` writes the settings for you, and
+  it refuses rather than merging if you already have a `.vscode/settings.json`.
+  Semgrep is the one row it leaves out on purpose: the rules live in this
+  baseline, not in your tree, so the extension would scan with rules you have
+  not got ([#153](https://github.com/maximalcode/maxi-quality/issues/153)).
 - **Java is Maven only, and Gradle fails loud rather than skipping.** Gradle
   gets built when a Gradle consumer exists
   ([#10](https://github.com/maximalcode/maxi-quality/issues/10)).

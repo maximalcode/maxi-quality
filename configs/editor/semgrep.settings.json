@@ -30,8 +30,12 @@
   // THESE PATHS ARE REPO-RELATIVE TO A CHECKOUT OF maxi-quality ITSELF.
   // A consumer's tree never contains them — adopt.sh writes configs and a
   // workflow call, and the rules reach the scan from inside the composite
-  // action. See README §5; resolving this is step 2's problem (#126), and
-  // this contract's job is to state it rather than paper over it.
+  // action. So `adopt.sh --editor` (#126) writes NEITHER this fragment nor the
+  // Semgrep extension row, and says so in the file it does write: pointing the
+  // extension at paths that do not resolve, or installing it with no rules
+  // configured at all, are both divergence rather than parity. Choosing
+  // between copying the rules, fetching them by URL, and declining outright is
+  // issue #153. See README §5.
   "semgrep.scan.configuration": [
     "semgrep/general",
     "semgrep/security",

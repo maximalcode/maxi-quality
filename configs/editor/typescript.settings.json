@@ -50,7 +50,8 @@
   // (samples/format/needs-width-100.ts is clean at 100 and dirty at Prettier's
   // default 80). With the extension installed and NO config file present, the
   // editor formats at the default width and every save fights the gate. Drop
-  // both keys if prettier is not adopted.
+  // both keys if prettier is not adopted — `adopt.sh --editor` does exactly
+  // that for you, writing neither unless the target has a prettier config.
   "[typescript]": {
     "editor.defaultFormatter": "esbenp.prettier-vscode",
     "editor.formatOnSave": true

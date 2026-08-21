@@ -282,6 +282,12 @@ per-language id is not new scope; inventing a new convention is.
   each claim in it does and does not rest on. Do not read this as a precedent —
   a new config that could have a sample and does not is still a violation.
 
+  Read the exemption narrowly, because the wording is what a later session will
+  act on. It covers **what the settings do inside an editor**, and nothing else.
+  Since #126 the *composition* of those fragments into a consumer's `.vscode/`
+  files is ordinary behaviour with ordinary end-to-end assertions in the `adopt`
+  job, and `configs/editor/` is no longer a directory nothing runs.
+
 ---
 
 ## Agent skills
