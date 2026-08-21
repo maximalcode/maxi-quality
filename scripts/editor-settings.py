@@ -31,8 +31,13 @@ them (README §5). Writing it would point the extension at nothing, and its
 `scan.configuration` default of `[]` means it would then scan with whatever the
 Semgrep CLI is configured for — findings no gate here produces. Both halves are
 divergence, so the fragment and the extension row are both held back and said
-out loud. Making it portable is its own decision with its own costs; README §5
-states them.
+out loud.
+
+That is now a DECIDED thing rather than a pending one, and the reason is not the
+rule paths: `.maxi-quality.yml`'s `rules.disable` and `rules.warn` have no
+settings equivalent, so every way of fixing the paths still yields an editor
+reporting findings the repo's own policy switched off. See
+docs/adr/0002-no-in-editor-semgrep-parity.md and README §5.
 
 Subcommands:
   settings    print the composed .vscode/settings.json
@@ -69,7 +74,11 @@ FRAGMENTS = {
 # worse than not recommending it. configs/editor/extensions.json says so at the
 # row itself; this is where that sentence is executed.
 #
-# NOT_PORTABLE is the Semgrep row, for the reason in the module docstring.
+# NOT_PORTABLE is the Semgrep row. Held back on purpose and permanently — the
+# decision, its two rejected alternatives and what would reopen it are in
+# docs/adr/0002-no-in-editor-semgrep-parity.md. Do not promote this to a
+# language token to "fix" it: that ships the extension with scan.configuration
+# left at [], which is one of the two failure modes the ADR declines.
 ALWAYS = "always"
 PRETTIER = "prettier"
 NOT_PORTABLE = "not-portable"
@@ -294,7 +303,14 @@ def compose_settings(languages, prettier):
         "NOT here, deliberately: the Semgrep fragment. It names rule directories",
         "that exist only inside a checkout of the baseline itself, so pointing the",
         "extension at them from here would configure it to scan with rules this",
-        "tree does not have. See configs/editor/README.md §5.",
+        "tree does not have. That is settled, not pending — see §5 and the",
+        "baseline's docs/adr/0002-no-in-editor-semgrep-parity.md.",
+        "",
+        "If you wire the Semgrep extension up yourself anyway, know the half that",
+        "no settings file reaches: your .maxi-quality.yml can disable a rule or",
+        "demote it to a warning, and the extension has no rule-level filter at",
+        "all — only path excludes. It will show you findings your own policy",
+        "switched off. `scripts/scan.sh` reads the policy; the editor cannot.",
     ])
     return head + "{" + ",".join(blocks) + "\n}\n"
 
@@ -342,7 +358,10 @@ def compose_extensions(languages, prettier):
         "NOT here, deliberately: the Semgrep extension. Its rule paths do not",
         "resolve outside a checkout of the baseline, and with none configured it",
         "scans with whatever the Semgrep CLI is set to — findings no gate here",
-        "produces. See configs/editor/README.md §5.",
+        "produces. Settled, not pending — see §5 and the baseline's",
+        "docs/adr/0002-no-in-editor-semgrep-parity.md, which also records the",
+        "half no settings file reaches: the extension has no rule-level filter,",
+        "so it cannot honour .maxi-quality.yml's rules.disable or rules.warn.",
     ])
     return head + "{" + ",".join(kept_entries) + "\n}\n"
 

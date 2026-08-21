@@ -253,9 +253,13 @@ one language at a time, when someone has the week to spend on it.
   in-editor parity at all (Error Prone is a javac plugin; the extension uses
   the Eclipse compiler). `adopt.sh --editor` writes the settings for you, and
   it refuses rather than merging if you already have a `.vscode/settings.json`.
-  Semgrep is the one row it leaves out on purpose: the rules live in this
-  baseline, not in your tree, so the extension would scan with rules you have
-  not got ([#153](https://github.com/maximalcode/maxi-quality/issues/153)).
+  Semgrep is the one row it leaves out on purpose, and permanently: the rules
+  live in this baseline, not in your tree, so the extension would scan with
+  rules you have not got. Fixing that would not be enough anyway — the
+  extension's only filters are path-based, so it cannot honour the
+  `rules.disable` and `rules.warn` in your `.maxi-quality.yml`, and would report
+  findings you switched off. `scripts/scan.sh` is the policy-aware path
+  ([ADR 0002](docs/adr/0002-no-in-editor-semgrep-parity.md)).
 - **Java is Maven only, and Gradle fails loud rather than skipping.** Gradle
   gets built when a Gradle consumer exists
   ([#10](https://github.com/maximalcode/maxi-quality/issues/10)).

@@ -735,13 +735,22 @@ oversight.** The Java gate is Error Prone and NullAway, which are javac plugins;
 the extension compiles with the Eclipse compiler. No setting routes one into the
 other, so the Java findings cannot reach the Problems panel at all.
 
-**Semgrep is deliberately not configured.** Its rules live in this baseline, not
-in your tree — `adopt.sh` writes configs and a workflow call, and the rules reach
-the scan from inside the composite action. Pointing the extension at paths that
-do not resolve, or installing it with no rules configured, are both worse than
-leaving it out. Semgrep still runs in CI, and locally `scripts/scan.sh` is the
-policy-aware path. Whether this can be fixed at all is
-[#153](https://github.com/maximalcode/maxi-quality/issues/153).
+**Semgrep is deliberately not configured, and that is settled.** Its rules live
+in this baseline, not in your tree — `adopt.sh` writes configs and a workflow
+call, and the rules reach the scan from inside the composite action. Pointing the
+extension at paths that do not resolve, or installing it with no rules
+configured, are both worse than leaving it out. Copying the rules in and fetching
+them by URL were both weighed and rejected in
+[ADR 0002](adr/0002-no-in-editor-semgrep-parity.md).
+
+The half of that worth knowing **even if you wire the extension up yourself**:
+your `.maxi-quality.yml` can disable a rule or demote it to a warning, and the
+extension has no rule-level filter at all — its only filters are
+`semgrep.scan.exclude` and `semgrep.scan.include`, both path-based. So a
+hand-configured extension shows you findings your own policy switched off, at
+full severity. Semgrep still runs in CI, and locally `scripts/scan.sh` is the
+policy-aware path: it resolves `.maxi-quality.yml` before it runs, which is the
+one thing no settings file can do.
 
 The prettier rows — the extension recommendation and the `[typescript]` /
 `[typescriptreact]` formatter blocks — are written **only if your repo already

@@ -280,30 +280,38 @@ nothing local for the extension to point at.
 checkout of **this** repository — which is the tree step 3's parity run
 measures, so it is the right thing to freeze now.
 
-**Step 2 did not resolve this; it stopped writing it.** `adopt.sh --editor`
-composes neither this fragment nor the `Semgrep.semgrep` recommendation into a
-consumer's tree, because both halves diverge: the fragment would name paths
-that do not resolve, and the extension installed without it leaves
-`scan.configuration` at its default `[]`, which scans with whatever the Semgrep
-CLI is configured for — findings no gate here produces. So a consumer gets
-Semgrep at PR time and nothing while typing, which is at least not misleading.
-Choosing an actual resolution is [#153], and the two candidates both carry a
-cost worth stating before someone picks one casually:
+**This is decided, and the answer is no** — [ADR 0002], out of [#153].
+`adopt.sh --editor` composes neither this fragment nor the `Semgrep.semgrep`
+recommendation into a consumer's tree, and will not be changed to. Both halves
+diverge: the fragment would name paths that do not resolve, and the extension
+installed without it leaves `scan.configuration` at its default `[]`, which
+scans with whatever the Semgrep CLI is configured for — findings no gate here
+produces. A consumer gets Semgrep at PR time and `scripts/scan.sh` locally.
 
-- **Ship a copy of the rules into the consumer's tree.** Gives the extension
-  local paths. Adds a twelve-file copy to the drift surface — the same failure
-  shape as the copied `.editorconfig` and the copied `[lints]` block, both of
-  which needed their own CI guard to stay honest.
-- **Point at URLs.** No copy, but it pins rules by URL rather than by the `@v1`
-  tag the rest of adoption uses, and the extension would fetch per-file.
+Two ways to fix the paths were weighed and rejected. Copying the rules into the
+consumer's tree gives the extension somewhere local to point, at the price of a
+twelve-file copy on the drift surface — the same failure shape as the copied
+`.editorconfig` and the copied `[lints]` block, except that those are guarded by
+CI *here*, and **nothing in this repo can see a consumer's tree**. Pointing at
+URLs needs no copy, but the directory form above is a *local* one — over HTTP
+there is nothing for a directory to enumerate — so it is twelve URLs written
+into every adopting repo, going stale the moment a thirteenth rule file lands.
 
-A third, less obvious cost applies either way: `.maxi-quality.yml`'s
-`rules.disable` and `rules.warn` have **no** settings equivalent. This confirms
-[#111]'s prediction exactly — the extension's only filters are
-`semgrep.scan.exclude` and `semgrep.scan.include`, both path-based. Path
-excludes map; rule-level policy does not. A repo that disabled a rule in policy
-still sees it in the editor, and full policy-aware parity stays with
-`scripts/scan.sh`.
+**What actually decided it is the next paragraph, not the paths.**
+
+`.maxi-quality.yml`'s `rules.disable` and `rules.warn` have **no** settings
+equivalent, under any of the three options. This confirms [#111]'s prediction
+exactly — the extension's only filters are `semgrep.scan.exclude` and
+`semgrep.scan.include`, both path-based. Path excludes map; rule-level policy
+does not. So every fix for the paths still ships an editor **louder** than the
+gate, reporting findings the repo switched off on purpose. §1 of this document
+exists because a panel quieter than the gate reads as "nothing wrong"; a panel
+louder than it arrives at the same distrust from the other side. Full
+policy-aware parity stays with `scripts/scan.sh`, which resolves the policy file
+before it runs.
+
+What would reopen this is a **rule-level filter in the extension** — not a
+cleverer answer to the rule paths.
 
 ---
 
@@ -369,9 +377,6 @@ not, which is why the TypeScript fragment marks its pair OPTIONAL.
   what evidence the verdicts above do and do not rest on. Rust is the pair to
   capture — at the default there is no clippy lint at all, so the contrast is
   total.
-- **Whether the Semgrep settings can be made portable at all** — [#153]. §5
-  states the gap and the three candidate answers; [#126] shipped the honest
-  interim, which is to write neither the fragment nor the extension row.
 - **The five-pair parity run and its ablation** — [#121], the step after
   `adopt.sh --editor`, and what §3's table exists to serve.
 
@@ -406,7 +411,10 @@ have produced exactly that file.
 
 - **The Semgrep fragment and the `Semgrep.semgrep` row** — §5. Both halves
   diverge in a consumer's tree, so neither is written and the file it does
-  write says so. [#153] decides whether that can change.
+  write says so. That is settled rather than pending ([ADR 0002]), and the
+  generated header tells the reader the part that outlives the decision: the
+  extension has no rule-level filter, so wiring it up by hand still gets you
+  findings your `.maxi-quality.yml` switched off.
 
 **What it will not do**
 
@@ -425,3 +433,4 @@ unrecoverable thing this feature could do.
 [#126]: https://github.com/maximalcode/maxi-quality/issues/126
 [#151]: https://github.com/maximalcode/maxi-quality/issues/151
 [#153]: https://github.com/maximalcode/maxi-quality/issues/153
+[ADR 0002]: ../../docs/adr/0002-no-in-editor-semgrep-parity.md

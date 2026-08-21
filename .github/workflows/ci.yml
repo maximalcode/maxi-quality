@@ -3460,7 +3460,8 @@ jobs:
           # Semgrep stays out even here. Its rule paths resolve only inside a
           # checkout of the baseline, and the extension with none configured
           # scans with whatever the CLI is set to — findings no gate produces.
-          # configs/editor/README.md §5, issue #153.
+          # configs/editor/README.md §5, decided in
+          # docs/adr/0002-no-in-editor-semgrep-parity.md.
           if any(k.startswith("semgrep.") for k in doc):
               bad.append("the non-portable semgrep fragment was written into a "
                          "consumer's tree")

@@ -33,9 +33,12 @@
   // action. So `adopt.sh --editor` (#126) writes NEITHER this fragment nor the
   // Semgrep extension row, and says so in the file it does write: pointing the
   // extension at paths that do not resolve, or installing it with no rules
-  // configured at all, are both divergence rather than parity. Choosing
-  // between copying the rules, fetching them by URL, and declining outright is
-  // issue #153. See README §5.
+  // configured at all, are both divergence rather than parity.
+  //
+  // That is now DECIDED and not pending. Copying the rules in and fetching
+  // them by URL were both weighed and rejected in
+  // docs/adr/0002-no-in-editor-semgrep-parity.md — and note what decided it,
+  // because it is not the paths: see the exclude comment below. See README §5.
   "semgrep.scan.configuration": [
     "semgrep/general",
     "semgrep/security",
@@ -54,6 +57,12 @@
   // only filters are scan.exclude and scan.include, both path-based. A repo
   // that disables a rule in policy still sees it in the editor. Full
   // policy-aware parity stays with scripts/scan.sh.
+  //
+  // THIS is what decided the ADR above, rather than the unresolvable paths.
+  // Every way of making the paths work leaves this gap standing, so each one
+  // buys an editor that is LOUDER than the gate — findings the repo switched
+  // off on purpose. A panel nobody trusts is the same end state as an empty
+  // one, reached from the other side.
   "semgrep.scan.exclude": [],
 
   // Already the default; pinned because a scan the extension cannot run is

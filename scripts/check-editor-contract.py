@@ -357,11 +357,48 @@ if compose is not None and ext is not None:
                 bad(f"{key} is in {fname} but not in the composed settings — "
                     "adopt.sh --editor would drop it silently")
     # Never the semgrep fragment: its rule paths resolve only inside a checkout
-    # of this repo (README §5, issue #153), so composing it into a consumer's
-    # tree would point the extension at nothing.
+    # of this repo, so composing it into a consumer's tree would point the
+    # extension at nothing. Declined for good in README §5 and
+    # docs/adr/0002-no-in-editor-semgrep-parity.md.
     if "semgrep.scan.onlyGitDirty" in doc:
         bad("the composed settings include the semgrep fragment — its rule "
             "paths do not exist in a consumer's tree (README §5)")
+
+# --- G8: a recorded decision cannot be un-recorded by editing one line ------
+# In-editor Semgrep parity is DECLINED, and the decision is docs/adr/0002 rather
+# than a comment, because it is the kind of thing a later session re-derives from
+# first principles and quietly reverses. Two ways that reversal could land
+# without a reviewer seeing it, so both are asserted:
+#
+#   a. The ADR is renamed or deleted and the citations dangle. This is the same
+#      rot the §N check above catches inside the README, one directory up: the
+#      sentence still reads fine and points at nothing.
+#   b. `Semgrep.semgrep` stops being NOT_PORTABLE. The bidirectional table check
+#      in G7 would NOT notice — it asserts the identifier is known to the
+#      composer, and "typescript" is a perfectly well-formed value. A one-word
+#      edit would put the extension into every consumer's extensions.json with
+#      `scan.configuration` left at its default [], which is the exact failure
+#      the ADR declines to ship.
+adr_cited = set()
+for q in [*sorted(D.iterdir()), pathlib.Path("scripts/editor-settings.py")]:
+    if q.suffix not in (".md", ".json", ".py"): continue
+    for m in sorted(set(re.findall(r"docs/adr/([0-9]{4}-[A-Za-z0-9-]+\.md)",
+                                   q.read_text()))):
+        adr_cited.add(m)
+        if not pathlib.Path("docs/adr", m).exists():
+            bad(f"{q} cites docs/adr/{m}, which does not exist")
+if not adr_cited:
+    bad("nothing in configs/editor/ or the composer cites an ADR — the Semgrep "
+        "portability decision has no record, so this guard stopped guarding")
+
+if compose is not None:
+    if compose.RECOMMENDATIONS.get("Semgrep.semgrep") is not compose.NOT_PORTABLE:
+        bad("editor-settings.py no longer holds the Semgrep extension back — "
+            "adopt.sh --editor would recommend it with no rules configured, "
+            "which docs/adr/0002 declined. Reverse the ADR first.")
+    if compose.NOT_PORTABLE in compose.FRAGMENTS:
+        bad("NOT_PORTABLE collides with a language token — the sentinel must "
+            "not be a value _wants() would resolve as a detected language")
 
 if fail:
     for f in fail: print(f"::error::{f}")
