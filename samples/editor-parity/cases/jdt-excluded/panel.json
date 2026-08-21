@@ -1,0 +1,26 @@
+[
+	{
+		"resource": "/checkout/samples/java/src/main/java/dev/maximalcode/sample/NullAwayErrors.java",
+		"owner": "_generated_diagnostic_collection_name_#0",
+		"code": "16777788",
+		"severity": 4,
+		"message": "Null type safety: The expression of type 'String' needs unchecked conversion to conform to '@NonNull String'",
+		"source": "Java",
+		"startLineNumber": 12,
+		"startColumn": 16,
+		"endLineNumber": 12,
+		"endColumn": 20
+	},
+	{
+		"resource": "/checkout/samples/java/src/main/java/dev/maximalcode/sample/NullAwayErrors.java",
+		"owner": "_generated_diagnostic_collection_name_#0",
+		"code": "16777787",
+		"severity": 4,
+		"message": "Potential null pointer access: this expression has a '@Nullable' type",
+		"source": "Java",
+		"startLineNumber": 20,
+		"startColumn": 5,
+		"endLineNumber": 20,
+		"endColumn": 9
+	}
+]

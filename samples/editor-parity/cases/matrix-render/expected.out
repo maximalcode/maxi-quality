@@ -1,0 +1,5 @@
+| Language | Sample | Tool | Cond. | Expected | Shown | Missing | Extra | Demoted | Verdict |
+|---|---|---|---|---:|---:|---:|---:|---:|---|
+| Java | `samples/java` | javac | with | 9 | 0 | 9 | 0 | 0 | DIVERGES |
+| Rust | `samples/rust` | clippy | with | 8 | 8 | 0 | 0 | 0 | PARITY |
+| Rust | `samples/rust` | clippy | without | 8 | 0 | 8 | 0 | 0 | DIVERGES |

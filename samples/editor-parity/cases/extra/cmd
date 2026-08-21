@@ -1,0 +1,1 @@
+--sample samples/rust --tool clippy --manifest samples/editor-parity/cases/extra/expected.json --condition with
