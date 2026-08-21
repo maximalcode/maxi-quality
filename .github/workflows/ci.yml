@@ -2860,6 +2860,23 @@ jobs:
           done
           echo 'OK: both sample .editorconfigs match configs/'
 
+  # #120 — the editor contract. configs/editor/ is the only directory here that
+  # nothing executes: there is no headless VS Code, so a .vscode/settings.json
+  # cannot be proven by a sample the way every other config is. That makes it
+  # the exact shape CONTRIBUTING.md warns about — present, plausible, gating
+  # nothing — so the assertions are about the contract's INTERNAL consistency
+  # instead: every key justified, every verified divergence still pinned at the
+  # value README.md §1 records, the C# Dev Kit licensing trap still excluded,
+  # and every expectation manifest still named in the table step 3 will measure
+  # against. The reasoning is in the script's docstring.
+  editor-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: The editor contract must still say what it claims
+        shell: bash
+        run: python3 scripts/check-editor-contract.py
+
   # #11 — adopt.sh, proven end-to-end rather than by reading it. The assertion
   # that matters is not "it copied some files", it is "a repo adopted by the
   # script behaves exactly like the hand-configured sample" — in BOTH

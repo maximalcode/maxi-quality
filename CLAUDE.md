@@ -248,7 +248,7 @@ per-language id is not new scope; inventing a new convention is.
   moves `v1` on a green push to it, so a merge to `main` is not a checkpoint —
   it ships to every consumer pinning `@v1`. Promoting `develop` to `main` is
   the user's decision, not yours; do not open or merge that PR unasked. Both
-  branches carry the same 26 required checks, admins included — one per
+  branches carry the same 27 required checks, admins included — one per
   context `ci.yml` produces, and that equality is the point. A job that runs but
   is not on the required list reports and blocks nothing, which is
   indistinguishable from a passing gate in the PR UI. This drifted twice:
@@ -258,8 +258,8 @@ per-language id is not new scope; inventing a new convention is.
   repo had just built could not fail one either. **Adding a job to `ci.yml` is
   not done until it is a required context on both branches.**
 
-  Count **contexts, not jobs** — `layer2` is a two-leg matrix, so 25 jobs make
-  26 contexts, and "one per job" was off by one before anything drifted.
+  Count **contexts, not jobs** — `layer2` is a two-leg matrix, so 26 jobs make
+  27 contexts, and "one per job" was off by one before anything drifted.
   `workflow-lint` asserts that this number matches `ci.yml`; it cannot read the
   protection API (that needs admin rights a read-only CI token does not have),
   so the number here is the tripwire and setting the contexts is still a
