@@ -744,8 +744,9 @@ them by URL were both weighed and rejected in
 [ADR 0002](adr/0002-no-in-editor-semgrep-parity.md).
 
 The half of that worth knowing **even if you wire the extension up yourself**:
-your `.maxi-quality.yml` can disable a rule or demote it to a warning, and the
-extension has no rule-level filter at all — its only filters are
+your `.maxi-quality.yml` can disable a rule, demote it to a warning or switch a
+whole group off, and the extension has no rule-level filter at all — its only
+filters are
 `semgrep.scan.exclude` and `semgrep.scan.include`, both path-based. So a
 hand-configured extension shows you findings your own policy switched off, at
 full severity. Semgrep still runs in CI, and locally `scripts/scan.sh` is the

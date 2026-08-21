@@ -45,14 +45,15 @@
     "semgrep/conventions"
   ],
 
-  // The consumer-policy half, and the reason it is only a half. A repo's
-  // `.maxi-quality.yml` has three knobs: paths.exclude, rules.disable and
-  // rules.warn. Only the first has an equivalent here, so this key is where a
+  // The consumer-policy half, and the reason it is only a half. Exactly one of
+  // a repo's `.maxi-quality.yml` knobs has an equivalent here — paths.exclude
+  // — and this key is the equivalent, so this key is where a
   // repo's paths.exclude entries go — BY HAND, since nothing generates it yet.
   // Left empty rather than guessed: an exclude list that does not match the
   // policy file is worse than none, because it is silent in both directions.
   //
-  // rules.disable and rules.warn have NO equivalent. That is the residual gap
+  // rules.disable, rules.warn, rules.groups and extends have NO equivalent —
+  // the schema is scripts/policy.py. That is the residual gap
   // #111 predicted, now confirmed against the extension's own manifest: its
   // only filters are scan.exclude and scan.include, both path-based. A repo
   // that disables a rule in policy still sees it in the editor. Full

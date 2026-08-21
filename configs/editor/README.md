@@ -299,8 +299,8 @@ into every adopting repo, going stale the moment a thirteenth rule file lands.
 
 **What actually decided it is the next paragraph, not the paths.**
 
-`.maxi-quality.yml`'s `rules.disable` and `rules.warn` have **no** settings
-equivalent, under any of the three options. This confirms [#111]'s prediction
+`.maxi-quality.yml`'s `rules.disable`, `rules.warn` and `rules.groups` have
+**no** settings equivalent, under any of the three options. This confirms [#111]'s prediction
 exactly — the extension's only filters are `semgrep.scan.exclude` and
 `semgrep.scan.include`, both path-based. Path excludes map; rule-level policy
 does not. So every fix for the paths still ships an editor **louder** than the

@@ -89,9 +89,9 @@ configs/editor/         the editor contract (#120): one .vscode settings fragmen
                         a consumer's tree since #126 — opt-in, detected languages only,
                         and it refuses rather than merging. The Semgrep fragment is the
                         one it never composes — declined for good in ADR 0002, #153.
-                        README.md there carries the
-                        six VERIFIED extension-default divergences and the per-language
-                        authoritative expectation source step 3 measures parity against
+                        README.md there carries the six VERIFIED extension-default
+                        divergences and the per-language authoritative expectation
+                        source step 3 measures parity against
 
 semgrep/general/       todo-without-issue, catch-and-swallow, debug-print, sync-over-async
 semgrep/security/      sql-string-concat, command-injection, weak-crypto, hardcoded-secret
@@ -124,10 +124,13 @@ scripts/check-editor-contract.py  configs/editor/ is the only config here that n
                           divergence still pinned at the documented value, C# Dev Kit
                           still excluded, every expectation manifest still in the table,
                           and (since #126) the composer's rules and the templates agree
-                          in both directions. G8 (#153) is the tripwire on ADR 0002: the
-                          ADR citations must resolve, and Semgrep.semgrep must still be
-                          NOT_PORTABLE — a one-word edit to a language token would ship
-                          the extension with no rules, and the table check would pass
+                          in both directions. G8 (#153) is the tripwire on ADR 0002:
+                          every ADR citation in the tree must resolve — repo-wide,
+                          because the citations are — editor-settings.py must still
+                          name the decision, and Semgrep.semgrep must still be
+                          NOT_PORTABLE, since a one-word edit to a language token
+                          would ship the extension with no rules and the table
+                          check would pass
 scripts/editor-settings.py  composes .vscode/settings.json and .vscode/extensions.json
                           from configs/editor/ for the detected languages (#126). Works
                           on the JSONC TEXT rather than parsing and re-dumping, so every

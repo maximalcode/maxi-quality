@@ -8,8 +8,11 @@ own header that this one row is missing and why.
 
 This declines **one row of the editor contract**, and neither Semgrep — which is
 Layer 2's first tool and still gates every PR — nor the contract itself. Of the
-six verified extension-default divergences, this is one; Java's is out of reach
-for an unrelated and architectural reason; the rest are what `--editor` writes.
+six verified extension-default divergences in `configs/editor/README.md` §1,
+this is #1. Of the other five, that document's §6 is explicit that #5 is
+*narrowed* rather than closed and that #6's TypeScript half is deliberately left
+unpinned; the rest are what `--editor` writes. Java's absence from the Problems
+panel is a different thing again — §4, and architectural.
 
 ## Why this was decided at all
 
@@ -62,12 +65,15 @@ which is what [#153] was opened to settle.
 Not the rule paths. **The rule-level policy gap, which survives all three
 options.**
 
-`.maxi-quality.yml` has three knobs: `paths.exclude`, `rules.disable` and
-`rules.warn`. Only the first has a settings equivalent — the extension's filters
-are `semgrep.scan.exclude` and `semgrep.scan.include`, both path-based, checked
-against its published manifest in [#120]. So a repo that switched a rule off in
-policy, or demoted it to a warning, still sees it at full severity in the
-editor, under every option above.
+Exactly one of `.maxi-quality.yml`'s knobs has a settings equivalent:
+`paths.exclude`, which maps to `semgrep.scan.exclude`. `rules.disable`,
+`rules.warn`, `rules.groups` and `extends` have none — the extension's only
+filters are `semgrep.scan.exclude` and `semgrep.scan.include`, and both are
+path-based, checked against its published manifest in [#120]. (The schema is
+`scripts/policy.py`'s `TOP_LEVEL_KEYS` and `RULES_KEYS`, if that list is ever
+worth re-checking.) So a repo that switched a rule off in policy, demoted it to
+a warning, or turned a whole group off still sees every one of them at full
+severity in the editor, under every option above.
 
 That is not partial parity, it is parity in the wrong direction. §1 of the
 editor contract exists because a Problems panel quieter than the gate reads as
@@ -105,8 +111,8 @@ permanent drift surface for that is a bad trade at any price, and options 1 and
   blocker.
 - Java and Semgrep are now the two rows with no in-editor parity, for unrelated
   reasons — Java's is architectural (Error Prone is a javac plugin, the
-  extension compiles with ECJ) and this one is not. Neither is a defect in the
-  five divergences the contract does close.
+  extension compiles with ECJ) and this one is not. Neither is a defect in what
+  the contract does close.
 
 [#120]: https://github.com/maximalcode/maxi-quality/issues/120
 [#126]: https://github.com/maximalcode/maxi-quality/issues/126

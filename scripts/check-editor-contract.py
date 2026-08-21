@@ -44,6 +44,12 @@ That adds a second way for this contract to rot quietly: a template row the
 composer has no rule for, or a composer rule for a row that no longer exists.
 Neither is visible in a diff of either file alone, so both are asserted here.
 
+And since #153 one of these templates is held back on purpose rather than
+composed at all, which is a decision (docs/adr/0002) rather than a mechanism. A
+decision that one edit reverses without a reviewer noticing is not recorded, so
+G8 asserts the record: every ADR citation in the tree resolves, and the row the
+ADR declines is still declined.
+
 Reads only committed files. Does no network I/O and writes nothing.
 
 Exit codes: 0 the contract holds - 1 it drifted
@@ -364,38 +370,65 @@ if compose is not None and ext is not None:
         bad("the composed settings include the semgrep fragment — its rule "
             "paths do not exist in a consumer's tree (README §5)")
 
-# --- G8: a recorded decision cannot be un-recorded by editing one line ------
-# In-editor Semgrep parity is DECLINED, and the decision is docs/adr/0002 rather
-# than a comment, because it is the kind of thing a later session re-derives from
-# first principles and quietly reverses. Two ways that reversal could land
-# without a reviewer seeing it, so both are asserted:
+# --- G8: the Semgrep decision stays recorded, and its citations resolve -----
+# In-editor Semgrep parity is DECLINED, and the decision lives in an ADR rather
+# than a comment because it is the kind of thing a later session re-derives from
+# first principles and quietly reverses. Two ways that could land unseen:
 #
-#   a. The ADR is renamed or deleted and the citations dangle. This is the same
-#      rot the §N check above catches inside the README, one directory up: the
-#      sentence still reads fine and points at nothing.
-#   b. `Semgrep.semgrep` stops being NOT_PORTABLE. The bidirectional table check
-#      in G7 would NOT notice — it asserts the identifier is known to the
-#      composer, and "typescript" is a perfectly well-formed value. A one-word
-#      edit would put the extension into every consumer's extensions.json with
-#      `scan.configuration` left at its default [], which is the exact failure
-#      the ADR declines to ship.
-adr_cited = set()
-for q in [*sorted(D.iterdir()), pathlib.Path("scripts/editor-settings.py")]:
-    if q.suffix not in (".md", ".json", ".py"): continue
-    for m in sorted(set(re.findall(r"docs/adr/([0-9]{4}-[A-Za-z0-9-]+\.md)",
-                                   q.read_text()))):
-        adr_cited.add(m)
-        if not pathlib.Path("docs/adr", m).exists():
-            bad(f"{q} cites docs/adr/{m}, which does not exist")
-if not adr_cited:
-    bad("nothing in configs/editor/ or the composer cites an ADR — the Semgrep "
-        "portability decision has no record, so this guard stopped guarding")
+#   a. The ADR is renamed or deleted and every citation dangles. This is the rot
+#      the §N check above catches inside the README, one directory up: the
+#      sentence still reads fine and points at nothing. The loop below is
+#      REPO-WIDE rather than scoped to configs/editor/, because the citations
+#      are — README.md, docs/ADOPTION.md, docs/STATUS.md and ci.yml all name the
+#      file. A guard that checks only where the citations happened to sit on the
+#      day it was written is exactly the narrower-than-its-claim failure this
+#      script's own docstring calls worse than none.
+#   b. `Semgrep.semgrep` stops being NOT_PORTABLE. The adopt job catches this
+#      end-to-end too (it asserts the row is absent from a five-language
+#      compose), so this is deliberately a second copy: it fails in the cheap
+#      guard instead of only after a full adoption, and it fails with the
+#      decision's name attached rather than just the symptom. What a table check
+#      cannot catch is either — G7 asserts the identifier is KNOWN to the
+#      composer, and a language token is a well-formed value.
+import subprocess
+
+ADR_RE = re.compile(r"docs/adr/([0-9]{4}-[A-Za-z0-9-]+\.md)")
+DECISION = "0002-no-in-editor-semgrep-parity.md"
+SCANNED = (".md", ".json", ".py", ".yml", ".yaml", ".sh")
+
+try:
+    tracked = subprocess.run(["git", "ls-files"], check=True, text=True,
+                             capture_output=True).stdout.splitlines()
+except (OSError, subprocess.CalledProcessError) as e:   # noqa: BLE001
+    tracked = []
+    bad(f"G8 could not list tracked files, so no ADR citation was checked: {e}")
+
+cites_decision = set()
+for name in tracked:
+    q = pathlib.Path(name)
+    if q.suffix not in SCANNED: continue
+    try:
+        text = q.read_text()
+    except (OSError, UnicodeDecodeError):
+        continue
+    for m in sorted(set(ADR_RE.findall(text))):
+        if m == DECISION: cites_decision.add(name)
+        if not (pathlib.Path("docs/adr") / m).exists():
+            bad(f"{name} cites docs/adr/{m}, which does not exist")
+
+# A NAMED file, rather than "some ADR is cited somewhere": the floor has to be
+# one this script cannot satisfy by quoting the path in its OWN comment, and
+# editor-settings.py is where the acceptance criterion put it.
+if "scripts/editor-settings.py" not in cites_decision:
+    bad(f"scripts/editor-settings.py no longer cites docs/adr/{DECISION} — the "
+        "NOT_PORTABLE rule must carry the decision that put it there, or the "
+        "next session reads a bare sentinel and re-derives the wrong answer")
 
 if compose is not None:
-    if compose.RECOMMENDATIONS.get("Semgrep.semgrep") is not compose.NOT_PORTABLE:
+    if compose.RECOMMENDATIONS.get("Semgrep.semgrep") != compose.NOT_PORTABLE:
         bad("editor-settings.py no longer holds the Semgrep extension back — "
             "adopt.sh --editor would recommend it with no rules configured, "
-            "which docs/adr/0002 declined. Reverse the ADR first.")
+            f"which docs/adr/{DECISION} declined. Reverse the ADR first.")
     if compose.NOT_PORTABLE in compose.FRAGMENTS:
         bad("NOT_PORTABLE collides with a language token — the sentinel must "
             "not be a value _wants() would resolve as a detected language")
