@@ -1,5 +1,44 @@
 | Language | Sample | Tool | Cond. | Expected | Shown | Missing | Extra | Demoted | Verdict |
 |---|---|---|---|---:|---:|---:|---:|---:|---|
+| C# | `samples/dotnet` | dotnet | with | — | — | — | — | — | **not run** |
+| C# | `samples/dotnet` | dotnet | without | — | — | — | — | — | **not run** |
+| C# | `samples/dotnet-clean` | dotnet | with | — | — | — | — | — | **not run** |
+| C# | `samples/dotnet-clean` | dotnet | without | — | — | — | — | — | **not run** |
+| C# | `samples/dotnet-tests` | dotnet | with | — | — | — | — | — | **not run** |
+| C# | `samples/dotnet-tests` | dotnet | without | — | — | — | — | — | **not run** |
 | Java | `samples/java` | javac | with | 9 | 0 | 9 | 0 | 0 | DIVERGES |
+| Java | `samples/java` | javac | without | — | — | — | — | — | **not run** |
+| Java | `samples/java-clean` | javac | with | — | — | — | — | — | **not run** |
+| Java | `samples/java-clean` | javac | without | — | — | — | — | — | **not run** |
+| Java | `samples/java-lint` | javac | with | — | — | — | — | — | **not run** |
+| Java | `samples/java-lint` | javac | without | — | — | — | — | — | **not run** |
+| Python | `samples/deptry` | deptry | with | — | — | — | — | — | **not run** |
+| Python | `samples/deptry` | deptry | without | — | — | — | — | — | **not run** |
+| Python | `samples/deptry-clean` | deptry | with | — | — | — | — | — | **not run** |
+| Python | `samples/deptry-clean` | deptry | without | — | — | — | — | — | **not run** |
+| Python | `samples/python` | mypy | with | — | — | — | — | — | **not run** |
+| Python | `samples/python` | mypy | without | — | — | — | — | — | **not run** |
+| Python | `samples/python` | ruff | with | — | — | — | — | — | **not run** |
+| Python | `samples/python` | ruff | without | — | — | — | — | — | **not run** |
+| Python | `samples/python-clean` | mypy | with | — | — | — | — | — | **not run** |
+| Python | `samples/python-clean` | mypy | without | — | — | — | — | — | **not run** |
+| Python | `samples/python-clean` | ruff | with | — | — | — | — | — | **not run** |
+| Python | `samples/python-clean` | ruff | without | — | — | — | — | — | **not run** |
 | Rust | `samples/rust` | clippy | with | 8 | 8 | 0 | 0 | 0 | PARITY |
 | Rust | `samples/rust` | clippy | without | 8 | 0 | 8 | 0 | 0 | DIVERGES |
+| Rust | `samples/rust-clean` | clippy | with | — | — | — | — | — | **not run** |
+| Rust | `samples/rust-clean` | clippy | without | — | — | — | — | — | **not run** |
+| Semgrep (all languages) | the whole tree | semgrep | with | — | — | — | — | — | **not run** |
+| Semgrep (all languages) | the whole tree | semgrep | without | — | — | — | — | — | **not run** |
+| TypeScript | `samples/knip` | knip | with | — | — | — | — | — | **not run** |
+| TypeScript | `samples/knip` | knip | without | — | — | — | — | — | **not run** |
+| TypeScript | `samples/knip-clean` | knip | with | — | — | — | — | — | **not run** |
+| TypeScript | `samples/knip-clean` | knip | without | — | — | — | — | — | **not run** |
+| TypeScript | `samples/typescript` | eslint | with | — | — | — | — | — | **not run** |
+| TypeScript | `samples/typescript` | eslint | without | — | — | — | — | — | **not run** |
+| TypeScript | `samples/typescript-clean` | eslint | with | — | — | — | — | — | **not run** |
+| TypeScript | `samples/typescript-clean` | eslint | without | — | — | — | — | — | **not run** |
+| TypeScript | `samples/typescript-clean` | tsc | with | — | — | — | — | — | **not run** |
+| TypeScript | `samples/typescript-clean` | tsc | without | — | — | — | — | — | **not run** |
+| TypeScript | `samples/typescript-strict` | tsc | with | — | — | — | — | — | **not run** |
+| TypeScript | `samples/typescript-strict` | tsc | without | — | — | — | — | — | **not run** |

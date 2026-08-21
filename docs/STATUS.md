@@ -243,14 +243,17 @@ samples/policy/           the policy file's own suite: one fixture per knob
 samples/policy/expected/  the resolved-policy snapshot — what a policy RESOLVES
                           to, with a placeholder baseline path so it encodes
                           nobody's home directory
-samples/editor-parity/    the differ's own corpus (#121): ten panel dumps, one
-                          per way a cell goes wrong — demoted severity, an extra
-                          the gate never produces, a marker with no rule id, a
-                          marker from the wrong folder, JDT noise that must not
-                          become an extra, both path bases, and a dump that is not
-                          JSON — plus one case over the RENDERER, because a matrix
-                          printing PARITY on every row would read as a finished,
-                          successful run. Hermetic manifests, except
+samples/editor-parity/    the differ's own corpus (#121): 14 cases, one per way a
+                          cell goes wrong — demoted severity, the same rule id
+                          published twice at two severities, an extra the gate
+                          never produces, a marker with no rule id, a marker from
+                          the wrong folder, JDT noise that must not become an
+                          extra, both path bases, the Semgrep row that names no
+                          sample folder at all, a §3 row nothing can anchor, and a
+                          dump that is not JSON. Plus one over the RENDERER,
+                          because a matrix printing PARITY on every row — or
+                          quietly omitting the rows nobody ran — would read as a
+                          finished, successful run. Hermetic manifests, except
                           table-resolution, which reads the real one to prove §3
                           is parsed live
 samples/expected/         the manifests: rule id + file + line per tool, so a

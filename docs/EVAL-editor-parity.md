@@ -52,9 +52,9 @@ python3 scripts/editor-parity.py matrix --run-dir .parity   # renders the table
 ```
 
 The observing is manual and irreducibly so. The **diffing is not**, and that is
-the half that invents cells: §3 names twenty manifests, three of which use a
-different path base from the other seventeen, and a rule id compared by eye is
-how a cell comes to read "assumed". `scripts/editor-parity.py` computes each
+the half that invents cells: §3's table is twenty rows over nineteen manifests,
+six of those rows use a different path base from the other fourteen, and a rule
+id compared by eye is how a cell comes to read "assumed". `scripts/editor-parity.py` computes each
 cell from the dump, so a cell exists only where an observation was pasted;
 `matrix` names the un-run ones on stderr rather than omitting them.
 
@@ -85,10 +85,36 @@ column.
   the Semgrep row *is* measured here, because this repo is the one tree where
   those rule paths resolve. What is declined is shipping the fragment onward.
 
-## 2. What is already known without opening a window
+## 2. What the ablation column must show, per language
 
-Two cells' outcomes are settled by architecture rather than by observation, and
-recording that here keeps the run from reading them as failures:
+#121's second criterion is that the `without` column shows "at least the
+divergences step 1 verified". §1 of the contract verified six, from the
+extensions' published manifests. Transcribed here as predictions **before** the
+run, so the ablation is measured against something rather than read for
+plausibility:
+
+| Language / layer | At the defaults, the panel should… | §1 row |
+|---|---|---|
+| **Rust** | show **no clippy finding at all** — `cargo check` never loads the clippy driver, so the whole of `configs/rust/lints.toml` is invisible. The cleanest contrast in the set: 8 expected, 0 shown | 3 |
+| **Python** (mypy) | run a *bundled* mypy at *per-file* scope. Not a subset of the gate's result — mypy is a whole-program checker, so the same line can report differently | 2, 6 |
+| **Python** (Ruff) | show **no divergence**. `ruff.importStrategy` is pinned at what is already the default, defensively | non-divergence table |
+| **C#** | scope diagnostics to open files: close every tab and the findings go with them | 6 |
+| **TypeScript** (`tsc`) | type-check with VS Code's own bundled compiler, not the repo's pin | 5 |
+| **Semgrep** | scan only the uncommitted diff. On a clean worktree over already-committed bait, that is an **empty panel** | 1 |
+| **Java** | show nothing from the gate in *either* condition — see below | §4, architectural |
+
+A language whose `without` column matches its `with` column is a language whose
+settings pin nothing, and the matrix must say so rather than let parity in the
+`with` column imply value. Ruff is the one row where that outcome is *predicted*;
+anywhere else it is a finding.
+
+The C# Dev Kit row (§1 row 4) is deliberately absent from this table. It is an
+unwanted *recommendation*, not a settings key, so it produces no cell in either
+condition — §2 of the contract is where it is argued.
+
+### Two outcomes settled by architecture, not by observation
+
+Recording these here keeps the run from reading them as failures:
 
 - **Java's gate findings cannot reach the panel at all.** Error Prone is a javac
   plugin; `redhat.java` produces diagnostics with the Eclipse compiler. §4 of
@@ -117,6 +143,12 @@ a custom extension?" eval — consumes. The bar, written before the numbers:
 - **The matrix records a gap the official extensions cannot close via
   settings** → #122 is armed, and evaluates a custom extension against *exactly
   those gaps* — not against the general idea of an extension.
+  **The two gaps §2 predicts do not arm it.** Java's absence from the panel and
+  TypeScript's open-files scope are already known, already argued, and already
+  written down; if they counted, #122 would be armed before the run and the
+  matrix would decide nothing. Arming needs a gap this run *discovers*. Java
+  reopens only on a change to how `redhat.java` compiles, which is upstream's
+  decision and not a gap a custom extension is the answer to.
 - **The `without` column shows no divergence for a language** → the settings for
   that language pin nothing, and the matrix must say so. That is an argument
   against shipping them, and it is the reading the ablation exists to make

@@ -1,0 +1,6 @@
+{
+  "tool": "semgrep",
+  "findings": [
+    { "rule": "sql-string-concat-cs", "file": "samples/semgrep/Bad.cs", "line": 12 }
+  ]
+}

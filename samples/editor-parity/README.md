@@ -18,6 +18,11 @@ Most cases exercise the differ. Each is a directory holding five files:
 | `expected.out` | the exact stdout the run must produce |
 | `expected.rc` | the exact exit code |
 
+`expected.err` is optional and present only where stderr carries something
+stdout does not — the severity a finding was demoted to, which path fell outside
+the sample, which marker published no rule id. Without it the counts would be
+pinned and the detail behind them would not.
+
 **A case holding a `cells/` directory exercises the renderer instead**, with
 `matrix --run-dir cells/` and the same two expectation files. `matrix` is what
 produces #121's actual deliverable, so a corpus that only covered the arithmetic
@@ -56,7 +61,10 @@ read live rather than hardcoded, and the fix is one number in one file.
 | `outside` | a marker from a different sample folder. Reported, not folded into this pair's diff |
 | `jdt-excluded` | JDT's own null analysis, which README §3 excludes by name. It must not become an `extra`, and the real NullAway finding must still read as missing (§4) |
 | `malformed` | a dump that is not a "Copy All" JSON array — exit 3, never a silent empty panel |
-| `repo-relative` | the seventeen manifests written repo-relative, against the three written fixture-relative |
+| `repo-relative` | the fourteen §3 rows written repo-relative, against the six written fixture-relative (three tools: clippy, knip, deptry) |
+| `whole-tree` | §3's Semgrep row names no sample folder — its cell has to anchor on the checkout instead, and a path from some other tree must read as `outside` rather than as a finding |
+| `duplicate-severity` | the same rule id published twice at two severities. Present at error is not demoted because something else also warned, and an extra shown as a warning is not counted in two columns at once |
+| `unanchorable-sample` | a §3 row whose sample cell is prose this tool cannot anchor. Exit 3, rather than a cell computed against nothing |
 | `table-resolution` | §3 is parsed live; a stubbed resolver fails here |
 | `matrix-render` | the rendered table: language grouping, row order, and the verdict column — a renderer that printed `PARITY` for every row would read as a finished, successful run |
 
