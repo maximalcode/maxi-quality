@@ -131,6 +131,18 @@ scripts/check-editor-contract.py  configs/editor/ is the only config here that n
                           NOT_PORTABLE, since a one-word edit to a language token
                           would ship the extension with no rules and the table
                           check would pass
+scripts/editor-parity.py  the differ for the #121 parity run: a VS Code Problems
+                          panel dumped as JSON ("Copy All"), diffed against the
+                          manifest README §3 names for that sample. The observing
+                          needs a person at a window; the arithmetic does not, and
+                          the arithmetic is what invents cells — §3's twenty
+                          manifests do not all share a path base, and a rule id
+                          compared by eye is how a cell comes to read "assumed".
+                          Distinguishes missing from extra from DEMOTED (present,
+                          but at warning severity), excludes JDT null analysis by
+                          name per §3, and names un-run cells rather than omitting
+                          them. Divergence is exit 0 on purpose — the ablation is
+                          SUPPOSED to diverge
 scripts/editor-settings.py  composes .vscode/settings.json and .vscode/extensions.json
                           from configs/editor/ for the detected languages (#126). Works
                           on the JSONC TEXT rather than parsing and re-dumping, so every
@@ -157,6 +169,11 @@ scripts/pom-region.py     inserts/refreshes/verifies the Java managed region in 
 
 docs/ADOPTION.md       how a project takes this on, per language
 docs/REFERENCE.md      every input, flag, exit code and rule id
+docs/EVAL-editor-parity.md  the editor parity run (#121), PRE-REGISTERED: protocol,
+                       exclusions, verdict definitions and the bar that arms or
+                       disarms the custom-extension eval (#122), all written
+                       before a window was opened. Holds no matrix yet and says
+                       so — the run needs a person at a VS Code
 CONTEXT.md             the GLOSSARY, and nothing else — Consumer vs Adopter, the
                        three tests that admit a language, Mechanism vs Finding
                        change. Terms only; CONCEPT.md still holds the design
@@ -226,6 +243,16 @@ samples/policy/           the policy file's own suite: one fixture per knob
 samples/policy/expected/  the resolved-policy snapshot — what a policy RESOLVES
                           to, with a placeholder baseline path so it encodes
                           nobody's home directory
+samples/editor-parity/    the differ's own corpus (#121): ten panel dumps, one
+                          per way a cell goes wrong — demoted severity, an extra
+                          the gate never produces, a marker with no rule id, a
+                          marker from the wrong folder, JDT noise that must not
+                          become an extra, both path bases, and a dump that is not
+                          JSON — plus one case over the RENDERER, because a matrix
+                          printing PARITY on every row would read as a finished,
+                          successful run. Hermetic manifests, except
+                          table-resolution, which reads the real one to prove §3
+                          is parsed live
 samples/expected/         the manifests: rule id + file + line per tool, so a
                           regression names the rule that stopped firing
 ```
