@@ -54,11 +54,26 @@ and it is still open — see §8.
 | 1 | The Semgrep extension defaults `onlyGitDirty: true` — it scans the uncommitted diff, not the window CI scans | **VERIFIED** | `semgrep.scan.onlyGitDirty`, type boolean, **default `true`**. The extension's own docs put it plainly: it displays "findings for lines that have changed since the last commit", and is "On by default". |
 | 2 | The mypy extension defaults `importStrategy: useBundled` — a bundled mypy, not this repo's pin | **VERIFIED** | `mypy-type-checker.importStrategy`, enum `["useBundled", "fromEnvironment"]`, **default `"useBundled"`**. |
 | 3 | rust-analyzer runs `cargo check` unless told `check.command: clippy` — pedantic/nursery lints invisible in-editor | **VERIFIED** | `rust-analyzer.check.command`, **default `"check"`**. That is what the manifest proves: the default is not `clippy`. The consequence — `cargo check` runs the compiler's own check pass and never loads the clippy driver, so the whole of `configs/rust/lints.toml` is invisible — is a fact about cargo rather than about the manifest, and it is the one behavioural step in this table. |
-| 4 | The base C# extension, not C# Dev Kit — Dev Kit's licence gates on paid VS subscriptions | **VERIFIED** | Dev Kit is licensed under the Visual Studio terms: free for individuals and for commercial teams **up to 5 users**; 6+ needs a Visual Studio Professional (or higher) subscription; an organisation over **250 PCs or $1M annual revenue** needs a paid subscription regardless of team size. Separately confirmed from the base extension's manifest: `ms-dotnettools.csharp` declares **no** `extensionDependencies` or `extensionPack` on `csdevkit`, so recommending the base alone is a coherent install and not a half-configured one. |
+| 4 | The base C# extension, not C# Dev Kit — Dev Kit's licence gates on paid VS subscriptions | **VERIFIED, and sharpened** | The vendor's own FAQ: free "for personal, academic, and open-source projects", and "for commercial purposes, teams of up to 5 can also use the C# Dev Kit at no cost" — above five, a Visual Studio Professional or higher subscription. The same page states the base C# extension is "fully open source" and "licensed under the MIT license", while Dev Kit is closed source. **See the note below on the part of #111's claim that did NOT check out.** Separately confirmed from the base extension's manifest: `ms-dotnettools.csharp` declares **no** `extensionDependencies` or `extensionPack` on `csdevkit`, so recommending the base alone is a coherent install and not a half-configured one. |
 
 Four for four. None was refuted, and each is one settings line — except #4,
 which is one *unwanted* recommendation, because VS Code steers users to Dev Kit
 on its own and silence there is not a decision the adopter ever sees.
+
+**One detail of #111's row 4 could not be confirmed, and is not repeated
+here.** #111 wrote the threshold as "5 developers / $1M revenue / 250 PCs". The
+five-developer rule is on the vendor's own FAQ, quoted above. The revenue and
+device figures are the Visual Studio **Community** enterprise definition, which
+Dev Kit is widely reported to have shipped under — but the FAQ does not state
+them, and the licence text itself is behind a page that serves no readable
+content to a plain fetch. So this contract asserts the five-developer rule and
+stops there.
+
+It costs the argument nothing, because the argument was never really about
+price: **Dev Kit is closed source, and this baseline is free/OSS only**
+(`CLAUDE.md` §5). That disqualifies it on its own terms, at any team size, and
+it is a fact the vendor states plainly rather than one that needs a licence
+lawyer. The base extension is MIT.
 
 ### Two more, found by the same pass
 
@@ -117,12 +132,17 @@ typescript.settings.json   typescript.enablePromptUseWorkspaceTsdk            = 
 not merely absent from `recommendations`.
 
 The reasoning is in that file at the key, so it travels with the copy. The
-short form: this baseline's premise is zero spend (`CLAUDE.md` §5), and Dev
-Kit's licence attaches a paid-subscription requirement that triggers on
-thresholds — 250 PCs, $1M revenue — an adopting team does not necessarily know
-it has crossed. Recommending it would ship that trap as a default. The base
-extension carries the Roslyn analyzer and `.editorconfig` severity handling
-that `configs/dotnet` is actually built on, and it needs nothing from Dev Kit.
+short form is two independent disqualifications, either of which is enough:
+
+1. **It is not OSS.** Dev Kit is closed source; `CLAUDE.md` §5 is free/OSS
+   only, and that is a success criterion rather than a preference.
+2. **It attaches a paid-subscription requirement.** Commercial teams above five
+   developers need a Visual Studio Professional or higher subscription — a
+   threshold a growing team crosses without anyone re-reading a licence.
+
+The base extension carries the Roslyn analyzer and `.editorconfig` severity
+handling that `configs/dotnet` is actually built on, it is MIT-licensed, and it
+needs nothing from Dev Kit.
 
 ---
 

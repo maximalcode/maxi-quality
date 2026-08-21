@@ -60,18 +60,18 @@
   // THE LICENSING TRAP, and the reason this key is not empty.
   //
   // C# Dev Kit is the extension VS Code's own C# onboarding steers users to,
-  // and its licence is NOT the MIT/permissive terms the rest of this list
-  // carries. It is licensed as part of Visual Studio: free for individuals and
-  // for commercial teams up to 5 users, but an organisation with more than 250
-  // PCs OR more than $1M annual revenue needs a paid Visual Studio
-  // subscription regardless of team size.
+  // and it fails this baseline's rules twice over. Per the vendor's own FAQ:
+  // it is CLOSED SOURCE where the base C# extension is "fully open source"
+  // and MIT — and CLAUDE.md §5 is free/OSS only, which is a success criterion
+  // rather than a preference. Separately, commercial use is free only for
+  // "teams of up to 5"; above that it needs a Visual Studio Professional or
+  // higher subscription, a threshold a growing team crosses without anyone
+  // re-reading a licence.
   //
-  // This baseline's whole premise is zero spend (CLAUDE.md §5). Recommending
-  // Dev Kit would put a paid-subscription requirement inside a free baseline,
-  // triggered by a threshold most adopters cannot see themselves crossing.
-  // The base ms-dotnettools.csharp extension is not affected: its manifest
-  // declares no dependency or extension pack on csdevkit, so recommending the
-  // base alone is coherent rather than a half-install.
+  // Either one disqualifies it. The base ms-dotnettools.csharp extension is
+  // not affected: its manifest declares no dependency or extension pack on
+  // csdevkit, so recommending the base alone is coherent rather than a
+  // half-install.
   //
   // Listing it as UNWANTED rather than merely omitting it is the point: VS
   // Code surfaces Dev Kit on its own, so silence here is not a decision the
