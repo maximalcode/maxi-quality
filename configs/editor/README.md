@@ -200,6 +200,13 @@ wrong thing or silently skips it:
 - **`samples/expected/deptry-targets.json`.** A manifest, but of *which
   directories get scanned*, not of findings — `scripts/deptry-targets.py`'s
   enumeration, diffed as JSON. Nothing in an editor corresponds to it.
+- **Problems-panel sources that no gate produces.** The two bullets above are
+  gates a panel cannot be diffed against; this is the reverse, and step 3 has
+  to exclude it by name or every Java run reads as a parity failure. There is
+  exactly one today: **JDT's own null analysis**, if a team enables it (§4). It
+  is not NullAway and `layer1-java` never asserts it, but it is a real
+  bug-finder, so this contract excludes its diagnostics from the diff rather
+  than switching it off in the editor.
 - **Snapshot files** (`configs/*/*.snapshot.json`). These pin *resolved
   configuration* — what the build system computed after every inheritance layer
   had its say — not diagnostics. A drift there is a config regression, and it
@@ -221,15 +228,24 @@ configuration mistake, and it will not be closed by trying harder.
 
 What [`java.settings.json`](java.settings.json) does instead:
 
-- **Switches JDT's own null analysis OFF** (`java.compile.nullAnalysis.mode:
-  "disabled"`, against a default of `"interactive"`). This is the one
-  judgement call in this contract and it deserves the label. JDT null analysis
-  is not NullAway — different inference, different annotations, different
-  findings. Left on, the panel reports nulls the gate never asserts *while
-  still missing* the NullAway findings it does assert: wrong in both
-  directions, and step 3 would need an unbounded exclusion list to measure
-  anything at all. A team that wants JDT's null analysis for its own sake
-  should turn it back on and treat it as outside this contract.
+- **Leaves JDT's own null analysis alone**, deliberately. An earlier draft
+  pinned `java.compile.nullAnalysis.mode: "disabled"`, reasoning that JDT null
+  analysis is not NullAway — different inference, different annotations,
+  different findings — so leaving it on gives a panel that reports nulls the
+  gate never asserts *while still missing* the NullAway findings it does.
+
+  That reasoning was right about the facts and wrong about the conclusion.
+  Every key here names the CI behaviour it pins; `"disabled"` would have named
+  the *absence* of one, which makes it a measurement convenience rather than a
+  contract term. It is also a working bug-finder, and switching it off to keep
+  step 3's diff tidy optimises for the measurement over the developer. The
+  draft justified it by claiming step 3 would otherwise need "an unbounded
+  exclusion list" — overstated: JDT null-analysis diagnostics are one
+  identifiable source, and §3 names them as an exclusion.
+
+  The default is `"interactive"`, which asks before enabling, so nothing is
+  imposed in either direction. Turn it on if your team wants it; its findings
+  are outside this contract.
 - **Makes the pom the editor reads and the pom Maven reads the same file**
   (`java.configuration.updateBuildConfiguration: "automatic"`). `adopt.sh`
   writes the lint block into the consumer's `pom.xml` as a marker-delimited

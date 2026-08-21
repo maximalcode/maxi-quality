@@ -5,21 +5,23 @@
   // the contract cannot deliver parity: the gate is built on Error Prone and
   // NullAway, which are javac plugins, and redhat.java produces its Problems
   // entries with the Eclipse compiler (ECJ). There is no setting that routes
-  // Error Prone into the Problems panel. This file therefore pins what CAN be
-  // made honest, and deliberately switches off a source of findings the gate
-  // does not produce.
+  // Error Prone into the Problems panel. This file therefore pins only what CAN
+  // be made honest, and says out loud what it deliberately does NOT pin —
+  // which for Java is most of it.
 
-  // NOT a parity pin — an ANTI-parity pin, and the one judgement call in this
-  // contract. JDT's null analysis is not NullAway: different inference,
-  // different annotations, different findings. Left at its default
-  // ("interactive") it prompts to enable itself and then reports nulls
-  // layer1-java never asserts, while still missing the NullAway findings
-  // samples/expected/java.json does assert. A Problems panel that is wrong in
-  // both directions is worse than one that is quiet, and step 3's parity run
-  // would have to carry an unbounded exclusion list to measure anything.
-  // Reversible: a team that wants JDT's null analysis for its own sake should
-  // set this back to "interactive" and accept that it is outside the contract.
-  "java.compile.nullAnalysis.mode": "disabled",
+  // DELIBERATELY ABSENT: java.compile.nullAnalysis.mode. An earlier draft
+  // pinned it to "disabled" so JDT's own null analysis could not report nulls
+  // layer1-java never asserts. That was the wrong trade twice over. Every key
+  // in this directory names the CI behaviour it pins; this one would have
+  // named the ABSENCE of one, which is a measurement convenience rather than
+  // a contract. And it is a working bug-finder — switching it off to make
+  // step 3's diff tidier optimises for the measurement over the developer.
+  //
+  // Its default is "interactive", which ASKS before enabling, so nothing is
+  // imposed either way. If you turn it on, its findings are simply outside
+  // this contract: README §3 names them as a Problems-panel source no gate
+  // produces, which is what step 3 excludes rather than something it has to
+  // chase.
 
   // adopt.sh writes the lint configuration into the consumer's own pom.xml as
   // a marker-delimited region (scripts/pom-region.py), and layer1-java asserts
