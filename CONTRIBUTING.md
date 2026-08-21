@@ -32,6 +32,14 @@ Every config is proven by an intentionally-bad sample that must fail, with an
 findings. Both halves matter: a config that flags everything is as useless as one
 that flags nothing.
 
+**One config is exempt, and only one: `configs/editor/`.** It ships editor
+settings, and there is no headless VS Code here, so no sample can fail without
+them. The exemption is paid for rather than granted — `editor-contract` asserts
+that contract's internal consistency instead (see
+[`configs/editor/README.md`](configs/editor/README.md)), and it is a required
+check like every other. A new config that *could* have a sample and does not is
+still a violation.
+
 If a sample stops failing, **the config regressed — fix the config.** Never make
 a sample pass by adding a disable comment, a `NoWarn`, or a suppression inside
 the fixture. Never adjust an expected count to match new output without saying,
@@ -88,7 +96,7 @@ So the flow is:
 
 `develop` is the default branch, so `gh pr create` and the web UI already target
 it — you should not have to change the base. Both branches carry the same
-protection: 26 required checks, admins included, branch must be up to date, no
+protection: 27 required checks, admins included, branch must be up to date, no
 force-pushes, no direct commits.
 
 Promoting `develop` to `main` is a maintainer decision, because it is where the
@@ -122,6 +130,15 @@ silence it with a disable comment or a `NoWarn` inside the fixture.
 It runs in about two minutes and needs Node, the .NET SDK, Python, the pinned
 Rust toolchain (plus cargo-deny), and either the Layer 2 tools natively or
 Docker. The full command list is in [`docs/STATUS.md`](docs/STATUS.md) §3.
+
+### The editor contract
+
+The one gate with no sample behind it, for the reason in Rule 2. It needs
+nothing installed:
+
+```bash
+python3 scripts/check-editor-contract.py
+```
 
 ### TypeScript
 

@@ -1,0 +1,38 @@
+{
+  // maxi-quality — C# editor parity, against layer1-dotnet.
+  //
+  // Merge into .vscode/settings.json. The extension this pins is the BASE
+  // ms-dotnettools.csharp; see extensions.json for why C# Dev Kit is listed as
+  // unwanted rather than merely omitted. See ./README.md.
+
+  // DIVERGENCE (verified, #120 — NOT one of the four #111 named, and the same
+  // shape as mypy's reportingScope). The C# extension defaults
+  // `analyzerDiagnosticsScope` to "openFiles": analyzer findings appear only
+  // for files that happen to be open in a tab. layer1-dotnet runs
+  // `dotnet build` over the whole project and asserts an exact finding set
+  // (samples/expected/dotnet.json). At the default, closing a tab removes
+  // findings the gate will still report.
+  "dotnet.backgroundAnalysis.analyzerDiagnosticsScope": "fullSolution",
+
+  // The same default, for the compiler half. configs/dotnet/Directory.Build.props
+  // sets TreatWarningsAsErrors, so compiler diagnostics are gating diagnostics
+  // here — samples/expected/dotnet.json holds both analyzer (CAxxxx/IDExxxx)
+  // and compiler (CSxxxx) ids, which is exactly why both scopes are pinned.
+  "dotnet.backgroundAnalysis.compilerDiagnosticsScope": "fullSolution",
+
+  // Already the default. Pinned because it is the switch between two entirely
+  // different language servers: the OmniSharp path does not carry the Roslyn
+  // analyzer and .editorconfig severity handling that configs/dotnet is built
+  // on, so a user who set this globally would get an editor that cannot show
+  // the gate's findings at all, with no error to explain why.
+  "dotnet.server.useOmnisharp": false,
+
+  // adopt.sh appends configs/dotnet/dotnet.editorconfig into the target's
+  // .editorconfig, and Roslyn reads it directly for both formatting and
+  // analyzer severities. layer1-dotnet pins the formatting half with
+  // samples/format/MissingFinalNewline.cs, whose missing trailing newline
+  // separates the shipped .editorconfig from the tool defaults.
+  "[csharp]": {
+    "editor.formatOnSave": true
+  }
+}

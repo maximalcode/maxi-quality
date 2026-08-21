@@ -1,0 +1,73 @@
+{
+  // maxi-quality — Semgrep editor settings, against layer2.
+  //
+  // READ README §5 BEFORE COPYING THIS. Unlike every other fragment here, this
+  // one is NOT copy-and-go for a consumer: the rules it points at do not exist
+  // in a consumer's tree. It is correct as written for a checkout of this
+  // repository, which is the tree step 3's parity run measures.
+
+  // DIVERGENCE (verified, #120). The Semgrep extension defaults
+  // `scan.onlyGitDirty` to true — it reports findings only on lines changed
+  // since the last commit. layer2 scans the whole tree and asserts a fixed
+  // finding set (samples/expected/semgrep.json, 130 findings across 40 rule
+  // ids). At the default, everything already committed is invisible in the
+  // editor while still gating the merge, which is the exact failure mode this
+  // contract exists to remove: an empty Problems panel that means "nothing
+  // changed recently", read as "nothing wrong".
+  //
+  // NOTE the one place the default is right: it is close to what
+  // `scan.sh --changed-only` does. If a repo has adopted the ratchet, the
+  // default matches the ratchet and this key should be reconsidered rather
+  // than copied — that is a per-repo decision, not a baseline one.
+  "semgrep.scan.onlyGitDirty": false,
+
+  // The extension defaults `scan.configuration` to [], which means it scans
+  // with whatever the Semgrep CLI/app is configured for — NOT this baseline's
+  // rules. These are the same three directories scan.sh passes as
+  // --config arguments, in the same order: 12 files, 40 rule ids, three
+  // groups that `.maxi-quality.yml` can switch off independently.
+  //
+  // THESE PATHS ARE REPO-RELATIVE TO A CHECKOUT OF maxi-quality ITSELF.
+  // A consumer's tree never contains them — adopt.sh writes configs and a
+  // workflow call, and the rules reach the scan from inside the composite
+  // action. See README §5; resolving this is step 2's problem (#126), and
+  // this contract's job is to state it rather than paper over it.
+  "semgrep.scan.configuration": [
+    "semgrep/general",
+    "semgrep/security",
+    "semgrep/conventions"
+  ],
+
+  // The consumer-policy half, and the reason it is only a half. A repo's
+  // `.maxi-quality.yml` has three knobs: paths.exclude, rules.disable and
+  // rules.warn. Only the first has an equivalent here, so this key is where a
+  // repo's paths.exclude entries go — BY HAND, since nothing generates it yet.
+  // Left empty rather than guessed: an exclude list that does not match the
+  // policy file is worse than none, because it is silent in both directions.
+  //
+  // rules.disable and rules.warn have NO equivalent. That is the residual gap
+  // #111 predicted, now confirmed against the extension's own manifest: its
+  // only filters are scan.exclude and scan.include, both path-based. A repo
+  // that disables a rule in policy still sees it in the editor. Full
+  // policy-aware parity stays with scripts/scan.sh.
+  "semgrep.scan.exclude": [],
+
+  // Already the default; pinned because a scan the extension cannot run is
+  // indistinguishable in the Problems panel from a clean one, and a version
+  // skew is the most likely cause. scan.sh warns when a native semgrep on
+  // PATH is not the pinned version — findings AND parse errors both differ
+  // between versions. Leaving this false means the extension refuses loudly
+  // instead of scanning with something else.
+  "semgrep.ignoreCliVersion": false,
+
+  // Off by default and left off. This baseline is free/OSS only (CLAUDE.md
+  // §5); both of these are Semgrep Pro/AppSec features that need an account,
+  // and a settings file that switches them on would put a login in the path
+  // of a gate that has none.
+  "semgrep.scan.pro_intrafile": false,
+  // Same reason, secrets half: layer2 already runs gitleaks for credentials,
+  // and .maxi-quality.yml deliberately cannot switch that off. A second,
+  // account-gated secrets scanner in the editor only would report findings no
+  // gate produces.
+  "semgrep.scan.secrets": false
+}
