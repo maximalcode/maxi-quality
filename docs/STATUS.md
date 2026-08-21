@@ -85,17 +85,21 @@ configs/java/pom-lints.xml              Error Prone + NullAway(ERROR) + Spotless
 configs/java/settings.snapshot.json      what Maven RESOLVES the two plugins to, after Spring Boot's parent
 configs/editor/         the editor contract (#120): one .vscode settings fragment per
                         language + the shared extensions list, every key annotated with
-                        the CI behaviour it pins. NOTHING WRITES THESE YET — adopt.sh
-                        learns about them in #126. README.md there carries the six
-                        VERIFIED extension-default divergences and the per-language
-                        authoritative expectation source step 3 measures parity against
+                        the CI behaviour it pins. `adopt.sh --editor` composes them into
+                        a consumer's tree since #126 — opt-in, detected languages only,
+                        and it refuses rather than merging. The Semgrep fragment is the
+                        one it never composes — declined for good in ADR 0002, #153.
+                        README.md there carries the six VERIFIED extension-default
+                        divergences and the per-language authoritative expectation
+                        source step 3 measures parity against
 
 semgrep/general/       todo-without-issue, catch-and-swallow, debug-print, sync-over-async
 semgrep/security/      sql-string-concat, command-injection, weak-crypto, hardcoded-secret
 semgrep/conventions/   no-ambient-clock, mutation-requires-authz,
                        no-permission-denied-for-invisible-resource, no-float-for-money
 
-scripts/adopt.sh          adopt into a consumer: detect languages, drop the copies
+scripts/adopt.sh          adopt into a consumer: detect languages, drop the copies.
+                          --hooks and --editor are the two opt-in extras
 scripts/scan.sh           Layer 2 runner: semgrep + gitleaks + osv (+ SBOM, licences)
 scripts/policy.py         resolves a consumer's .maxi-quality.yml, emits semgrep
                           args, classifies findings into gating vs warn-only, and
@@ -118,7 +122,22 @@ scripts/check-editor-contract.py  configs/editor/ is the only config here that n
                           RUNS — no headless VS Code — so this asserts its internal
                           consistency instead: every key justified, every verified
                           divergence still pinned at the documented value, C# Dev Kit
-                          still excluded, every expectation manifest still in the table
+                          still excluded, every expectation manifest still in the table,
+                          and (since #126) the composer's rules and the templates agree
+                          in both directions. G8 (#153) is the tripwire on ADR 0002:
+                          every ADR citation in the tree must resolve — repo-wide,
+                          because the citations are — editor-settings.py must still
+                          name the decision, and Semgrep.semgrep must still be
+                          NOT_PORTABLE, since a one-word edit to a language token
+                          would ship the extension with no rules and the table
+                          check would pass
+scripts/editor-settings.py  composes .vscode/settings.json and .vscode/extensions.json
+                          from configs/editor/ for the detected languages (#126). Works
+                          on the JSONC TEXT rather than parsing and re-dumping, so every
+                          justification comment survives into the consumer's file — a
+                          json.dump would ship the plausible-and-pins-nothing file the
+                          guard above exists to prevent. Also prints the key-by-key
+                          delta adopt.sh shows instead of merging
 scripts/deadcode-gate.py  turns knip/deptry output into a VERDICT: which issue types
                           may fail a build, and the changed-only ratchet applied to
                           the results (neither tool takes a file list)
@@ -142,7 +161,10 @@ CONTEXT.md             the GLOSSARY, and nothing else — Consumer vs Adopter, t
                        three tests that admit a language, Mechanism vs Finding
                        change. Terms only; CONCEPT.md still holds the design
 docs/adr/              decisions that are hard to reverse, with the alternatives
-                       that lost. 0001 is the audience position (§1a)
+                       that lost. 0001 is the audience position (§1a); 0002
+                       declines in-editor Semgrep parity — not over the rule
+                       paths, but because the extension has no rule-level filter,
+                       so every fix for the paths still ignores .maxi-quality.yml
 examples/              five copyable consumer repos — ts-npm, dotnet, python-uv,
                        mixed-monorepo, legacy-ratchet. NOT fixtures: CI asserts
                        each scans clean, is detected as the language it claims,

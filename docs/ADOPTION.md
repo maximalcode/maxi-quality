@@ -10,6 +10,7 @@ Where to start:
 - **Existing repo** → §5 with `changed-only`, which grandfathers your backlog.
   Come back to §§1–4b when you have the time budgeted.
 - **Layer 1 by hand** → §§1–4b, one section per language.
+- **The same findings while typing** → §5b, once CI is green.
 
 Every command below refers to the baseline as `$BASELINE`, so this is the only
 line that depends on where you put it:
@@ -51,7 +52,8 @@ current one. Deliberately not a version number here: this line has named a
 superseded tag twice, and once named `v1.0.3`, which never existed at all. A doc
 that hard-codes a version goes stale on the next release by construction, and a
 `--ref` a reader copies verbatim is the one place that costs them something.
-`--no-workflow` skips the CI scaffold.
+`--no-workflow` skips the CI scaffold. `--editor` additionally writes the
+`.vscode/` files that make your editor show what CI shows — §5b.
 
 CI proves this end-to-end in both directions: a repo adopted by the script builds
 the clean fixture at 0 errors/0 warnings **and** rejects the bad fixture with
@@ -680,6 +682,85 @@ has never heard of this repo; `MAXI_QUALITY_BASELINE` overrides it at run time
 if the checkout moves. If `core.hooksPath` is set, the hook installs there
 instead of `.git/hooks` — writing to a directory git does not read would look
 installed and do nothing.
+
+---
+
+## 5b. The editor — the same findings while typing
+
+Everything above shows up at PR time. `--editor` is what makes it show up while
+you type, and it is **opt-in**:
+
+```bash
+"$BASELINE"/scripts/adopt.sh <repo> --editor
+```
+
+It writes two files, composed from the baseline's `configs/editor/` fragments
+for **the languages detection actually found** — a TypeScript-and-Python repo
+gets no Rust, C# or Java keys:
+
+```
+.vscode/settings.json      the settings that close a measured divergence
+.vscode/extensions.json    the extensions those settings configure
+```
+
+Why this needs writing down at all: the official extensions, installed unaided,
+do not show what CI shows. Measured against their own published manifests — the
+Semgrep extension scans only lines changed since the last commit; the mypy
+extension runs a mypy it bundles rather than your pin and type-checks only the
+active tab; rust-analyzer runs `cargo check`, so not one clippy lint appears;
+the C# extension reports analyzer findings for open files only; and VS Code
+type-checks with the TypeScript it ships rather than the one in your
+`node_modules`. Every key written carries the CI behaviour it pins as a comment
+directly above it — VS Code parses these files as JSONC, so the reasons survive
+the copy. Delete what you disagree with; the comment is there so that is a
+decision rather than a guess.
+
+### Four things to know before you run it
+
+**It refuses rather than merging.** If either file already exists, nothing is
+written to it, the delta it would have applied is printed key by key, and the
+run exits **5**. Everything else in the adoption still happened. Merge by hand,
+or delete the file and re-run — `--force` overwrites if that is what you want.
+Your editor configuration is yours, and clobbering it is the one unrecoverable
+thing this flag could do.
+
+**TypeScript needs one action no settings file can perform.** Run
+`TypeScript: Select TypeScript Version` and choose the **workspace** version.
+`typescript.tsdk` only allows the switch; accepting it is deliberately a human
+decision, because it is code execution out of your `node_modules`. Until you do,
+the editor type-checks with the compiler VS Code ships and CI uses yours.
+
+**Java gets build wiring only, and that is architecture rather than an
+oversight.** The Java gate is Error Prone and NullAway, which are javac plugins;
+the extension compiles with the Eclipse compiler. No setting routes one into the
+other, so the Java findings cannot reach the Problems panel at all.
+
+**Semgrep is deliberately not configured, and that is settled.** Its rules live
+in this baseline, not in your tree — `adopt.sh` writes configs and a workflow
+call, and the rules reach the scan from inside the composite action. Pointing the
+extension at paths that do not resolve, or installing it with no rules
+configured, are both worse than leaving it out. Copying the rules in and fetching
+them by URL were both weighed and rejected in
+[ADR 0002](adr/0002-no-in-editor-semgrep-parity.md).
+
+The half of that worth knowing **even if you wire the extension up yourself**:
+your `.maxi-quality.yml` can disable a rule, demote it to a warning or switch a
+whole group off, and the extension has no rule-level filter at all — its only
+filters are
+`semgrep.scan.exclude` and `semgrep.scan.include`, both path-based. So a
+hand-configured extension shows you findings your own policy switched off, at
+full severity. Semgrep still runs in CI, and locally `scripts/scan.sh` is the
+policy-aware path: it resolves `.maxi-quality.yml` before it runs, which is the
+one thing no settings file can do.
+
+The prettier rows — the extension recommendation and the `[typescript]` /
+`[typescriptreact]` formatter blocks — are written **only if your repo already
+has a prettier config** (§2a). With the extension installed and no config
+present, the editor formats at Prettier's default width against a gate that pins
+100, so every save would fight `prettier --check`.
+
+Full detail, including what each key is and is not evidence for:
+[`configs/editor/README.md`](../configs/editor/README.md).
 
 ---
 

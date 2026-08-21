@@ -3125,6 +3125,358 @@ jobs:
           grep -q 'skip' /tmp/rerun.log || { echo '::error::re-run did not report skips'; exit 1; }
           echo 'OK: re-run is idempotent and non-destructive'
 
+      # #126 — `adopt.sh --editor`. These files are the first thing the baseline
+      # writes that GATES NOTHING, so no sample can fail without them; that is
+      # why configs/editor/ is CONTRIBUTING.md's one documented exemption from
+      # the sample rule. What CAN be proven end-to-end is the COMPOSITION, and
+      # it is proven here rather than read: the right languages in, the wrong
+      # ones out, and a consumer's own settings never touched. The last of those
+      # is the only unrecoverable thing this flag can do, so it is asserted from
+      # both sides — the file is byte-identical AND the run says what it would
+      # have changed.
+      - name: --editor writes only the detected languages, as valid JSONC
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # An INDEPENDENT JSONC reader, deliberately not the composer's own:
+          # validating a writer with its own parser proves they agree, not that
+          # the file is right. Reused by the steps below.
+          cat > /tmp/jsonc.py <<'PY'
+          import json, sys
+          def strip(text):
+              out, i, n, s, e = [], 0, len(text), False, False
+              while i < n:
+                  c = text[i]
+                  if s:
+                      out.append(c)
+                      if e: e = False
+                      elif c == "\\": e = True
+                      elif c == '"': s = False
+                      i += 1; continue
+                  if c == '"':
+                      s = True; out.append(c); i += 1; continue
+                  if c == "/" and i + 1 < n and text[i+1] == "/":
+                      while i < n and text[i] != "\n": i += 1
+                      continue
+                  if c == "/" and i + 1 < n and text[i+1] == "*":
+                      i += 2
+                      while i + 1 < n and not (text[i] == "*" and text[i+1] == "/"): i += 1
+                      i += 2; continue
+                  out.append(c); i += 1
+              return "".join(out)
+          def load(path):
+              return json.loads(strip(open(path).read()))
+          def keys(path):
+              # object_pairs_hook so a DUPLICATE key cannot hide behind dict
+              # collapsing — VS Code takes the last one and says nothing.
+              got = []
+              json.loads(strip(open(path).read()),
+                         object_pairs_hook=lambda kv: got.extend(k for k, _ in kv) or dict(kv))
+              return got
+          if __name__ == "__main__":
+              print("\n".join(load(sys.argv[1]).keys()))
+          PY
+          rm -rf /tmp/ed-tspy && mkdir -p /tmp/ed-tspy/src
+          printf '{"name":"demo"}\n' > /tmp/ed-tspy/package.json
+          printf '{}\n' > /tmp/ed-tspy/tsconfig.json
+          printf '[project]\nname = "demo"\nversion = "0.1.0"\n' > /tmp/ed-tspy/pyproject.toml
+          ./scripts/adopt.sh /tmp/ed-tspy --no-workflow --editor
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "/tmp")
+          import jsonc
+          s = "/tmp/ed-tspy/.vscode/settings.json"
+          e = "/tmp/ed-tspy/.vscode/extensions.json"
+          doc, ext = jsonc.load(s), jsonc.load(e)
+          bad = []
+          for k in ("typescript.tsdk", "typescript.enablePromptUseWorkspaceTsdk",
+                    "eslint.useFlatConfig", "eslint.workingDirectories",
+                    "mypy-type-checker.importStrategy",
+                    "mypy-type-checker.reportingScope",
+                    "ruff.configurationPreference", "[python]"):
+              if k not in doc:
+                  bad.append(f"settings.json is missing {k}")
+          for k in doc:
+              if k.startswith(("rust-analyzer", "dotnet.", "java.", "semgrep.")) \
+                 or k in ("[rust]", "[csharp]", "[java]"):
+                  bad.append(f"settings.json carries {k} for a language this repo "
+                             "does not have")
+          # Duplicates matter more here than anywhere else in this repo: VS Code
+          # takes the LAST occurrence, silently, so two fragments owning one key
+          # would produce a file whose behaviour depends on fragment order.
+          seen = jsonc.keys(s)
+          for k in set(seen):
+              if seen.count(k) > 1:
+                  bad.append(f"settings.json defines {k} {seen.count(k)} times")
+          rec = ext["recommendations"]
+          for want in ("EditorConfig.EditorConfig", "dbaeumer.vscode-eslint",
+                       "ms-python.python", "charliermarsh.ruff",
+                       "ms-python.mypy-type-checker"):
+              if want not in rec:
+                  bad.append(f"extensions.json does not recommend {want}")
+          for never in ("rust-lang.rust-analyzer", "ms-dotnettools.csharp",
+                        "redhat.java", "Semgrep.semgrep"):
+              if never in rec:
+                  bad.append(f"extensions.json recommends {never} in a repo with "
+                             "no such language")
+          # The C# Dev Kit row is C#-gated like every other C# row, so a
+          # TypeScript+Python tree carries no unwantedRecommendations at all.
+          if ext.get("unwantedRecommendations"):
+              bad.append("extensions.json carries the C# Dev Kit row with no C# "
+                         "in the repo")
+          # The comments ARE the contract (configs/editor/README.md's opening
+          # claim). A composer that parsed and re-dumped would pass every
+          # assertion above and ship a file that justifies nothing.
+          text = open(s).read()
+          if "DIVERGENCE (verified, #120)" not in text:
+              bad.append("the composed settings.json lost its justification "
+                         "comments — a settings line whose reason lives "
+                         "somewhere else is one nobody dares delete")
+          for b in bad:
+              print(f"::error::{b}")
+          sys.exit(1 if bad else 0)
+          PY
+          echo 'OK: --editor composed TypeScript + Python only, with the comments intact'
+
+      - name: --editor refuses rather than merging, and says what it would have done
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm -rf /tmp/ed-conflict && mkdir -p /tmp/ed-conflict/.vscode
+          printf '{"name":"demo"}\n' > /tmp/ed-conflict/package.json
+          printf '[project]\nname = "demo"\nversion = "0.1.0"\n' > /tmp/ed-conflict/pyproject.toml
+          cat > /tmp/ed-conflict/.vscode/settings.json <<'JSON'
+          {
+            // mine, and none of the baseline's business
+            "editor.fontSize": 13,
+            "eslint.useFlatConfig": true,
+            "typescript.tsdk": "somewhere/else"
+          }
+          JSON
+          before=$(sha256sum /tmp/ed-conflict/.vscode/settings.json | cut -d' ' -f1)
+          rc=0
+          ./scripts/adopt.sh /tmp/ed-conflict --no-workflow --editor > /tmp/ed-conflict.log 2>&1 || rc=$?
+          cat /tmp/ed-conflict.log
+          after=$(sha256sum /tmp/ed-conflict/.vscode/settings.json | cut -d' ' -f1)
+          [[ "$before" == "$after" ]] || {
+            echo '::error::--editor rewrote a settings.json that already existed — that is the one unrecoverable thing it can do'
+            exit 1; }
+          [[ $rc -eq 5 ]] || { echo "::error::a refused editor file must exit 5, got $rc"; exit 1; }
+          # The refusal is only useful if it says what it withheld. Every key the
+          # composition would have applied must be named — including the ones
+          # that already match, so the reader can tell "yours differs" from
+          # "already fine" without re-deriving it.
+          python3 scripts/editor-settings.py settings --languages typescript,python > /tmp/ed-want.json
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "/tmp")
+          import jsonc
+          log = open("/tmp/ed-conflict.log").read()
+          missing = [k for k in jsonc.load("/tmp/ed-want.json") if f'"{k}"' not in log]
+          for k in missing:
+              print(f"::error::the printed delta never names {k}")
+          sys.exit(1 if missing else 0)
+          PY
+          # The other file had no conflict, so it must still have been written.
+          # A refusal on one file is not a reason to abandon the other.
+          [[ -f /tmp/ed-conflict/.vscode/extensions.json ]] || {
+            echo '::error::a conflict on settings.json also skipped extensions.json'; exit 1; }
+          echo 'OK: refused, byte-identical, delta printed in full, exit 5'
+
+      - name: A conflict on extensions.json names every extension, not an ellipsis
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # The settings delta above is one key per line and reads fine. The
+          # extensions file is the opposite shape — its whole content is one
+          # long array — so an elided value there would print
+          # `+ "recommendations": ["Editor...` and name not one extension. A
+          # refusal that does not say what it withheld is a refusal with no
+          # remedy attached, so it is asserted separately rather than assumed to
+          # follow from the settings case.
+          rm -rf /tmp/ed-extconf && mkdir -p /tmp/ed-extconf/.vscode
+          printf '{"name":"demo"}\n' > /tmp/ed-extconf/package.json
+          printf '[project]\nname = "demo"\nversion = "0.1.0"\n' > /tmp/ed-extconf/pyproject.toml
+          printf '{"recommendations":["dbaeumer.vscode-eslint"]}\n' \
+            > /tmp/ed-extconf/.vscode/extensions.json
+          before=$(sha256sum /tmp/ed-extconf/.vscode/extensions.json | cut -d' ' -f1)
+          rc=0
+          ./scripts/adopt.sh /tmp/ed-extconf --no-workflow --editor > /tmp/ed-extconf.log 2>&1 || rc=$?
+          cat /tmp/ed-extconf.log
+          [[ $rc -eq 5 ]] || { echo "::error::a refused extensions.json must exit 5, got $rc"; exit 1; }
+          after=$(sha256sum /tmp/ed-extconf/.vscode/extensions.json | cut -d' ' -f1)
+          [[ "$before" == "$after" ]] || {
+            echo '::error::--editor rewrote an extensions.json that already existed'; exit 1; }
+          python3 scripts/editor-settings.py extensions --languages typescript,python > /tmp/ed-want-ext.json
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "/tmp")
+          import jsonc
+          log = open("/tmp/ed-extconf.log").read()
+          want = jsonc.load("/tmp/ed-want-ext.json")
+          missing = [i for i in want["recommendations"] if i not in log]
+          for i in missing:
+              print(f"::error::the printed delta never names {i} — an elided "
+                    "value is a refusal with no remedy attached")
+          sys.exit(1 if missing else 0)
+          PY
+          # And the file with no conflict still gets written. A refusal on one
+          # is not a reason to abandon the other, in either direction.
+          [[ -f /tmp/ed-extconf/.vscode/settings.json ]] || {
+            echo '::error::a conflict on extensions.json also skipped settings.json'; exit 1; }
+          echo 'OK: every withheld extension is named, and settings.json was still written'
+
+      - name: Only --force overwrites, and only --editor writes .vscode at all
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # Opt-in has to hold under every other flag, not just the bare run:
+          # "it only writes .vscode when you ask" is the whole reason this is a
+          # flag, and --force is the flag most likely to be reached for blindly.
+          for variant in "" "--hooks" "--force" "--dry-run"; do
+            rm -rf /tmp/ed-optin
+            mkdir -p /tmp/ed-optin
+            printf '{"name":"demo"}\n' > /tmp/ed-optin/package.json
+            git -C /tmp/ed-optin init -q
+            # Unquoted on purpose: the empty first iteration must expand to NO
+            # argument at all. Quoted, it would pass "" as a second target and
+            # adopt.sh would (correctly) refuse the whole run as a usage error.
+            ./scripts/adopt.sh /tmp/ed-optin --no-workflow ${variant} >/dev/null 2>&1
+            [[ -e /tmp/ed-optin/.vscode ]] && {
+              echo "::error::.vscode was created without --editor (with '${variant:-no flags}')"
+              exit 1; }
+            echo "  OK  no .vscode with '${variant:-no flags}'"
+          done
+          # And --dry-run --editor must predict without writing, same as
+          # everywhere else in this script.
+          rm -rf /tmp/ed-dry && mkdir -p /tmp/ed-dry
+          printf '{"name":"demo"}\n' > /tmp/ed-dry/package.json
+          ./scripts/adopt.sh /tmp/ed-dry --no-workflow --editor --dry-run >/dev/null
+          [[ -e /tmp/ed-dry/.vscode ]] && { echo '::error::--dry-run --editor wrote files'; exit 1; }
+          # --force is the documented escape hatch. It has to actually work, or
+          # the refusal above is a dead end rather than a fork in the road.
+          rm -rf /tmp/ed-force && mkdir -p /tmp/ed-force/.vscode
+          printf '{"name":"demo"}\n' > /tmp/ed-force/package.json
+          printf '{}\n' > /tmp/ed-force/.vscode/settings.json
+          ./scripts/adopt.sh /tmp/ed-force --no-workflow --editor --force >/dev/null
+          grep -q 'typescript.tsdk' /tmp/ed-force/.vscode/settings.json || {
+            echo '::error::--force did not overwrite the existing settings.json'; exit 1; }
+          echo 'OK: opt-in holds under every other flag, --dry-run writes nothing, --force overwrites'
+
+      - name: The prettier rows are written only where a prettier config exists
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # adopt.sh prints the prettier install as an OPTIONAL step, so a TS
+          # repo can legitimately have no config. With the extension installed
+          # and none present, VS Code formats at Prettier's default 80 against a
+          # gate that pins 100 — every save would fight `prettier --check`. That
+          # is strictly worse than no formatter routing, so the rows are
+          # conditional rather than recommended-with-a-caveat.
+          for state in without with; do
+            rm -rf /tmp/ed-pret
+            mkdir -p /tmp/ed-pret
+            printf '{"name":"demo"}\n' > /tmp/ed-pret/package.json
+            if [[ "$state" == with ]]; then
+              cp configs/typescript/prettier.config.mjs /tmp/ed-pret/prettier.config.mjs
+            fi
+            ./scripts/adopt.sh /tmp/ed-pret --no-workflow --editor >/dev/null
+            s=/tmp/ed-pret/.vscode/settings.json
+            e=/tmp/ed-pret/.vscode/extensions.json
+            if [[ "$state" == with ]]; then
+              for k in '"\[typescript\]"' '"\[typescriptreact\]"'; do
+                grep -q "$k" "$s" || { echo "::error::[with a prettier config] $k was not written"; exit 1; }
+              done
+              grep -q 'esbenp.prettier-vscode' "$e" || {
+                echo '::error::[with a prettier config] the prettier extension was not recommended'; exit 1; }
+            else
+              for k in '"\[typescript\]"' '"\[typescriptreact\]"'; do
+                grep -q "$k" "$s" && { echo "::error::[no prettier config] $k was written anyway — every save would fight prettier --check"; exit 1; }
+              done
+              grep -q 'esbenp.prettier-vscode' "$e" && {
+                echo '::error::[no prettier config] the prettier extension was recommended anyway'; exit 1; }
+            fi
+            echo "  OK  $state a prettier config"
+          done
+          echo 'OK: the prettier rows follow the config file, not the language'
+
+      - name: Nothing detected — --editor writes nothing and says why
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # Every key in configs/editor/ belongs to a language; there is no
+          # language-independent half. So a tree with nothing detected must get
+          # NO settings file rather than an empty one — an empty
+          # .vscode/settings.json shadows nothing, explains nothing, and looks
+          # configured, which is this whole directory's failure mode.
+          rm -rf /tmp/ed-none && mkdir -p /tmp/ed-none
+          echo hi > /tmp/ed-none/README.md
+          rc=0
+          out=$(./scripts/adopt.sh /tmp/ed-none --editor 2>&1) || rc=$?
+          echo "$out"
+          [[ $rc -eq 1 ]] || { echo "::error::a no-language repo must still exit 1 with --editor, got $rc"; exit 1; }
+          [[ -e /tmp/ed-none/.vscode ]] && { echo '::error::--editor created .vscode with no language detected'; exit 1; }
+          grep -q 'vscode' <<<"$out" || {
+            echo '::error::--editor wrote nothing and did not say so — "nothing to do" does not answer "where are my .vscode files"'
+            exit 1; }
+          echo 'OK: nothing written, and it says why'
+
+      - name: All five languages compose into one file, end to end
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # The composer is exercised on every fragment by the editor-contract
+          # job; this is the same thing THROUGH adopt.sh, so detection, the
+          # language tokens it passes, and the fragment map cannot disagree.
+          rm -rf /tmp/ed-all && mkdir -p /tmp/ed-all/src
+          printf '{"name":"demo"}\n' > /tmp/ed-all/package.json
+          printf '[project]\nname = "demo"\nversion = "0.1.0"\n' > /tmp/ed-all/pyproject.toml
+          printf '[package]\nname = "demo"\nversion = "0.1.0"\n' > /tmp/ed-all/Cargo.toml
+          : > /tmp/ed-all/Cargo.lock
+          printf 'fn main() {}\n' > /tmp/ed-all/src/main.rs
+          printf '<Project Sdk="Microsoft.NET.Sdk"></Project>\n' > /tmp/ed-all/P.csproj
+          cat > /tmp/ed-all/pom.xml <<'POM'
+          <project xmlns="http://maven.apache.org/POM/4.0.0">
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>demo</groupId><artifactId>demo</artifactId><version>1</version>
+            <build><plugins></plugins></build>
+          </project>
+          POM
+          ./scripts/adopt.sh /tmp/ed-all --no-workflow --editor >/dev/null
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "/tmp")
+          import jsonc
+          doc = jsonc.load("/tmp/ed-all/.vscode/settings.json")
+          ext = jsonc.load("/tmp/ed-all/.vscode/extensions.json")
+          bad = []
+          for k in ("typescript.tsdk", "mypy-type-checker.reportingScope",
+                    "rust-analyzer.check.command",
+                    "dotnet.backgroundAnalysis.analyzerDiagnosticsScope",
+                    "dotnet.backgroundAnalysis.compilerDiagnosticsScope",
+                    "java.configuration.updateBuildConfiguration"):
+              if k not in doc:
+                  bad.append(f"a five-language adoption is missing {k}")
+          # Semgrep stays out even here. Its rule paths resolve only inside a
+          # checkout of the baseline, and the extension with none configured
+          # scans with whatever the CLI is set to — findings no gate produces.
+          # configs/editor/README.md §5, decided in
+          # docs/adr/0002-no-in-editor-semgrep-parity.md.
+          if any(k.startswith("semgrep.") for k in doc):
+              bad.append("the non-portable semgrep fragment was written into a "
+                         "consumer's tree")
+          if "Semgrep.semgrep" in ext["recommendations"]:
+              bad.append("the Semgrep extension was recommended with no rules to "
+                         "point it at")
+          if "ms-dotnettools.csdevkit" not in ext.get("unwantedRecommendations", []):
+              bad.append("a C# repo did not get the C# Dev Kit row as UNWANTED — "
+                         "VS Code offers it unprompted (configs/editor/README.md §2)")
+          for b in bad:
+              print(f"::error::{b}")
+          sys.exit(1 if bad else 0)
+          PY
+          echo 'OK: five languages composed, semgrep held back, Dev Kit still unwanted'
+
   # #13 — Semgrep is pinned in two places: the layer2 action's input default and
   # the layer2-counts job below. If they drift, CI asserts 100 findings against a
   # Semgrep that consumers never run, and the samples quietly stop meaning what

@@ -1,10 +1,10 @@
 {
   // maxi-quality — the shared extension recommendation list.
   //
-  // Copy into .vscode/extensions.json. This is the FULL list; a consumer's
-  // tree should carry only the rows for languages it actually has, which is
-  // the composition step 2 (`adopt.sh --editor`, #126) will do. adopt.sh does
-  // not write this file yet.
+  // This is the FULL list, and it is not what a consumer's tree should hold:
+  // `scripts/adopt.sh --editor` (#126) writes a .vscode/extensions.json with
+  // only the rows for the languages detection found. Copying this file by hand
+  // instead gives every row, including ones for languages the repo has not got.
   //
   // Every id below is the publisher.name from that extension's own published
   // manifest. See ./README.md for the verified divergence each one needs a
@@ -24,8 +24,10 @@
     // the prettier install as an OPTIONAL step, so a tree can legitimately
     // have no prettier.config.mjs. Recommending the extension where the config
     // is absent formats against Prettier's defaults, not this baseline's —
-    // strictly worse than not recommending it. Step 2 must gate this row on
-    // the config file existing.
+    // strictly worse than not recommending it. `adopt.sh --editor` therefore
+    // writes this row only when the target already has a prettier config, and
+    // scripts/check-editor-contract.py asserts that gate still names the two
+    // keys it gates (#126).
     "esbenp.prettier-vscode",
 
     // Python — layer1-python (ruff + mypy). ms-python.python is not optional

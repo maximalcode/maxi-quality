@@ -38,6 +38,18 @@ Plus the shape-guard the rest of this repo uses: a language that ships a config
 must have a fragment, so the next language cannot arrive with the editor
 contract silently not covering it.
 
+And since #126 the fragments are no longer only copied by hand —
+`scripts/editor-settings.py` composes them into a consumer's `.vscode/` files.
+That adds a second way for this contract to rot quietly: a template row the
+composer has no rule for, or a composer rule for a row that no longer exists.
+Neither is visible in a diff of either file alone, so both are asserted here.
+
+And since #153 one of these templates is held back on purpose rather than
+composed at all, which is a decision (docs/adr/0002) rather than a mechanism. A
+decision that one edit reverses without a reviewer noticing is not recorded, so
+G8 asserts the record: every ADR citation in the tree resolves, and the row the
+ADR declines is still declined.
+
 Reads only committed files. Does no network I/O and writes nothing.
 
 Exit codes: 0 the contract holds - 1 it drifted
@@ -254,6 +266,172 @@ for m in re.findall(r"samples/expected/([A-Za-z0-9._-]+\.json)", s3):
 # arbitrary minimum would only add slack.
 if not manifests:
     bad("samples/expected/ is empty — this guard stopped guarding")
+
+# --- G7: the composer and the templates must agree -------------------------
+# scripts/editor-settings.py turns these templates into a consumer's .vscode/
+# files, which means it carries a table saying which detected language earns
+# each extension row. A table beside the data it describes drifts from it — so
+# it is checked in both directions rather than trusted, and the composer is run
+# once here on every language, because a splitter that mangles a fragment
+# produces a plausible file nobody would look twice at.
+import importlib.util
+
+# The docstring above promises this script WRITES NOTHING, and importing a
+# module by path is enough to make CPython drop a __pycache__ directory into
+# scripts/. Turned off rather than gitignored: a guard that dirties the tree it
+# is checking is a guard people learn to run with `git checkout .` afterwards.
+sys.dont_write_bytecode = True
+
+spec = importlib.util.spec_from_file_location(
+    "editor_settings", pathlib.Path("scripts/editor-settings.py"))
+compose = importlib.util.module_from_spec(spec)
+try:
+    spec.loader.exec_module(compose)
+except Exception as e:            # noqa: BLE001 - reported, not swallowed
+    bad(f"scripts/editor-settings.py does not import: {e}")
+    compose = None
+
+if compose is not None and ext is not None:
+    if set(compose.FRAGMENTS) != langs:
+        bad("scripts/editor-settings.py's FRAGMENTS map covers "
+            f"{sorted(compose.FRAGMENTS)}, configs/ ships {sorted(langs)} — "
+            "adopt.sh --editor would write nothing for the difference")
+    for lang, fname in compose.FRAGMENTS.items():
+        if not (D / fname).exists():
+            bad(f"editor-settings.py maps {lang} to {fname}, which does not exist")
+
+    for key, table, name in ((("recommendations"), compose.RECOMMENDATIONS,
+                              "RECOMMENDATIONS"),
+                             ("unwantedRecommendations", compose.UNWANTED,
+                              "UNWANTED")):
+        listed = set(ext.get(key, []))
+        for ident in sorted(listed - set(table)):
+            bad(f"extensions.json lists {ident} under {key}, and "
+                f"editor-settings.py's {name} has no rule for it — "
+                "adopt.sh --editor would refuse to compose")
+        for ident in sorted(set(table) - listed):
+            bad(f"editor-settings.py's {name} has a rule for {ident}, which "
+                "extensions.json no longer lists")
+        for ident, rule in sorted(table.items()):
+            if rule not in (compose.ALWAYS, compose.PRETTIER,
+                            compose.NOT_PORTABLE) and rule not in langs:
+                bad(f"{name}[{ident}] is gated on {rule!r}, which is not a "
+                    "language configs/ ships")
+
+    # A sixth language reaches the composer only if adopt.sh also names it.
+    # The FRAGMENTS check above keeps the composer in step with configs/; this
+    # keeps adopt.sh in step with the composer, which is the half a new language
+    # would otherwise miss in silence — detection would find the language, and
+    # its fragment would simply never be composed into anything.
+    adopt = pathlib.Path("scripts/adopt.sh").read_text()
+    named = set(re.findall(r'EDITOR_LANGS,([a-z]+)"', adopt))
+    for lang in sorted(set(compose.FRAGMENTS) - named):
+        bad(f"scripts/adopt.sh never adds {lang!r} to EDITOR_LANGS, so "
+            f"configs/editor/{compose.FRAGMENTS[lang]} would never reach a "
+            "consumer's tree")
+    for lang in sorted(named - set(compose.FRAGMENTS)):
+        bad(f"scripts/adopt.sh passes {lang!r} to editor-settings.py, which has "
+            "no fragment for it — --editor would fail on every repo with that "
+            "language")
+
+    # The prettier gate names two keys in typescript.settings.json. If either is
+    # renamed, the gate silently stops gating and a repo with no prettier config
+    # gets format-on-save against Prettier's defaults — the exact failure
+    # extensions.json's own comment says step 2 must prevent.
+    try:
+        ts_keys = {k for _, k, _ in
+                   compose.object_entries((D / "typescript.settings.json").read_text())}
+    except Exception as e:        # noqa: BLE001
+        ts_keys = set()
+        bad(f"editor-settings.py cannot split typescript.settings.json: {e}")
+    for k in compose.PRETTIER_KEYS:
+        if k not in ts_keys:
+            bad(f"editor-settings.py gates {k!r} on the prettier config, but "
+                "typescript.settings.json no longer has that key")
+
+    # Compose every language once. Cheap, and it is the only place the splitter
+    # itself is exercised against all six fragments at their current shape.
+    try:
+        composed = compose.compose_settings(list(compose.FRAGMENTS), prettier=True)
+        doc = compose.parse(composed)
+    except Exception as e:        # noqa: BLE001
+        doc = {}
+        bad(f"editor-settings.py cannot compose all languages: {e}")
+    for fname in sorted(compose.FRAGMENTS.values()):
+        for _, key, _ in compose.object_entries((D / fname).read_text()):
+            if key not in doc:
+                bad(f"{key} is in {fname} but not in the composed settings — "
+                    "adopt.sh --editor would drop it silently")
+    # Never the semgrep fragment: its rule paths resolve only inside a checkout
+    # of this repo, so composing it into a consumer's tree would point the
+    # extension at nothing. Declined for good in README §5 and
+    # docs/adr/0002-no-in-editor-semgrep-parity.md.
+    if "semgrep.scan.onlyGitDirty" in doc:
+        bad("the composed settings include the semgrep fragment — its rule "
+            "paths do not exist in a consumer's tree (README §5)")
+
+# --- G8: the Semgrep decision stays recorded, and its citations resolve -----
+# In-editor Semgrep parity is DECLINED, and the decision lives in an ADR rather
+# than a comment because it is the kind of thing a later session re-derives from
+# first principles and quietly reverses. Two ways that could land unseen:
+#
+#   a. The ADR is renamed or deleted and every citation dangles. This is the rot
+#      the §N check above catches inside the README, one directory up: the
+#      sentence still reads fine and points at nothing. The loop below is
+#      REPO-WIDE rather than scoped to configs/editor/, because the citations
+#      are — README.md, docs/ADOPTION.md, docs/STATUS.md and ci.yml all name the
+#      file. A guard that checks only where the citations happened to sit on the
+#      day it was written is exactly the narrower-than-its-claim failure this
+#      script's own docstring calls worse than none.
+#   b. `Semgrep.semgrep` stops being NOT_PORTABLE. The adopt job catches this
+#      end-to-end too (it asserts the row is absent from a five-language
+#      compose), so this is deliberately a second copy: it fails in the cheap
+#      guard instead of only after a full adoption, and it fails with the
+#      decision's name attached rather than just the symptom. What a table check
+#      cannot catch is either — G7 asserts the identifier is KNOWN to the
+#      composer, and a language token is a well-formed value.
+import subprocess
+
+ADR_RE = re.compile(r"docs/adr/([0-9]{4}-[A-Za-z0-9-]+\.md)")
+DECISION = "0002-no-in-editor-semgrep-parity.md"
+SCANNED = (".md", ".json", ".py", ".yml", ".yaml", ".sh")
+
+try:
+    tracked = subprocess.run(["git", "ls-files"], check=True, text=True,
+                             capture_output=True).stdout.splitlines()
+except (OSError, subprocess.CalledProcessError) as e:   # noqa: BLE001
+    tracked = []
+    bad(f"G8 could not list tracked files, so no ADR citation was checked: {e}")
+
+cites_decision = set()
+for name in tracked:
+    q = pathlib.Path(name)
+    if q.suffix not in SCANNED: continue
+    try:
+        text = q.read_text()
+    except (OSError, UnicodeDecodeError):
+        continue
+    for m in sorted(set(ADR_RE.findall(text))):
+        if m == DECISION: cites_decision.add(name)
+        if not (pathlib.Path("docs/adr") / m).exists():
+            bad(f"{name} cites docs/adr/{m}, which does not exist")
+
+# A NAMED file, rather than "some ADR is cited somewhere": the floor has to be
+# one this script cannot satisfy by quoting the path in its OWN comment, and
+# editor-settings.py is where the acceptance criterion put it.
+if "scripts/editor-settings.py" not in cites_decision:
+    bad(f"scripts/editor-settings.py no longer cites docs/adr/{DECISION} — the "
+        "NOT_PORTABLE rule must carry the decision that put it there, or the "
+        "next session reads a bare sentinel and re-derives the wrong answer")
+
+if compose is not None:
+    if compose.RECOMMENDATIONS.get("Semgrep.semgrep") != compose.NOT_PORTABLE:
+        bad("editor-settings.py no longer holds the Semgrep extension back — "
+            "adopt.sh --editor would recommend it with no rules configured, "
+            f"which docs/adr/{DECISION} declined. Reverse the ADR first.")
+    if compose.NOT_PORTABLE in compose.FRAGMENTS:
+        bad("NOT_PORTABLE collides with a language token — the sentinel must "
+            "not be a value _wants() would resolve as a detected language")
 
 if fail:
     for f in fail: print(f"::error::{f}")

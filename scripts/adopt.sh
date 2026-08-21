@@ -22,6 +22,12 @@
 #                     installed without this flag: a hook that appears in
 #                     someone's repo unasked gets ripped out along with
 #                     everything near it. Bypass with `git commit --no-verify`.
+#   --editor          ALSO write .vscode/settings.json and .vscode/extensions.json
+#                     from configs/editor/, for the DETECTED languages only.
+#                     Opt-in for the same reason --hooks is, and one more: this
+#                     is the first thing the baseline writes that gates nothing.
+#                     It NEVER merges — if either file exists it writes nothing
+#                     to it, prints the delta it would have applied, and exits 5.
 #   -h, --help        This text.
 #
 # What gets written, per detected language:
@@ -51,6 +57,11 @@
 #                                           lines for every language, Rust
 #                                           included since #70)
 #   --hooks  .git/hooks/pre-commit         <- hooks/pre-commit (only with --hooks)
+#   --editor .vscode/settings.json         <- configs/editor/<lang>.settings.json
+#                                             for the detected languages, composed
+#                                             by scripts/editor-settings.py
+#   --editor .vscode/extensions.json       <- configs/editor/extensions.json, the
+#                                             same rows and nothing else
 #
 # The TS pair is a copy for the same reason Directory.Build.props is: a private
 # git devDep cannot npm-install in a consumer's CI. The Rust trio is a copy for
@@ -60,6 +71,9 @@
 # and a free <parent> slot to consume, and a Spring Boot project has neither.
 #
 # Exit codes: 0 adopted (or dry-run) · 1 nothing detected · 3 usage error
+#             5 --editor refused: a .vscode file already existed and was left
+#               alone. Everything else still adopted; only the editor files
+#               were held back, and the delta was printed.
 
 set -Eeuo pipefail
 
@@ -80,6 +94,10 @@ FORCE=0
 REF="v1"
 NO_WORKFLOW=0
 HOOKS=0
+# Not named EDITOR: that is a standard environment variable, and a script that
+# shadows someone's $EDITOR is a script that surprises them elsewhere.
+WANT_EDITOR=0
+EDITOR_CONFLICT=0
 
 die() { printf '\033[31merror:\033[0m %s\n' "$1" >&2; exit 3; }
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }
@@ -88,7 +106,7 @@ info() { printf '\033[36m›\033[0m %s\n' "$1"; }
 skip() { printf '\033[33mskip\033[0m %s\n' "$1"; }
 wrote() { printf '\033[32mwrite\033[0m %s\n' "$1"; }
 
-usage() { sed -n '3,51p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
+usage() { sed -n '3,64p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -96,6 +114,7 @@ while [ $# -gt 0 ]; do
     --force) FORCE=1; shift ;;
     --no-workflow) NO_WORKFLOW=1; shift ;;
     --hooks) HOOKS=1; shift ;;
+    --editor) WANT_EDITOR=1; shift ;;
     --ref)
       [ $# -ge 2 ] || die "--ref needs a value"
       REF="$2"; shift 2 ;;
@@ -172,6 +191,12 @@ if [ "$HAS_DOTNET" -eq 0 ] && [ "$HAS_TS" -eq 0 ] && [ "$HAS_PYTHON" -eq 0 ] \
    && [ "$HAS_RUST" -eq 0 ] && [ "$HAS_JAVA" -eq 0 ]; then
   warn "no TypeScript, C#, Python, Rust or Java project found under $TARGET"
   warn "scope is TypeScript, C#, Python, Rust and Java/Maven (CLAUDE.md §4)."
+  # Said separately, because "nothing to do" does not answer "so where are my
+  # .vscode files". The editor settings are per-language all the way down —
+  # there is no language-independent half — so a tree with no detected language
+  # gets an EMPTY settings file or none, and an empty .vscode/settings.json is
+  # worse than none: it shadows nothing, explains nothing, and looks configured.
+  [ "$WANT_EDITOR" -eq 1 ] && warn "--editor wrote no .vscode/settings.json or .vscode/extensions.json: every key in configs/editor/ belongs to a language, and none was found."
   warn "Nothing to do."
   exit 1
 fi
@@ -579,6 +604,92 @@ if [ "$HOOKS" -eq 1 ]; then
   fi
 fi
 
+# --- the editor, only on --editor --------------------------------------------
+#
+# ONLY on --editor, and for one reason more than --hooks has: this is the first
+# thing the baseline writes that GATES NOTHING. Everything else here fails a
+# build when it is wrong; a settings file only changes what someone sees while
+# typing, and .vscode/settings.json is a file developers have opinions about.
+#
+# So it never merges. If either target exists, nothing is written to it, the
+# delta is printed, and the run exits 5 — the consumer applies it by hand or
+# deletes the file and re-runs. Silently clobbering someone's editor config is
+# the one unrecoverable thing this feature could do, and "helpfully merged your
+# settings" is not a sentence this script gets to say.
+if [ "$WANT_EDITOR" -eq 1 ]; then
+  # Language tokens are the configs/ directory names, which is what
+  # scripts/editor-settings.py keys its fragment map on.
+  EDITOR_LANGS=""
+  [ "$HAS_TS" -eq 1 ] && EDITOR_LANGS="$EDITOR_LANGS,typescript"
+  [ "$HAS_DOTNET" -eq 1 ] && EDITOR_LANGS="$EDITOR_LANGS,dotnet"
+  [ "$HAS_PYTHON" -eq 1 ] && EDITOR_LANGS="$EDITOR_LANGS,python"
+  [ "$HAS_RUST" -eq 1 ] && EDITOR_LANGS="$EDITOR_LANGS,rust"
+  [ "$HAS_JAVA" -eq 1 ] && EDITOR_LANGS="$EDITOR_LANGS,java"
+  EDITOR_LANGS="${EDITOR_LANGS#,}"
+
+  # The prettier rows — the extension recommendation and the [typescript] /
+  # [typescriptreact] formatter blocks — are gated on the repo ACTUALLY having
+  # taken adopt.sh's OPTIONAL prettier step. With the extension installed and
+  # no config present, VS Code formats at Prettier's default width and every
+  # save fights `prettier --check` at the width configs/typescript pins. That
+  # is strictly worse than no formatter routing at all, so it is conditional
+  # rather than recommended-and-caveated.
+  #
+  # Declared empty, and every expansion below uses the ${arr[@]+"${arr[@]}"}
+  # form: under `set -u`, bash 3.2 treats an EMPTY array as an unbound variable,
+  # so plain "${PRETTIER_ARGS[@]}" aborts on every repo that has no prettier
+  # config — which is most of them. CI runs this on ubuntu and would never see
+  # it; this script is run by a person on their own machine, and /bin/bash on
+  # macOS is still 3.2. Same reason hooks/pre-commit is written for 3.2.
+  # Found by running it there, not by reading the manual.
+  PRETTIER_ARGS=()
+  if [ "$HAS_TS" -eq 1 ]; then
+    for f in prettier.config.mjs prettier.config.js prettier.config.cjs \
+             .prettierrc .prettierrc.json .prettierrc.json5 .prettierrc.yaml \
+             .prettierrc.yml .prettierrc.mjs .prettierrc.js .prettierrc.cjs \
+             .prettierrc.toml; do
+      if [ -e "$TARGET/$f" ]; then PRETTIER_ARGS=(--prettier); break; fi
+    done
+    # package.json's own "prettier" key is a config too — parsed rather than
+    # grepped, because `"prettier"` also appears in devDependencies and a
+    # dependency is not a configuration.
+    if [ ${#PRETTIER_ARGS[@]} -eq 0 ] && [ -f "$TARGET/package.json" ]; then
+      python3 -c 'import json,sys; sys.exit(0 if "prettier" in json.load(open(sys.argv[1])) else 1)' \
+        "$TARGET/package.json" 2>/dev/null && PRETTIER_ARGS=(--prettier)
+    fi
+  fi
+
+  for spec in "settings:.vscode/settings.json" "extensions:.vscode/extensions.json"; do
+    kind="${spec%%:*}"; dst="$TARGET/${spec#*:}"
+    if [ -e "$dst" ] && [ "$FORCE" -eq 0 ]; then
+      skip "$dst — already exists; --editor never merges"
+      printf '\n'
+      python3 "$BASELINE/scripts/editor-settings.py" delta --kind "$kind" \
+        --existing "$dst" --languages "$EDITOR_LANGS" \
+        ${PRETTIER_ARGS[@]+"${PRETTIER_ARGS[@]}"} >&2
+      printf '\n'
+      EDITOR_CONFLICT=1
+      NEEDS_MERGE=1
+      continue
+    fi
+    wrote "$dst"
+    [ "$DRY_RUN" -eq 1 ] && continue
+    mkdir -p "$(dirname "$dst")"
+    # Composed to a temp file first: a python failure mid-write against "$dst"
+    # would leave a truncated settings.json, which VS Code reports as a parse
+    # error in a panel nobody has open and otherwise treats as no settings.
+    tmp="$dst.maxi-quality.$$"
+    if python3 "$BASELINE/scripts/editor-settings.py" "$kind" \
+         --languages "$EDITOR_LANGS" \
+         ${PRETTIER_ARGS[@]+"${PRETTIER_ARGS[@]}"} > "$tmp"; then
+      mv "$tmp" "$dst"
+    else
+      rm -f "$tmp"
+      die "could not compose $dst from configs/editor/ — this is a bug in the baseline, not in your repo"
+    fi
+  done
+fi
+
 # --- what the human still has to do ------------------------------------------
 printf '\n'
 bold "── next steps ──"
@@ -776,6 +887,26 @@ if [ "$HAS_JAVA" -eq 1 ]; then
   printf '       is what the .editorconfig copied above already declares.\n'
 fi
 
+if [ "$WANT_EDITOR" -eq 1 ]; then
+  printf '  Editor (VS Code)\n'
+  printf '    1. Open the folder and take the extension recommendations. The\n'
+  printf '       settings only matter with the extensions they configure.\n'
+  printf '    2. TypeScript needs one HUMAN action no settings file can perform:\n'
+  printf '       run "TypeScript: Select TypeScript Version" and pick the\n'
+  printf '       WORKSPACE version. Until then the editor type-checks with the\n'
+  printf "       one VS Code ships and CI uses yours — two compilers, two answers.\n"
+  printf '    3. Every key carries the CI behaviour it pins in a comment above\n'
+  printf '       it. Delete what you disagree with; the comment is there so that\n'
+  printf '       is a decision rather than a guess.\n'
+  printf '    4. Semgrep is NOT configured here, deliberately: its rules live in\n'
+  printf '       the baseline, not in your tree, so the extension would scan with\n'
+  printf '       rules this repo does not have. Semgrep still runs in CI.\n'
+  printf '    5. Java gets build wiring only. Error Prone and NullAway are javac\n'
+  printf '       plugins and the extension compiles with ECJ, so the Java gate\n'
+  printf "       findings cannot reach the Problems panel — that is architecture,\n"
+  printf '       not a missing setting.\n'
+fi
+
 if [ "$NEEDS_MERGE" -eq 1 ]; then
   printf '\n'
   warn "some files already existed and were left untouched."
@@ -788,4 +919,16 @@ if [ "$DRY_RUN" -eq 1 ]; then
   printf '\033[33mDRY RUN\033[0m — nothing written. Re-run without --dry-run to apply.\n'
 else
   printf '\033[32mADOPTED\033[0m — commit these files, push, and CI gates the next PR.\n'
+fi
+
+# LAST, so a refused editor file does not cost the run everything else it did.
+# The rest of adoption has already happened and been reported; this exit code
+# says one specific thing, and a caller that scripts adopt.sh can tell it apart
+# from "nothing detected" (1) and "you typed it wrong" (3).
+if [ "$EDITOR_CONFLICT" -eq 1 ]; then
+  printf '\n'
+  printf '\033[31mEDITOR FILES NOT WRITTEN\033[0m — a .vscode file already existed.\n'
+  printf 'The delta above is what --editor would have applied. Merge it by hand,\n'
+  printf 'or delete the file and re-run. --force overwrites, if that is what you want.\n'
+  exit 5
 fi

@@ -40,6 +40,12 @@ that contract's internal consistency instead (see
 check like every other. A new config that *could* have a sample and does not is
 still a violation.
 
+Note what the exemption does **not** cover. Since `adopt.sh --editor` (#126),
+the *composition* of those fragments into a consumer's `.vscode/` files is
+ordinary behaviour and is proven end-to-end in the `adopt` job — right languages
+in, wrong ones out, a pre-existing settings file never touched. What stays
+unprovable here is only what the settings *do inside an editor*.
+
 If a sample stops failing, **the config regressed — fix the config.** Never make
 a sample pass by adding a disable comment, a `NoWarn`, or a suppression inside
 the fixture. Never adjust an expected count to match new output without saying,
@@ -138,6 +144,13 @@ nothing installed:
 
 ```bash
 python3 scripts/check-editor-contract.py
+```
+
+What the fragments compose *into* is ordinary behaviour and is checked in the
+`adopt` job. Locally:
+
+```bash
+scripts/adopt.sh /tmp/demo --editor --dry-run
 ```
 
 ### TypeScript
