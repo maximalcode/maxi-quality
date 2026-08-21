@@ -83,6 +83,12 @@ configs/python/settings.snapshot.json   what ruff and mypy RESOLVE to — 344 ru
 configs/java/pom-lints.xml              Error Prone + NullAway(ERROR) + Spotless(palantir AOSP), all pinned;
                                         a MANAGED REGION merged into the consumer's own pom.xml
 configs/java/settings.snapshot.json      what Maven RESOLVES the two plugins to, after Spring Boot's parent
+configs/editor/         the editor contract (#120): one .vscode settings fragment per
+                        language + the shared extensions list, every key annotated with
+                        the CI behaviour it pins. NOTHING WRITES THESE YET — adopt.sh
+                        learns about them in #126. README.md there carries the six
+                        VERIFIED extension-default divergences and the per-language
+                        authoritative expectation source step 3 measures parity against
 
 semgrep/general/       todo-without-issue, catch-and-swallow, debug-print, sync-over-async
 semgrep/security/      sql-string-concat, command-injection, weak-crypto, hardcoded-secret
@@ -108,6 +114,11 @@ scripts/coverage.py       coverage ratchet: lcov + Cobertura vs a committed floo
                           --patch-threshold defaults to 50, and 0 keeps the
                           measurement without the gate
 scripts/check-expected.py diffs a tool's JSON output against a committed manifest
+scripts/check-editor-contract.py  configs/editor/ is the only config here that nothing
+                          RUNS — no headless VS Code — so this asserts its internal
+                          consistency instead: every key justified, every verified
+                          divergence still pinned at the documented value, C# Dev Kit
+                          still excluded, every expectation manifest still in the table
 scripts/deadcode-gate.py  turns knip/deptry output into a VERDICT: which issue types
                           may fail a build, and the changed-only ratchet applied to
                           the results (neither tool takes a file list)

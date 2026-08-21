@@ -215,6 +215,7 @@ one language at a time, when someone has the week to spend on it.
 | SBOM and licence gate | both from OSV-Scanner; the SBOM never gates | [`docs/REFERENCE.md`](docs/REFERENCE.md) |
 | Formatting | Prettier, `ruff format`, `dotnet format whitespace`, gated in CI | [#42](https://github.com/maximalcode/maxi-quality/issues/42) |
 | Editor defaults | one shared `.editorconfig` | [`configs/editorconfig`](configs/editorconfig) |
+| Editor parity | the settings that make the official extensions show what CI shows. Frozen as a contract; **not written into your tree yet** | [`configs/editor/`](configs/editor/) |
 | Copyable examples | seven complete consumer repos, each asserted by CI | [`examples/`](examples/) |
 | Test suite | planted-bug samples per language; a sample that stops failing means the config regressed | [`samples/`](samples/) |
 
@@ -238,6 +239,19 @@ one language at a time, when someone has the week to spend on it.
   GitHub issue replaced it. Detection is settled; whether a presentation layer
   is worth adding is being measured separately, and until it reports, the
   answer is still no.
+- **Your editor does not show what CI shows, and installing the official
+  extensions does not fix it.** Measured against the extensions' own manifests:
+  the Semgrep extension scans only lines changed since the last commit; the
+  mypy extension runs a mypy it bundles rather than your pin, and type-checks
+  only the file in the active tab; rust-analyzer runs `cargo check`, so not one
+  clippy lint appears; the C# extension reports analyzer findings for open
+  files only; and VS Code type-checks with the TypeScript it ships rather than
+  the one in your `node_modules`. Six divergences, each one settings line —
+  [`configs/editor/`](configs/editor/) is the frozen contract that closes them,
+  and Java is the one language where nothing closes it (Error Prone is a javac
+  plugin; the extension uses the Eclipse compiler). Nothing writes these files
+  for you yet
+  ([#126](https://github.com/maximalcode/maxi-quality/issues/126)).
 - **Java is Maven only, and Gradle fails loud rather than skipping.** Gradle
   gets built when a Gradle consumer exists
   ([#10](https://github.com/maximalcode/maxi-quality/issues/10)).
