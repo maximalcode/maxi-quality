@@ -1,0 +1,24 @@
+{
+  "why": "A refusal that does not say what to run is a refusal the session works around. With gate_command declared, the message names it.",
+  "hook": "stop",
+  "setup": {
+    "committed": {
+      "a.txt": "one\n"
+    },
+    "worktree": {
+      "a.txt": "one\ntwo\n"
+    },
+    "config": {
+      "gate_command": "npm run gate"
+    }
+  },
+  "event": {
+    "hook_event_name": "Stop"
+  },
+  "expect": {
+    "decision": "block",
+    "reason_contains": [
+      "npm run gate"
+    ]
+  }
+}

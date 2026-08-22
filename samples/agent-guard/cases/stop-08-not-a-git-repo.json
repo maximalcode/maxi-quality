@@ -1,0 +1,19 @@
+{
+  "why": "FAIL OPEN ON OUR OWN PLUMBING. The hook cannot be bypassed by the party it constrains, so a broken install must not become a session nobody can end.",
+  "hook": "stop",
+  "setup": {
+    "git": false,
+    "worktree": {
+      "a.txt": "one\n"
+    }
+  },
+  "event": {
+    "hook_event_name": "Stop"
+  },
+  "expect": {
+    "decision": "allow",
+    "stderr_contains": [
+      "not inside a git"
+    ]
+  }
+}

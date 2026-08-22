@@ -1,0 +1,22 @@
+{
+  "why": "A changed tree and no receipt at all is the base case: the gate never ran, and the block has to say what to run.",
+  "hook": "stop",
+  "setup": {
+    "committed": {
+      "a.txt": "one\n"
+    },
+    "worktree": {
+      "a.txt": "one\ntwo\n"
+    }
+  },
+  "event": {
+    "hook_event_name": "Stop"
+  },
+  "expect": {
+    "decision": "block",
+    "reason_contains": [
+      "has not run",
+      "record-gate.py"
+    ]
+  }
+}

@@ -2886,6 +2886,32 @@ jobs:
         shell: bash
         run: python3 scripts/editor-parity.py selftest
 
+  # #158 — the third surface. CI is the gate and configs/editor/ freezes what
+  # the editor shows; neither reaches the agent session that writes the code.
+  # The two hooks in configs/agent/ do, and this is their test suite.
+  #
+  # A JOB rather than a step, unlike the parity differ next door, and the
+  # difference is worth stating because the comment above argues the other way.
+  # That differ is editor work and there was an editor job to put it in. There
+  # is no agent job, and hanging a second surface's contract off the first one's
+  # context would make a failure here report as "editor-contract failed".
+  #
+  # It needs no toolchain — python3 and git, both already on the runner — so the
+  # 50-minute argument that keeps configs/editor/ out of samples/ does not apply
+  # here, and configs/agent/ takes an ordinary fixture corpus like every other
+  # config in this repo.
+  agent-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # The fixtures build real git repositories and commit to them. A runner
+      # has no user.email, and without an identity the failure reads as a broken
+      # fixture rather than as missing config — so selftest.py sets one per
+      # invocation and this job deliberately does NOT configure a global one.
+      - name: The agent hooks must still block what they claim, and only that
+        shell: bash
+        run: python3 scripts/agent-guard/selftest.py
+
   # #11 — adopt.sh, proven end-to-end rather than by reading it. The assertion
   # that matters is not "it copied some files", it is "a repo adopted by the
   # script behaves exactly like the hand-configured sample" — in BOTH

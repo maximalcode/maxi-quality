@@ -1,0 +1,21 @@
+{
+  "why": "The self-reference that made every session unendable. The guard's own state file is written after the fingerprint it records, so it must never be part of one.",
+  "hook": "changed",
+  "setup": {
+    "committed": {
+      "a.txt": "one\n"
+    },
+    "worktree": {
+      "a.txt": "one\ntwo\n"
+    },
+    "receipt": {
+      "verdict": "pass",
+      "fingerprint": "current"
+    }
+  },
+  "expect": {
+    "files": [
+      "a.txt"
+    ]
+  }
+}

@@ -102,7 +102,7 @@ So the flow is:
 
 `develop` is the default branch, so `gh pr create` and the web UI already target
 it — you should not have to change the base. Both branches carry the same
-protection: 27 required checks, admins included, branch must be up to date, no
+protection: 28 required checks, admins included, branch must be up to date, no
 force-pushes, no direct commits.
 
 Promoting `develop` to `main` is a maintainer decision, because it is where the

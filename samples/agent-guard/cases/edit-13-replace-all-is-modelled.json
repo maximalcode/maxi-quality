@@ -1,0 +1,28 @@
+{
+  "why": "replace_all is modelled rather than ignored. Note what this case does NOT prove: every occurrence has the same line delta, so its SIGN never changes with the number of replacements \u2014 a shrink is a shrink at one occurrence or at ten. No fixture can distinguish the two models under a line-count rule, and deleting the replace_all branch would keep this suite green. It is kept because the branch becomes load-bearing the moment the check reads content instead of counting lines, and that is stated in configs/agent/README.md rather than implied by a passing test.",
+  "hook": "sample",
+  "setup": {
+    "committed": {
+      "samples/typescript/src/bad.ts": "export function f(a: any) {\n  if (a == 1) { return 1; }\n  if (a == 2) { return 2; }\n  if (a == 3) { return 3; }\n  return null;\n}\n",
+      "samples/expected/eslint.json": "{\n  \"tool\": \"eslint\",\n  \"findings\": [\n    {\n      \"rule\": \"eqeqeq\",\n      \"file\": \"samples/typescript/src/bad.ts\",\n      \"line\": 2\n    },\n    {\n      \"rule\": \"@typescript-eslint/no-explicit-any\",\n      \"file\": \"samples/typescript/src/bad.ts\",\n      \"line\": 1\n    }\n  ]\n}\n",
+      "src/app.ts": "const x = 1;\nconst y = 2;\nconst z = 3;\n",
+      "samples/typescript-clean/src/ok.ts": "export const ok = 1;\n"
+    }
+  },
+  "event": {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Edit",
+    "tool_input": {
+      "file_path": "{{ROOT}}/samples/typescript/src/bad.ts",
+      "old_string": "  if (a == 1) { return 1; }\n",
+      "new_string": "",
+      "replace_all": true
+    }
+  },
+  "expect": {
+    "decision": "deny",
+    "reason_contains": [
+      "test suite"
+    ]
+  }
+}
