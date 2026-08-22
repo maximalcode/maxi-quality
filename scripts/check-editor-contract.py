@@ -157,8 +157,16 @@ def check_annotations(path, raw, extra_depth=()):
 frags = sorted(D.glob("*.settings.json"))
 
 # G6: a language that ships a config must have a fragment.
+#
+# Not every directory under configs/ is a language. Two are SURFACES — the
+# editor contract itself, and the agent hooks (#158) — and a surface has no
+# .settings.json because there is no editor to configure for it. The exclusion
+# is an explicit set rather than a pattern on purpose: a new LANGUAGE that
+# forgot its fragment must still fail here, and the only way past this guard is
+# to type a name into this line, which is a reviewable act.
+NOT_LANGUAGES = {"editor", "agent"}
 langs = {p.name for p in pathlib.Path("configs").iterdir()
-         if p.is_dir() and p.name != "editor"}
+         if p.is_dir() and p.name not in NOT_LANGUAGES}
 for lang in sorted(langs):
     if not (D / f"{lang}.settings.json").exists():
         bad(f"configs/{lang}/ ships a config but configs/editor/{lang}.settings.json "

@@ -1,0 +1,24 @@
+{
+  "why": "END TO END: record-gate.py actually runs, writes its own receipt, and the stop hook accepts it. The hand-written receipts elsewhere assert the hook; this asserts the pair.",
+  "hook": "stop",
+  "setup": {
+    "committed": {
+      "a.txt": "one\n"
+    },
+    "worktree": {
+      "a.txt": "one\ntwo\n"
+    },
+    "record": {
+      "command": [
+        "true"
+      ]
+    }
+  },
+  "event": {
+    "hook_event_name": "Stop"
+  },
+  "expect": {
+    "decision": "allow",
+    "record_exit": 0
+  }
+}

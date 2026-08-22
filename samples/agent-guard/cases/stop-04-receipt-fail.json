@@ -1,0 +1,27 @@
+{
+  "why": "A failing run must not read as an absent one: the message says fix what it reported, not run it for the first time.",
+  "hook": "stop",
+  "setup": {
+    "committed": {
+      "a.txt": "one\n"
+    },
+    "worktree": {
+      "a.txt": "one\ntwo\n"
+    },
+    "receipt": {
+      "verdict": "fail",
+      "fingerprint": "current",
+      "command": "make gate"
+    }
+  },
+  "event": {
+    "hook_event_name": "Stop"
+  },
+  "expect": {
+    "decision": "block",
+    "reason_contains": [
+      "FAILED",
+      "make gate"
+    ]
+  }
+}
