@@ -1,0 +1,11 @@
+{
+  "why": "NEGATIVE CONTROL for the long spelling. `--message --no-verify` is `-m \"--no-verify\"` written out, and the option-value table has to cover both spellings or the guard is a substring search with extra steps for half the flags.",
+  "hook": "noverify",
+  "setup": { "git": false },
+  "event": {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": { "command": "git commit --message --no-verify -a" }
+  },
+  "expect": { "decision": "allow" }
+}

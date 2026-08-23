@@ -1,0 +1,14 @@
+{
+  "why": "FAIL OPEN ON PLUMBING. An unbalanced quote is a command the tokenizer cannot read. An agent hook is not bypassable by the party it constrains, so a parser that cannot parse must allow and say so, or a broken install is a session nobody can end.",
+  "hook": "noverify",
+  "setup": { "git": false },
+  "event": {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": { "command": "git commit -m \"unterminated" }
+  },
+  "expect": {
+    "decision": "allow",
+    "stderr_contains": ["could not be tokenised"]
+  }
+}

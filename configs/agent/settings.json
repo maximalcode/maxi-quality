@@ -1,4 +1,10 @@
 {
+  "permissions": {
+    "deny": [
+      "Edit(/.claude/agent-guard-receipt.json)",
+      "Edit(/samples/expected/**)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {
@@ -7,6 +13,16 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/agent-guard/sample-guard.py\"",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/agent-guard/no-verify-guard.py\"",
             "timeout": 15
           }
         ]

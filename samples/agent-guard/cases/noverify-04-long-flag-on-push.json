@@ -1,0 +1,21 @@
+{
+  "why": "`git push --no-verify` skips pre-push \u2014 a DIFFERENT hook from the one `commit` skips, and one this baseline does not ship. A single refusal message reused across both subcommands names the wrong hook on this arm and claims to protect something it does not, which is why the message is asserted and not just the flag.",
+  "hook": "noverify",
+  "setup": {
+    "git": false
+  },
+  "event": {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "git push --no-verify origin HEAD"
+    }
+  },
+  "expect": {
+    "decision": "deny",
+    "reason_contains": [
+      "--no-verify",
+      "pre-push"
+    ]
+  }
+}

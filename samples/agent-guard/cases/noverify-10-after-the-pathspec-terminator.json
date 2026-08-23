@@ -1,0 +1,11 @@
+{
+  "why": "NEGATIVE CONTROL. After `--` every word is a pathspec, so this stages a file that is unfortunately named and skips nothing.",
+  "hook": "noverify",
+  "setup": { "git": false },
+  "event": {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": { "command": "git commit -m x -- --no-verify" }
+  },
+  "expect": { "decision": "allow" }
+}

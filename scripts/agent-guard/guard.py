@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared machinery for the two agent-guard hooks.
+"""Shared machinery for the three agent-guard hooks.
 
 WHY A FINGERPRINT AND NOT A RE-RUN
 
@@ -25,11 +25,14 @@ merge. A receipt is a statement about a diff, not about a commit.
 
 THIS GUARDS DRIFT, NOT MALICE
 
-Every check here is defeated by a session that decides to write the receipt
-file by hand, and none of it is hardened against that. It does not need to be:
-the failure this exists to stop is a model that forgets, not a model that
-lies. Saying so plainly matters, because a guard sold as tamper-proof gets
-trusted for things it cannot do.
+The `permissions.deny` half of this contract stops the FILE TOOLS writing the
+receipt; a shell still can, and the receipt is this hook's own input, so a
+hand-written one with a matching fingerprint passes and there is no backstop
+that could catch it. None of this is hardened against that and it does not
+need to be: the failure it exists to stop is a model that forgets, not a model
+that lies. Saying so plainly matters, because a guard sold as tamper-proof
+gets trusted for things it cannot do. configs/agent/README.md §3 states the
+boundary in full.
 
 FAIL OPEN ON OUR OWN PLUMBING, FAIL CLOSED ON POLICY
 
