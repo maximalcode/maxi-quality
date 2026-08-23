@@ -220,20 +220,23 @@ and every case still passes while this file describes a contract the wiring does
 not implement.
 
 `scripts/check-agent-contract.py` is the guard for the seams between the four
-parts, and the `agent-guard` job runs it as a second step: every `command`
-against the script it names and every script against some `command`, the
-matchers against the prose in both directions, the case counts in both READMEs
-against `cases/`, every mutation row and every cited case and section and link
-against what exists, and the deny array against the block quoted in §2 and the
-table in §5a. **It reads the numbers here and refuses to write them** — a
-checker that updates its own expectations agrees with itself forever, which is
-the argument `check-expected.py` and `editor-parity.py --update` already make
-about their own corpora.
+parts, and the `agent-guard` job runs it in two more steps — the check, and the
+checker's own mutations. Every `command` against the script it names and every
+script against some `command`; the matchers against the prose in both
+directions; the case counts in both READMEs against `cases/`; every mutation
+row, cited case, cited section and link against what exists; the deny array
+against the block quoted in §2 and the table in §5a; and every reference in §6
+against its own `as of <date>`. **It reads the numbers here and refuses to
+write them** — a checker that updates its own expectations agrees with itself
+forever, which is the argument `check-expected.py` and `editor-parity.py
+--update` already make about their own corpora.
 
 Its own mutations are executable rather than tabled, and the difference is
-cost: `selftest` copies the contract into a temp tree, breaks one thing, and
+cost: `selftest` stages the contract in a temp tree, breaks one thing, and
 asserts the run names what moved. That runs in a second, so there is no reason
-to record it in prose the way the tables below have to be.
+to record it in prose the way the tables below have to be. What no mutation
+reaches is marked at the site, for the same reason the zero rows below are
+published rather than dropped.
 
 **The deny rules are the exception, and it is paid for rather than granted.** A
 `permissions.deny` rule cannot be exercised headlessly — there is no way to make

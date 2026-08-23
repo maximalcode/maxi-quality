@@ -51,7 +51,15 @@ this script is the only thing standing between the two. So `selftest` copies
 the contract into a temp tree, applies one mutation, and asserts the run fails
 naming the thing that moved. The first three are #163's first three acceptance
 criteria, executable rather than recorded; its fourth — that `ci.yml` gains no
-new job — is `workflow-lint`'s to assert and not this script's. It is the `editor-parity.py selftest` precedent, and the
+new job — is `workflow-lint`'s to assert and not this script's.
+
+`editor-parity.py` is the precedent for HAVING a selftest mode and is not the
+precedent for this one's shape: its corpus is fourteen committed case files, and
+this one's is the real contract with one thing broken. The difference is not
+preference. A case file can describe a panel dump, which is data this repo
+invents; it cannot describe "the README and the fragment disagree", which is a
+relationship between two files that both have to exist. Staging the real tree is
+the only corpus that can express the mutation. It is the `editor-parity.py selftest` precedent, and the
 corpus is the real contract because the real contract is what the mutations are
 about.
 
@@ -125,6 +133,31 @@ def word_to_int(word: str) -> int | None:
     return None
 
 
+def _documented_count(text: str, pattern: str, actual: int, gone: str,
+                      says, truth) -> list[str]:
+    """Problems with a count a document states, in words or in digits.
+
+    Three places state a count that something else decides — the wiring row's
+    matchers, and the case count in each of the two READMEs. All three fail the
+    same three ways (the sentence is gone, the number is not a number, the
+    number is wrong), so they share this rather than three near-copies.
+    """
+    hit = re.search(pattern, text, re.M)
+    if not hit:
+        return [gone]
+    word = hit.group(1)
+    said = word_to_int(word)
+    if said is None:
+        return [f"{says(word)}, which is not a number"]
+    if said != actual:
+        # Both spellings when they differ: quoting only the parsed number hides
+        # what to edit ("Fifty-one" is not greppable as 51), and quoting only
+        # the word makes the reader do the arithmetic to see the disagreement.
+        shown = word if word.lower() == str(said) else f"{word!r} ({said})"
+        return [f"{says(shown)}; {truth(actual)}"]
+    return []
+
+
 def read(path: pathlib.Path) -> str:
     try:
         return path.read_text(encoding="utf-8")
@@ -184,9 +217,9 @@ def check(root: pathlib.Path) -> list[str]:
     # addresses the scripts through its OWN constant, so a renamed hook leaves
     # the corpus green; settings.json still parses; and the only symptom is a
     # hook that stopped firing in every tree that adopted it.
-    named: set = set()
-    events: dict = {}
-    groups_seen: dict = {}
+    named: set[str] = set()
+    events: dict[str, list] = {}
+    groups_seen: dict[str, int] = {}
     hooks_block = settings.get("hooks")
     if not isinstance(hooks_block, dict) or not hooks_block:
         bad("configs/agent/settings.json has no `hooks` object — the wiring "
@@ -288,22 +321,19 @@ def check(root: pathlib.Path) -> list[str]:
     # The top table's wiring row counts the matchers in words. A third matcher
     # added without touching that row is a contract whose own summary is wrong,
     # and the summary is the part a consumer reads before the sections.
-    row = re.search(r"(\w+) `PreToolUse` matchers?, (\w+) `Stop`", readme)
-    if not row:
-        bad("configs/agent/README.md no longer counts the wiring in its first "
+    gone = ("configs/agent/README.md no longer counts the wiring in its first "
             "table — this guard stopped guarding")
-    else:
-        counted = ((row.group(1), len(events.get("PreToolUse", [])),
-                    "`PreToolUse` matchers"),
-                   (row.group(2), groups_seen.get("Stop", 0), "`Stop` hooks"))
-        for word, actual, label in counted:
-            said = word_to_int(word)
-            if said is None:
-                bad(f"configs/agent/README.md's wiring row says {word!r} for "
-                    f"{label}, which is not a number")
-            elif said != actual:
-                bad(f"configs/agent/README.md's wiring row says {word!r} for "
-                    f"{label}; settings.json wires {actual}")
+    for pattern, actual, label in (
+            (r"(\w+) `PreToolUse` matchers?, \w+ `Stop`",
+             len(events.get("PreToolUse", [])), "`PreToolUse` matchers"),
+            (r"\w+ `PreToolUse` matchers?, (\w+) `Stop`",
+             groups_seen.get("Stop", 0), "`Stop` hooks")):
+        for problem in _documented_count(
+                readme, pattern, actual, gone,
+                lambda v, label=label: f"configs/agent/README.md's wiring row "
+                                       f"says {v!r} for {label}",
+                lambda v: f"settings.json wires {v}"):
+            bad(problem)
 
     # --- G3: the case count, in both spellings ------------------------------
     #
@@ -312,31 +342,21 @@ def check(root: pathlib.Path) -> list[str]:
     # script's to read: it is never rewritten here, because a guard that
     # updates its own expectation agrees with itself forever.
     n = len(cases)
-    m = re.search(r"`samples/agent-guard/` is (\S+) cases", readme)
-    if not m:
-        bad("configs/agent/README.md no longer states how many cases "
-            "samples/agent-guard/ holds — this guard stopped guarding")
-    else:
-        said = word_to_int(m.group(1))
-        if said is None:
-            bad(f"configs/agent/README.md §5 says samples/agent-guard/ is "
-                f"{m.group(1)!r} cases, which is not a number")
-        elif said != n:
-            bad(f"configs/agent/README.md §5 says samples/agent-guard/ is "
-                f"{said} cases; cases/ holds {n}")
-
-    m = re.search(r"^(\S+) cases, one JSON file each", samples_readme, re.M)
-    if not m:
-        bad("samples/agent-guard/README.md no longer opens with its case count "
-            "— this guard stopped guarding")
-    else:
-        said = word_to_int(m.group(1))
-        if said is None:
-            bad(f"samples/agent-guard/README.md says {m.group(1)!r} cases, "
-                "which is not a number")
-        elif said != n:
-            bad(f"samples/agent-guard/README.md says {said} cases; cases/ "
-                f"holds {n}")
+    for problem in _documented_count(
+            readme, r"`samples/agent-guard/` is (\S+) cases", n,
+            "configs/agent/README.md no longer states how many cases "
+            "samples/agent-guard/ holds — this guard stopped guarding",
+            lambda v: f"configs/agent/README.md §5 says samples/agent-guard/ "
+                      f"is {v} cases",
+            lambda v: f"cases/ holds {v}"):
+        bad(problem)
+    for problem in _documented_count(
+            samples_readme, r"^(\S+) cases, one JSON file each", n,
+            "samples/agent-guard/README.md no longer opens with its case count "
+            "— this guard stopped guarding",
+            lambda v: f"samples/agent-guard/README.md says {v} cases",
+            lambda v: f"cases/ holds {v}"):
+        bad(problem)
 
     # --- G4: every row, citation and link in the prose resolves --------------
     #
@@ -352,6 +372,14 @@ def check(root: pathlib.Path) -> list[str]:
         bad(f"configs/agent/README.md §5 holds only {len(rows)} table rows — "
             "the mutation tables are the evidence this section claims, and "
             "this guard stopped guarding")
+    # Scoped to `*.py` names resolved against scripts/agent-guard/, and NOT to
+    # every backticked token in a row, which would be the broader reading of
+    # "names a file that exists". Deliberate: §5a's rows name paths in a
+    # CONSUMER's tree — `.claude/agent-guard-receipt.json` is runtime state that
+    # is gitignored here and `sub/samples/expected/eslint.json` never existed
+    # anywhere — so resolving every token against this repo would report a
+    # correct table as broken. A guard that overstates itself is worse than
+    # none; this one covers the scripts, and says so.
     for line in rows:
         for script in re.findall(r"`([A-Za-z0-9_-]+\.py)`", line):
             if not (hooks_dir / script).is_file():
@@ -365,24 +393,25 @@ def check(root: pathlib.Path) -> list[str]:
     stems = {name[:-len(".json")] for name in cases}
     cite_targets = [readme_path, fragment_path, samples_readme_path]
     cite_targets += sorted(hooks_dir.glob("*.py"))
-    for q in cite_targets:
-        text = read(q)
+    for cited_in in cite_targets:
+        text = read(cited_in)
         for stem in sorted(set(re.findall(
                 r"\b((?:stop|edit|noverify|changed|deny)-\d{2}-[a-z0-9-]+)", text))):
             if stem not in stems:
-                bad(f"{_rel(q, root)} cites the case `{stem}`, which is not in "
-                    "samples/agent-guard/cases/")
+                bad(f"{_rel(cited_in, root)} cites the case `{stem}`, which "
+                    "is not in samples/agent-guard/cases/")
 
     # A relative link is the one citation form a reader clicks, so a dangling
     # one is the loudest kind of quiet rot. Anchors and URLs are somebody
     # else's problem; a path in this tree is this checker's.
-    for q in (readme_path, fragment_path, samples_readme_path):
-        for target in re.findall(r"\]\(([^)\s]+)\)", read(q)):
+    for doc in (readme_path, fragment_path, samples_readme_path):
+        for target in re.findall(r"\]\(([^)\s]+)\)", read(doc)):
             if target.startswith(("http://", "https://", "#", "mailto:")):
                 continue
-            resolved = (q.parent / target.split("#", 1)[0]).resolve()
+            resolved = (doc.parent / target.split("#", 1)[0]).resolve()
             if not resolved.exists():
-                bad(f"{_rel(q, root)} links to {target!r}, which does not exist")
+                bad(f"{_rel(doc, root)} links to {target!r}, which does not "
+                    "exist")
 
     # --- G5: the deny rules, verbatim, in both places ------------------------
     #
@@ -411,31 +440,45 @@ def check(root: pathlib.Path) -> list[str]:
                 "§5a's table — the live observation was made against a "
                 "different rule than the one that ships")
 
-    # --- G6: the reference date is a date -----------------------------------
+    # --- G6: every reference carries its own date ---------------------------
     #
-    # §6 is explicit that there is no schema version for either format, so the
-    # date the docs were read IS the whole version statement. A version
-    # statement that is not a date is not one.
-    flat = " ".join(readme.split())
-    if "built against" not in flat:
-        bad("configs/agent/README.md no longer says what reference the contract "
-            "was built against — §6 says that date is the only version "
-            "statement available, so losing it loses the claim")
-    dates = re.findall(r"as of \*\*([^*]+)\*\*", flat)
-    if not dates:
-        bad("configs/agent/README.md states no `as of <date>` for the reference "
-            "it was built against")
+    # §6 is explicit that there is no schema version for either the hooks format
+    # or the permissions one, so the date the reference was READ is the whole
+    # version statement. Checking "built against" and "as of <date>" as two
+    # independent substrings is not enough and was the first version of this
+    # guard: §6 names two references, and dropping the date from one of them
+    # left the other's date satisfying the check while a reference silently
+    # lost its only version statement. So the two are checked as a PAIR — every
+    # backticked reference in §6 must be followed by its own `as of <date>`.
+    section6 = _section(readme, "## 6. What has NOT been measured")
+    flat6 = " ".join(section6.split())
+    if "built against" not in flat6:
+        bad("configs/agent/README.md §6 no longer says what reference the "
+            "contract was built against — §6 is itself explicit that the date "
+            "is the only version statement available, so losing the sentence "
+            "loses the claim")
+    references = re.findall(r"against `([^`]+)`(?: as of \*\*([^*]+)\*\*)?",
+                            flat6)
+    if not references:
+        bad("configs/agent/README.md §6 names no reference the contract was "
+            "built against — this guard stopped guarding")
     today = datetime.date.today()
-    for value in dates:
+    for reference, value in references:
+        if not value:
+            bad(f"configs/agent/README.md §6 says the contract was built "
+                f"against `{reference}` and gives no `as of <date>` for it — "
+                "that date is the only version statement this contract has")
+            continue
         try:
             when = datetime.date.fromisoformat(value)
         except ValueError:
-            bad(f"configs/agent/README.md says the contract was built against a "
-                f"reference as of {value!r}, which is not a date")
+            bad(f"configs/agent/README.md §6 dates `{reference}` at {value!r}, "
+                "which is not a date")
             continue
         if when > today:
-            bad(f"configs/agent/README.md dates a reference at {value}, which "
-                "is in the future — a version statement nobody could have made")
+            bad(f"configs/agent/README.md §6 dates `{reference}` at {value}, "
+                "which is in the future — a version statement nobody could "
+                "have made")
 
     # --- G7: the managed region's markers -----------------------------------
     #
@@ -467,11 +510,12 @@ def check(root: pathlib.Path) -> list[str]:
     if not headings:
         bad("configs/agent/README.md has no numbered sections — this guard "
             "stopped guarding")
-    for q in cite_targets:
-        for cited in sorted(set(re.findall(r"\u00a7(\d+[a-z]?)", read(q)))):
+    for cited_in in cite_targets:
+        text = read(cited_in)
+        for cited in sorted(set(re.findall(r"\u00a7(\d+[a-z]?)", text))):
             if cited not in headings:
-                bad(f"{_rel(q, root)} cites configs/agent/README.md \u00a7{cited}, "
-                    "which is not a section")
+                bad(f"{_rel(cited_in, root)} cites configs/agent/README.md "
+                    f"\u00a7{cited}, which is not a section")
 
     return fail
 
@@ -537,12 +581,62 @@ def _deny_block(readme: str):
 SURFACES = ("configs/agent", "scripts/agent-guard", "samples/agent-guard")
 
 
+def _stage(root: pathlib.Path, copy: pathlib.Path) -> None:
+    """A tree a mutation can edit, with the rest of the repo symlinked in place.
+
+    Only the three surfaces are copied — copying the repo would mean copying
+    node_modules and .git for every mutation. But everything ELSE is linked in
+    rather than left absent, because the link check resolves paths: a legitimate
+    link from the contract to somewhere outside these three directories would
+    otherwise fail on the unmutated baseline and read as a broken checker rather
+    than as a temp tree missing a file.
+    """
+    surfaces = {pathlib.PurePath(rel) for rel in SURFACES}
+    parents = {rel.parent for rel in surfaces}
+    copy.mkdir(parents=True)
+    for entry in root.iterdir():
+        here = pathlib.PurePath(entry.name)
+        if here not in parents:
+            (copy / entry.name).symlink_to(entry)
+            continue
+        (copy / entry.name).mkdir()
+        for child in entry.iterdir():
+            target = copy / entry.name / child.name
+            if here / child.name in surfaces:
+                shutil.copytree(child, target)
+            else:
+                target.symlink_to(child)
+
+
 def _edit(root: pathlib.Path, rel: str, old: str, new: str) -> None:
     path = root / rel
     text = path.read_text(encoding="utf-8")
     if old not in text:
         raise CorpusError(f"selftest cannot mutate {rel}: {old!r} is not in it")
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+def _edit_re(root: pathlib.Path, rel: str, pattern: str, new: str) -> None:
+    """Replace the first match of `pattern`, or say why the mutation is stale.
+
+    By SHAPE rather than by literal text wherever the text is expected to
+    change: two mutations below move the reference date, and pinning today's
+    date in this file would turn an ordinary date bump into an exit-3 "cannot
+    mutate" report on a contract that is perfectly fine.
+    """
+    path = root / rel
+    text = path.read_text(encoding="utf-8")
+    edited, count = re.subn(pattern, new, text, count=1)
+    if not count:
+        raise CorpusError(f"selftest cannot mutate {rel}: nothing matches "
+                          f"{pattern!r}")
+    path.write_text(edited, encoding="utf-8")
+
+
+def _edit_date(root: pathlib.Path, new: str) -> None:
+    """Rewrite the first `as of **<date>**` in the README to `new`."""
+    _edit_re(root, "configs/agent/README.md",
+             r"(?<= as of \*\*)\d{4}-\d{2}-\d{2}(?=\*\*)", new)
 
 
 def mutations(cases: int) -> list[tuple]:
@@ -575,9 +669,14 @@ def mutations(cases: int) -> list[tuple]:
                          "<!-- BEGIN maxi-quality agent-guard -->\n", ""),
          ("BEGIN maxi-quality agent-guard",)),
         ("the reference date is not a date",
-         lambda r: _edit(r, "configs/agent/README.md",
-                         "**2026-08-23**", "**2026-13-45**"),
+         lambda r: _edit_date(r, "2026-13-45"),
          ("2026-13-45",)),
+        # The failure the spec review found in the first version of G6: two
+        # references, one date between them, and the guard exited 0.
+        ("a reference loses its date and the other keeps one",
+         lambda r: _edit_re(r, "configs/agent/README.md",
+                            r" as of \*\*\d{4}-\d{2}-\d{2}\*\*", ""),
+         ("only version statement",)),
         ("a mutation row names a script that does not exist",
          lambda r: _edit(r, "configs/agent/README.md",
                          "| `stop-gate.py` ignores the fingerprint |",
@@ -625,14 +724,13 @@ def mutations(cases: int) -> list[tuple]:
         ("the wiring row miscounts the matchers",
          lambda r: _edit(r, "configs/agent/README.md",
                          "two `PreToolUse` matchers", "three `PreToolUse` matchers"),
-         ("three", "2")),
+         ("three", "wires 2")),
         ("the README documents a matcher nothing wires",
          lambda r: _edit(r, "configs/agent/README.md",
                          "`PreToolUse` on `Bash`", "`PreToolUse` on `Task`"),
          ("Task",)),
         ("a reference is dated in the future",
-         lambda r: _edit(r, "configs/agent/README.md",
-                         "**2026-08-22**", "**2099-08-22**"),
+         lambda r: _edit_date(r, "2099-08-22"),
          ("2099-08-22",)),
     ]
 
@@ -646,13 +744,13 @@ def selftest(root: pathlib.Path) -> int:
         print("::error::the UNMUTATED contract already fails — fix that first")
         return 1
 
+    plan = mutations(cases)
     failed = 0
-    for name, mutate, expect in mutations(cases):
+    for name, mutate, expect in plan:
         tmp = pathlib.Path(tempfile.mkdtemp(prefix="agent-contract-"))
         try:
             copy = tmp / "repo"
-            for rel in SURFACES:
-                shutil.copytree(root / rel, copy / rel)
+            _stage(root, copy)
             mutate(copy)
             problems = check(copy)
         finally:
@@ -672,7 +770,7 @@ def selftest(root: pathlib.Path) -> int:
             else:
                 print(f"ok   {name}")
 
-    print(f"\nmutations={len(mutations(cases))} failed={failed}")
+    print(f"\nmutations={len(plan)} failed={failed}")
     return 1 if failed else 0
 
 
