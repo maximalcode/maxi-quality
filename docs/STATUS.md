@@ -174,6 +174,11 @@ docs/EVAL-editor-parity.md  the editor parity run (#121), PRE-REGISTERED: protoc
                        disarms the custom-extension eval (#122), all written
                        before a window was opened. Holds no matrix yet and says
                        so — the run needs a person at a VS Code
+docs/EVAL-vs-code-guardian.md  the agent-surface eval (#160), PRE-REGISTERED:
+                       the claims a commercial guard layer publishes, quoted
+                       verbatim and dated, the three verdicts, the fixture each
+                       measurable claim gets, and the bar. Holds no verdict and
+                       no count and says so — #162 is the run
 CONTEXT.md             the GLOSSARY, and nothing else — Consumer vs Adopter, the
                        three tests that admit a language, Mechanism vs Finding
                        change. Terms only; CONCEPT.md still holds the design
