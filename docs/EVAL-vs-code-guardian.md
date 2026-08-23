@@ -315,9 +315,9 @@ them apart would be hiding the more interesting one.
 attached. A claim cannot become *covered* by argument.
 
 `configs/agent/` above is the agent contract from [#158] and [#161] — four
-rules, its seam stated in its own README §1. It is the B track of this milestone
-and lands on `develop` independently of this document; §3 states what [#162]
-does when a row's subject is not there yet.
+rules, its seam stated in its own README §1. It is the B track of this milestone,
+merged to `develop` on 2026-08-23 and still moving under [#163]; §3 states what
+[#162] does when a row's subject is not there on the day of the run.
 
 ---
 
@@ -343,10 +343,12 @@ sample mean something. Whether `eval/code-guardian/` survives past the run is
 [#164]'s to decide, not this document's.
 
 **Rows naming `configs/agent/`, `scripts/agent-guard/` or `samples/agent-guard/`
-depend on the B track.** Those paths arrive with [#158] and [#161] and are not
-on `develop` at the time this protocol is written. [#162] runs against whatever
-of them exists on the day of the run and states which; a row whose subject is
-still absent is recorded as un-run, never silently as a miss.
+came from the B track**, and it has landed — [#158] and [#161] merged to
+`develop` on 2026-08-23, so those paths resolve and the rows below name real
+files. The rule stands anyway, because the two tracks run in parallel and the
+contract is still moving: [#162] runs against whatever exists on the day of the
+run and states which, and a row whose subject is absent is recorded as un-run,
+never silently as a miss.
 
 ### 3a. Measurable claims
 
@@ -358,7 +360,7 @@ still absent is recorded as un-run, never silently as a miss.
 | **C4** irreversible migration | one drop-column migration per language this baseline ships: `eval/code-guardian/migrations/typescript/` (a knex/Prisma migration), `…/dotnet/` (EF Core `migrationBuilder.DropColumn`), `…/python/` (Alembic `op.drop_column`), `…/rust/` (a `sqlx` migration with `ALTER TABLE … DROP COLUMN`), `…/java/` (a Flyway `V2__…sql`) | Layer 2 Semgrep over the tree, plus that language's Layer 1. Which of the 40 rule ids fires, if any, is what [#162] records — this row fixes the tools, not the outcome |
 | **C5** package reputation | two manifests carrying a name one character from a real one — a `package.json` depending on `reqests`, and a `requirements.txt` on `requirments` — one with a lockfile entry and one without | OSV-Scanner via `scripts/scan.sh`. [#162] records the category difference in the same row: OSV answers *is this package known-vulnerable*, the claim is *is this package reputable*, and a miss for one reason is not a miss for the other |
 | **C6** data / schema judgement | a migration containing a destructive statement with no backup (`DELETE FROM … WHERE …`, and an `UPDATE` with no `WHERE`), and a query assembled by string concatenation next to it | `semgrep/security/sql-string-concat.yaml` for the concatenation half, Layer 2 Semgrep over the migration for the destructive-statement half. The two halves are recorded as two results, because a hit on one is not a hit on the other |
-| **C7** claims backed by command output | the existing `stop-*` cases in `samples/agent-guard/` — a turn that ends with changed content and no recorded gate run — cited, not rewritten | `scripts/agent-guard/stop-gate.py`. This is the one claim where the fixture already exists, and [#162] must cite the case ids it ran rather than re-describing them |
+| **C7** claims backed by command output | the existing `stop-` cases in `samples/agent-guard/cases/` — `stop-01-no-receipt` (a turn ending with changed content and no gate run), `stop-03-receipt-stale` and `stop-04-receipt-fail` — cited, not rewritten | `scripts/agent-guard/stop-gate.py`. This is the one claim where the fixture already exists, and [#162] must cite the case ids it ran rather than re-describing them |
 | **C12** slop audit | a TypeScript fixture carrying the mechanical shapes: an unreferenced export, a duplicated block, a left-behind debug print, a `TODO` with no issue reference | knip via `actions/deadcode/`, plus `semgrep/general/debug-print-left-behind.yaml` and `semgrep/general/todo-without-issue.yaml`, plus Layer 1 typescript-eslint |
 | **C15** wiring analysis into a foreign project | none planted. The comparable artefact is `adopt.sh` on `examples/typescript-npm`, which the `adopt` and `examples` jobs already assert end to end | `adopt.sh`, via the existing CI evidence, for the JS/TS half only. The PHP half has no measurement here at all: PHP is not a language this baseline ships, and `CLAUDE.md` §4 is why — no in-house demand, so nothing exists to run |
 
@@ -451,4 +453,5 @@ Three consequences, stated now so the run cannot argue them later:
 [#160]: https://github.com/maximalcode/maxi-quality/issues/160
 [#161]: https://github.com/maximalcode/maxi-quality/issues/161
 [#162]: https://github.com/maximalcode/maxi-quality/issues/162
+[#163]: https://github.com/maximalcode/maxi-quality/issues/163
 [#164]: https://github.com/maximalcode/maxi-quality/issues/164
