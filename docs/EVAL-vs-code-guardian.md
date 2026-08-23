@@ -271,8 +271,8 @@ Recorded for the date stamp only. It is **not** a claim [#162] classifies —
 
 ## 2. The three verdicts, and the test that decides each
 
-Every claim **C1–C16** gets exactly one verdict in [#162]. The tests are applied
-in this order, and the order is the point.
+Every claim **C1–C16** gets exactly one verdict in [#162]. The seam test is
+applied first and decides the label; the fixture is run either way.
 
 **C17 and C18 get no verdict, and that is not an omission.** C17 is the
 product's own scope statement: its job is to bound which of C1–C16 could apply
@@ -283,22 +283,31 @@ later.
 
 | # | Verdict | The test |
 |---|---|---|
-| 1 | **covered** | Something already in Layer 1, Layer 2 or `configs/agent/` **fires on the planted fixture** §3 names for that claim. Fires means an exit code or a finding, produced by a run, pasted into [#162] — never inferred from a config file. |
-| 2 | **declined** | It did not fire, **and** the claim fails the seam test of D-e (it does not reference the baseline itself — it protects a person in any repo, and belongs in `~/.claude`), **or** `docs/CONCEPT.md` §1 excludes it (no AI review pipeline; every detector here is a denylist and an exit code). The reason is written out per claim, naming which of the two applies. Never implied. |
-| 3 | **gap** | It did not fire, and it passes the seam test. |
+| 1 | **declined** | The claim **fails the seam test** of D-e (it does not reference the baseline itself — it protects a person in any repo, and belongs in `~/.claude`), **or** `docs/CONCEPT.md` §1 excludes it (no AI review pipeline; every detector here is a denylist and an exit code). The reason is written out per claim, naming which of the two applies. Never implied. |
+| 2 | **covered** | It passes the seam test, **and** something already in Layer 1, Layer 2 or `configs/agent/` **fires on the planted fixture** §3 names for it. Fires means an exit code or a finding, produced by a run, pasted into [#162] — never inferred from a config file. |
+| 3 | **gap** | It passes the seam test, and nothing fires. |
 
-**Detection is tested before scope, deliberately.** If the seam test ran first,
-a claim ruled out of scope would never be run, and "we decline this" would be
-indistinguishable from "we don't know whether we already do it". Running the
-fixture first makes *declined* a statement about something we measured and chose
-not to pursue, rather than a statement about something we did not look at.
+**The seam decides the label; the fixture still runs.** These are two questions
+and only the first one picks the word. A claim that fails the seam test is
+*declined* whether or not anything here fires on it, because the seam of D-e
+governs what this baseline builds and that does not change on a detection
+result.
 
-**The consequence, stated so it is not discovered later:** a claim that fires is
-recorded *covered* even where it would have failed the seam test. That is
-intended. The seam of D-e governs what this baseline **builds**, not what it
-happens to already do, and a row reading "declined" over a fixture that came
-back red would be false about the tree. Where the two diverge, [#162] writes the
-seam note in the row rather than changing the verdict.
+**But a declined claim is still run**, wherever §3 gives it a fixture, and this
+is the half that is easy to drop. If declining a claim also excused us from
+running it, "we decline this" would be indistinguishable from "we never looked",
+and the tree would be described by an argument instead of by a result. So the
+fixture goes in, and the row carries what came back:
+
+- **declined, and nothing fires** — out of scope, and we do not do it today.
+- **declined, and something fires anyway** — out of scope, and we do it
+  regardless. The row names what fired (`declined — fires via …`). This is not a
+  contradiction and it is not promoted to *covered*: it is a thing the baseline
+  happens to catch on its way to catching something else, and [#164] may read it
+  either way.
+
+Those two are different facts about the tree, and a verdict that could not tell
+them apart would be hiding the more interesting one.
 
 **A claim with no fixture gets no verdict of covered.** §3 marks each such claim
 "not measurable, because …"; those are classified on the seam test alone and
