@@ -1,0 +1,11 @@
+{
+  "why": "FAIL OPEN ON PLUMBING. A payload with no `command` is a matcher that routed something unexpected here, not a policy violation.",
+  "hook": "noverify",
+  "setup": { "git": false },
+  "event": {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": {}
+  },
+  "expect": { "decision": "allow" }
+}

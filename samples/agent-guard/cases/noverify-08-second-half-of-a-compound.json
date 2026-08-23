@@ -1,0 +1,14 @@
+{
+  "why": "A shell command is not one command. If only the first word is inspected, `<anything> && git push --no-verify` is a complete bypass and it is the obvious one to reach for.",
+  "hook": "noverify",
+  "setup": { "git": false },
+  "event": {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": { "command": "npm run build && git push --no-verify" }
+  },
+  "expect": {
+    "decision": "deny",
+    "reason_contains": ["--no-verify"]
+  }
+}

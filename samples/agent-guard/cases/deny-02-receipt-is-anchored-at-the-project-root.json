@@ -1,0 +1,23 @@
+{
+  "why": "AN ANCHOR SLIP. `/.claude/...` anchors at the settings source — the project root for project settings — and matches there and nowhere else. Drop the leading slash and the bare-name gitignore rule matches at ANY depth; double it and `//` anchors at the filesystem root and matches nothing in the repo at all. All three spellings look correct in a diff, so the tree below plants the receipt at the root and at a nested path and demands one match and one miss.",
+  "hook": "permissions",
+  "rule": "Edit(/.claude/agent-guard-receipt.json)",
+  "tree": [
+    ".claude/agent-guard-receipt.json",
+    "sub/.claude/agent-guard-receipt.json",
+    ".claude/settings.json",
+    ".claude/agent-guard/guard.py",
+    "agent-guard-receipt.json",
+    "samples/expected/eslint.json"
+  ],
+  "expect": {
+    "denied": [".claude/agent-guard-receipt.json"],
+    "allowed": [
+      "sub/.claude/agent-guard-receipt.json",
+      ".claude/settings.json",
+      ".claude/agent-guard/guard.py",
+      "agent-guard-receipt.json",
+      "samples/expected/eslint.json"
+    ]
+  }
+}

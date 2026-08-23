@@ -1,13 +1,23 @@
 #!/usr/bin/env python3
 """Run the agent-guard hooks against samples/agent-guard/ and assert the verdicts.
 
-Every case in `samples/agent-guard/cases/*.json` is a real invocation: a real
-git repository is built in a temp directory, the real hook script is executed
-as a subprocess with the case's payload on stdin, and its stdout is parsed the
-way Claude Code parses it. Nothing here imports the hook and calls a function —
-the thing under test is the executable, including its exit code and the shape
-of what it prints, because those are the parts of the contract that are easy to
-break and invisible when broken.
+Most cases in `samples/agent-guard/cases/*.json` are a real invocation: the real
+hook script is executed as a subprocess with the case's payload on stdin, and
+its stdout is parsed the way Claude Code parses it. Nothing there imports the
+hook and calls a function — the thing under test is the executable, including
+its exit code and the shape of what it prints, because those are the parts of
+the contract that are easy to break and invisible when broken. The `stop-` and
+`edit-` cases build a real git repository first; the `noverify-` cases do not,
+because a command guard reads a string and has no opinion about the repository
+it stands in.
+
+TWO KINDS OF CASE ARE NOT AN INVOCATION, AND BOTH SAY SO
+
+`changed-` calls `changed_files()` directly, because a fingerprint over the
+wrong file set is still "some hash" and no hook decision can tell those apart.
+`permissions` runs nothing at all — a `permissions.deny` rule is enforced
+inside Claude Code and cannot be made to fire from a fixture; the comment block
+above `deny_rules()` says what is asserted instead and what that costs.
 
 WHY THE ASSERTION IS THE DECISION AND NOT THE EXIT CODE
 
@@ -26,6 +36,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -38,7 +49,13 @@ from guard import CONFIG, RECEIPT, changed_files, fingerprint  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(HERE))
 CASES = os.path.join(REPO, "samples", "agent-guard", "cases")
-HOOKS = {"stop": "stop-gate.py", "sample": "sample-guard.py"}
+HOOKS = {"stop": "stop-gate.py", "sample": "sample-guard.py",
+         "noverify": "no-verify-guard.py"}
+FRAGMENT = os.path.join(REPO, "configs", "agent", "settings.json")
+
+# The only two tool names Claude Code consults a PATH rule for. Everything
+# else in this position is the trap the `permissions` mode exists to catch.
+PATH_RULE_TOOLS = ("Edit", "Read")
 
 
 def run_git(root: str, *args: str) -> None:
@@ -136,12 +153,215 @@ def decision_of(hook: str, stdout: str) -> tuple[str, str]:
             if hso.get("permissionDecision") == "deny" else ("allow", ""))
 
 
+# --- the permissions.deny mode ----------------------------------------------
+#
+# WHY THIS IS STRUCTURAL AND NOT A REAL DENIAL
+#
+# A `permissions.deny` rule is enforced inside Claude Code. There is no
+# headless way to make it fire, the way `selftest.py` makes a hook fire by
+# running it as a subprocess — which is exactly the shape CONTRIBUTING.md's
+# "samples/ is the test suite" rule exists to refuse, and exactly the shape
+# configs/editor/ already had. So the exemption is paid for the same way it is
+# there: this asserts the rule's INTERNAL CONSISTENCY — that it is spelled
+# with a tool whose path rules are consulted at all, that it parses, and that
+# it covers the literal paths it names and no others — and configs/agent/
+# README.md §5 states what evidence the claim rests on, including the one
+# dated live observation in §5a that is not mechanisable.
+#
+# It is not a precedent. A config that COULD have a failing sample and does
+# not is still a violation.
+
+
+def deny_rules() -> list:
+    """The fragment's `permissions.deny` array, exactly as written.
+
+    Non-string entries are returned rather than filtered out. Dropping them
+    here would turn "somebody wrote an object into the deny array" into a
+    shorter list and a green run, which is the same silence this whole mode
+    exists to break.
+    """
+    with open(FRAGMENT, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    return list(((doc.get("permissions") or {}).get("deny")) or [])
+
+
+def split_rule(rule) -> tuple[str, str]:
+    """(tool, specifier), or raise ValueError with the reason it is unusable."""
+    if not isinstance(rule, str):
+        raise ValueError(f"{rule!r} is not a string; a deny rule is one")
+    if not rule.endswith(")") or "(" not in rule:
+        # A bare `Edit` deny is legal and matches the tool EVERYWHERE — the
+        # docs say so and say Claude Code does not warn about it. Silently
+        # disabling every edit in the repo is not what any rule here means.
+        raise ValueError(f"{rule!r} names no path; a bare tool-name deny "
+                         "matches that tool everywhere")
+    tool, spec = rule[:rule.index("(")], rule[rule.index("(") + 1:-1]
+    if tool not in PATH_RULE_TOOLS:
+        raise ValueError(
+            f"{rule!r} is a {tool}(path) rule. Claude Code checks file "
+            f"permissions against {' and '.join(PATH_RULE_TOOLS)} rules only; "
+            "a path rule for Write, MultiEdit, NotebookEdit or Glob is "
+            "accepted, never consulted, and warns once at startup."
+        )
+    if not spec:
+        raise ValueError(f"{rule!r} has an empty pattern")
+    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*:", spec):
+        raise ValueError(
+            f"{rule!r} is a parameter-match rule. The primary content field — "
+            "`file_path` for Edit and Read — cannot be matched that way; "
+            "Claude Code ignores the rule and warns at startup."
+        )
+    if "\\" in spec:
+        raise ValueError(f"{rule!r} contains a backslash; gitignore patterns "
+                         "use forward slashes on every platform")
+    if spec.endswith("/"):
+        raise ValueError(f"{rule!r} ends in a slash, so it names a directory "
+                         "and matches no file the tools can edit")
+    if spec.count("[") != spec.count("]"):
+        raise ValueError(f"{rule!r} has an unbalanced character class")
+    return tool, spec
+
+
+def glob_regex(pattern: str) -> str:
+    """gitignore glob -> regex. `*` stays inside one segment, `**` crosses."""
+    out, i, n = [], 0, len(pattern)
+    while i < n:
+        if pattern.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif pattern.startswith("/**", i) and i + 3 == n:
+            out.append("/.*")
+            i += 3
+        elif pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(pattern[i]))
+            i += 1
+    return "".join(out)
+
+
+def rule_matcher(spec: str, root: str) -> re.Pattern:
+    """The absolute-path regex a deny specifier resolves to.
+
+    The four anchors are the permissions reference's own table, and getting
+    them wrong is the failure this mode is for: `//x` is the filesystem root,
+    `~/x` is home, `/x` is the SETTINGS SOURCE — the project root, for the
+    project settings this fragment becomes — and a bare `x` is relative to the
+    current directory. A pattern with no slash in it is a gitignore bare name
+    and matches at any depth; anything else matches only where it is anchored.
+
+    Today's rules use the `/` anchor and nothing else, so three of these four
+    branches — and `glob_regex()`'s `?` — are reached by no fixture. They are
+    not kept out of generality. A checker that models three anchors does not
+    REJECT the fourth; it resolves it quietly against the wrong base and
+    reports a clean run, which is the anchor-slip bug this whole mode exists
+    to catch, one level up.
+    """
+    if spec.startswith("//"):
+        base, rest, anchored = "", spec[1:].lstrip("/"), True
+    elif spec.startswith("~/"):
+        base, rest, anchored = os.path.expanduser("~"), spec[2:], True
+    elif spec.startswith("/"):
+        base, rest, anchored = root, spec[1:], True
+    else:
+        rest = spec[2:] if spec.startswith("./") else spec
+        # A session starts at the repo root, so cwd and the settings source
+        # are the same directory here. The DEPTH is what differs, and that is
+        # what the fixture asserts.
+        base, anchored = root, "/" in rest
+    depth = "" if anchored else "(?:.*/)?"
+    return re.compile("^" + re.escape(base.rstrip("/")) + "/" + depth
+                      + glob_regex(rest) + "$")
+
+
+def run_permissions_case(case: dict) -> list[str]:
+    fails: list[str] = []
+    rules = deny_rules()
+
+    # Shape is asserted for EVERY rule on every permissions case, not only on
+    # the one that pins the list: a rule added later must not be able to
+    # arrive in the trap spelling just because nobody updated a fixture.
+    for rule in rules:
+        try:
+            split_rule(rule)
+        except ValueError as exc:
+            fails.append(str(exc))
+
+    expect = case.get("expect", {})
+    if "rules" in expect:
+        if rules != expect["rules"]:
+            fails.append(f"permissions.deny is {rules}, expected "
+                         f"{expect['rules']}")
+        if not rules:
+            fails.append("permissions.deny is empty — this contract stopped "
+                         "denying anything")
+
+    if "rule" not in case:
+        return fails
+
+    rule = case["rule"]
+    if rule not in rules:
+        return fails + [f"{rule!r} is not in the fragment's permissions.deny"]
+    try:
+        _tool, spec = split_rule(rule)
+    except ValueError:
+        return fails  # already reported above
+
+    tmp = tempfile.mkdtemp(prefix="agent-guard-")
+    try:
+        # A real tree, realpath-resolved for the same reason every other case
+        # here resolves one: a pattern asserted against a path that does not
+        # exist is a pattern asserted against a typo.
+        root = os.path.realpath(os.path.join(tmp, "repo"))
+        planted = sorted(case.get("tree", []))
+        for rel in planted:
+            full = os.path.join(root, rel)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w", encoding="utf-8") as fh:
+                fh.write("planted\n")
+
+        denied = sorted(expect.get("denied", []))
+        allowed = sorted(expect.get("allowed", []))
+        # Exhaustive on purpose. A planted path that is in neither list is a
+        # path the case has no opinion about, and a case with no opinion is
+        # how a rule's blast radius grows without a diff.
+        #
+        # NO MUTATION REACHES THIS. It guards the next fixture author, not the
+        # rules, and there is no case shape for "this case must fail" — so
+        # removing it fails nothing. Kept and marked; README §5 says so too.
+        if sorted(denied + allowed) != planted:
+            fails.append("denied+allowed must be exactly the planted tree; "
+                         f"planted={planted} listed={sorted(denied + allowed)}")
+
+        matcher = rule_matcher(spec, root)
+        for rel in denied:
+            if not matcher.match(os.path.join(root, rel)):
+                fails.append(f"{rule} does NOT match {rel}, and must")
+        for rel in allowed:
+            if matcher.match(os.path.join(root, rel)):
+                fails.append(f"{rule} matches {rel}, and must not")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    return fails
+
+
 def run_case(path: str) -> list[str]:
     """Returns a list of failure messages; empty means the case passed."""
     with open(path, encoding="utf-8") as fh:
         case = json.load(fh)
 
     hook = case["hook"]
+
+    if hook == "permissions":
+        return run_permissions_case(case)
 
     # A direct assertion on the shared module rather than on a hook decision.
     # It exists because a decision cannot see the difference: two fingerprints

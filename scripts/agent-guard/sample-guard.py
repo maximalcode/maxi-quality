@@ -116,6 +116,11 @@ def proposed_text(tool: str, ti: dict, current: str | None) -> str | None:
             return None
         # replace_all is honoured, because refusing to model it would let the
         # one form that removes the MOST lines through unexamined.
+        #
+        # NO FIXTURE REACHES THIS BRANCH, and none can. Every occurrence of the
+        # same replacement carries the same line delta, so the SIGN of the
+        # delta — all this rule reads — is identical at one occurrence and at
+        # ten. Kept and marked; see configs/agent/README.md §5.
         return (current.replace(old, new)
                 if ti.get("replace_all") else current.replace(old, new, 1))
 

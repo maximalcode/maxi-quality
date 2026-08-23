@@ -1,0 +1,14 @@
+{
+  "why": "`-an` is `-a -n`. Short flags bundle, so a comparison against the whole token misses every spelling but the bare one.",
+  "hook": "noverify",
+  "setup": { "git": false },
+  "event": {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": { "command": "git commit -an -m x" }
+  },
+  "expect": {
+    "decision": "deny",
+    "reason_contains": ["-n"]
+  }
+}
