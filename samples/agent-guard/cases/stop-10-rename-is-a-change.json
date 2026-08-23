@@ -1,0 +1,22 @@
+{
+  "why": "A rename is a deletion with a new name. Both paths belong in the fingerprint, or moving a fixture out of the way gates as clean.",
+  "hook": "stop",
+  "setup": {
+    "committed": {
+      "samples/typescript/src/bad.ts": "export function f(a: any) {\n  if (a == 1) {\n    return a;\n  }\n  return null;\n}\n"
+    },
+    "worktree": {
+      "samples/typescript/src/bad.ts": null,
+      "samples/typescript/src/moved.ts": "export function f(a: any) {\n  if (a == 1) {\n    return a;\n  }\n  return null;\n}\n"
+    }
+  },
+  "event": {
+    "hook_event_name": "Stop"
+  },
+  "expect": {
+    "decision": "block",
+    "reason_contains": [
+      "has not run"
+    ]
+  }
+}

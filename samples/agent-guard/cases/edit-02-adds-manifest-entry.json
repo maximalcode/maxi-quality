@@ -1,0 +1,24 @@
+{
+  "why": "Adding coverage is the thing this must never discourage.",
+  "hook": "sample",
+  "setup": {
+    "committed": {
+      "samples/typescript/src/bad.ts": "export function f(a: any) {\n  if (a == 1) {\n    return a;\n  }\n  return null;\n}\n",
+      "samples/expected/eslint.json": "{\n  \"tool\": \"eslint\",\n  \"findings\": [\n    {\n      \"rule\": \"eqeqeq\",\n      \"file\": \"samples/typescript/src/bad.ts\",\n      \"line\": 2\n    },\n    {\n      \"rule\": \"@typescript-eslint/no-explicit-any\",\n      \"file\": \"samples/typescript/src/bad.ts\",\n      \"line\": 1\n    }\n  ]\n}\n",
+      "src/app.ts": "const x = 1;\nconst y = 2;\nconst z = 3;\n",
+      "samples/typescript-clean/src/ok.ts": "export const ok = 1;\n"
+    }
+  },
+  "event": {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Edit",
+    "tool_input": {
+      "file_path": "{{ROOT}}/samples/expected/eslint.json",
+      "old_string": "  \"findings\": [\n",
+      "new_string": "  \"findings\": [\n    {\n      \"rule\": \"no-debugger\",\n      \"file\": \"samples/typescript/src/bad.ts\",\n      \"line\": 4\n    },\n"
+    }
+  },
+  "expect": {
+    "decision": "allow"
+  }
+}

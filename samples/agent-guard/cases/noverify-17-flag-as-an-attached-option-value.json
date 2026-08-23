@@ -1,0 +1,11 @@
+{
+  "why": "NEGATIVE CONTROL for the attached spelling. `--message=--no-verify` carries its value inside the token, so a guard that consumes the NEXT word here eats `-a` and reads nothing; one that compares the whole token to `--no-verify` never sees it at all. Both halves of the `=` split are asserted by this one command.",
+  "hook": "noverify",
+  "setup": { "git": false },
+  "event": {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": { "command": "git commit --message=--no-verify -a" }
+  },
+  "expect": { "decision": "allow" }
+}

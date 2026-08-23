@@ -1,0 +1,14 @@
+{
+  "why": "A newline separates commands as surely as `&&` does, and a tokenizer that treats the whole script as one argv sees `git commit` first and never reaches the second command's own subcommand.",
+  "hook": "noverify",
+  "setup": { "git": false },
+  "event": {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": { "command": "echo starting\ngit push --no-verify" }
+  },
+  "expect": {
+    "decision": "deny",
+    "reason_contains": ["--no-verify"]
+  }
+}

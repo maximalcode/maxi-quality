@@ -1,0 +1,19 @@
+{
+  "why": "The same rename, unstaged, is a delete plus an untracked file and never an 'R' entry. Both spellings have to reach the same set, or the guard's behaviour depends on whether someone ran git add.",
+  "hook": "changed",
+  "setup": {
+    "committed": {
+      "old.txt": "x\n"
+    },
+    "worktree": {
+      "old.txt": null,
+      "new.txt": "x\n"
+    }
+  },
+  "expect": {
+    "files": [
+      "new.txt",
+      "old.txt"
+    ]
+  }
+}

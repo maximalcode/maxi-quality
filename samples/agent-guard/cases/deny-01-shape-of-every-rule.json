@@ -1,0 +1,10 @@
+{
+  "why": "THE SILENT-WRITE TRAP, and the reason this mode exists. Per the permissions reference (read 2026-08-23): a path rule written for `Write`, `MultiEdit`, `NotebookEdit` or `Glob` is 'accepted but never consulted', and warns once at startup. Accepted-and-ignored is indistinguishable from protection right up until someone relies on it, so the spelling is asserted rather than trusted. The exact rule list is pinned here too: a deny array that quietly loses an entry is the same failure with no diff to read.",
+  "hook": "permissions",
+  "expect": {
+    "rules": [
+      "Edit(/.claude/agent-guard-receipt.json)",
+      "Edit(/samples/expected/**)"
+    ]
+  }
+}

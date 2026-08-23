@@ -32,19 +32,30 @@ Every config is proven by an intentionally-bad sample that must fail, with an
 findings. Both halves matter: a config that flags everything is as useless as one
 that flags nothing.
 
-**One config is exempt, and only one: `configs/editor/`.** It ships editor
-settings, and there is no headless VS Code here, so no sample can fail without
-them. The exemption is paid for rather than granted — `editor-contract` asserts
-that contract's internal consistency instead (see
-[`configs/editor/README.md`](configs/editor/README.md)), and it is a required
-check like every other. A new config that *could* have a sample and does not is
-still a violation.
+**Two things are exempt, and only two.** Both enforce inside a program this
+repo cannot drive headlessly, so no sample can fail without them. Each exemption
+is paid for rather than granted — a checker asserts internal consistency
+instead, and both checkers are required checks like every other:
 
-Note what the exemption does **not** cover. Since `adopt.sh --editor` (#126),
-the *composition* of those fragments into a consumer's `.vscode/` files is
+- **`configs/editor/`.** Editor settings, and there is no headless VS Code here.
+  `editor-contract` is the checker; see
+  [`configs/editor/README.md`](configs/editor/README.md).
+- **The `permissions.deny` array in `configs/agent/settings.json`.** A Claude
+  Code deny rule is evaluated inside Claude Code and cannot be made to fire from
+  a fixture. The `permissions` mode in `agent-guard` is the checker; see
+  [`configs/agent/README.md`](configs/agent/README.md) §5, which also records a
+  dated live observation of the rules refusing a real `Edit`.
+
+A new config that *could* have a sample and does not is still a violation.
+
+Note what the exemptions do **not** cover. Since `adopt.sh --editor` (#126),
+the *composition* of the editor fragments into a consumer's `.vscode/` files is
 ordinary behaviour and is proven end-to-end in the `adopt` job — right languages
 in, wrong ones out, a pre-existing settings file never touched. What stays
-unprovable here is only what the settings *do inside an editor*.
+unprovable here is only what the settings *do inside an editor*. And the agent
+exemption reaches the two deny strings and nothing else: every hook in that same
+file is an executable, and `samples/agent-guard/` runs each one as a subprocess
+on a real payload.
 
 If a sample stops failing, **the config regressed — fix the config.** Never make
 a sample pass by adding a disable comment, a `NoWarn`, or a suppression inside
@@ -102,7 +113,7 @@ So the flow is:
 
 `develop` is the default branch, so `gh pr create` and the web UI already target
 it — you should not have to change the base. Both branches carry the same
-protection: 27 required checks, admins included, branch must be up to date, no
+protection: 28 required checks, admins included, branch must be up to date, no
 force-pushes, no direct commits.
 
 Promoting `develop` to `main` is a maintainer decision, because it is where the

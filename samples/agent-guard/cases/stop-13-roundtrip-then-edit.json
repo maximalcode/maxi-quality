@@ -1,0 +1,30 @@
+{
+  "why": "The realistic drift: gate passes, then one more edit lands before the turn ends. The receipt is real, the verdict is real, and it no longer describes the tree.",
+  "hook": "stop",
+  "setup": {
+    "committed": {
+      "a.txt": "one\n"
+    },
+    "worktree": {
+      "a.txt": "one\ntwo\n"
+    },
+    "record": {
+      "command": [
+        "true"
+      ],
+      "after": {
+        "a.txt": "one\ntwo\nthree\n"
+      }
+    }
+  },
+  "event": {
+    "hook_event_name": "Stop"
+  },
+  "expect": {
+    "decision": "block",
+    "record_exit": 0,
+    "reason_contains": [
+      "no longer exists"
+    ]
+  }
+}

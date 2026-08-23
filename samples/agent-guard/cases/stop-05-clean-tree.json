@@ -1,0 +1,15 @@
+{
+  "why": "Nothing differs from HEAD, so there is no ungated change. A read-only session must never be made to run a gate.",
+  "hook": "stop",
+  "setup": {
+    "committed": {
+      "a.txt": "one\n"
+    }
+  },
+  "event": {
+    "hook_event_name": "Stop"
+  },
+  "expect": {
+    "decision": "allow"
+  }
+}

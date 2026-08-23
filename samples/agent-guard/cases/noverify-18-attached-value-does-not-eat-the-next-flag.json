@@ -1,0 +1,14 @@
+{
+  "why": "The mirror of case 17, and the one that decides the `=` split is load-bearing. `--message=x` carries its own value, so an option table that consumes the next word regardless swallows `--no-verify` and reports nothing — a deny that turns into an allow because of a punctuation mark.",
+  "hook": "noverify",
+  "setup": { "git": false },
+  "event": {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": { "command": "git commit --message=wip --no-verify" }
+  },
+  "expect": {
+    "decision": "deny",
+    "reason_contains": ["--no-verify"]
+  }
+}

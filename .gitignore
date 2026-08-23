@@ -12,3 +12,7 @@ target/
 # OS / editor
 .DS_Store
 *.swp
+
+# Python bytecode — scripts/ is a package tree only by accident of imports
+__pycache__/
+*.pyc

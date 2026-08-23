@@ -1,0 +1,25 @@
+{
+  "why": "A pass recorded against different content is the failure mode the fingerprint exists for \u2014 edit after gating, and the verdict describes code that no longer exists.",
+  "hook": "stop",
+  "setup": {
+    "committed": {
+      "a.txt": "one\n"
+    },
+    "worktree": {
+      "a.txt": "one\ntwo\n"
+    },
+    "receipt": {
+      "verdict": "pass",
+      "fingerprint": "stale"
+    }
+  },
+  "event": {
+    "hook_event_name": "Stop"
+  },
+  "expect": {
+    "decision": "block",
+    "reason_contains": [
+      "no longer exists"
+    ]
+  }
+}

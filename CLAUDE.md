@@ -248,7 +248,7 @@ per-language id is not new scope; inventing a new convention is.
   moves `v1` on a green push to it, so a merge to `main` is not a checkpoint —
   it ships to every consumer pinning `@v1`. Promoting `develop` to `main` is
   the user's decision, not yours; do not open or merge that PR unasked. Both
-  branches carry the same 27 required checks, admins included — one per
+  branches carry the same 28 required checks, admins included — one per
   context `ci.yml` produces, and that equality is the point. A job that runs but
   is not on the required list reports and blocks nothing, which is
   indistinguishable from a passing gate in the PR UI. This drifted twice:
@@ -273,20 +273,35 @@ per-language id is not new scope; inventing a new convention is.
   an intentionally-bad sample that fails. If a sample stops failing, the config
   regressed — fix the config, do not weaken the sample.
 
-  **One documented exception, and it is the only one: `configs/editor/`.** A
-  `.vscode/settings.json` cannot be exercised here — there is no headless VS
-  Code — so no sample can fail without it. That is exactly the shape this rule
-  exists to catch, so the exception is paid for rather than granted:
-  `scripts/check-editor-contract.py` asserts the contract's internal
-  consistency instead, and `configs/editor/README.md` §1 states what evidence
-  each claim in it does and does not rest on. Do not read this as a precedent —
-  a new config that could have a sample and does not is still a violation.
+  **Two documented exceptions, and they are the only two.** Both are the same
+  shape — a config whose enforcement lives inside a program this repo cannot
+  drive headlessly, so no sample can fail without it — which is exactly the
+  shape this rule exists to catch. Neither is granted; both are paid for the
+  same way, and the price is a checker that asserts internal consistency plus a
+  README section stating what evidence each claim does and does not rest on:
 
-  Read the exemption narrowly, because the wording is what a later session will
-  act on. It covers **what the settings do inside an editor**, and nothing else.
-  Since #126 the *composition* of those fragments into a consumer's `.vscode/`
-  files is ordinary behaviour with ordinary end-to-end assertions in the `adopt`
-  job, and `configs/editor/` is no longer a directory nothing runs.
+  - **`configs/editor/`.** A `.vscode/settings.json` cannot be exercised here,
+    because there is no headless VS Code. `scripts/check-editor-contract.py` is
+    the checker; `configs/editor/README.md` §1 is the statement.
+  - **The `permissions.deny` array in `configs/agent/settings.json`** (#161). A
+    deny rule is enforced by Claude Code before any hook is consulted, and there
+    is no way to make one fire from a fixture. `selftest.py`'s `permissions`
+    mode is the checker; `configs/agent/README.md` §5 is the statement, and §5a
+    adds one dated live observation, because a structurally consistent rule that
+    is not actually enforced still protects nothing.
+
+  Do not read either as a precedent — a new config that could have a sample and
+  does not is still a violation.
+
+  Read both exemptions narrowly, because the wording is what a later session
+  will act on. The first covers **what the settings do inside an editor**, and
+  nothing else: since #126 the *composition* of those fragments into a
+  consumer's `.vscode/` files is ordinary behaviour with ordinary end-to-end
+  assertions in the `adopt` job, and `configs/editor/` is no longer a directory
+  nothing runs. The second covers **the two deny strings and nothing around
+  them**: the hooks in the same file are executables, and
+  `samples/agent-guard/` runs every one of them as a subprocess on a real
+  payload.
 
 ---
 
