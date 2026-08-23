@@ -165,8 +165,17 @@ def read(path: pathlib.Path) -> str:
         raise CorpusError(f"{path} cannot be read: {exc}") from exc
 
 
-def check(root: pathlib.Path) -> list[str]:
-    """Return every way the contract's four parts disagree. Empty means it holds."""
+def check(root: pathlib.Path, today: datetime.date) -> list[str]:
+    """Return every way the contract's four parts disagree. Empty means it holds.
+
+    `today` is passed in rather than read here, and deliberately has no default:
+    a default is the ambient clock one layer down. G6 rejects a reference dated
+    in the future, and that branch is only testable if the caller decides what
+    "now" is — with a real clock read inside, the mutation for it would work
+    only for as long as the date it hard-codes stays far away, which is a test
+    that expires. `semgrep/conventions/no-ambient-clock.yaml` made this point
+    about this very line; it was right.
+    """
     fail: list[str] = []
 
     def bad(msg: str) -> None:
@@ -462,7 +471,6 @@ def check(root: pathlib.Path) -> list[str]:
     if not references:
         bad("configs/agent/README.md §6 names no reference the contract was "
             "built against — this guard stopped guarding")
-    today = datetime.date.today()
     for reference, value in references:
         if not value:
             bad(f"configs/agent/README.md §6 says the contract was built "
@@ -639,7 +647,7 @@ def _edit_date(root: pathlib.Path, new: str) -> None:
              r"(?<= as of \*\*)\d{4}-\d{2}-\d{2}(?=\*\*)", new)
 
 
-def mutations(cases: int) -> list[tuple]:
+def mutations(cases: int, today: datetime.date) -> list[tuple]:
     return [
         # AC1 — a hook that silently stopped firing because its script moved.
         ("a hook script is renamed and settings.json is not",
@@ -729,22 +737,26 @@ def mutations(cases: int) -> list[tuple]:
          lambda r: _edit(r, "configs/agent/README.md",
                          "`PreToolUse` on `Bash`", "`PreToolUse` on `Task`"),
          ("Task",)),
+        # Relative to the injected instant, not a hard-coded far-future year:
+        # "2099" would quietly stop being in the future, and the mutation would
+        # pass by testing nothing.
         ("a reference is dated in the future",
-         lambda r: _edit_date(r, "2099-08-22"),
-         ("2099-08-22",)),
+         lambda r, when=str(today + datetime.timedelta(days=365)):
+             _edit_date(r, when),
+         (str(today + datetime.timedelta(days=365)),)),
     ]
 
 
-def selftest(root: pathlib.Path) -> int:
+def selftest(root: pathlib.Path, today: datetime.date) -> int:
     cases = len(list((root / "samples/agent-guard/cases").glob("*.json")))
-    baseline = check(root)
+    baseline = check(root, today)
     if baseline:
         for f in baseline:
             print(f"     {f}")
         print("::error::the UNMUTATED contract already fails — fix that first")
         return 1
 
-    plan = mutations(cases)
+    plan = mutations(cases, today)
     failed = 0
     for name, mutate, expect in plan:
         tmp = pathlib.Path(tempfile.mkdtemp(prefix="agent-contract-"))
@@ -752,7 +764,7 @@ def selftest(root: pathlib.Path) -> int:
             copy = tmp / "repo"
             _stage(root, copy)
             mutate(copy)
-            problems = check(copy)
+            problems = check(copy, today)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -784,10 +796,15 @@ def main() -> int:
     # failure mode it exists to refuse.
     root = pathlib.Path(__file__).resolve().parent.parent
 
+    # The single clock read, at the edge, so everything below takes the instant
+    # as data. nosemgrep because this is the injection POINT the convention asks
+    # for — the rule's own comment says a one-off site takes an inline waiver.
+    today = datetime.date.today()  # nosemgrep: no-ambient-clock-python — the one read, at the edge
+
     try:
         if args.mode == "selftest":
-            return selftest(root)
-        problems = check(root)
+            return selftest(root, today)
+        problems = check(root, today)
     except CorpusError as exc:
         print(f"::error::{exc}")
         return 3
