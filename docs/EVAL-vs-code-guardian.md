@@ -10,10 +10,14 @@
 >
 > **Decisions bound:** **D-e** — the seam is baseline-referencing rules only
 > ([#152]). **D-f** — the product is named, quoted verbatim, and dated.
-> **Sequence:** this is A1. [#162] runs the fixtures and classifies; [#164]
-> writes the decision on [#6].
+> **Sequence:** this is **A1** of the four-track plan recorded on [#152] —
+> track A is the map (A1 protocol → A2 run → A3 decision), track B is the
+> contract, C is distribution, D is the adoption-cost measurement. [#162] is A2
+> and runs the fixtures and classifies; [#164] is A3 and writes the decision on
+> [#6].
 >
-> **`#NN`** here are this repo's public issue numbers.
+> **`#NN`** here are this repo's public issue numbers; **[#6]** is its
+> milestone 6, *agent surface — measured*.
 
 ---
 
@@ -27,6 +31,11 @@ August 2026") and names the product version it describes as **v16.127**.
 The page presents itself with a count:
 
 > "5 Modi" · "6 Gates" · "18 Hooks" · "17 Detektoren"
+
+**The page states that count twice, in two spellings**, and both are recorded
+here verbatim rather than reconciled: the figures above are the stat block, and
+the prose spells the first two out — "Fünf Modi, sechs Gates, 18 Hooks, 17
+Detektoren" (C18). Neither is a paraphrase of the other; the page carries both.
 
 **The page does not name them individually.** There is no list of the eighteen
 hooks, no list of the seventeen detectors, no rule ids. Exactly one hook is
@@ -262,8 +271,15 @@ Recorded for the date stamp only. It is **not** a claim [#162] classifies —
 
 ## 2. The three verdicts, and the test that decides each
 
-Every claim C1–C17 gets exactly one verdict in [#162]. The tests are applied in
-this order, and the order is the point.
+Every claim **C1–C16** gets exactly one verdict in [#162]. The tests are applied
+in this order, and the order is the point.
+
+**C17 and C18 get no verdict, and that is not an omission.** C17 is the
+product's own scope statement: its job is to bound which of C1–C16 could apply
+to a tree this baseline ships for, so it is recorded as context on every other
+row rather than scored on its own. C18 is the counts, excluded in §0. §3b
+carries both rows with that reason attached, so neither can be quietly scored
+later.
 
 | # | Verdict | The test |
 |---|---|---|
@@ -277,6 +293,13 @@ indistinguishable from "we don't know whether we already do it". Running the
 fixture first makes *declined* a statement about something we measured and chose
 not to pursue, rather than a statement about something we did not look at.
 
+**The consequence, stated so it is not discovered later:** a claim that fires is
+recorded *covered* even where it would have failed the seam test. That is
+intended. The seam of D-e governs what this baseline **builds**, not what it
+happens to already do, and a row reading "declined" over a fixture that came
+back red would be false about the tree. Where the two diverge, [#162] writes the
+seam note in the row rather than changing the verdict.
+
 **A claim with no fixture gets no verdict of covered.** §3 marks each such claim
 "not measurable, because …"; those are classified on the seam test alone and
 [#162] records them as **declined** or **gap** with the missing-fixture reason
@@ -284,23 +307,31 @@ attached. A claim cannot become *covered* by argument.
 
 `configs/agent/` above is the agent contract from [#158] and [#161] — four
 rules, its seam stated in its own README §1. It is the B track of this milestone
-and lands on `develop` independently of this document; [#162] runs against
-whatever of it exists on the day of the run, and says which.
+and lands on `develop` independently of this document; §3 states what [#162]
+does when a row's subject is not there yet.
 
 ---
 
 ## 3. The fixture each claim gets, pre-registered
 
-Nothing in this section exists yet — [#160] does not create fixtures, and
-creating one here would be running the eval. Each row fixes **the artefact
-[#162] will plant** and **the tool that would have to fire** for the claim to be
-classified *covered*. Naming the tool is not predicting that it fires; it is
+**No fixture is created by this document** — [#160] does not create them, and
+creating one here would be running the eval. Two rows point at artefacts that
+already exist (C7's `stop-` cases, C15's `adopt` and `examples` jobs); those are
+**cited, not created**, and the row says so. Everything else is planted in
+[#162]. Each row fixes **the artefact [#162] will use** and **the tool that
+would have to fire** for the claim to be classified *covered*. Naming the tool is not predicting that it fires; it is
 fixing in advance which tool's silence counts as a miss, so a claim cannot be
 quietly re-pointed at a tool that happened to say something.
 
-New fixtures live under `samples/code-guardian/`, separate from the existing
-per-language samples, because they are eval material and not a proof that any
-config in `configs/` works. Nothing under `samples/code-guardian/` gates CI.
+**New fixtures live under `eval/code-guardian/`, not under `samples/`**, and
+the reason is `CLAUDE.md` §5 rather than tidiness: `samples/` *is* the test
+suite, every directory in it is either a planted bug that must fail or a clean
+control that must pass, and CI holds it to that. An eval fixture is neither. It
+exists to be run once and recorded, and some of these are expected to produce
+nothing at all — which under `samples/` is indistinguishable from a config that
+regressed. Putting them there would erode the one invariant that makes a red
+sample mean something. Whether `eval/code-guardian/` survives past the run is
+[#164]'s to decide, not this document's.
 
 **Rows naming `configs/agent/`, `scripts/agent-guard/` or `samples/agent-guard/`
 depend on the B track.** Those paths arrive with [#158] and [#161] and are not
@@ -312,20 +343,21 @@ still absent is recorded as un-run, never silently as a miss.
 
 | Claim | Fixture planted in [#162] | The tool that would have to fire |
 |---|---|---|
-| **C1** approval workflow | a `PreToolUse` payload for `Edit` on an ordinary source file, in a session with no plan and no approval — the same payload shape `samples/agent-guard/cases/` already uses | a `PreToolUse` hook in `configs/agent/`; today the only one on `Edit` is `sample-guard.py` |
-| **C2** destructive commands | three `PreToolUse` payloads for `Bash`: `git reset --hard`, `rm -rf src`, and `rsync -az ./ user@prod:/var/www/` | a `PreToolUse` hook on `Bash` in `configs/agent/`; today the only one is `no-verify-guard.py` |
-| **C3** transfer classification | a fixture tree holding a populated `.env`, a `dump-*.sql`, a build artefact and a private storage path, plus a `Bash` payload that rsyncs the tree to a remote host | two different questions, and [#162] records them separately: the **transfer** half needs a hook in `configs/agent/`; the **at-rest secret** half is Gitleaks via `scripts/scan.sh`. Gitleaks finding the planted secret is *not* the transfer claim, and the row says so |
-| **C4** irreversible migration | one drop-column migration per language this baseline ships: `samples/code-guardian/migrations/typescript/` (a knex/Prisma migration), `…/dotnet/` (EF Core `migrationBuilder.DropColumn`), `…/python/` (Alembic `op.drop_column`), `…/rust/` (a `sqlx` migration with `ALTER TABLE … DROP COLUMN`), `…/java/` (a Flyway `V2__…sql`) | Layer 2 Semgrep over the tree, plus that language's Layer 1. Which of the 40 rule ids fires, if any, is what [#162] records — this row fixes the tools, not the outcome |
+| **C1** approval workflow | a `PreToolUse` payload for `Edit` on an ordinary source file, in a session with no plan and no approval — the same payload shape `samples/agent-guard/cases/` already uses | a `PreToolUse` hook wired by `configs/agent/settings.json`; today the only one on `Edit` is `scripts/agent-guard/sample-guard.py` |
+| **C2** destructive commands | three `PreToolUse` payloads for `Bash`: `git reset --hard`, `rm -rf src`, and `rsync -az ./ user@prod:/var/www/` | a `PreToolUse` hook on `Bash` wired by `configs/agent/settings.json`; today the only one is `scripts/agent-guard/no-verify-guard.py` |
+| **C3** transfer classification | a fixture tree holding a populated `.env`, a `dump-*.sql`, a build artefact and a private storage path, plus a `Bash` payload that rsyncs the tree to a remote host | two different questions, and [#162] records them separately: the **transfer** half needs a hook wired by `configs/agent/settings.json`; the **at-rest secret** half is Gitleaks via `scripts/scan.sh`. Gitleaks finding the planted secret is *not* the transfer claim, and the row says so |
+| **C4** irreversible migration | one drop-column migration per language this baseline ships: `eval/code-guardian/migrations/typescript/` (a knex/Prisma migration), `…/dotnet/` (EF Core `migrationBuilder.DropColumn`), `…/python/` (Alembic `op.drop_column`), `…/rust/` (a `sqlx` migration with `ALTER TABLE … DROP COLUMN`), `…/java/` (a Flyway `V2__…sql`) | Layer 2 Semgrep over the tree, plus that language's Layer 1. Which of the 40 rule ids fires, if any, is what [#162] records — this row fixes the tools, not the outcome |
 | **C5** package reputation | two manifests carrying a name one character from a real one — a `package.json` depending on `reqests`, and a `requirements.txt` on `requirments` — one with a lockfile entry and one without | OSV-Scanner via `scripts/scan.sh`. [#162] records the category difference in the same row: OSV answers *is this package known-vulnerable*, the claim is *is this package reputable*, and a miss for one reason is not a miss for the other |
 | **C6** data / schema judgement | a migration containing a destructive statement with no backup (`DELETE FROM … WHERE …`, and an `UPDATE` with no `WHERE`), and a query assembled by string concatenation next to it | `semgrep/security/sql-string-concat.yaml` for the concatenation half, Layer 2 Semgrep over the migration for the destructive-statement half. The two halves are recorded as two results, because a hit on one is not a hit on the other |
-| **C7** claims backed by command output | the existing `stop-*` cases in `samples/agent-guard/` — a turn that ends with changed content and no recorded gate run — cited, not rewritten | `stop-gate.py` in `configs/agent/`. This is the one claim where the fixture already exists, and [#162] must cite the case ids it ran rather than re-describing them |
+| **C7** claims backed by command output | the existing `stop-*` cases in `samples/agent-guard/` — a turn that ends with changed content and no recorded gate run — cited, not rewritten | `scripts/agent-guard/stop-gate.py`. This is the one claim where the fixture already exists, and [#162] must cite the case ids it ran rather than re-describing them |
 | **C12** slop audit | a TypeScript fixture carrying the mechanical shapes: an unreferenced export, a duplicated block, a left-behind debug print, a `TODO` with no issue reference | knip via `actions/deadcode/`, plus `semgrep/general/debug-print-left-behind.yaml` and `semgrep/general/todo-without-issue.yaml`, plus Layer 1 typescript-eslint |
 | **C15** wiring analysis into a foreign project | none planted. The comparable artefact is `adopt.sh` on `examples/typescript-npm`, which the `adopt` and `examples` jobs already assert end to end | `adopt.sh`, via the existing CI evidence, for the JS/TS half only. The PHP half has no measurement here at all: PHP is not a language this baseline ships, and `CLAUDE.md` §4 is why — no in-house demand, so nothing exists to run |
 
 ### 3b. Claims that are not measurable, and why
 
-Each of these is classified in [#162] on the seam test alone. None can become
-*covered*.
+Each of these is classified in [#162] on the seam test alone, and none can
+become *covered*. The two exceptions are C17 and C18, which get no verdict at
+all — §2 says why.
 
 | Claim | Not measurable, because … |
 |---|---|
@@ -349,10 +381,11 @@ noticed it was missing.
 ## 4. The bar
 
 **The only outcome that changes this baseline is a claim classified *gap* that
-passes the seam test of D-e — and it changes it by opening one issue for that
-one claim, on its own evidence.** A claim classified *covered* or *declined*
-changes nothing, and no count of covered / declined / gap changes anything: the
-milestone is not reopened on the score, and a total is not a result here.
+passes the seam test of D-e — it changes it by opening one issue for that one
+claim, on its own evidence — and every other outcome changes nothing, including
+a claim classified *covered*, a claim classified *declined*, and any count of
+the three.** The milestone is not reopened on the score, and a total is not a
+result here.
 
 Three consequences, stated now so the run cannot argue them later:
 
