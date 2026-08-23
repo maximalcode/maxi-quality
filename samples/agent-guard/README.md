@@ -7,7 +7,9 @@ python3 scripts/agent-guard/selftest.py
 ```
 
 `ci.yml`'s `agent-guard` job runs exactly that, and it is a required check on
-both branches.
+both branches. The same job runs `scripts/check-agent-contract.py`, which holds
+the count in the line above to the number of files in `cases/` — the count is
+this README's to state and that script's to read, never to update.
 
 ## Five kinds of case, and why the fifth is different
 
