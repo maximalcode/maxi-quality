@@ -49,13 +49,30 @@ from guard import (  # noqa: E402
 )
 
 
+def recorder(root: str) -> str:
+    """Where record-gate.py is, as a path the reader can paste.
+
+    Derived from this file's own location rather than hardcoded, because
+    `adopt.sh --agent` copies these scripts to `.claude/agent-guard/` and the
+    baseline runs them from `scripts/agent-guard/`. A hardcoded path is right
+    in exactly one of those trees and names a nonexistent file in the other —
+    which is a refusal whose remedy does not run, in the tree where this
+    contract is doing the work it was written for.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    rel = os.path.relpath(os.path.join(here, "record-gate.py"), root)
+    # Outside the repo (a shared checkout, a symlinked install) `relpath` walks
+    # up out of the tree; an absolute path is shorter to read and always right.
+    return here + os.sep + "record-gate.py" if rel.startswith("..") else rel
+
+
 def instruction(root: str) -> str:
     """What to run, named as concretely as this repo allows."""
     cmd = gate_command(root)
     if cmd:
-        return f"python3 scripts/agent-guard/record-gate.py -- {cmd}"
+        return f"python3 {recorder(root)} -- {cmd}"
     return (
-        "python3 scripts/agent-guard/record-gate.py -- <the gate command your "
+        f"python3 {recorder(root)} -- <the gate command your "
         f"CLAUDE.md names>  (or declare it once as gate_command in .claude/"
         "agent-guard.json so this message can name it for you)"
     )
