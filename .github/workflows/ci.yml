@@ -3707,7 +3707,19 @@ jobs:
           # reports once at startup and thereafter treats as saying nothing —
           # the contract adopted invisibly, enforcing nothing, in the report
           # panel nobody has open.
-          for spec in 'oops:{"hooks": "oops"}' 'comma:{"hooks": {},}'; do
+          # An EXPLICIT NULL is not an absent key, and the two are one typo
+          # apart. `{"permissions": {"deny": null}}` reached the merge as a real
+          # value, and the "is it missing?" check waved it through — so the
+          # refusal arrived as a Python traceback rather than a sentence. A
+          # traceback tells a consumer nothing except that this is our bug.
+          for spec in 'oops:{"hooks": "oops"}' \
+                      'comma:{"hooks": {},}' \
+                      'hooksnull:{"hooks": null}' \
+                      'eventnull:{"hooks": {"Stop": null}}' \
+                      'permnull:{"permissions": null}' \
+                      'denynull:{"permissions": {"deny": null}}' \
+                      'toplevel:null' \
+                      'denyobj:{"permissions": {"deny": [{"tool": "Edit"}]}}'; do
             name="${spec%%:*}"; body="${spec#*:}"
             rm -rf "/tmp/ag-$name" && mkdir -p "/tmp/ag-$name/.claude"
             printf '{"name":"demo"}\n' > "/tmp/ag-$name/package.json"
@@ -3733,8 +3745,33 @@ jobs:
             # reason to abandon the adoption the consumer also asked for.
             [[ -e "/tmp/ag-$name/.editorconfig" ]] \
               || { echo "::error::[$name] a refused merge also abandoned the rest of the run"; exit 1; }
+            grep -q 'Traceback (most recent call last)' "/tmp/ag-$name.log" \
+              && { echo "::error::[$name] refused with a traceback instead of a sentence"; exit 1; }
             echo "  OK  [$name] refused, exit 6, nothing agent-shaped written"
           done
+
+      - name: An EMPTY settings.json is merged into, not refused
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # The one unparseable case that involves no guessing: a file with no
+          # content says nothing, so merging into it can lose nothing. `touch
+          # .claude/settings.json` is common enough that refusing it would be a
+          # refusal with no useful remedy — "fix your JSON" about a file that
+          # has none.
+          rm -rf /tmp/ag-empty && mkdir -p /tmp/ag-empty/.claude
+          printf '{"name":"demo"}\n' > /tmp/ag-empty/package.json
+          : > /tmp/ag-empty/.claude/settings.json
+          ./scripts/adopt.sh /tmp/ag-empty --no-workflow --agent
+          python3 - <<'PY'
+          import json, sys
+          got = json.load(open("/tmp/ag-empty/.claude/settings.json"))
+          want = json.load(open("configs/agent/settings.json"))
+          if got != want:
+              print("::error::an empty settings.json did not merge to the baseline")
+              sys.exit(1)
+          PY
+          echo 'OK: an empty settings.json takes the baseline whole'
 
       - name: Only --agent writes the agent contract
         shell: bash

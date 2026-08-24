@@ -62,6 +62,11 @@ class Refused(Exception):
     """The target cannot be merged into. Nothing has been written."""
 
 
+def _shape(value: object) -> str:
+    """A type name a reader recognises. `NoneType` is not one of those."""
+    return "null" if value is None else type(value).__name__
+
+
 def die(msg: str) -> None:
     print(f"agent-settings: {msg}", file=sys.stderr)
     raise SystemExit(3)
@@ -78,13 +83,13 @@ def die(msg: str) -> None:
 def _check_hooks(hooks: object, where: str) -> None:
     if not isinstance(hooks, dict):
         raise Refused(
-            f"{where}: `hooks` is {type(hooks).__name__}, and the documented "
+            f"{where}: `hooks` is {_shape(hooks)}, and the documented "
             "shape is an object keyed by event name. Nothing was written."
         )
     for event, groups in hooks.items():
         if not isinstance(groups, list):
             raise Refused(
-                f"{where}: `hooks.{event}` is {type(groups).__name__}, and the "
+                f"{where}: `hooks.{event}` is {_shape(groups)}, and the "
                 "documented shape is an array of matcher groups. Nothing was "
                 "written."
             )
@@ -100,7 +105,7 @@ def _check_hooks(hooks: object, where: str) -> None:
             if not isinstance(entries, list):
                 raise Refused(
                     f"{where}: `{at}.hooks` is "
-                    f"{type(entries).__name__}, and the documented shape is an "
+                    f"{_shape(entries)}, and the documented shape is an "
                     "array of hook entries. Nothing was written."
                 )
             for j, entry in enumerate(entries):
@@ -119,17 +124,22 @@ def _check_hooks(hooks: object, where: str) -> None:
 
 
 def _check_deny(settings: dict, where: str) -> None:
-    permissions = settings.get("permissions")
-    if permissions is None:
+    # `key not in` rather than `get(...) is None` at both levels. An explicit
+    # null is NOT an absent key: it reaches the merge as a real value, and
+    # `{}.setdefault("deny", [])` on a dict that already holds None hands back
+    # the None. Treating the two as the same is how this used to answer a
+    # malformed settings.json with a traceback instead of the sentence below.
+    if "permissions" not in settings:
         return
+    permissions = settings["permissions"]
     if not isinstance(permissions, dict):
         raise Refused(
-            f"{where}: `permissions` is {type(permissions).__name__}, and the "
+            f"{where}: `permissions` is {_shape(permissions)}, and the "
             "documented shape is an object. Nothing was written."
         )
-    deny = permissions.get("deny")
-    if deny is None:
+    if "deny" not in permissions:
         return
+    deny = permissions["deny"]
     if not isinstance(deny, list) or any(not isinstance(r, str) for r in deny):
         raise Refused(
             f"{where}: `permissions.deny` is not an array of strings. A deny "
@@ -141,7 +151,7 @@ def _check_deny(settings: dict, where: str) -> None:
 def validate(settings: object, where: str) -> dict:
     if not isinstance(settings, dict):
         raise Refused(
-            f"{where}: the top level is {type(settings).__name__}, not a JSON "
+            f"{where}: the top level is {_shape(settings)}, not a JSON "
             "object. Nothing was written."
         )
     if "hooks" in settings:
@@ -156,15 +166,23 @@ def load(path: str) -> dict:
         return {}
     try:
         with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
+            text = fh.read()
+    except OSError as exc:
+        raise Refused(f"{path}: cannot be read ({exc}). Nothing was written.") from exc
+    # An empty file is the one unparseable case that involves no guessing: it
+    # says nothing, so merging into it can lose nothing. `touch
+    # .claude/settings.json` is common enough that refusing it would be a
+    # refusal with no useful remedy — "fix your JSON" about a file with none.
+    if not text.strip():
+        return {}
+    try:
+        data = json.loads(text)
     except ValueError as exc:
         raise Refused(
             f"{path}: does not parse as JSON ({exc}). This file is strict "
             "JSON, not JSONC — a trailing comma or a comment is enough. Fix it "
             "and re-run. Nothing was written."
         ) from exc
-    except OSError as exc:
-        raise Refused(f"{path}: cannot be read ({exc}). Nothing was written.") from exc
     return validate(data, path)
 
 
