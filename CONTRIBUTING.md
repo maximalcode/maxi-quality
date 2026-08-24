@@ -113,8 +113,14 @@ So the flow is:
 
 `develop` is the default branch, so `gh pr create` and the web UI already target
 it — you should not have to change the base. Both branches carry the same
-protection: 28 required checks, admins included, branch must be up to date, no
-force-pushes, no direct commits.
+28 required checks, admins included, with no force-pushes and no direct
+commits.
+
+They differ in exactly one setting, and only maintainers ever meet it:
+`develop` requires a branch to be up to date before merging, and `main` does
+not. Requiring it on `main` deadlocked every release — the reasoning is #89 and
+CLAUDE.md §5. Nothing about contributing changes: a PR into `develop` must
+still be up to date, and all 28 checks must still pass.
 
 Promoting `develop` to `main` is a maintainer decision, because it is where the
 version gets chosen. It is not part of a contribution, and a PR that targets

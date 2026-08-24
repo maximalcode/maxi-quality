@@ -258,12 +258,47 @@ per-language id is not new scope; inventing a new convention is.
   repo had just built could not fail one either. **Adding a job to `ci.yml` is
   not done until it is a required context on both branches.**
 
-  Count **contexts, not jobs** — `layer2` is a two-leg matrix, so 26 jobs make
-  27 contexts, and "one per job" was off by one before anything drifted.
+  Count **contexts, not jobs** — `layer2` is a two-leg matrix, so the job count
+  and the context count differ by one, and "one per job" was the wording that
+  hid that before anything drifted.
   `workflow-lint` asserts that this number matches `ci.yml`; it cannot read the
   protection API (that needs admin rights a read-only CI token does not have),
   so the number here is the tripwire and setting the contexts is still a
   deliberate act.
+- **`main` does not require branches to be up to date; `develop` does.** The
+  asymmetry is deliberate, and #89 is why. Promoting `develop` to `main`
+  creates a merge commit **on `main`** that `develop` never receives, so every
+  release leaves `develop` one commit further behind. With the up-to-date
+  requirement on, the next promotion is then unmergeable no matter how green it
+  is — and GitHub reports that as `BLOCKED`, the same word it uses for a
+  failing check or a missing review, so the symptom points nowhere near the
+  cause. It reached three commits, and #87 sat fully green and unmergeable
+  until someone queried the compare API by hand.
+
+  **Every required context stays required on both branches.** The only thing
+  dropped is the up-to-date requirement, and only on `main`.
+
+  Two alternatives were rejected, and both reasons are worth keeping.
+  Automating the back-merge needs the PR opened by something other than
+  `GITHUB_TOKEN` — GitHub creates no workflow runs for events that token
+  triggers, so `ci` would never run on the PR and its required contexts would
+  never report. That is the same deadlock, permanent instead of clearable, and
+  the only fix for it is a stored PAT with `pull-requests: write`: a long-lived
+  credential bought to save one merge per release, in the repo whose release
+  workflow declines a checkout `ref:` over exactly this kind of blast radius.
+  A fast-forward-only promotion was the other, and GitHub's PR UI has no
+  fast-forward merge.
+
+  **So `develop` sitting a few commits behind `main` is expected, and those
+  commits are empty.** The promotion merges carried `develop`'s own tree into
+  `main`; only the merge commit itself is missing. Back-merging before a
+  release is optional tidying, never a gate, and never a step anything waits
+  on.
+
+  What this gives up: a commit that lands on `main` and not on `develop` can be
+  reverted by the next promotion, because nothing forces that promotion to have
+  seen it. That is a reason not to commit to `main` directly — which this file
+  already says — and not a reason to turn the requirement back on.
 - **Tags gate the consumers.** Projects pin the baseline by tag (`@v1`), so an
   updated ruleset never silently breaks an old project. Do not tag until the
   step that the tag represents is actually verified working. The immutable
