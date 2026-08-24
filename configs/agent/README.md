@@ -393,19 +393,55 @@ puts minimum versions on the file-permission checks (2.1.208 for edits, 2.1.228
 for writes, 2.1.210 for the unconsulted-rule warning), so a consumer on an older
 build has the rules and not the enforcement.
 
-## 7. Adopting it by hand
+## 7. Adopting it
 
-`adopt.sh` does not write these yet — that is deliberate and it is a separate
-issue. Until then:
+```bash
+"$BASELINE"/scripts/adopt.sh <repo> --agent --dry-run   # look first
+"$BASELINE"/scripts/adopt.sh <repo> --agent
+```
 
-1. Copy `scripts/agent-guard/*.py` to the consumer's `.claude/agent-guard/`.
-2. Merge `settings.json` into the consumer's `.claude/settings.json` — **both**
+Opt-in, like `--hooks` and `--editor`, and for a stronger reason than either:
+this is executable policy arriving in someone's tree. It writes the four things
+§7a lists below, and it is the one flag in that script that **merges** rather
+than refusing when the target exists — `.vscode/settings.json` is a file a
+consumer may not have, and `.claude/settings.json` is a file a consumer running
+Claude Code almost certainly does. Refuse-if-exists there would mean this never
+adopts anywhere it matters.
+
+The merge has ownership: baseline hook entries are matched by their `command`
+string and deny rules by the rule string, and appended to what is already
+there. Nothing of the consumer's is replaced, reordered or removed, and
+re-running adds nothing twice. `scripts/agent-settings.py` holds it.
+
+It **refuses** a `.claude/settings.json` it cannot fully read — one that does
+not parse, or a `hooks` key whose shape is not the documented one — and the
+refusal skips the whole flag rather than just that file. Half a contract is a
+`CLAUDE.md` that says these rules refuse, in a repo where nothing refuses, and
+the next session reads it and believes it. The run exits 6 and the rest of the
+adoption still happens.
+
+### 7a. What lands, and by hand if you would rather
+
+1. `scripts/agent-guard/*.py` to the consumer's `.claude/agent-guard/`.
+2. `settings.json` merged into the consumer's `.claude/settings.json` — **both**
    keys. `hooks` without `permissions` drops half the contract silently, and
    `permissions` is the half with no runtime evidence that it is missing.
-3. Append `CLAUDE.fragment.md` to the consumer's `CLAUDE.md`.
-4. Add `.claude/agent-guard-receipt.json` to `.gitignore` — it is per-checkout
+3. `CLAUDE.fragment.md` appended to the consumer's `CLAUDE.md`, between the
+   markers it carries — that is how a later baseline replaces the region
+   without a merge.
+4. `.claude/agent-guard-receipt.json` added to `.gitignore` — it is per-checkout
    state. Nothing breaks if you forget; it is excluded from the fingerprint
    either way.
+
+One thing `--agent` does not do, and cannot: declare what your gate command is.
+Write `.claude/agent-guard.json` as `{ "gate_command": "<your gate>" }` once.
+Without it the `Stop` hook still blocks and simply cannot name what to run, and
+a refusal with no remedy attached is a refusal that gets worked around.
+
+**`selftest.py` is copied along with the rest and does not run in your tree.**
+It is this repo's own corpus runner and it needs `samples/agent-guard/`, which
+adoption does not carry. Nothing in an adopted tree invokes it; it is named
+here so its presence is a known fact rather than a discovery.
 
 **Check the startup output once after merging.** A deny rule Claude Code will
 not consult — the `Write(...)` spelling, a tool name that does not exist — warns
@@ -426,5 +462,7 @@ executable policy arriving in someone's tree should be something they see.
 `hooks/` at the repo root is the **git** pre-commit hook, installed by
 `adopt.sh --hooks`. It has nothing to do with this directory — except that
 `no-verify-guard.py` exists to stop a session switching that one off, which is
-the only place the two meet. Two unrelated things called hooks, one repo; the
-flag for this one, when it exists, will not be `--hooks`.
+the only place the two meet. Two unrelated things called hooks, one repo — so
+this one's flag is `--agent`, and `--hooks` still means the git one. Passing
+`--hooks` installs the pre-commit hook and no part of this contract; passing
+`--agent` does the reverse. They compose, and neither implies the other.

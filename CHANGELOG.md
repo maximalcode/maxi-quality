@@ -73,10 +73,14 @@ Two things in this window look like Finding changes and are not:
   editor shows what CI shows, plus `adopt.sh --editor` to compose them into a
   consumer's `.vscode/` files for detected languages only.
 - **`configs/agent/`** — three hooks and two `permissions.deny` rules for the
-  third surface, the agent session that writes the code. **Not consumed by
-  `@v1`**: the scripts are copied by hand, nothing in `actions/` or
-  `quality.yml` references them, and adoption cost has not been measured in any
-  consumer.
+  third surface, the agent session that writes the code, plus `adopt.sh --agent`
+  to install them. **Not consumed by `@v1`**: nothing in `actions/` or
+  `quality.yml` references them, the scripts are copied into the consumer's tree
+  rather than pinned to a tag, and adoption cost has not been measured in any
+  consumer. Opt-in, and the only `adopt.sh` flag that MERGES into a file you
+  already own — your hook entries and deny rules are appended to, never replaced
+  or reordered, and a `.claude/settings.json` it cannot fully read is refused
+  with nothing written at all.
 
 ### Changed
 
