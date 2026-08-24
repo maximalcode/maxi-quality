@@ -45,6 +45,6 @@ because each one is only a defect if reach is a goal.
   the same discipline as not writing configs for languages nobody uses.
 - SHA-pinning is **not** recommended to Adopters. The pinned workflow text still
   resolves `actions/layer2@v1` one level down, so the pin would look real and
-  protect nothing. `v1.0.x` exists for anyone who needs an immutable ref.
+  protect nothing. `v1.x.y` exists for anyone who needs an immutable ref.
 - Judging whether correct, tested code should exist stays **out of scope**. It
   is review, not a gate, and no mechanism here will ever cover it.

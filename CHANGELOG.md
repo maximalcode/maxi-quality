@@ -20,7 +20,7 @@ the whole thing:
   one. `v2` gets cut when a Mechanism change actually needs it, and no `v2`
   machinery gets built before then.
 
-**If you cannot take a Finding change unannounced, pin a `v1.0.x` tag.** They
+**If you cannot take a Finding change unannounced, pin a `v1.x.y` tag.** They
 never move. `@v1` follows `main` within about a minute of a promotion.
 
 Read **Rule changes** before every bump. The rest is context.
@@ -37,7 +37,7 @@ is no public v1.0.0 through v1.0.3 to backfill. `CLAUDE.md` §2 has the reason.
 
 Everything on `develop` since v1.0.5. **Part of this has been live on `@v1`
 since 2026-08-17**, when a promotion moved the tag and no immutable tag was cut
-alongside it; the next `v1.0.x` names it.
+alongside it; the next immutable tag names it.
 
 ### Rule changes
 

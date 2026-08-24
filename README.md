@@ -49,8 +49,8 @@ because someone outside asks for it. What the tag promises:
   new you must have in your own repo.
 - **Do not SHA-pin `quality.yml`.** Your Scorecard will ask you to. The pinned
   workflow text still resolves `actions/layer2@v1` one level down, so the pin
-  would look real and protect nothing. Pin a **`v1.0.x`** tag instead if you
-  need a ref that never moves.
+  would look real and protect nothing. Pin an immutable **`v1.x.y`** tag
+  instead if you need a ref that never moves.
 
 **What this does not do.** Stated because a gate that stays quiet about its
 edges gets trusted past them:
