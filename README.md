@@ -47,6 +47,11 @@ because someone outside asks for it. What the tag promises:
 - A **mechanism change is breaking**, and gets a new major tag instead: an input
   removed or renamed, a job renamed, detection behaviour altered, or anything
   new you must have in your own repo.
+- **The minor position means something now.** A **minor** bump is a new
+  capability reaching you — a new input, language, gate or config. A **patch**
+  is fixes and Finding changes that add no new capability. Neither is breaking,
+  and both can turn a build red, so read **Rule changes** rather than the
+  number.
 - **Do not SHA-pin `quality.yml`.** Your Scorecard will ask you to. The pinned
   workflow text still resolves `actions/layer2@v1` one level down, so the pin
   would look real and protect nothing. Pin a **`v1.0.x`** tag instead if you

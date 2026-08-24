@@ -20,8 +20,18 @@ the whole thing:
   one. `v2` gets cut when a Mechanism change actually needs it, and no `v2`
   machinery gets built before then.
 
-**If you cannot take a Finding change unannounced, pin a `v1.0.x` tag.** They
+**If you cannot take a Finding change unannounced, pin a `v1.x.y` tag.** They
 never move. `@v1` follows `main` within about a minute of a promotion.
+
+The contract splits breaking from non-breaking and stops there, so until now
+the minor and patch positions carried no information. They do now:
+
+- **minor** — a new capability reaches consumers: a new input, language,
+  gate, or config directory.
+- **patch** — fixes, and Finding changes that add no new capability.
+
+Neither is breaking. Both can turn a green build red, which is why **Rule
+changes** is the section to read and not the version number.
 
 Read **Rule changes** before every bump. The rest is context.
 
@@ -33,11 +43,9 @@ is no public v1.0.0 through v1.0.3 to backfill. `CLAUDE.md` §2 has the reason.
 
 ---
 
-## [Unreleased]
+## [Unreleased] — v1.2.0
 
-Everything on `develop` since v1.0.5. **Part of this has been live on `@v1`
-since 2026-08-17**, when a promotion moved the tag and no immutable tag was cut
-alongside it; the next `v1.0.x` names it.
+Everything on `develop` since v1.1.0.
 
 ### Rule changes
 
@@ -82,6 +90,38 @@ Two things in this window look like Finding changes and are not:
 
 - `release-tag.yml` no longer checks out the untrusted commit it never read,
   and its write credential is scoped to the one job that pushes the tag.
+
+---
+
+## [v1.1.0] — 2026-08-17
+
+**Live on `@v1` since 2026-08-17, and unnamed until now.** A promotion moved
+the moving tag and no immutable tag was cut beside it, so this release reached
+every consumer pinning `@v1` a week before it had a number. If you are on
+`@v1`, you have been running this.
+
+### Rule changes
+
+- **Dead code and unused dependencies are gated, and the gate is ON BY
+  DEFAULT.** `quality.yml` now calls `actions/deadcode@v1` — knip over
+  TypeScript packages, deptry over Python ones — behind
+  `if: inputs.dead-code != 'off'`. Both tools existed here before; what changed
+  is that they reach consumers. **New findings appeared in every adopting repo
+  that did not set `dead-code: off`.** knip's unused-exports half is gated
+  separately and is application-code only.
+- **Rust `unmaintained` narrowed from `all` to `workspace`** in
+  `configs/rust/deny.toml` — a **relaxation**: unmaintained *transitive* crates
+  stopped being reported. The reason is a trap in the key itself: under
+  cargo-deny 0.20 `unmaintained` is not a lint level, it selects which
+  advisories are reported and everything reported is an error. There is no
+  `warn` value, and writing one fails config deserialisation, which takes every
+  other check down with it.
+
+### Added
+
+- The quality gate runs on **macOS runners**, not only `ubuntu-latest`.
+- The **version contract itself** — `CONTEXT.md`, ADR 0001, and the README
+  section this changelog is the other half of.
 
 ---
 
