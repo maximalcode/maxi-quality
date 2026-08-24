@@ -2911,6 +2911,22 @@ jobs:
       - name: The agent hooks must still block what they claim, and only that
         shell: bash
         run: python3 scripts/agent-guard/selftest.py
+      # #163 — the seams between the parts, which the corpus above cannot see.
+      # selftest.py runs each hook as a subprocess, so it never routes through a
+      # `matcher` and never reads a `command`: narrow the matcher, rename a
+      # script, and every case above still passes while the hook stops firing in
+      # every tree that adopted it. STEPS rather than a job, for the reason the
+      # parity differ next door is one — no toolchain, and a new context would
+      # have to be added to branch protection on both branches to gate anything.
+      - name: The agent contract's four parts must still agree
+        shell: bash
+        run: python3 scripts/check-agent-contract.py
+      # And the checker itself, because a guard that stopped guarding makes
+      # exactly the same green run as a contract that holds. Each mutation is an
+      # acceptance criterion made executable rather than recorded.
+      - name: The contract checker must still catch the drift it claims
+        shell: bash
+        run: python3 scripts/check-agent-contract.py selftest
 
   # #11 — adopt.sh, proven end-to-end rather than by reading it. The assertion
   # that matters is not "it copied some files", it is "a repo adopted by the
