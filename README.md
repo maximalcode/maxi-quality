@@ -41,7 +41,9 @@ because someone outside asks for it. What the tag promises:
 - A **new finding is not a breaking change.** New rules, analyzer bumps and
   tightened configs land on `@v1` and can turn a green build red. That is the
   product working — ratcheting up is the point — and `--changed-only` is how you
-  grandfather an existing backlog on day one.
+  grandfather an existing backlog on day one. Every one of them is listed under
+  **Rule changes** in [`CHANGELOG.md`](CHANGELOG.md); read that section before
+  you bump, because it is the whole mitigation for this permission.
 - A **mechanism change is breaking**, and gets a new major tag instead: an input
   removed or renamed, a job renamed, detection behaviour altered, or anything
   new you must have in your own repo.
