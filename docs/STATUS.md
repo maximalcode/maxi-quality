@@ -131,6 +131,20 @@ scripts/check-editor-contract.py  configs/editor/ is the only config here that n
                           NOT_PORTABLE, since a one-word edit to a language token
                           would ship the extension with no rules and the table
                           check would pass
+scripts/check-agent-contract.py  the agent contract is four files that a single
+                          edit puts out of step with nothing red in between, and
+                          samples/agent-guard/ cannot see it: the corpus runs each
+                          hook as a subprocess, so no case routes through a
+                          `matcher` or reads a `command`. This checks the SEAMS —
+                          commands against the scripts they name and scripts
+                          against some command, matchers against the prose both
+                          ways, both READMEs' case counts against cases/, every
+                          mutation row and cited case and section and link against
+                          what exists, the deny array against the block the README
+                          quotes and the table it observed, and every reference
+                          against its own `as of <date>`. It READS those numbers
+                          and refuses to write them. `selftest` mutates a staged
+                          copy 21 ways and asserts each run names what moved
 scripts/editor-parity.py  the differ for the #121 parity run: a VS Code Problems
                           panel dumped as JSON ("Copy All"), diffed against the
                           manifest README §3 names for that sample. The observing
