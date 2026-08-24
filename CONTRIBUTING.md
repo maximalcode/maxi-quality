@@ -8,7 +8,7 @@ a merge here does not surprise anyone downstream.
 ## Rule 1 — the ruleset is capped at 12 conventions
 
 Twelve. Not "twelve for now". The budget is **fully spent**, and the inventory
-is in [`docs/REFERENCE.md`](docs/REFERENCE.md#the-ruleset--12-conventions-28-rule-ids).
+is in [`docs/REFERENCE.md`](docs/REFERENCE.md#the-ruleset--12-conventions-40-rule-ids).
 
 Adding a thirteenth convention means **removing one**. This is not gatekeeping
 for its own sake: rule-writing is infinitely expandable and feels productive, so
@@ -24,6 +24,14 @@ Note the distinction: **12 conventions, currently 40 rule ids.** Semgrep pattern
 are language-specific, so one convention needs a separate id per language when
 the syntax differs. Splitting an existing convention into a per-language id is
 not new scope. Inventing a new convention is.
+
+**Any rule change needs a `CHANGELOG.md` entry, under Rule changes.** A new
+rule id, a severity raised, an analyzer version bumped, a config tightened —
+each of those is a **Finding change**, which the version contract permits to
+land on the moving `@v1` tag and turn a consumer's green build red. That
+permission is not free-standing: the changelog entry IS the mitigation for it.
+A rule change buried among ordinary entries makes the contract unenforceable in
+practice even though it is stated, so the section is separate on purpose.
 
 ## Rule 2 — `samples/` is the test suite, and you may not weaken it
 
