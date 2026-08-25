@@ -3594,6 +3594,79 @@ jobs:
             && { echo '::error::--agent copied the scripts to the baseline path, not .claude/'; exit 1; }
           echo 'OK: adopted from nothing, and the installed Stop hook refuses'
 
+      # ISSUE #178, end to end and in an ADOPTED tree. The refusal prints a
+      # line for a session to paste, so this step PASTES IT — `eval` on the
+      # exact string the hook produced, not a re-typed approximation of it.
+      # That is the whole defect: the old instruction interpolated the declared
+      # gate into an argv, so an `&&` in it bound OUTSIDE the recorder, the
+      # second half ran unrecorded, and the receipt said "pass" for a gate that
+      # had failed. No fixture can catch that, because a fixture runs the
+      # command it meant rather than the one the message asked for.
+      - name: the line the refusal prints runs the WHOLE gate when pasted
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm -rf /tmp/ag-gate; mkdir -p /tmp/ag-gate
+          printf '{"name":"demo"}\n' > /tmp/ag-gate/package.json
+          git -C /tmp/ag-gate init -q
+          git -C /tmp/ag-gate config user.email ci@example.invalid
+          git -C /tmp/ag-gate config user.name ci
+          git -C /tmp/ag-gate add -A && git -C /tmp/ag-gate commit -qm init
+          ./scripts/adopt.sh /tmp/ag-gate --no-workflow --agent
+
+          # A two-part gate, written the natural way. Its SECOND half is the
+          # one that decides, which is the half the defect dropped.
+          printf '{"gate_command": "test -f package.json && test -f %s"}\n' \
+            NOPE > /tmp/ag-gate/.claude/agent-guard.json
+          echo 'ungated' >> /tmp/ag-gate/package.json
+
+          instruction() {
+            local out
+            out=$(cd /tmp/ag-gate && printf '{"cwd":"%s","hook_event_name":"Stop"}' /tmp/ag-gate \
+                  | python3 /tmp/ag-gate/.claude/agent-guard/stop-gate.py)
+            echo "$out" >&2
+            python3 - "$out" <<'PY'
+          import json, sys
+          doc = json.loads(sys.argv[1])
+          if doc.get("decision") != "block":
+              print("::error::the stop was not blocked", file=sys.stderr); sys.exit(1)
+          for line in doc["reason"].splitlines():
+              if "record-gate.py" in line:
+                  print(line.strip()); sys.exit(0)
+          print("::error::the refusal named no command to run", file=sys.stderr)
+          sys.exit(1)
+          PY
+          }
+
+          line=$(instruction)
+          echo "pasting: $line"
+          rc=0
+          (cd /tmp/ag-gate && eval "$line") || rc=$?
+          [[ $rc -ne 0 ]] \
+            || { echo '::error::the pasted line reported success for a gate whose second half fails'; exit 1; }
+          verdict=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["verdict"])' \
+                    /tmp/ag-gate/.claude/agent-guard-receipt.json)
+          [[ $verdict == fail ]] \
+            || { echo "::error::the receipt says $verdict for a gate that failed"; exit 1; }
+
+          # And the stop is STILL refused, on the failing verdict rather than
+          # on an absent receipt.
+          out=$(cd /tmp/ag-gate && printf '{"cwd":"%s","hook_event_name":"Stop"}' /tmp/ag-gate \
+                | python3 /tmp/ag-gate/.claude/agent-guard/stop-gate.py)
+          grep -q 'FAILED' <<<"$out" \
+            || { echo '::error::a failing recorded gate did not refuse the stop'; exit 1; }
+
+          # Now the same gate, passing. Same pasted line, no edits to it.
+          printf '{"gate_command": "test -f package.json && test -f .gitignore"}\n' \
+            > /tmp/ag-gate/.claude/agent-guard.json
+          line=$(instruction)
+          (cd /tmp/ag-gate && eval "$line")
+          out=$(cd /tmp/ag-gate && printf '{"cwd":"%s","hook_event_name":"Stop"}' /tmp/ag-gate \
+                | python3 /tmp/ag-gate/.claude/agent-guard/stop-gate.py)
+          [[ -z ${out//[[:space:]]/} ]] \
+            || { echo "::error::the stop was still refused after a passing gate: $out"; exit 1; }
+          echo 'OK: the printed line ran both halves, both times, inside the recorder'
+
       - name: --agent merges, and a consumer keeps everything they had
         shell: bash
         run: |

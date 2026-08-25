@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run the gate, and record what it verified.
 
+    python3 scripts/agent-guard/record-gate.py --gate
     python3 scripts/agent-guard/record-gate.py -- npm run gate
 
 Runs the command with its output going where it always would, then writes
@@ -8,6 +9,23 @@ Runs the command with its output going where it always would, then writes
 exactly the content the command saw. The command's own exit code is this
 script's exit code, so putting the wrapper in front of a gate never changes
 what CI or a human sees.
+
+THE TWO FORMS, AND WHY THERE ARE TWO (#178)
+
+`--` takes an argv the caller's own shell has already split. `--gate` takes no
+command at all: it reads `gate_command` out of `.claude/agent-guard.json` and
+runs THAT, whole, through one shell.
+
+The second form exists because the first cannot be printed. The Stop hook's
+refusal has to tell a session what to run, and interpolating a declared gate
+into `record-gate.py -- <gate>` put any `&&`, `;` or `|` in it OUTSIDE this
+wrapper: pasted, half the gate ran unrecorded and the receipt said "pass" for
+a run whose second half had failed. `--gate` carries no operators, so there is
+nothing left to paste wrong.
+
+Note which input each form takes, because it is the whole of the reasoning
+below about shells: `--` receives an argv, and `--gate` receives a string that
+was never anything but a shell command.
 
 WHY THE FINGERPRINT IS TAKEN BEFORE, NOT AFTER
 
@@ -30,18 +48,29 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from guard import RECEIPT, fingerprint, repo_root  # noqa: E402
+from guard import (  # noqa: E402
+    CONFIG,
+    RECEIPT,
+    fingerprint,
+    gate_argv,
+    gate_command,
+    repo_root,
+)
 
-USAGE = "usage: record-gate.py [--] <command> [args...]"
+USAGE = ("usage: record-gate.py --gate\n"
+         "       record-gate.py [--] <command> [args...]")
 
 
 def main(argv: list[str]) -> int:
     args = argv[1:]
+    declared = None
+    want_gate = bool(args) and args[0] == "--gate"
     if args and args[0] == "--":
         args = args[1:]
     if not args:
@@ -53,12 +82,34 @@ def main(argv: list[str]) -> int:
         print("record-gate: not inside a git working tree", file=sys.stderr)
         return 3
 
+    if want_gate:
+        if len(args) > 1:
+            print("record-gate: --gate takes no command; it runs the one "
+                  f"{CONFIG} declares", file=sys.stderr)
+            return 3
+        declared = gate_command(root)
+        if declared is None:
+            # Nothing is written. A receipt for a gate that was never named
+            # would be a pass for a run that did not happen, which is worse
+            # than the absent receipt the Stop hook already knows how to
+            # report.
+            print(f"record-gate: no gate_command in {CONFIG}. Declare it "
+                  'once:\n\n  echo \'{ "gate_command": "<your gate>" }\' > '
+                  f"{CONFIG}\n\nOr pass the command directly: "
+                  "record-gate.py -- <your gate>", file=sys.stderr)
+            return 3
+        args = list(gate_argv(declared))
+
     # BEFORE the command runs — see the module docstring.
     before = fingerprint(root)
 
-    # No shell. The command arrives as a list from the caller's own shell, and
-    # re-quoting it through `sh -c` here would turn a path with a space into
-    # two arguments that fail in a way nobody would attribute to this wrapper.
+    # No shell HERE, in either form. Under `--` the command arrives as a list
+    # the caller's own shell already split, and re-quoting it through `sh -c`
+    # would turn a path with a space into two arguments that fail in a way
+    # nobody would attribute to this wrapper. Under `--gate` the list is
+    # `bash -c <the declared string>`, built by guard.gate_argv() from a value
+    # that was a shell command to begin with — so there is still nothing being
+    # re-quoted, which is the distinction that keeps both forms honest.
     try:
         rc = subprocess.run(args).returncode
     except (OSError, FileNotFoundError) as exc:
@@ -77,7 +128,13 @@ def main(argv: list[str]) -> int:
                 "fingerprint": before,
                 "verdict": "pass" if rc == 0 else "fail",
                 "exit_code": rc,
-                "command": " ".join(args),
+                # shlex.join, not " ".join: the latter renders
+                # ["bash", "-c", "a && b"] as `bash -c a && b`, which is a
+                # DIFFERENT command and the exact one #178 is about. A label
+                # that reads back as the broken form is worse than no label,
+                # and the Stop hook now compares this field.
+                "command": shlex.join(args),
+                **({"gate_command": declared} if declared is not None else {}),
             },
             fh,
             indent=2,

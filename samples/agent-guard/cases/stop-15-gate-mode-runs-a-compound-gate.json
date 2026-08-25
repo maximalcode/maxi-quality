@@ -1,0 +1,25 @@
+{
+  "why": "--gate hands the DECLARED string to one shell, so a gate written as `a && b` runs whole inside the recorder. The paired case is stop-16: this one proves the compound is not simply always-failing.",
+  "hook": "stop",
+  "setup": {
+    "committed": {
+      "a.txt": "one\n"
+    },
+    "worktree": {
+      "a.txt": "one\ntwo\n"
+    },
+    "config": {
+      "gate_command": "true && true"
+    },
+    "record": {
+      "gate": true
+    }
+  },
+  "event": {
+    "hook_event_name": "Stop"
+  },
+  "expect": {
+    "decision": "allow",
+    "record_exit": 0
+  }
+}

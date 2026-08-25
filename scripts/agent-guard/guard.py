@@ -51,6 +51,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 
@@ -199,6 +200,56 @@ def gate_command(root: str) -> str | None:
         return None
     cmd = data.get("gate_command") if isinstance(data, dict) else None
     return cmd if isinstance(cmd, str) and cmd.strip() else None
+
+
+def gate_argv(cmd: str) -> tuple[str, ...]:
+    """The declared gate as an argv that runs the WHOLE of it.
+
+    `gate_command` is a SHELL COMMAND STRING and always was — `npm run gate`
+    is one, and so is `a && b`. The only faithful way to turn that back into
+    an argv is to hand the whole string to a shell, so that is what this does,
+    unconditionally and in one place.
+
+    This does not reopen the no-shell decision in record-gate.py, which is
+    about a DIFFERENT input: an argv the caller's own shell already split, and
+    re-quoting that through `sh -c` breaks a path with a space in it. Here
+    there is nothing to re-quote. The string never was an argv.
+
+    `bash` rather than `sh` because a consumer's gate may be a bashism and the
+    adoption path is a bash script already; a repo without bash could not have
+    run adopt.sh in the first place.
+    """
+    return ("bash", "-c", cmd)
+
+
+def covers_gate(receipt: dict, declared: str) -> bool:
+    """Did this receipt record a run of the WHOLE declared gate?
+
+    THE FAILURE THIS EXISTS FOR (#178)
+
+    A fingerprint cannot see it. `a && b` run as half a gate produces a receipt
+    that is genuinely fresh and genuinely passing — for content that a check
+    genuinely read. What it does not record is `b`. So the receipt is checked
+    against WHAT RAN as well as against what was verified.
+
+    Three spellings are accepted, and they are the three ways the declared gate
+    actually gets run rather than a generosity budget:
+
+      * `--gate`, which records the declared string in its own field;
+      * an argv whose joined form IS the declared string, which is how a
+        one-command gate has always been run and must keep working;
+      * an argv that is exactly this module's own `bash -c` rendering, which is
+        both the pre-#178 workaround and what `--gate` executes.
+
+    Anything else is a different command. It may be a better one; it is not the
+    one the repo declared, and standing in for that is the whole point.
+    """
+    if receipt.get("gate_command") == declared:
+        return True
+    command = receipt.get("command")
+    if not isinstance(command, str):
+        return False
+    return command in (declared, shlex.join(gate_argv(declared)))
 
 
 def emit(payload: dict) -> None:

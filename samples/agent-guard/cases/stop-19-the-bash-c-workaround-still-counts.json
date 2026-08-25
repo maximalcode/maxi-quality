@@ -1,0 +1,29 @@
+{
+  "why": "A repo that declared its gate in the pre-#178 workaround form, `bash -c '...'`, and runs it as an argv, is running the declared gate whole. Recognising that spelling is what stops the fix from blocking the people who had already worked around the bug.",
+  "hook": "stop",
+  "setup": {
+    "committed": {
+      "a.txt": "one\n"
+    },
+    "worktree": {
+      "a.txt": "one\ntwo\n"
+    },
+    "config": {
+      "gate_command": "bash -c 'true && true'"
+    },
+    "record": {
+      "command": [
+        "bash",
+        "-c",
+        "true && true"
+      ]
+    }
+  },
+  "event": {
+    "hook_event_name": "Stop"
+  },
+  "expect": {
+    "decision": "allow",
+    "record_exit": 0
+  }
+}

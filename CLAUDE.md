@@ -378,13 +378,18 @@ This repo's quality baseline is enforced by three hooks and two deny rules in
 **Run the gate through the recorder, not directly:**
 
 ```bash
-python3 .claude/agent-guard/record-gate.py -- <this repo's gate command>
+python3 .claude/agent-guard/record-gate.py --gate
 ```
 
-That runs the gate exactly as it always ran, passes its exit code straight
-through, and records what it verified. A session cannot end while the working
-tree holds changes the gate has not seen. If it refuses, the message says which
-of the three cases you are in: never ran, ran and failed, or ran against
+`--gate` runs the command this repo declares in `.claude/agent-guard.json`,
+whole and through one shell, so a gate written as `a && b` is recorded as a
+gate rather than as its first half. It passes the gate's exit code straight
+through. (`-- <command>` still works for an ad-hoc run, and is what you want
+when the thing you are running is not the declared gate.)
+
+A session cannot end while the working tree holds changes the gate has not
+seen. If it refuses, the message says which of the four cases you are in: never
+ran, ran and failed, ran something that was not this repo's gate, or ran against
 different content.
 
 **Do not write `.claude/agent-guard-receipt.json` by hand.** The `Edit` tool is

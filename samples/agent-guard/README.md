@@ -1,6 +1,6 @@
 # The agent guard's test suite
 
-Fifty-two cases, one JSON file each, in [`cases/`](cases). Run them:
+Fifty-eight cases, one JSON file each, in [`cases/`](cases). Run them:
 
 ```bash
 python3 scripts/agent-guard/selftest.py
@@ -67,15 +67,19 @@ a fixture asserting something the hook does not do.
 
 ## The negative controls matter as much as the blocks
 
-Thirteen cases exist to prove the guards stay out of the way: an edit outside
+Fifteen cases exist to prove the guards stay out of the way: an edit outside
 `samples/`, an edit that adds a manifest entry, an edit that grows a fixture, an
 edit to an uncited clean fixture, a brand-new manifest, a tool the matcher should
 never have routed here, an ordinary `git commit -m`, `npm test -- -n`,
 `git push -n` (which is `--dry-run`, not `--no-verify`), and the four shapes
 where a hook-skipping flag is really an option's VALUE — `-m "--no-verify"`,
 `--message --no-verify`, `--message=--no-verify`, and anything after a `--`
-pathspec terminator. A guard that also objects to ordinary work is a guard
-someone switches off within a day, and then the real one is not running either.
+pathspec terminator. Two more arrived with #178, and they are the same
+argument one level in: the `Stop` hook now checks the receipt against the
+DECLARED gate, so a one-command gate run the ordinary way, and the
+`bash -c '...'` spelling people used before `--gate` existed, both have to keep
+standing. A guard that also objects to ordinary work is a guard someone switches
+off within a day, and then the real one is not running either.
 
 Five more are the fail-open cases — not a git repo, a payload with no
 `file_path`, a `Bash` payload with no `command`, a `Bash` command whose quotes do
@@ -105,6 +109,11 @@ Add the JSON file, watch it fail, then change the hook until it passes. Each cas
 carries a `why` field and it is not decoration — a case whose reason is "more
 coverage" is a case nobody can correctly delete later. State the failure it
 stops.
+
+A `stop-` case can run the wrapper for real instead of hand-writing a receipt:
+`record: {"command": [...]}` is the argv form, `record: {"gate": true}` is
+`--gate`, which reads the case's own `config`. Prefer either to a hand-written
+receipt when what you are asserting involves the wrapper at all.
 
 `fingerprint: "current"` in a receipt is computed by the runner after the tree is
 final, never written into the fixture. A hash copied into a case file rots the

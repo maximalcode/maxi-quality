@@ -698,7 +698,7 @@ def mutations(cases: int, today: datetime.date) -> list[tuple]:
              r / "scripts/agent-guard/stop-gate2.py"),
          ("stop-gate.py",)),
         # AC2 — the README's count rotting the way "27 required checks" did.
-        ("a 53rd case file arrives and the README still says 52",
+        ("one more case file arrives and the README still says how many there were",
          lambda r: (r / "samples/agent-guard/cases/zz-99-extra.json").write_text(
              "{}", encoding="utf-8"),
          (str(cases), str(cases + 1))),
@@ -756,7 +756,7 @@ def mutations(cases: int, today: datetime.date) -> list[tuple]:
          ("§9",)),
         ("the samples README's spelled-out count drifts",
          lambda r: _edit(r, "samples/agent-guard/README.md",
-                         "Fifty-two cases", "Fifty-one cases"),
+                         "Fifty-eight cases", "Fifty-seven cases"),
          (str(cases), str(cases - 1))),
         ("a link in the contract points at nothing",
          lambda r: _edit(r, "configs/agent/README.md",

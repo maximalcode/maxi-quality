@@ -788,8 +788,9 @@ CLAUDE.md                          += the marker-delimited workflow region
 What it buys you is one rule every `CLAUDE.md` already asks for and nothing has
 ever enforced: **a session may not call it done on code the gate has not seen.**
 The `Stop` hook fingerprints everything that differs from `HEAD` and compares it
-against a receipt, so it refuses in three distinct cases — the gate never ran,
-it ran and failed, or it ran against different content. Two `PreToolUse` hooks
+against a receipt, so it refuses in four distinct cases — the gate never ran, it
+ran and failed, it ran something that was not the declared gate, or it ran
+against different content. Two `PreToolUse` hooks
 and two `permissions.deny` rules cover the rest: an edit that weakens the test
 suite, and a `git commit --no-verify` that routes around the pre-commit hook.
 
@@ -803,8 +804,13 @@ and then run your gate through the recorder from now on — same command, same
 exit code, plus a receipt of what it saw:
 
 ```bash
-python3 .claude/agent-guard/record-gate.py -- <your gate>
+python3 .claude/agent-guard/record-gate.py --gate
 ```
+
+`--gate` reads the line you just declared and runs the whole of it through one
+shell, which is why the declaration is not optional: a gate written the natural
+way for two checks, `a && b`, cannot be interpolated into an argv without the
+`&&` binding outside the wrapper (#178).
 
 **This is the one flag that merges.** `--editor` refuses when the target
 exists; `.claude/settings.json` is a file you probably already have, so refusing

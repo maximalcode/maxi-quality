@@ -150,7 +150,7 @@ scripts/check-agent-contract.py  the agent contract is four files that a single
                           would notice: samples/agent-guard/ runs the source.
                           It READS those numbers
                           and refuses to write them. `selftest` mutates a staged
-                          copy 21 ways and asserts each run names what moved
+                          copy 23 ways and asserts each run names what moved
 scripts/editor-parity.py  the differ for the #121 parity run: a VS Code Problems
                           panel dumped as JSON ("Copy All"), diffed against the
                           manifest README §3 names for that sample. The observing

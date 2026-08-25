@@ -108,10 +108,17 @@ def build(root: str, setup: dict) -> None:
     # only way to build a genuinely stale one without copying a hash.
     record = setup.get("record")
     if record is not None:
+        # `gate: true` is the --gate form, which reads the command out of the
+        # config this fixture just wrote instead of taking one on its argv.
+        # The two are separate spellings of the same wrapper and both need
+        # covering: one is what the block message tells a session to paste,
+        # the other is what a human or CI runs ad hoc.
+        argv = ((sys.executable, os.path.join(HERE, "record-gate.py"), "--gate")
+                if record.get("gate")
+                else (sys.executable, os.path.join(HERE, "record-gate.py"), "--",
+                      *record["command"]))
         proc = subprocess.run(
-            (sys.executable, os.path.join(HERE, "record-gate.py"), "--",
-             *record["command"]),
-            cwd=root, capture_output=True, text=True, timeout=60,
+            argv, cwd=root, capture_output=True, text=True, timeout=60,
         )
         setup["_record_exit"] = proc.returncode
         write_tree(root, record.get("after", {}))
@@ -125,11 +132,17 @@ def build(root: str, setup: dict) -> None:
               else "0" * 64)
         path = os.path.join(root, RECEIPT)
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        body = {"fingerprint": fp,
+                "verdict": receipt.get("verdict", "pass"),
+                "exit_code": 0 if receipt.get("verdict") == "pass" else 1,
+                "command": receipt.get("command", "fixture gate")}
+        # Only when the case says so. A receipt that always carried it could
+        # never model the one this fix is about: a real, passing receipt for a
+        # command that is not the whole of the declared gate.
+        if "gate_command" in receipt:
+            body["gate_command"] = receipt["gate_command"]
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump({"fingerprint": fp,
-                       "verdict": receipt.get("verdict", "pass"),
-                       "exit_code": 0 if receipt.get("verdict") == "pass" else 1,
-                       "command": receipt.get("command", "fixture gate")}, fh)
+            json.dump(body, fh)
 
 
 def decision_of(hook: str, stdout: str) -> tuple[str, str]:

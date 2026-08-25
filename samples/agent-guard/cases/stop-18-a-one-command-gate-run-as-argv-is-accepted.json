@@ -1,0 +1,27 @@
+{
+  "why": "The strict check must not make the ordinary spelling wrong. A gate that is one command, run the way record-gate.py has always been run, records exactly the declared string and stands.",
+  "hook": "stop",
+  "setup": {
+    "committed": {
+      "a.txt": "one\n"
+    },
+    "worktree": {
+      "a.txt": "one\ntwo\n"
+    },
+    "config": {
+      "gate_command": "true"
+    },
+    "record": {
+      "command": [
+        "true"
+      ]
+    }
+  },
+  "event": {
+    "hook_event_name": "Stop"
+  },
+  "expect": {
+    "decision": "allow",
+    "record_exit": 0
+  }
+}
