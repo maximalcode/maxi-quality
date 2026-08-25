@@ -393,6 +393,58 @@ puts minimum versions on the file-permission checks (2.1.208 for edits, 2.1.228
 for writes, 2.1.210 for the unconsulted-rule warning), so a consumer on an older
 build has the rules and not the enforcement.
 
+### 6a. The baseline runs its own contract, as of 2026-08-25
+
+`scripts/adopt.sh . --agent`, committed (#166). Not the adoption-cost
+measurement above — that one still requires a Consumer and a contributor who
+did not choose this. This is the **in-house-demand** half of the same test:
+before a language ships here it has to be written in a repo the owner
+maintains, and the agent contract was the one surface asking others to adopt
+something the baseline itself did not.
+
+It runs from a **copy** under `.claude/agent-guard/`, not a symlink to
+`scripts/agent-guard/`, so this tree drifts exactly the way a consumer's will.
+`check-agent-contract.py` G9 is what notices; nothing else could, because all 52
+fixtures in `samples/agent-guard/` run the source.
+
+The gate is declared in `.claude/agent-guard.json` as
+`bash -c 'python3 scripts/agent-guard/selftest.py && python3
+scripts/check-agent-contract.py'` — deliberately not the full `ci.yml`. Twenty-
+eight contexts needing .NET, Java and Rust toolchains and a network is minutes
+on every stop, and the same argument that made the `Stop` hook read a receipt
+instead of running the gate applies to what the receipt is a receipt OF.
+
+**What the installed hook says**, invoked from `.claude/agent-guard/` with the
+documented `Stop` payload against this tree, one file changed and no receipt:
+
+```
+The gate has not run. 1 file(s) differ from HEAD and there is no
+.claude/agent-guard-receipt.json.
+
+Run it, then stop:
+
+  python3 .claude/agent-guard/record-gate.py -- bash -c 'python3
+  scripts/agent-guard/selftest.py && python3 scripts/check-agent-contract.py'
+
+If it fails, fix what it reports — do not record a receipt by hand.
+```
+
+Two defects the dogfood found in its own first hour, neither of which any
+fixture had reached:
+
+- **The `bash -c` in that gate command is a workaround, not a preference.**
+  Declared the natural way — `a && b` — the printed instruction binds the `&&`
+  outside the recorder, so half the gate runs unrecorded and a receipt can say
+  `"verdict": "pass"` for a run whose second half failed. The guard's own
+  message is what produces it. Opened as #178.
+- **Re-running `--agent` skips an existing `CLAUDE.md` region rather than
+  refreshing it**, so the one part of the contract that says what the rules ARE
+  is the one part re-adoption does not upgrade. §7a and #177.
+
+Both are recorded rather than fixed here, which is the rule this dogfood is
+run under: a cost found by living with it is the measurement, and fixing it in
+the same branch would delete the evidence.
+
 ## 7. Adopting it
 
 ```bash
