@@ -414,8 +414,12 @@ eight contexts needing .NET, Java and Rust toolchains and a network is minutes
 on every stop, and the same argument that made the `Stop` hook read a receipt
 instead of running the gate applies to what the receipt is a receipt OF.
 
-**What the installed hook says**, invoked from `.claude/agent-guard/` with the
-documented `Stop` payload against this tree, one file changed and no receipt:
+**A live session was blocked on 2026-08-25.** This is the observation the
+milestone actually needed, and it is separate from the fixtures: all 52 cases in
+`samples/agent-guard/` invoke the hooks as subprocesses on synthetic payloads,
+so none of them can tell you whether Claude Code *wires* them. It was reached
+deliberately — one real uncommitted edit to this file, the gate not run — and
+the turn could not end. Verbatim, as the session received it:
 
 ```
 The gate has not run. 1 file(s) differ from HEAD and there is no
@@ -423,11 +427,22 @@ The gate has not run. 1 file(s) differ from HEAD and there is no
 
 Run it, then stop:
 
-  python3 .claude/agent-guard/record-gate.py -- bash -c 'python3
-  scripts/agent-guard/selftest.py && python3 scripts/check-agent-contract.py'
+  python3 .claude/agent-guard/record-gate.py -- bash -c 'python3 scripts/agent-guard/selftest.py && python3 scripts/check-agent-contract.py'
 
 If it fails, fix what it reports — do not record a receipt by hand.
 ```
+
+Running that line recorded the gate, and the next stop was allowed. First stop
+blocked, gate recorded, stop allowed — the whole loop, in a real session, in
+this tree.
+
+**Two details worth keeping, because both were nearly assumed instead.** The
+hooks arrived mid-session and were live without a restart. And the stop *before*
+this one was allowed rather than blocked, correctly: the tree was clean at that
+moment, and `stop-gate.py` returns early when nothing differs from `HEAD` — a
+read-only session must not be made to run a gate. The blocked case and the
+allowed case were both observed, which is what separates "it refuses" from "it
+refuses everything".
 
 Two defects the dogfood found in its own first hour, neither of which any
 fixture had reached:
