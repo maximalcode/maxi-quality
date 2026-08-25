@@ -1,5 +1,8 @@
-<!-- maxi-quality: agent guard — appended by hand today, by adopt.sh later.
-     Keep the markers; they are how the region is upgraded without a merge. -->
+<!-- maxi-quality: agent guard — written by `adopt.sh --agent`.
+     Keep the markers. Re-running --agent SKIPS a region that is already here,
+     so a later baseline does not reach this text on its own: replace what is
+     between the markers with configs/agent/CLAUDE.fragment.md by hand when it
+     changes (configs/agent/README.md §7a). -->
 <!-- BEGIN maxi-quality agent-guard -->
 
 ## The gate, and how a session ends

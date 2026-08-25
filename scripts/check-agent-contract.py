@@ -525,6 +525,48 @@ def check(root: pathlib.Path, today: datetime.date) -> list[str]:
                 bad(f"{_rel(cited_in, root)} cites configs/agent/README.md "
                     f"\u00a7{cited}, which is not a section")
 
+    # --- G9: the adopted copy under .claude/ still matches the source --------
+    #
+    # This repo runs its own contract (#166), and it runs it from a COPY under
+    # .claude/agent-guard/ rather than a symlink to scripts/agent-guard/. That
+    # is deliberate: a consumer gets a copy, because a hook `command` is a path
+    # on disk and Claude Code has no remote consumption, so re-running
+    # `adopt.sh --agent` is the only upgrade path there is. A symlink here would
+    # make this the one tree in the world that cannot drift, which is the one
+    # property a dogfood must not have.
+    #
+    # So the drift is real and it arrives the first time someone edits a hook
+    # and does not re-adopt. What the copy then enforces is the OLD rule, in the
+    # repo that ships the new one, and every fixture still passes because
+    # samples/agent-guard/ runs the source.
+    #
+    # __pycache__ is excluded: it is a build artifact of whichever directory
+    # last imported guard.py, it is gitignored on both sides, and comparing it
+    # would report the checker's own last run as drift.
+    adopted = root / ".claude" / "agent-guard"
+    if not adopted.is_dir():
+        bad(".claude/agent-guard/ does not exist — this repo stopped running "
+            "the contract it ships (#166). Re-run `scripts/adopt.sh . --agent`.")
+    else:
+        want = {f.name: f.read_bytes() for f in hooks_dir.glob("*.py")}
+        have = {f.name: f.read_bytes() for f in adopted.glob("*.py")}
+        for name in sorted(set(want) - set(have)):
+            bad(f".claude/agent-guard/{name} is missing — scripts/agent-guard/ "
+                "has it and the adopted copy does not, so this repo runs a "
+                "contract with a hole its own fixtures cannot see. Re-run "
+                "`scripts/adopt.sh . --agent`.")
+        for name in sorted(set(have) - set(want)):
+            bad(f".claude/agent-guard/{name} has no source under "
+                "scripts/agent-guard/ — it is either a script that was deleted "
+                "from the baseline and left running here, or one that never "
+                "came from it")
+        for name in sorted(set(want) & set(have)):
+            if want[name] != have[name]:
+                bad(f".claude/agent-guard/{name} has drifted from "
+                    f"scripts/agent-guard/{name} — this repo is enforcing an "
+                    "older copy of a rule it has already changed. Re-run "
+                    "`scripts/adopt.sh . --agent`.")
+
     return fail
 
 
@@ -586,7 +628,8 @@ def _deny_block(readme: str):
 #   * the END-before-BEGIN ordering check. Losing a marker is mutated below;
 #     swapping them is a hand-edit no upgrade path produces.
 
-SURFACES = ("configs/agent", "scripts/agent-guard", "samples/agent-guard")
+SURFACES = ("configs/agent", "scripts/agent-guard", "samples/agent-guard",
+            ".claude/agent-guard")
 
 
 def _stage(root: pathlib.Path, copy: pathlib.Path) -> None:
@@ -685,6 +728,19 @@ def mutations(cases: int, today: datetime.date) -> list[tuple]:
          lambda r: _edit_re(r, "configs/agent/README.md",
                             r" as of \*\*\d{4}-\d{2}-\d{2}\*\*", ""),
          ("only version statement",)),
+        # AC (#166) — the dogfood copy enforcing a rule the source has moved
+        # past, which every fixture still passes because they run the source.
+        ("the adopted copy under .claude/ drifts from its source",
+         lambda r: _edit(r, ".claude/agent-guard/stop-gate.py",
+                         "stop_hook_active", "stop_hook_inactive"),
+         ("drifted", "stop-gate.py")),
+        # The set difference, isolated. Deleting from the ADOPTED side rather
+        # than adding to the source, because adding to the source also trips G1
+        # ("a hook script exists that no command names") and the mutation would
+        # pass on the wrong guard's message.
+        ("the adopted copy is missing a script the source has",
+         lambda r: (r / ".claude/agent-guard/record-gate.py").unlink(),
+         ("record-gate.py", "is missing")),
         ("a mutation row names a script that does not exist",
          lambda r: _edit(r, "configs/agent/README.md",
                          "| `stop-gate.py` ignores the fingerprint |",

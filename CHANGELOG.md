@@ -80,7 +80,10 @@ Two things in this window look like Finding changes and are not:
   consumer. Opt-in, and the only `adopt.sh` flag that MERGES into a file you
   already own — your hook entries and deny rules are appended to, never replaced
   or reordered, and a `.claude/settings.json` it cannot fully read is refused
-  with nothing written at all.
+  with nothing written at all. It is also the only thing the baseline adopts
+  into **itself**: this repo now runs the contract it ships, from a copy under
+  `.claude/agent-guard/` that `check-agent-contract.py` holds against its
+  source.
 
 ### Changed
 
