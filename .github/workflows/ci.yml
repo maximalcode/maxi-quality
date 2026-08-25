@@ -3528,6 +3528,290 @@ jobs:
           PY
           echo 'OK: five languages composed, semgrep held back, Dev Kit still unwanted'
 
+      # #165 — `adopt.sh --agent`. This is the one flag that MERGES into a file
+      # the consumer already owns, and the two things it could do wrong are both
+      # unrecoverable in someone else's repo: drop their own hooks, or write a
+      # settings.json Claude Code cannot read. Both are asserted here rather
+      # than argued for in a comment, and from both sides — what survived, and
+      # what the run refused to do.
+      #
+      # The adopted tree is exercised for real: the Stop hook is run as a
+      # subprocess from where --agent put it, against a dirty worktree. That is
+      # the assertion samples/agent-guard cannot make, because the corpus runs
+      # the scripts in THIS repo's layout and --agent's whole job is to produce
+      # a different one.
+      - name: --agent installs a contract that actually refuses
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          agent_repo() {
+            rm -rf "$1"; mkdir -p "$1"
+            printf '{"name":"demo"}\n' > "$1/package.json"
+            git -C "$1" init -q
+            git -C "$1" config user.email ci@example.invalid
+            git -C "$1" config user.name ci
+            git -C "$1" add -A && git -C "$1" commit -qm init
+          }
+          agent_repo /tmp/ag-fresh
+          ./scripts/adopt.sh /tmp/ag-fresh --no-workflow --agent
+          for f in .claude/settings.json .claude/agent-guard/guard.py \
+                   .claude/agent-guard/stop-gate.py CLAUDE.md .gitignore; do
+            [[ -e /tmp/ag-fresh/$f ]] || { echo "::error::--agent did not write $f"; exit 1; }
+          done
+          # A tree with no settings.json of its own must end up with the
+          # baseline exactly — if the merge can transform the file on the empty
+          # case, every other case is guesswork.
+          python3 - <<'PY'
+          import json, sys
+          got = json.load(open("/tmp/ag-fresh/.claude/settings.json"))
+          want = json.load(open("configs/agent/settings.json"))
+          if got != want:
+              print("::error::a fresh --agent produced something other than the baseline")
+              print(json.dumps(got, indent=2))
+              sys.exit(1)
+          PY
+          grep -qF '<!-- BEGIN maxi-quality agent-guard -->' /tmp/ag-fresh/CLAUDE.md \
+            || { echo '::error::the CLAUDE.md region was not appended'; exit 1; }
+          grep -qxF '.claude/agent-guard-receipt.json' /tmp/ag-fresh/.gitignore \
+            || { echo '::error::the receipt was not gitignored'; exit 1; }
+          # The whole point, end to end. One modified file, no receipt: the Stop
+          # hook must refuse, from the path --agent copied it to. The failure
+          # this catches is a copy that lands the scripts somewhere the
+          # `command` in settings.json does not point — which looks like a
+          # successful adoption and gates nothing.
+          echo 'ungated' >> /tmp/ag-fresh/package.json
+          out=$(cd /tmp/ag-fresh && printf '{"cwd":"%s","hook_event_name":"Stop"}' /tmp/ag-fresh \
+                | python3 /tmp/ag-fresh/.claude/agent-guard/stop-gate.py)
+          echo "$out"
+          grep -q '"decision": *"block"' <<<"$out" \
+            || { echo '::error::the adopted Stop hook allowed a stop on ungated changes'; exit 1; }
+          # And its remedy has to name a file that EXISTS in the adopted tree.
+          # A refusal telling the session to run scripts/agent-guard/ — this
+          # repo's layout, not theirs — is a refusal with no remedy attached.
+          grep -q '\.claude/agent-guard/record-gate\.py' <<<"$out" \
+            || { echo '::error::the refusal names a record-gate.py path that does not exist here'; exit 1; }
+          [[ -e /tmp/ag-fresh/scripts/agent-guard ]] \
+            && { echo '::error::--agent copied the scripts to the baseline path, not .claude/'; exit 1; }
+          echo 'OK: adopted from nothing, and the installed Stop hook refuses'
+
+      - name: --agent merges, and a consumer keeps everything they had
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm -rf /tmp/ag-own && mkdir -p /tmp/ag-own/.claude
+          printf '{"name":"demo"}\n' > /tmp/ag-own/package.json
+          git -C /tmp/ag-own init -q
+          git -C /tmp/ag-own config user.email ci@example.invalid
+          git -C /tmp/ag-own config user.name ci
+          # A settings.json shaped like a real one: their own PreToolUse hook
+          # under a matcher the baseline ALSO uses, their own deny rule, and two
+          # keys this merge has no business touching at all.
+          cat > /tmp/ag-own/.claude/settings.json <<'JSON'
+          {
+            "model": "opus",
+            "permissions": {
+              "deny": ["Read(/.env)"],
+              "allow": ["Bash(ls:*)"]
+            },
+            "hooks": {
+              "PreToolUse": [
+                {
+                  "matcher": "Bash",
+                  "hooks": [
+                    { "type": "command", "command": "python3 tools/mine.py", "timeout": 9 }
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          # Deliberately unterminated: appending the fragment straight onto
+          # someone's last line puts an HTML comment inside their final
+          # paragraph, and a heading that continues a line is not a heading.
+          printf '# Their CLAUDE.md\n\ntheir last line, no newline' > /tmp/ag-own/CLAUDE.md
+          printf 'node_modules/\n' > /tmp/ag-own/.gitignore
+          git -C /tmp/ag-own add -A && git -C /tmp/ag-own commit -qm own
+          ./scripts/adopt.sh /tmp/ag-own --no-workflow --agent
+          python3 - <<'PY'
+          import json, sys
+          s = json.load(open("/tmp/ag-own/.claude/settings.json"))
+          base = json.load(open("configs/agent/settings.json"))
+          bad = []
+          # Their own entries, byte-for-byte. This is the criterion the whole
+          # flag lives or dies on: the failure it catches is --editor's
+          # refuse-if-exists copied here (useless), or a replace that silently
+          # deletes the consumer's own rules.
+          if s.get("model") != "opus":
+              bad.append("an unrelated top-level key was lost")
+          if s["permissions"].get("allow") != ["Bash(ls:*)"]:
+              bad.append("permissions.allow was lost — this merge only writes deny")
+          if s["permissions"]["deny"][0] != "Read(/.env)":
+              bad.append(f"the consumer's deny rule moved: {s['permissions']['deny']}")
+          mine = [e for g in s["hooks"]["PreToolUse"] for e in g["hooks"]
+                  if e["command"] == "python3 tools/mine.py"]
+          if mine != [{"type": "command", "command": "python3 tools/mine.py", "timeout": 9}]:
+              bad.append(f"the consumer's own hook entry did not survive intact: {mine}")
+          # And the baseline's arrived — under the SAME Bash group, not a
+          # duplicate one, because a second group with an identical matcher runs
+          # fine and reads as a mistake forever after.
+          groups = [g for g in s["hooks"]["PreToolUse"] if g.get("matcher") == "Bash"]
+          if len(groups) != 1:
+              bad.append(f"{len(groups)} groups now match Bash; the merge should extend the one that exists")
+          elif [e["command"] for e in groups[0]["hooks"]][0] != "python3 tools/mine.py":
+              bad.append("the baseline entry was prepended — the merge reordered a consumer's hooks")
+          want = {e["command"] for gs in base["hooks"].values() for g in gs for e in g["hooks"]}
+          have = {e["command"] for gs in s["hooks"].values() for g in gs for e in g["hooks"]}
+          for c in sorted(want - have):
+              bad.append(f"the baseline hook {c} was not merged in")
+          for r in base["permissions"]["deny"]:
+              if r not in s["permissions"]["deny"]:
+                  bad.append(f"the baseline deny rule {r} was not merged in")
+          for b in bad:
+              print(f"::error::{b}")
+          sys.exit(1 if bad else 0)
+          PY
+          grep -qxF 'node_modules/' /tmp/ag-own/.gitignore \
+            || { echo '::error::the consumer .gitignore was clobbered'; exit 1; }
+          grep -qxF 'their last line, no newline' /tmp/ag-own/CLAUDE.md \
+            || { echo '::error::the fragment was glued onto the consumer last line'; exit 1; }
+          head -1 /tmp/ag-own/CLAUDE.md | grep -qF '# Their CLAUDE.md' \
+            || { echo '::error::the consumer CLAUDE.md was overwritten'; exit 1; }
+          echo 'OK: merged in, nothing of theirs replaced, reordered or lost'
+
+      - name: --agent twice is --agent once
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # Re-adoption is how this contract is UPGRADED — the scripts are a
+          # path on disk and there is no remote consumption for a hook command
+          # — so it happens on every baseline bump, not once. Hooks that double
+          # on every re-run would turn the upgrade path into the bug.
+          git -C /tmp/ag-own add -A && git -C /tmp/ag-own commit -qm adopted
+          ./scripts/adopt.sh /tmp/ag-own --no-workflow --agent
+          if ! git -C /tmp/ag-own diff --exit-code; then
+            echo '::error::a second --agent changed the tree'
+            exit 1
+          fi
+          untracked=$(git -C /tmp/ag-own ls-files --others --exclude-standard)
+          [[ -z "$untracked" ]] || { echo "::error::a second --agent left $untracked"; exit 1; }
+          echo 'OK: idempotent, by git rather than by inspection'
+
+      - name: --agent refuses a settings.json it cannot read, and writes NOTHING
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # Two shapes, one rule. A file that does not parse is a file whose
+          # contents we would be guessing at; a `hooks` key of the wrong shape
+          # is a file where "append to the array" has no meaning. Writing a
+          # plausible guess into either produces a settings.json Claude Code
+          # reports once at startup and thereafter treats as saying nothing —
+          # the contract adopted invisibly, enforcing nothing, in the report
+          # panel nobody has open.
+          # An EXPLICIT NULL is not an absent key, and the two are one typo
+          # apart. `{"permissions": {"deny": null}}` reached the merge as a real
+          # value, and the "is it missing?" check waved it through — so the
+          # refusal arrived as a Python traceback rather than a sentence. A
+          # traceback tells a consumer nothing except that this is our bug.
+          for spec in 'oops:{"hooks": "oops"}' \
+                      'comma:{"hooks": {},}' \
+                      'hooksnull:{"hooks": null}' \
+                      'eventnull:{"hooks": {"Stop": null}}' \
+                      'permnull:{"permissions": null}' \
+                      'denynull:{"permissions": {"deny": null}}' \
+                      'toplevel:null' \
+                      'denyobj:{"permissions": {"deny": [{"tool": "Edit"}]}}'; do
+            name="${spec%%:*}"; body="${spec#*:}"
+            rm -rf "/tmp/ag-$name" && mkdir -p "/tmp/ag-$name/.claude"
+            printf '{"name":"demo"}\n' > "/tmp/ag-$name/package.json"
+            printf '%s' "$body" > "/tmp/ag-$name/.claude/settings.json"
+            before=$(sha256sum "/tmp/ag-$name/.claude/settings.json" | cut -d' ' -f1)
+            rc=0
+            ./scripts/adopt.sh "/tmp/ag-$name" --no-workflow --agent > "/tmp/ag-$name.log" 2>&1 || rc=$?
+            cat "/tmp/ag-$name.log"
+            [[ $rc -eq 6 ]] || { echo "::error::[$name] a refused merge must exit 6, got $rc"; exit 1; }
+            after=$(sha256sum "/tmp/ag-$name/.claude/settings.json" | cut -d' ' -f1)
+            [[ "$before" == "$after" ]] \
+              || { echo "::error::[$name] the settings.json it refused to read was rewritten anyway"; exit 1; }
+            # EVERYTHING or nothing. Scripts plus fragment without the hooks is
+            # a CLAUDE.md promising refusals that nothing performs, which the
+            # next session reads and believes.
+            [[ -e "/tmp/ag-$name/.claude/agent-guard" ]] \
+              && { echo "::error::[$name] the guard scripts were copied despite the refusal"; exit 1; }
+            [[ -e "/tmp/ag-$name/CLAUDE.md" ]] \
+              && { echo "::error::[$name] the CLAUDE.md region was written despite the refusal"; exit 1; }
+            grep -qs 'agent-guard-receipt' "/tmp/ag-$name/.gitignore" \
+              && { echo "::error::[$name] .gitignore was appended to despite the refusal"; exit 1; }
+            # ...but only the AGENT half is held back. A refused merge is not a
+            # reason to abandon the adoption the consumer also asked for.
+            [[ -e "/tmp/ag-$name/.editorconfig" ]] \
+              || { echo "::error::[$name] a refused merge also abandoned the rest of the run"; exit 1; }
+            grep -q 'Traceback (most recent call last)' "/tmp/ag-$name.log" \
+              && { echo "::error::[$name] refused with a traceback instead of a sentence"; exit 1; }
+            echo "  OK  [$name] refused, exit 6, nothing agent-shaped written"
+          done
+
+      - name: An EMPTY settings.json is merged into, not refused
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # The one unparseable case that involves no guessing: a file with no
+          # content says nothing, so merging into it can lose nothing. `touch
+          # .claude/settings.json` is common enough that refusing it would be a
+          # refusal with no useful remedy — "fix your JSON" about a file that
+          # has none.
+          rm -rf /tmp/ag-empty && mkdir -p /tmp/ag-empty/.claude
+          printf '{"name":"demo"}\n' > /tmp/ag-empty/package.json
+          : > /tmp/ag-empty/.claude/settings.json
+          ./scripts/adopt.sh /tmp/ag-empty --no-workflow --agent
+          python3 - <<'PY'
+          import json, sys
+          got = json.load(open("/tmp/ag-empty/.claude/settings.json"))
+          want = json.load(open("configs/agent/settings.json"))
+          if got != want:
+              print("::error::an empty settings.json did not merge to the baseline")
+              sys.exit(1)
+          PY
+          echo 'OK: an empty settings.json takes the baseline whole'
+
+      - name: Only --agent writes the agent contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # Executable policy arriving unasked is the one thing this flag exists
+          # to prevent, so opt-in is asserted under every OTHER flag too —
+          # --force most of all, because it is the one reached for blindly.
+          for variant in "" "--hooks" "--force" "--dry-run" "--editor"; do
+            rm -rf /tmp/ag-optin && mkdir -p /tmp/ag-optin
+            printf '{"name":"demo"}\n' > /tmp/ag-optin/package.json
+            git -C /tmp/ag-optin init -q
+            # Unquoted on purpose — the empty first iteration must expand to no
+            # argument at all, or adopt.sh reads "" as a second target.
+            ./scripts/adopt.sh /tmp/ag-optin --no-workflow ${variant} >/dev/null 2>&1
+            [[ -e /tmp/ag-optin/.claude ]] && {
+              echo "::error::.claude was created without --agent (with '${variant:-no flags}')"; exit 1; }
+            grep -qs 'maxi-quality agent-guard' /tmp/ag-optin/CLAUDE.md && {
+              echo "::error::the CLAUDE.md region was appended without --agent (with '${variant:-no flags}')"; exit 1; }
+            echo "  OK  no agent contract with '${variant:-no flags}'"
+          done
+
+      - name: --agent --dry-run writes nothing and still says what it would do
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm -rf /tmp/ag-dry && mkdir -p /tmp/ag-dry
+          printf '{"name":"demo"}\n' > /tmp/ag-dry/package.json
+          ./scripts/adopt.sh /tmp/ag-dry --no-workflow --agent --dry-run > /tmp/ag-dry.log 2>&1
+          cat /tmp/ag-dry.log
+          [[ -e /tmp/ag-dry/.claude ]] && { echo '::error::--dry-run created .claude'; exit 1; }
+          [[ -e /tmp/ag-dry/CLAUDE.md ]] && { echo '::error::--dry-run created CLAUDE.md'; exit 1; }
+          # A dry run that reports nothing is indistinguishable from a dry run
+          # that would have done nothing, which is the question it is asked.
+          for want in 'stop-gate.py' 'CLAUDE.md' 'settings.json'; do
+            grep -qF "$want" /tmp/ag-dry.log \
+              || { echo "::error::--dry-run never mentioned $want"; exit 1; }
+          done
+          echo 'OK: nothing written, everything named'
+
   # #13 — Semgrep is pinned in two places: the layer2 action's input default and
   # the layer2-counts job below. If they drift, CI asserts 100 findings against a
   # Semgrep that consumers never run, and the samples quietly stop meaning what

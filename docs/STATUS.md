@@ -164,6 +164,18 @@ scripts/editor-settings.py  composes .vscode/settings.json and .vscode/extension
                           json.dump would ship the plausible-and-pins-nothing file the
                           guard above exists to prevent. Also prints the key-by-key
                           delta adopt.sh shows instead of merging
+scripts/agent-settings.py merges configs/agent/settings.json into a consumer's own
+                          .claude/settings.json (#165). The one adopt.sh path that
+                          MERGES rather than refusing, because unlike .vscode/ this
+                          file usually already exists. Ownership is by `command`
+                          string and by rule string — the consumer's entries are
+                          appended to, never replaced or reordered, and matching on
+                          the command rather than the matcher group is what keeps a
+                          relocated entry from being re-added on the next run. A
+                          settings.json it cannot fully read is REFUSED before the
+                          first byte is written, and the refusal skips the whole
+                          flag: half a contract is a CLAUDE.md promising refusals
+                          nothing performs
 scripts/deadcode-gate.py  turns knip/deptry output into a VERDICT: which issue types
                           may fail a build, and the changed-only ratchet applied to
                           the results (neither tool takes a file list)

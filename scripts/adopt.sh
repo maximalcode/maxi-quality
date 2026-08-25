@@ -28,6 +28,18 @@
 #                     is the first thing the baseline writes that gates nothing.
 #                     It NEVER merges — if either file exists it writes nothing
 #                     to it, prints the delta it would have applied, and exits 5.
+#   --agent           ALSO install the agent contract from configs/agent/: the
+#                     hooks and deny rules that constrain a Claude Code session
+#                     writing in your repo. Opt-in like the two above, and for
+#                     the strongest reason of the three — this is executable
+#                     policy arriving in someone's tree.
+#                     Unlike --editor it DOES merge, because unlike .vscode/ a
+#                     .claude/settings.json usually already exists. Your hook
+#                     entries and deny rules are appended to, never replaced,
+#                     never reordered, and re-running adds nothing twice. A
+#                     settings.json that does not parse, or whose `hooks` key is
+#                     not the documented shape, is REFUSED — nothing --agent
+#                     would have written gets written at all, and the run exits 6.
 #   -h, --help        This text.
 #
 # What gets written, per detected language:
@@ -62,6 +74,13 @@
 #                                             by scripts/editor-settings.py
 #   --editor .vscode/extensions.json       <- configs/editor/extensions.json, the
 #                                             same rows and nothing else
+#   --agent  .claude/agent-guard/*.py      <- scripts/agent-guard/ (baseline code,
+#                                             REFRESHED on every --agent run)
+#   --agent  .claude/settings.json         += configs/agent/settings.json, merged
+#                                             by scripts/agent-settings.py
+#   --agent  CLAUDE.md                     += configs/agent/CLAUDE.fragment.md,
+#                                             marker-guarded
+#   --agent  .gitignore                    += .claude/agent-guard-receipt.json
 #
 # The TS pair is a copy for the same reason Directory.Build.props is: a private
 # git devDep cannot npm-install in a consumer's CI. The Rust trio is a copy for
@@ -74,6 +93,11 @@
 #             5 --editor refused: a .vscode file already existed and was left
 #               alone. Everything else still adopted; only the editor files
 #               were held back, and the delta was printed.
+#             6 --agent refused: .claude/settings.json could not be merged into.
+#               Nothing --agent writes was written — not the scripts, not the
+#               fragment — because half an agent contract is a CLAUDE.md that
+#               promises refusals nothing performs. 6 wins over 5 when both
+#               happen: 5 held back files that gate nothing, 6 held back the gate.
 
 set -Eeuo pipefail
 
@@ -98,6 +122,10 @@ HOOKS=0
 # shadows someone's $EDITOR is a script that surprises them elsewhere.
 WANT_EDITOR=0
 EDITOR_CONFLICT=0
+# Not named AGENT either: --hooks already taught this script that a short,
+# obvious name can mean two unrelated things (configs/agent/README.md §8).
+WANT_AGENT=0
+AGENT_CONFLICT=0
 
 die() { printf '\033[31merror:\033[0m %s\n' "$1" >&2; exit 3; }
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }
@@ -106,7 +134,7 @@ info() { printf '\033[36m›\033[0m %s\n' "$1"; }
 skip() { printf '\033[33mskip\033[0m %s\n' "$1"; }
 wrote() { printf '\033[32mwrite\033[0m %s\n' "$1"; }
 
-usage() { sed -n '3,64p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
+usage() { sed -n '3,83p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -115,6 +143,7 @@ while [ $# -gt 0 ]; do
     --no-workflow) NO_WORKFLOW=1; shift ;;
     --hooks) HOOKS=1; shift ;;
     --editor) WANT_EDITOR=1; shift ;;
+    --agent) WANT_AGENT=1; shift ;;
     --ref)
       [ $# -ge 2 ] || die "--ref needs a value"
       REF="$2"; shift 2 ;;
@@ -197,6 +226,13 @@ if [ "$HAS_DOTNET" -eq 0 ] && [ "$HAS_TS" -eq 0 ] && [ "$HAS_PYTHON" -eq 0 ] \
   # gets an EMPTY settings file or none, and an empty .vscode/settings.json is
   # worse than none: it shadows nothing, explains nothing, and looks configured.
   [ "$WANT_EDITOR" -eq 1 ] && warn "--editor wrote no .vscode/settings.json or .vscode/extensions.json: every key in configs/editor/ belongs to a language, and none was found."
+  # Said separately again, and for the OPPOSITE reason: the agent contract has
+  # no language in it — it guards git state and samples/expected/ — so unlike
+  # the editor files it would have been perfectly writable here. It is held
+  # back only because this run stops before reaching it, and that is a limit of
+  # this script rather than of the contract. Adopt it by hand
+  # (configs/agent/README.md §7) if this really is the repo you meant.
+  [ "$WANT_AGENT" -eq 1 ] && warn "--agent wrote nothing either — not because the agent contract needs a detected language (it does not), but because this run stops here."
   warn "Nothing to do."
   exit 1
 fi
@@ -690,6 +726,121 @@ if [ "$WANT_EDITOR" -eq 1 ]; then
   done
 fi
 
+# --- the agent contract, only on --agent -------------------------------------
+#
+# ONLY on --agent, and for the strongest reason any of the three opt-ins has.
+# --hooks installs something a developer can bypass; --editor writes something
+# that gates nothing. This writes EXECUTABLE POLICY into someone's repository:
+# hooks Claude Code runs on every tool call and every stop, and deny rules it
+# enforces before any of them. Nothing about that should arrive by default.
+#
+# It is also the one thing here that MERGES rather than refusing, which is the
+# opposite of --editor two blocks up. The reason is the file, not a change of
+# heart: .vscode/settings.json is a file a consumer may not have, and
+# .claude/settings.json is a file a consumer who runs Claude Code almost
+# certainly does. Refuse-if-exists there would mean this never adopts anywhere
+# it matters. scripts/agent-settings.py holds the merge and its ownership rule.
+#
+# EVERYTHING OR NOTHING. The merge is dry-run first, and a refusal skips the
+# whole block — not just the settings file. Copying the scripts and appending
+# the fragment without the hooks would leave a CLAUDE.md that says "they are
+# not advice — they refuse" in a repo where nothing refuses. A contract that
+# describes enforcement it does not have is worse than no contract, because
+# the next session reads it and believes it.
+if [ "$WANT_AGENT" -eq 1 ]; then
+  AGENT_SETTINGS="$TARGET/.claude/settings.json"
+  AGENT_DIR="$TARGET/.claude/agent-guard"
+
+  # Preflight. Runs before the first byte is written, so a refusal costs the
+  # consumer a message and not a half-adopted tree.
+  if ! python3 "$BASELINE/scripts/agent-settings.py" merge \
+         --baseline "$BASELINE/configs/agent/settings.json" \
+         --target "$AGENT_SETTINGS" --dry-run >/dev/null; then
+    AGENT_CONFLICT=1
+    NEEDS_MERGE=1
+  else
+    # A guard that is not in a git working tree allows every stop and reports
+    # nothing — stop-gate.py fails open on plumbing, by design. Installing it
+    # there anyway produces the one outcome this script cares most about
+    # avoiding: a tree that looks adopted and enforces nothing.
+    if ! git -C "$TARGET" rev-parse --show-toplevel >/dev/null 2>&1; then
+      warn "--agent: $TARGET is not a git working tree. The Stop gate"
+      warn "fingerprints \`git status\`, so outside one it allows every stop and"
+      warn "says nothing. Installing anyway; run \`git init\` before you rely on it."
+      NEEDS_MERGE=1
+    fi
+
+    # The scripts are BASELINE CODE, not your configuration, so unlike every
+    # other copy in this script they are refreshed rather than skipped. There
+    # is no remote consumption for a hook command — it is a path on disk — so
+    # re-running this script IS the upgrade path, the same trade the C# and
+    # Rust configs already make. --force is not needed and would not mean
+    # anything here.
+    for src in "$BASELINE"/scripts/agent-guard/*.py; do
+      wrote "$AGENT_DIR/$(basename "$src") (refreshed)"
+      [ "$DRY_RUN" -eq 1 ] && continue
+      mkdir -p "$AGENT_DIR"
+      cp "$src" "$AGENT_DIR/$(basename "$src")"
+    done
+
+    # The fragment, marker-guarded. Same discipline as the C# .editorconfig
+    # section and the Rust [lints] block: re-running never appends twice, and
+    # the markers are how a later baseline replaces the region without a merge.
+    AGENT_MARKER='<!-- BEGIN maxi-quality agent-guard -->'
+    if [ -e "$TARGET/CLAUDE.md" ] && grep -qF "$AGENT_MARKER" "$TARGET/CLAUDE.md" 2>/dev/null; then
+      skip "$TARGET/CLAUDE.md — already contains the agent-guard region"
+    else
+      wrote "$TARGET/CLAUDE.md (append)"
+      if [ "$DRY_RUN" -eq 0 ]; then
+        # Terminate the consumer's last line if they left it unterminated, then
+        # separate with a blank one. Appending straight onto someone's final
+        # paragraph would put an HTML comment inside it, and a heading that
+        # continues the previous line is not a heading at all.
+        if [ -s "$TARGET/CLAUDE.md" ]; then
+          [ -z "$(tail -c 1 "$TARGET/CLAUDE.md")" ] || printf '\n' >> "$TARGET/CLAUDE.md"
+          printf '\n' >> "$TARGET/CLAUDE.md"
+        fi
+        cat "$BASELINE/configs/agent/CLAUDE.fragment.md" >> "$TARGET/CLAUDE.md"
+      fi
+    fi
+
+    # Per-checkout state: a receipt describes THIS working tree's diff, so a
+    # committed one is a claim about somebody else's. Nothing breaks if this
+    # line is missing — the receipt is excluded from the fingerprint either
+    # way — which is exactly why it is worth writing for people rather than
+    # leaving as a step nobody notices they skipped.
+    AGENT_IGNORE='.claude/agent-guard-receipt.json'
+    if [ -e "$TARGET/.gitignore" ] && grep -qxF "$AGENT_IGNORE" "$TARGET/.gitignore" 2>/dev/null; then
+      skip "$TARGET/.gitignore — already ignores the receipt"
+    else
+      wrote "$TARGET/.gitignore (append)"
+      if [ "$DRY_RUN" -eq 0 ]; then
+        if [ -s "$TARGET/.gitignore" ]; then
+          [ -z "$(tail -c 1 "$TARGET/.gitignore")" ] || printf '\n' >> "$TARGET/.gitignore"
+          printf '\n' >> "$TARGET/.gitignore"
+        fi
+        printf '# maxi-quality agent guard — per-checkout state, never committed\n%s\n' \
+          "$AGENT_IGNORE" >> "$TARGET/.gitignore"
+      fi
+    fi
+
+    # And the merge for real. The preflight above already proved it parses, so
+    # a failure HERE is ours: report it as such rather than as a conflict.
+    if [ "$DRY_RUN" -eq 1 ]; then
+      info "$AGENT_SETTINGS (dry run) — the merge would apply:"
+      python3 "$BASELINE/scripts/agent-settings.py" merge \
+        --baseline "$BASELINE/configs/agent/settings.json" \
+        --target "$AGENT_SETTINGS" --dry-run | sed 's/^/    /'
+    else
+      wrote "$AGENT_SETTINGS (merge)"
+      python3 "$BASELINE/scripts/agent-settings.py" merge \
+        --baseline "$BASELINE/configs/agent/settings.json" \
+        --target "$AGENT_SETTINGS" | sed 's/^/    /' \
+        || die "the merge failed after its own dry run passed — this is a bug in maxi-quality, not in your repo"
+    fi
+  fi
+fi
+
 # --- what the human still has to do ------------------------------------------
 printf '\n'
 bold "── next steps ──"
@@ -907,6 +1058,27 @@ if [ "$WANT_EDITOR" -eq 1 ]; then
   printf '       not a missing setting.\n'
 fi
 
+if [ "$WANT_AGENT" -eq 1 ] && [ "$AGENT_CONFLICT" -eq 0 ]; then
+  printf '  Agent contract (Claude Code)\n'
+  printf '    1. Claude Code will ask you ONCE to trust the hooks in this repo,\n'
+  printf '       the next time it starts here. That prompt is the point:\n'
+  printf '       executable policy arriving in your tree should be something you\n'
+  printf '       see. Until you accept it, none of this runs.\n'
+  printf '    2. Declare your gate command, so a refusal can name it:\n'
+  printf '         .claude/agent-guard.json  ->  { "gate_command": "<your gate>" }\n'
+  printf '       Without it the Stop hook still blocks, it just cannot tell the\n'
+  printf '       session WHAT to run — and a refusal with no remedy attached is a\n'
+  printf '       refusal that gets worked around.\n'
+  printf '    3. Run your gate through the recorder from now on:\n'
+  printf '         python3 .claude/agent-guard/record-gate.py -- <your gate>\n'
+  printf '       Same command, same exit code, plus a receipt of what it saw.\n'
+  printf '    4. Read the startup output once. A deny rule Claude Code will not\n'
+  printf '       consult warns there and then never mentions itself again.\n'
+  printf '    5. selftest.py came along with the rest of scripts/agent-guard/ and\n'
+  printf '       is the BASELINE\047s own corpus runner — it needs fixtures that do\n'
+  printf '       not exist in your repo. Nothing in your tree invokes it.\n'
+fi
+
 if [ "$NEEDS_MERGE" -eq 1 ]; then
   printf '\n'
   warn "some files already existed and were left untouched."
@@ -922,13 +1094,31 @@ else
 fi
 
 # LAST, so a refused editor file does not cost the run everything else it did.
-# The rest of adoption has already happened and been reported; this exit code
-# says one specific thing, and a caller that scripts adopt.sh can tell it apart
-# from "nothing detected" (1) and "you typed it wrong" (3).
+# The rest of adoption has already happened and been reported; these exit codes
+# say one specific thing each, and a caller that scripts adopt.sh can tell them
+# apart from "nothing detected" (1) and "you typed it wrong" (3).
+#
+# BOTH messages print when both happened; only one code can be returned, and it
+# is 6. A refused editor file held back settings that gate nothing; a refused
+# merge held back the gate itself.
 if [ "$EDITOR_CONFLICT" -eq 1 ]; then
   printf '\n'
   printf '\033[31mEDITOR FILES NOT WRITTEN\033[0m — a .vscode file already existed.\n'
   printf 'The delta above is what --editor would have applied. Merge it by hand,\n'
   printf 'or delete the file and re-run. --force overwrites, if that is what you want.\n'
+fi
+
+if [ "$AGENT_CONFLICT" -eq 1 ]; then
+  printf '\n'
+  printf '\033[31mAGENT CONTRACT NOT INSTALLED\033[0m — .claude/settings.json could not\n'
+  printf 'be merged into, and the reason is above. NOTHING --agent writes was\n'
+  printf 'written: not the scripts, not the CLAUDE.md region, not the .gitignore\n'
+  printf 'line. Half a contract is a CLAUDE.md promising refusals that nothing\n'
+  printf 'performs, which is worse than none. Fix the file and re-run, or adopt\n'
+  printf 'it by hand — configs/agent/README.md section 7.\n'
+  exit 6
+fi
+
+if [ "$EDITOR_CONFLICT" -eq 1 ]; then
   exit 5
 fi

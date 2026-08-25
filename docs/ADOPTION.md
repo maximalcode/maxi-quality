@@ -53,7 +53,9 @@ superseded tag twice, and once named `v1.0.3`, which never existed at all. A doc
 that hard-codes a version goes stale on the next release by construction, and a
 `--ref` a reader copies verbatim is the one place that costs them something.
 `--no-workflow` skips the CI scaffold. `--editor` additionally writes the
-`.vscode/` files that make your editor show what CI shows — §5b.
+`.vscode/` files that make your editor show what CI shows — §5b. `--agent`
+installs the hooks and deny rules that constrain a Claude Code session writing
+in your repo — §5c.
 
 CI proves this end-to-end in both directions: a repo adopted by the script builds
 the clean fixture at 0 errors/0 warnings **and** rejects the bad fixture with
@@ -761,6 +763,68 @@ present, the editor formats at Prettier's default width against a gate that pins
 
 Full detail, including what each key is and is not evidence for:
 [`configs/editor/README.md`](../configs/editor/README.md).
+
+---
+
+## 5c. The agent — the session that writes the code
+
+CI gates the pull request and the editor shows you the same findings while you
+type. Neither reaches the surface where the code is now being written: an agent
+session, which reads your `CLAUDE.md` as advice and can drift from it. `--agent`
+is **opt-in**, and more emphatically than the two flags above, because it is
+executable policy landing in your tree:
+
+```bash
+"$BASELINE"/scripts/adopt.sh <repo> --agent
+```
+
+```
+.claude/agent-guard/*.py           three hooks, the recorder, and their shared module
+.claude/settings.json              MERGED — the hook wiring and two deny rules
+CLAUDE.md                          += the marker-delimited workflow region
+.gitignore                         += .claude/agent-guard-receipt.json
+```
+
+What it buys you is one rule every `CLAUDE.md` already asks for and nothing has
+ever enforced: **a session may not call it done on code the gate has not seen.**
+The `Stop` hook fingerprints everything that differs from `HEAD` and compares it
+against a receipt, so it refuses in three distinct cases — the gate never ran,
+it ran and failed, or it ran against different content. Two `PreToolUse` hooks
+and two `permissions.deny` rules cover the rest: an edit that weakens the test
+suite, and a `git commit --no-verify` that routes around the pre-commit hook.
+
+Two things to do once, after the run:
+
+```bash
+echo '{ "gate_command": "<your gate>" }' > .claude/agent-guard.json
+```
+
+and then run your gate through the recorder from now on — same command, same
+exit code, plus a receipt of what it saw:
+
+```bash
+python3 .claude/agent-guard/record-gate.py -- <your gate>
+```
+
+**This is the one flag that merges.** `--editor` refuses when the target
+exists; `.claude/settings.json` is a file you probably already have, so refusing
+there would mean never adopting. Your hook entries and deny rules are appended
+to, never replaced and never reordered, and re-running adds nothing twice —
+which matters because re-running **is** the upgrade path: a hook command is a
+path on disk and Claude Code has no remote consumption, so the scripts are
+copied and refreshed rather than pinned to a tag.
+
+If your `settings.json` does not parse, or its `hooks` key is not the shape the
+docs describe, `--agent` writes **nothing at all** — not the scripts, not the
+`CLAUDE.md` region — says why, and exits 6. The rest of the adoption still
+happens. A tree carrying a `CLAUDE.md` that promises refusals nothing performs
+is worse than one with no contract, because the next session reads it and
+believes it.
+
+What this does **not** do is covered honestly and at length in
+[`configs/agent/README.md`](../configs/agent/README.md) §3 — read it before
+trusting it. The short version: it guards drift, not malice. A shell command can
+still write the receipt, and the receipt is the guard's own input.
 
 ---
 
