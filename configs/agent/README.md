@@ -433,6 +433,15 @@ adoption still happens.
    state. Nothing breaks if you forget; it is excluded from the fingerprint
    either way.
 
+**Re-running `--agent` does not refresh the `CLAUDE.md` region.** The markers
+make an in-place replacement possible — that is what `scripts/pom-region.py`
+does for the Java block in an XML file that has no append — but nothing performs
+it here yet: a region that is already present is skipped, so a later baseline's
+fragment never reaches a tree that already adopted one. Replace the text between
+the markers by hand when `CLAUDE.fragment.md` changes. Tracked as #177; the
+scripts and the settings merge DO refresh, and this is the one part that does
+not.
+
 One thing `--agent` does not do, and cannot: declare what your gate command is.
 Write `.claude/agent-guard.json` as `{ "gate_command": "<your gate>" }` once.
 Without it the `Stop` hook still blocks and simply cannot name what to run, and

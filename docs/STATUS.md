@@ -141,8 +141,14 @@ scripts/check-agent-contract.py  the agent contract is four files that a single
                           ways, both READMEs' case counts against cases/, every
                           mutation row and cited case and section and link against
                           what exists, the deny array against the block the README
-                          quotes and the table it observed, and every reference
-                          against its own `as of <date>`. It READS those numbers
+                          quotes and the table it observed, every reference
+                          against its own `as of <date>`, and (#166) the adopted
+                          copy under .claude/agent-guard/ against the source it
+                          was copied from — this repo runs its own contract from
+                          a COPY, because a consumer gets a copy, so it can drift
+                          here exactly the way it will drift there and no fixture
+                          would notice: samples/agent-guard/ runs the source.
+                          It READS those numbers
                           and refuses to write them. `selftest` mutates a staged
                           copy 21 ways and asserts each run names what moved
 scripts/editor-parity.py  the differ for the #121 parity run: a VS Code Problems
