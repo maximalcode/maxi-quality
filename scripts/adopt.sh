@@ -136,6 +136,121 @@ wrote() { printf '\033[32mwrite\033[0m %s\n' "$1"; }
 
 usage() { sed -n '3,83p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
 
+# --- the agent contract, only on --agent -------------------------------------
+#
+# ONLY on --agent, and for the strongest reason any of the three opt-ins has.
+# --hooks installs something a developer can bypass; --editor writes something
+# that gates nothing. This writes EXECUTABLE POLICY into someone's repository:
+# hooks Claude Code runs on every tool call and every stop, and deny rules it
+# enforces before any of them. Nothing about that should arrive by default.
+#
+# It is also the one thing here that MERGES rather than refusing, which is the
+# opposite of --editor two blocks up. The reason is the file, not a change of
+# heart: .vscode/settings.json is a file a consumer may not have, and
+# .claude/settings.json is a file a consumer who runs Claude Code almost
+# certainly does. Refuse-if-exists there would mean this never adopts anywhere
+# it matters. scripts/agent-settings.py holds the merge and its ownership rule.
+#
+# EVERYTHING OR NOTHING. The merge is dry-run first, and a refusal skips the
+# whole block — not just the settings file. Copying the scripts and appending
+# the fragment without the hooks would leave a CLAUDE.md that says "they are
+# not advice — they refuse" in a repo where nothing refuses. A contract that
+# describes enforcement it does not have is worse than no contract, because
+# the next session reads it and believes it.
+install_agent_contract() {
+  AGENT_SETTINGS="$TARGET/.claude/settings.json"
+  AGENT_DIR="$TARGET/.claude/agent-guard"
+
+  # Preflight. Runs before the first byte is written, so a refusal costs the
+  # consumer a message and not a half-adopted tree.
+  if ! python3 "$BASELINE/scripts/agent-settings.py" merge \
+         --baseline "$BASELINE/configs/agent/settings.json" \
+         --target "$AGENT_SETTINGS" --dry-run >/dev/null; then
+    AGENT_CONFLICT=1
+    NEEDS_MERGE=1
+  else
+    # A guard that is not in a git working tree allows every stop and reports
+    # nothing — stop-gate.py fails open on plumbing, by design. Installing it
+    # there anyway produces the one outcome this script cares most about
+    # avoiding: a tree that looks adopted and enforces nothing.
+    if ! git -C "$TARGET" rev-parse --show-toplevel >/dev/null 2>&1; then
+      warn "--agent: $TARGET is not a git working tree. The Stop gate"
+      warn "fingerprints \`git status\`, so outside one it allows every stop and"
+      warn "says nothing. Installing anyway; run \`git init\` before you rely on it."
+      NEEDS_MERGE=1
+    fi
+
+    # The scripts are BASELINE CODE, not your configuration, so unlike every
+    # other copy in this script they are refreshed rather than skipped. There
+    # is no remote consumption for a hook command — it is a path on disk — so
+    # re-running this script IS the upgrade path, the same trade the C# and
+    # Rust configs already make. --force is not needed and would not mean
+    # anything here.
+    for src in "$BASELINE"/scripts/agent-guard/*.py; do
+      wrote "$AGENT_DIR/$(basename "$src") (refreshed)"
+      [ "$DRY_RUN" -eq 1 ] && continue
+      mkdir -p "$AGENT_DIR"
+      cp "$src" "$AGENT_DIR/$(basename "$src")"
+    done
+
+    # The fragment, marker-guarded. Same discipline as the C# .editorconfig
+    # section and the Rust [lints] block: re-running never appends twice, and
+    # the markers are how a later baseline replaces the region without a merge.
+    AGENT_MARKER='<!-- BEGIN maxi-quality agent-guard -->'
+    if [ -e "$TARGET/CLAUDE.md" ] && grep -qF "$AGENT_MARKER" "$TARGET/CLAUDE.md" 2>/dev/null; then
+      skip "$TARGET/CLAUDE.md — already contains the agent-guard region"
+    else
+      wrote "$TARGET/CLAUDE.md (append)"
+      if [ "$DRY_RUN" -eq 0 ]; then
+        # Terminate the consumer's last line if they left it unterminated, then
+        # separate with a blank one. Appending straight onto someone's final
+        # paragraph would put an HTML comment inside it, and a heading that
+        # continues the previous line is not a heading at all.
+        if [ -s "$TARGET/CLAUDE.md" ]; then
+          [ -z "$(tail -c 1 "$TARGET/CLAUDE.md")" ] || printf '\n' >> "$TARGET/CLAUDE.md"
+          printf '\n' >> "$TARGET/CLAUDE.md"
+        fi
+        cat "$BASELINE/configs/agent/CLAUDE.fragment.md" >> "$TARGET/CLAUDE.md"
+      fi
+    fi
+
+    # Per-checkout state: a receipt describes THIS working tree's diff, so a
+    # committed one is a claim about somebody else's. Nothing breaks if this
+    # line is missing — the receipt is excluded from the fingerprint either
+    # way — which is exactly why it is worth writing for people rather than
+    # leaving as a step nobody notices they skipped.
+    AGENT_IGNORE='.claude/agent-guard-receipt.json'
+    if [ -e "$TARGET/.gitignore" ] && grep -qxF "$AGENT_IGNORE" "$TARGET/.gitignore" 2>/dev/null; then
+      skip "$TARGET/.gitignore — already ignores the receipt"
+    else
+      wrote "$TARGET/.gitignore (append)"
+      if [ "$DRY_RUN" -eq 0 ]; then
+        if [ -s "$TARGET/.gitignore" ]; then
+          [ -z "$(tail -c 1 "$TARGET/.gitignore")" ] || printf '\n' >> "$TARGET/.gitignore"
+          printf '\n' >> "$TARGET/.gitignore"
+        fi
+        printf '# maxi-quality agent guard — per-checkout state, never committed\n%s\n' \
+          "$AGENT_IGNORE" >> "$TARGET/.gitignore"
+      fi
+    fi
+
+    # And the merge for real. The preflight above already proved it parses, so
+    # a failure HERE is ours: report it as such rather than as a conflict.
+    if [ "$DRY_RUN" -eq 1 ]; then
+      info "$AGENT_SETTINGS (dry run) — the merge would apply:"
+      python3 "$BASELINE/scripts/agent-settings.py" merge \
+        --baseline "$BASELINE/configs/agent/settings.json" \
+        --target "$AGENT_SETTINGS" --dry-run | sed 's/^/    /'
+    else
+      wrote "$AGENT_SETTINGS (merge)"
+      python3 "$BASELINE/scripts/agent-settings.py" merge \
+        --baseline "$BASELINE/configs/agent/settings.json" \
+        --target "$AGENT_SETTINGS" | sed 's/^/    /' \
+        || die "the merge failed after its own dry run passed — this is a bug in maxi-quality, not in your repo"
+    fi
+  fi
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
@@ -159,8 +274,54 @@ done
 [ -d "$TARGET" ] || die "not a directory: $TARGET"
 TARGET="$(cd "$TARGET" && pwd)"
 
+# Adopting the baseline into itself is refused, with EXACTLY ONE exception.
+#
+# The refusal is about the language configs: configs/typescript/ is the source
+# and the consumer's tree is the destination, so pointing them at each other
+# means copying files onto the originals and calling the result an adoption.
+#
+# `--agent` is not that shape. Its source is configs/agent/ and its destination
+# is .claude/ — two different paths in this tree, no collision, and the result
+# is a repo that runs the contract it ships instead of one that only describes
+# it. That is the in-house-demand test the whole baseline is governed by
+# (CLAUDE.md §4), applied to the one thing here that can meet it before a
+# consumer does. Refusing it would mean the agent contract is the only surface
+# this repo asks other people to adopt and does not adopt itself (#166).
+#
+# Only the agent contract runs on this path — not the detection, not the
+# configs, not the workflow scaffold — and the run stops after it, so nothing
+# can reach the copy steps by accident.
 if [ "$TARGET" = "$BASELINE" ]; then
-  die "refusing to adopt maxi-quality into itself"
+  if [ "$WANT_AGENT" -eq 0 ]; then
+    die "refusing to adopt maxi-quality into itself"
+  fi
+  bold "── maxi-quality adopt: the agent contract, into the baseline itself ──"
+  info "baseline: $BASELINE"
+  info "target:   the same tree"
+  [ "$DRY_RUN" -eq 1 ] && warn "dry run — nothing will be written"
+  printf '\n'
+  # Named rather than silently ignored: someone who typed --editor here has a
+  # reasonable expectation this script owes them an answer about.
+  if [ "$WANT_EDITOR" -eq 1 ] || [ "$HOOKS" -eq 1 ] || [ "$FORCE" -eq 1 ]; then
+    warn "on this path --agent is the ONLY thing that runs; every other flag you"
+    warn "passed is ignored, because adopting the rest of the baseline into"
+    warn "itself would copy its own configs over their originals."
+    printf '\n'
+  fi
+  install_agent_contract
+  if [ "$AGENT_CONFLICT" -eq 1 ]; then
+    printf '\n'
+    printf '\033[31mAGENT CONTRACT NOT INSTALLED\033[0m — .claude/settings.json could not\n'
+    printf 'be merged into, and the reason is above. Nothing was written.\n'
+    exit 6
+  fi
+  printf '\n'
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '\033[33mDRY RUN\033[0m — nothing written. Re-run without --dry-run to apply.\n'
+  else
+    printf '\033[32mADOPTED\033[0m — this repo now runs the contract it ships.\n'
+  fi
+  exit 0
 fi
 
 # --- detection ---------------------------------------------------------------
@@ -726,121 +887,9 @@ if [ "$WANT_EDITOR" -eq 1 ]; then
   done
 fi
 
-# --- the agent contract, only on --agent -------------------------------------
-#
-# ONLY on --agent, and for the strongest reason any of the three opt-ins has.
-# --hooks installs something a developer can bypass; --editor writes something
-# that gates nothing. This writes EXECUTABLE POLICY into someone's repository:
-# hooks Claude Code runs on every tool call and every stop, and deny rules it
-# enforces before any of them. Nothing about that should arrive by default.
-#
-# It is also the one thing here that MERGES rather than refusing, which is the
-# opposite of --editor two blocks up. The reason is the file, not a change of
-# heart: .vscode/settings.json is a file a consumer may not have, and
-# .claude/settings.json is a file a consumer who runs Claude Code almost
-# certainly does. Refuse-if-exists there would mean this never adopts anywhere
-# it matters. scripts/agent-settings.py holds the merge and its ownership rule.
-#
-# EVERYTHING OR NOTHING. The merge is dry-run first, and a refusal skips the
-# whole block — not just the settings file. Copying the scripts and appending
-# the fragment without the hooks would leave a CLAUDE.md that says "they are
-# not advice — they refuse" in a repo where nothing refuses. A contract that
-# describes enforcement it does not have is worse than no contract, because
-# the next session reads it and believes it.
 if [ "$WANT_AGENT" -eq 1 ]; then
-  AGENT_SETTINGS="$TARGET/.claude/settings.json"
-  AGENT_DIR="$TARGET/.claude/agent-guard"
-
-  # Preflight. Runs before the first byte is written, so a refusal costs the
-  # consumer a message and not a half-adopted tree.
-  if ! python3 "$BASELINE/scripts/agent-settings.py" merge \
-         --baseline "$BASELINE/configs/agent/settings.json" \
-         --target "$AGENT_SETTINGS" --dry-run >/dev/null; then
-    AGENT_CONFLICT=1
-    NEEDS_MERGE=1
-  else
-    # A guard that is not in a git working tree allows every stop and reports
-    # nothing — stop-gate.py fails open on plumbing, by design. Installing it
-    # there anyway produces the one outcome this script cares most about
-    # avoiding: a tree that looks adopted and enforces nothing.
-    if ! git -C "$TARGET" rev-parse --show-toplevel >/dev/null 2>&1; then
-      warn "--agent: $TARGET is not a git working tree. The Stop gate"
-      warn "fingerprints \`git status\`, so outside one it allows every stop and"
-      warn "says nothing. Installing anyway; run \`git init\` before you rely on it."
-      NEEDS_MERGE=1
-    fi
-
-    # The scripts are BASELINE CODE, not your configuration, so unlike every
-    # other copy in this script they are refreshed rather than skipped. There
-    # is no remote consumption for a hook command — it is a path on disk — so
-    # re-running this script IS the upgrade path, the same trade the C# and
-    # Rust configs already make. --force is not needed and would not mean
-    # anything here.
-    for src in "$BASELINE"/scripts/agent-guard/*.py; do
-      wrote "$AGENT_DIR/$(basename "$src") (refreshed)"
-      [ "$DRY_RUN" -eq 1 ] && continue
-      mkdir -p "$AGENT_DIR"
-      cp "$src" "$AGENT_DIR/$(basename "$src")"
-    done
-
-    # The fragment, marker-guarded. Same discipline as the C# .editorconfig
-    # section and the Rust [lints] block: re-running never appends twice, and
-    # the markers are how a later baseline replaces the region without a merge.
-    AGENT_MARKER='<!-- BEGIN maxi-quality agent-guard -->'
-    if [ -e "$TARGET/CLAUDE.md" ] && grep -qF "$AGENT_MARKER" "$TARGET/CLAUDE.md" 2>/dev/null; then
-      skip "$TARGET/CLAUDE.md — already contains the agent-guard region"
-    else
-      wrote "$TARGET/CLAUDE.md (append)"
-      if [ "$DRY_RUN" -eq 0 ]; then
-        # Terminate the consumer's last line if they left it unterminated, then
-        # separate with a blank one. Appending straight onto someone's final
-        # paragraph would put an HTML comment inside it, and a heading that
-        # continues the previous line is not a heading at all.
-        if [ -s "$TARGET/CLAUDE.md" ]; then
-          [ -z "$(tail -c 1 "$TARGET/CLAUDE.md")" ] || printf '\n' >> "$TARGET/CLAUDE.md"
-          printf '\n' >> "$TARGET/CLAUDE.md"
-        fi
-        cat "$BASELINE/configs/agent/CLAUDE.fragment.md" >> "$TARGET/CLAUDE.md"
-      fi
-    fi
-
-    # Per-checkout state: a receipt describes THIS working tree's diff, so a
-    # committed one is a claim about somebody else's. Nothing breaks if this
-    # line is missing — the receipt is excluded from the fingerprint either
-    # way — which is exactly why it is worth writing for people rather than
-    # leaving as a step nobody notices they skipped.
-    AGENT_IGNORE='.claude/agent-guard-receipt.json'
-    if [ -e "$TARGET/.gitignore" ] && grep -qxF "$AGENT_IGNORE" "$TARGET/.gitignore" 2>/dev/null; then
-      skip "$TARGET/.gitignore — already ignores the receipt"
-    else
-      wrote "$TARGET/.gitignore (append)"
-      if [ "$DRY_RUN" -eq 0 ]; then
-        if [ -s "$TARGET/.gitignore" ]; then
-          [ -z "$(tail -c 1 "$TARGET/.gitignore")" ] || printf '\n' >> "$TARGET/.gitignore"
-          printf '\n' >> "$TARGET/.gitignore"
-        fi
-        printf '# maxi-quality agent guard — per-checkout state, never committed\n%s\n' \
-          "$AGENT_IGNORE" >> "$TARGET/.gitignore"
-      fi
-    fi
-
-    # And the merge for real. The preflight above already proved it parses, so
-    # a failure HERE is ours: report it as such rather than as a conflict.
-    if [ "$DRY_RUN" -eq 1 ]; then
-      info "$AGENT_SETTINGS (dry run) — the merge would apply:"
-      python3 "$BASELINE/scripts/agent-settings.py" merge \
-        --baseline "$BASELINE/configs/agent/settings.json" \
-        --target "$AGENT_SETTINGS" --dry-run | sed 's/^/    /'
-    else
-      wrote "$AGENT_SETTINGS (merge)"
-      python3 "$BASELINE/scripts/agent-settings.py" merge \
-        --baseline "$BASELINE/configs/agent/settings.json" \
-        --target "$AGENT_SETTINGS" | sed 's/^/    /' \
-        || die "the merge failed after its own dry run passed — this is a bug in maxi-quality, not in your repo"
-    fi
-  fi
+  install_agent_contract
 fi
-
 # --- what the human still has to do ------------------------------------------
 printf '\n'
 bold "── next steps ──"
