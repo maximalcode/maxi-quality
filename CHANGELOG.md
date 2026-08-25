@@ -83,7 +83,13 @@ Two things in this window look like Finding changes and are not:
   with nothing written at all. It is also the only thing the baseline adopts
   into **itself**: this repo now runs the contract it ships, from a copy under
   `.claude/agent-guard/` that `check-agent-contract.py` holds against its
-  source.
+  source — which is how #178 was found in the first hour and fixed inside the
+  same window, before any of this reached a tag. Declare your gate once in
+  `.claude/agent-guard.json` and run it as
+  `record-gate.py --gate`: the wrapper then executes the whole declared string
+  through one shell, and the `Stop` hook refuses a receipt that records
+  anything else. The earlier spelling interpolated the gate into an argv, so an
+  `&&` in it bound outside the wrapper and half the gate ran unrecorded.
 
 ### Changed
 

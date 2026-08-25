@@ -1,0 +1,25 @@
+{
+  "why": "The undeclared case is the one a freshly adopted tree is in — --agent cannot declare a gate for you. It used to print an interpolation slot, `-- <the gate command your CLAUDE.md names>`, which is #178 one step further out: fill it with `a && b` by hand and the operator binds outside the recorder again. It must name --gate and say to declare one.",
+  "hook": "stop",
+  "setup": {
+    "committed": {
+      "a.txt": "one\n"
+    },
+    "worktree": {
+      "a.txt": "one\ntwo\n"
+    }
+  },
+  "event": {
+    "hook_event_name": "Stop"
+  },
+  "expect": {
+    "decision": "block",
+    "reason_contains": [
+      "--gate",
+      "gate_command"
+    ],
+    "reason_excludes": [
+      "-- <the gate command"
+    ]
+  }
+}

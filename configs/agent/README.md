@@ -60,23 +60,67 @@ At the end of every turn the hook fingerprints the content that differs from
 `HEAD` — tracked edits, staged changes, untracked files git would not ignore,
 and both sides of a rename — and compares it against
 `.claude/agent-guard-receipt.json`. The stop is refused when there is no
-receipt, when the recorded verdict is a failure, or when the fingerprint no
-longer matches. Each of those gets a different message, because "the gate failed"
-and "the gate never ran" are different problems.
+receipt, when the recorded verdict is a failure, when the recorded run is not
+this repo's declared gate, or when the fingerprint no longer matches. Each of
+those gets a different message, because "the gate failed" and "the gate never
+ran" are different problems.
 
-The receipt is written by `record-gate.py`, which wraps the real command:
+The receipt is written by `record-gate.py`. Declare the gate once:
+
+```json
+{ "gate_command": "npm run gate" }
+```
+
+and run it through the wrapper:
+
+```bash
+python3 .claude/agent-guard/record-gate.py --gate
+```
+
+It passes the command's exit code straight through, so putting it in front of a
+gate changes nothing a human or CI sees. The `-- <command>` form is still there
+for an ad-hoc run:
 
 ```bash
 python3 .claude/agent-guard/record-gate.py -- npm run gate
 ```
 
-It passes the command's exit code straight through, so putting it in front of a
-gate changes nothing a human or CI sees. Declare the command once in
-`.claude/agent-guard.json` and the refusal message names it:
+**`--gate` exists because the other form could not be printed** (#178). The
+refusal has to tell a session what to run, and interpolating a declared gate
+into `record-gate.py -- <gate>` put any `&&`, `;` or `|` in it OUTSIDE the
+wrapper. Pasted, half the gate ran unrecorded, and the receipt said `"pass"` for
+a run whose second half had failed — through the message the guard itself
+printed, so the session had done nothing wrong. `--gate` carries no operators
+and hands the declared string to one shell, whole.
 
-```json
-{ "gate_command": "npm run gate" }
-```
+With no `gate_command` declared, the refusal names `--gate` anyway and says to
+declare one. It used to print `-- <the gate command your CLAUDE.md names>`,
+which is the same trap one step further out and the state every freshly adopted
+tree is in, since `--agent` cannot declare a gate for you. `--gate` with nothing
+declared exits 3 and says what to write — a loud wrong answer instead of a quiet
+one.
+
+That fixed the instruction. The receipt is checked too: **a passing, perfectly
+fresh receipt for a command that is not the declared gate is refused.** The
+fingerprint cannot see that case — the content really was checked, by a check
+that was only part of what this repo calls checking. Two shapes count as having
+run the gate: `--gate`, which records the declared string in a field of its own,
+and an argv that is either the `bash -c '<gate>'` rendering `--gate` executes —
+also the workaround from before it existed — or the declaration parsed as an
+argv, which is how a one-command gate has always been run.
+
+The comparison is on **argvs, not on strings**, so `bash -c "a && b"` and
+`bash -c 'a && b'` are one gate rather than two. What stops that normalisation
+from going too far is `SHELL_OPERATORS`: `a && b` splits to a list containing a
+bare `&&`, and handing that list to exec runs a program called `a` — so the
+declaration-as-argv shape is refused for any declaration a shell would do more
+with. Without that, the exact case #178 is about walks back in through the door
+the quoting fix opened.
+
+The `--` form stays legal for an ad-hoc run, and with a gate declared it now
+**warns on stderr** that the receipt it is about to write will not satisfy the
+`Stop` hook. The place to say that is where the command was chosen, not at the
+end of the next turn.
 
 **The fingerprint is taken before the command runs, not after.** A formatter is
 a gate that edits; fingerprinting afterwards would record a passing verdict for
@@ -201,7 +245,7 @@ which is the entire argument for §5's structural checker.
 
 ## 5. Evidence
 
-`samples/agent-guard/` is 52 cases. Every hook case runs the real hook as a
+`samples/agent-guard/` is 63 cases. Every hook case runs the real hook as a
 subprocess with a real payload on stdin and parses stdout the way Claude Code
 does; the `stop-` and `edit-` cases build a real git repository first, and the
 `noverify-` cases do not, because a command guard reads a string and has no
@@ -264,7 +308,8 @@ and does not is still a violation.
 that passes a broken guard proves nothing.
 
 The four scripts, on 2026-08-22 (`sample-guard.py`, `stop-gate.py`,
-`record-gate.py`, `guard.py`) and 2026-08-23 (`no-verify-guard.py`):
+`record-gate.py`, `guard.py`) and 2026-08-23 (`no-verify-guard.py`), with the
+`--gate` rows added 2026-08-25 (#178):
 
 | Mutation | Cases failed |
 |---|---|
@@ -288,6 +333,16 @@ The four scripts, on 2026-08-22 (`sample-guard.py`, `stop-gate.py`,
 | the `stop_hook_active` loop guard is removed | 1 |
 | `record-gate.py` hashes after the run instead of before | 1 |
 | `record-gate.py` swallows the gate's exit code | 1 |
+| the refusal interpolates the gate into `--` instead of printing `--gate` | 2 |
+| the undeclared case prints an interpolation slot again | 1 |
+| `--gate` splits the declared string instead of handing it to one shell | 3 |
+| `--gate` records a pass when nothing is declared | 1 |
+| the receipt joins its argv with spaces instead of `shlex.join` | 3 |
+| the receipt is not checked against the declared gate at all | 3 |
+| the comparison is on the joined strings, not on the argvs | 3 |
+| a bare operator is not treated as a word only a shell can run | 1 |
+| only the `--gate` spelling counts as having run the declared gate | 1 |
+| the wrapper does not warn on a run that is not the declared gate | 1 |
 | a rename's old path is dropped from the changed set | 1 |
 | the edited path is not resolved through symlinks | 1 |
 | manifest removals are not compared | 1 |
@@ -404,18 +459,25 @@ something the baseline itself did not.
 
 It runs from a **copy** under `.claude/agent-guard/`, not a symlink to
 `scripts/agent-guard/`, so this tree drifts exactly the way a consumer's will.
-`check-agent-contract.py` G9 is what notices; nothing else could, because all 52
+`check-agent-contract.py` G9 is what notices; nothing else could, because all 63
 fixtures in `samples/agent-guard/` run the source.
 
-The gate is declared in `.claude/agent-guard.json` as
-`bash -c 'python3 scripts/agent-guard/selftest.py && python3
-scripts/check-agent-contract.py'` — deliberately not the full `ci.yml`. Twenty-
-eight contexts needing .NET, Java and Rust toolchains and a network is minutes
-on every stop, and the same argument that made the `Stop` hook read a receipt
-instead of running the gate applies to what the receipt is a receipt OF.
+The gate is declared in `.claude/agent-guard.json` as `python3
+scripts/agent-guard/selftest.py && python3 scripts/check-agent-contract.py` —
+deliberately not the full `ci.yml`. Twenty-eight contexts needing .NET, Java and
+Rust toolchains and a network is minutes on every stop, and the same argument
+that made the `Stop` hook read a receipt instead of running the gate applies to
+what the receipt is a receipt OF.
+
+**On the day, that line was written `bash -c '...'`,** and the block quoted
+below prints it that way because that is what the session was handed. It was a
+workaround for #178, which is fixed; the declaration is the plain `&&` form now
+and the instruction is `--gate`. The transcript is left as it was rather than
+tidied, because a record that gets edited to match the current code is no longer
+a record of anything.
 
 **A live session was blocked on 2026-08-25.** This is the observation the
-milestone actually needed, and it is separate from the fixtures: all 52 cases in
+milestone actually needed, and it is separate from the fixtures: all 63 cases in
 `samples/agent-guard/` invoke the hooks as subprocesses on synthetic payloads,
 so none of them can tell you whether Claude Code *wires* them. It was reached
 deliberately — one real uncommitted edit to this file, the gate not run — and
@@ -451,7 +513,10 @@ fixture had reached:
   Declared the natural way — `a && b` — the printed instruction binds the `&&`
   outside the recorder, so half the gate runs unrecorded and a receipt can say
   `"verdict": "pass"` for a run whose second half failed. The guard's own
-  message is what produces it. Opened as #178.
+  message is what produces it. Opened as #178 and **fixed** the same day:
+  `record-gate.py --gate`, plus a receipt check that refuses a run which is not
+  the declared gate. §2 has the reasoning; `stop-15` through `stop-20` are the
+  cases.
 - **Re-running `--agent` skips an existing `CLAUDE.md` region rather than
   refreshing it**, so the one part of the contract that says what the rules ARE
   is the one part re-adoption does not upgrade. §7a and #177.
@@ -512,7 +577,9 @@ not.
 One thing `--agent` does not do, and cannot: declare what your gate command is.
 Write `.claude/agent-guard.json` as `{ "gate_command": "<your gate>" }` once.
 Without it the `Stop` hook still blocks and simply cannot name what to run, and
-a refusal with no remedy attached is a refusal that gets worked around.
+a refusal with no remedy attached is a refusal that gets worked around — and
+`--gate` has nothing to run, so it exits 3 and writes no receipt rather than
+recording a pass for a gate nobody named.
 
 **`selftest.py` is copied along with the rest and does not run in your tree.**
 It is this repo's own corpus runner and it needs `samples/agent-guard/`, which

@@ -506,6 +506,36 @@ def check(root: pathlib.Path, today: datetime.date) -> list[str]:
         bad("configs/agent/CLAUDE.fragment.md's END marker comes before its "
             "BEGIN marker")
 
+    # --- G10: this repo's own CLAUDE.md region is the fragment ---------------
+    #
+    # The baseline adopted its own contract (#166), so the region in the root
+    # CLAUDE.md is a COPY of the fragment — and re-running `--agent` skips a
+    # region that is already there (#177), so nothing refreshes it. Every
+    # change to the fragment is therefore a hand-edit in two files, which is
+    # the drift shape this whole script exists for: the half that states what
+    # the rules ARE is the half a session actually reads.
+    #
+    # Compared from BEGIN to END inclusive. The lines above the BEGIN marker
+    # are instructions to whoever is pasting it and are not part of the region
+    # an upgrade would replace.
+    begin, end = "<!-- BEGIN maxi-quality agent-guard -->", "<!-- END maxi-quality agent-guard -->"
+
+    def region(text: str, where: str) -> str | None:
+        i, j = text.find(begin), text.find(end)
+        if i < 0 or j < 0 or j < i:
+            bad(f"{where} has no complete agent-guard region")
+            return None
+        return text[i:j + len(end)]
+
+    own = read(root / "CLAUDE.md")
+    mine, theirs = region(own, "CLAUDE.md"), region(fragment, "configs/agent/CLAUDE.fragment.md")
+    if mine is not None and theirs is not None and mine != theirs:
+        bad("CLAUDE.md's agent-guard region is not configs/agent/"
+            "CLAUDE.fragment.md's. This repo runs its own contract, and "
+            "re-running --agent does not refresh an existing region (#177), so "
+            "the two are kept in step by hand — replace the text between the "
+            "markers in CLAUDE.md with the fragment's.")
+
     # --- G8: every §N citation on this surface resolves ----------------------
     #
     # Scoped to the agent surface rather than repo-wide, unlike
@@ -698,7 +728,7 @@ def mutations(cases: int, today: datetime.date) -> list[tuple]:
              r / "scripts/agent-guard/stop-gate2.py"),
          ("stop-gate.py",)),
         # AC2 — the README's count rotting the way "27 required checks" did.
-        ("a 53rd case file arrives and the README still says 52",
+        ("one more case file arrives and the README still says how many there were",
          lambda r: (r / "samples/agent-guard/cases/zz-99-extra.json").write_text(
              "{}", encoding="utf-8"),
          (str(cases), str(cases + 1))),
@@ -741,6 +771,16 @@ def mutations(cases: int, today: datetime.date) -> list[tuple]:
         ("the adopted copy is missing a script the source has",
          lambda r: (r / ".claude/agent-guard/record-gate.py").unlink(),
          ("record-gate.py", "is missing")),
+        # AC (#178) — the fragment and this repo's own copy of it drift apart,
+        # which is what happens by default: #177 means re-adoption does not
+        # refresh a region that is already there. Mutating the FRAGMENT rather
+        # than CLAUDE.md, because _stage symlinks root files and a write would
+        # follow the link into the real repo.
+        ("this repo's CLAUDE.md region and the fragment disagree",
+         lambda r: _edit(r, "configs/agent/CLAUDE.fragment.md",
+                         "They are not advice — they refuse.",
+                         "They are not advice."),
+         ("CLAUDE.md's agent-guard region",)),
         ("a mutation row names a script that does not exist",
          lambda r: _edit(r, "configs/agent/README.md",
                          "| `stop-gate.py` ignores the fingerprint |",
@@ -756,7 +796,7 @@ def mutations(cases: int, today: datetime.date) -> list[tuple]:
          ("§9",)),
         ("the samples README's spelled-out count drifts",
          lambda r: _edit(r, "samples/agent-guard/README.md",
-                         "Fifty-two cases", "Fifty-one cases"),
+                         "Sixty-three cases", "Sixty-two cases"),
          (str(cases), str(cases - 1))),
         ("a link in the contract points at nothing",
          lambda r: _edit(r, "configs/agent/README.md",

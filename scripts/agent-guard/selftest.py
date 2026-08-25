@@ -108,12 +108,20 @@ def build(root: str, setup: dict) -> None:
     # only way to build a genuinely stale one without copying a hash.
     record = setup.get("record")
     if record is not None:
+        # `gate: true` is the --gate form, which reads the command out of the
+        # config this fixture just wrote instead of taking one on its argv.
+        # The two are separate spellings of the same wrapper and both need
+        # covering: one is what the block message tells a session to paste,
+        # the other is what a human or CI runs ad hoc.
+        argv = ((sys.executable, os.path.join(HERE, "record-gate.py"), "--gate")
+                if record.get("gate")
+                else (sys.executable, os.path.join(HERE, "record-gate.py"), "--",
+                      *record["command"]))
         proc = subprocess.run(
-            (sys.executable, os.path.join(HERE, "record-gate.py"), "--",
-             *record["command"]),
-            cwd=root, capture_output=True, text=True, timeout=60,
+            argv, cwd=root, capture_output=True, text=True, timeout=60,
         )
         setup["_record_exit"] = proc.returncode
+        setup["_record_stderr"] = proc.stderr
         write_tree(root, record.get("after", {}))
 
     receipt = setup.get("receipt")
@@ -125,11 +133,17 @@ def build(root: str, setup: dict) -> None:
               else "0" * 64)
         path = os.path.join(root, RECEIPT)
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        body = {"fingerprint": fp,
+                "verdict": receipt.get("verdict", "pass"),
+                "exit_code": 0 if receipt.get("verdict") == "pass" else 1,
+                "command": receipt.get("command", "fixture gate")}
+        # Only when the case says so. A receipt that always carried it could
+        # never model the one this fix is about: a real, passing receipt for a
+        # command that is not the whole of the declared gate.
+        if "gate_command" in receipt:
+            body["gate_command"] = receipt["gate_command"]
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump({"fingerprint": fp,
-                       "verdict": receipt.get("verdict", "pass"),
-                       "exit_code": 0 if receipt.get("verdict") == "pass" else 1,
-                       "command": receipt.get("command", "fixture gate")}, fh)
+            json.dump(body, fh)
 
 
 def decision_of(hook: str, stdout: str) -> tuple[str, str]:
@@ -430,6 +444,14 @@ def run_case(path: str) -> list[str]:
             fails.append(f"record-gate exited {got}, expected "
                          f"{expect['record_exit']}")
 
+    # The wrapper's own stderr. A warning that is only ever read by a human is
+    # still a contract: it is the earliest place a run that will not satisfy
+    # the Stop hook can be named, and "warns" is not observable from a hook
+    # decision.
+    for needle in expect.get("record_stderr_contains", []):
+        if needle not in (setup.get("_record_stderr") or ""):
+            fails.append(f"record-gate's stderr never mentioned {needle!r}")
+
     # Always 0. A hook that exits non-zero on a blocking event blocks with a
     # worse message, and on a non-blocking one it is a broken install.
     if proc.returncode != 0:
@@ -444,6 +466,13 @@ def run_case(path: str) -> list[str]:
     for needle in expect.get("reason_contains", []):
         if needle not in reason:
             fails.append(f"reason never mentioned {needle!r}; got {reason[:200]!r}")
+
+    # Asserting a string is ABSENT is the only way to pin the removal of one.
+    # `reason_contains` cannot: the trap spelling can come back beside the
+    # right one and every case stays green.
+    for needle in expect.get("reason_excludes", []):
+        if needle in reason:
+            fails.append(f"reason still contains {needle!r}, and must not")
 
     for needle in expect.get("stderr_contains", []):
         if needle not in proc.stderr:

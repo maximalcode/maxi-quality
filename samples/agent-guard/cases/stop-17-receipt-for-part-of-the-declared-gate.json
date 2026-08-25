@@ -1,0 +1,30 @@
+{
+  "why": "The backstop for #178: a receipt that is fresh AND passing, for a command that is not the declared gate. Nothing about the fingerprint can see this — the content is genuinely the content that was checked, by a check that was only half the gate.",
+  "hook": "stop",
+  "setup": {
+    "committed": {
+      "a.txt": "one\n"
+    },
+    "worktree": {
+      "a.txt": "one\ntwo\n"
+    },
+    "config": {
+      "gate_command": "python3 a.py && python3 b.py"
+    },
+    "receipt": {
+      "fingerprint": "current",
+      "verdict": "pass",
+      "command": "python3 a.py"
+    }
+  },
+  "event": {
+    "hook_event_name": "Stop"
+  },
+  "expect": {
+    "decision": "block",
+    "reason_contains": [
+      "python3 a.py && python3 b.py",
+      "--gate"
+    ]
+  }
+}
