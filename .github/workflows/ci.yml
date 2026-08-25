@@ -3620,21 +3620,33 @@ jobs:
             NOPE > /tmp/ag-gate/.claude/agent-guard.json
           echo 'ungated' >> /tmp/ag-gate/package.json
 
+          stop_out() {
+            (cd /tmp/ag-gate && printf '{"cwd":"%s","hook_event_name":"Stop"}' /tmp/ag-gate \
+             | python3 /tmp/ag-gate/.claude/agent-guard/stop-gate.py)
+          }
+
+          # Extracts the ONE line a reader would paste, and asserts it is one
+          # line and that it holds no shell operator. That second assertion is
+          # the defect stated directly: an instruction carrying `&&`, `;` or
+          # `|` cannot survive being pasted, however well it reads.
           instruction() {
-            local out
-            out=$(cd /tmp/ag-gate && printf '{"cwd":"%s","hook_event_name":"Stop"}' /tmp/ag-gate \
-                  | python3 /tmp/ag-gate/.claude/agent-guard/stop-gate.py)
-            echo "$out" >&2
+            local out; out=$(stop_out); echo "$out" >&2
             python3 - "$out" <<'PY'
           import json, sys
           doc = json.loads(sys.argv[1])
           if doc.get("decision") != "block":
               print("::error::the stop was not blocked", file=sys.stderr); sys.exit(1)
-          for line in doc["reason"].splitlines():
-              if "record-gate.py" in line:
-                  print(line.strip()); sys.exit(0)
-          print("::error::the refusal named no command to run", file=sys.stderr)
-          sys.exit(1)
+          lines = [l.strip() for l in doc["reason"].splitlines() if "record-gate.py" in l]
+          if len(lines) != 1:
+              print(f"::error::{len(lines)} lines name record-gate.py; a paste target is one",
+                    file=sys.stderr)
+              sys.exit(1)
+          bad = [c for c in "&|;<>`" if c in lines[0]]
+          if bad:
+              print(f"::error::the pasteable line carries shell operators {bad} — #178",
+                    file=sys.stderr)
+              sys.exit(1)
+          print(lines[0])
           PY
           }
 
@@ -3651,8 +3663,7 @@ jobs:
 
           # And the stop is STILL refused, on the failing verdict rather than
           # on an absent receipt.
-          out=$(cd /tmp/ag-gate && printf '{"cwd":"%s","hook_event_name":"Stop"}' /tmp/ag-gate \
-                | python3 /tmp/ag-gate/.claude/agent-guard/stop-gate.py)
+          out=$(stop_out)
           grep -q 'FAILED' <<<"$out" \
             || { echo '::error::a failing recorded gate did not refuse the stop'; exit 1; }
 
@@ -3661,8 +3672,7 @@ jobs:
             > /tmp/ag-gate/.claude/agent-guard.json
           line=$(instruction)
           (cd /tmp/ag-gate && eval "$line")
-          out=$(cd /tmp/ag-gate && printf '{"cwd":"%s","hook_event_name":"Stop"}' /tmp/ag-gate \
-                | python3 /tmp/ag-gate/.claude/agent-guard/stop-gate.py)
+          out=$(stop_out)
           [[ -z ${out//[[:space:]]/} ]] \
             || { echo "::error::the stop was still refused after a passing gate: $out"; exit 1; }
           echo 'OK: the printed line ran both halves, both times, inside the recorder'

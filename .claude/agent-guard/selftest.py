@@ -121,6 +121,7 @@ def build(root: str, setup: dict) -> None:
             argv, cwd=root, capture_output=True, text=True, timeout=60,
         )
         setup["_record_exit"] = proc.returncode
+        setup["_record_stderr"] = proc.stderr
         write_tree(root, record.get("after", {}))
 
     receipt = setup.get("receipt")
@@ -443,6 +444,14 @@ def run_case(path: str) -> list[str]:
             fails.append(f"record-gate exited {got}, expected "
                          f"{expect['record_exit']}")
 
+    # The wrapper's own stderr. A warning that is only ever read by a human is
+    # still a contract: it is the earliest place a run that will not satisfy
+    # the Stop hook can be named, and "warns" is not observable from a hook
+    # decision.
+    for needle in expect.get("record_stderr_contains", []):
+        if needle not in (setup.get("_record_stderr") or ""):
+            fails.append(f"record-gate's stderr never mentioned {needle!r}")
+
     # Always 0. A hook that exits non-zero on a blocking event blocks with a
     # worse message, and on a non-blocking one it is a broken install.
     if proc.returncode != 0:
@@ -457,6 +466,13 @@ def run_case(path: str) -> list[str]:
     for needle in expect.get("reason_contains", []):
         if needle not in reason:
             fails.append(f"reason never mentioned {needle!r}; got {reason[:200]!r}")
+
+    # Asserting a string is ABSENT is the only way to pin the removal of one.
+    # `reason_contains` cannot: the trap spelling can come back beside the
+    # right one and every case stays green.
+    for needle in expect.get("reason_excludes", []):
+        if needle in reason:
+            fails.append(f"reason still contains {needle!r}, and must not")
 
     for needle in expect.get("stderr_contains", []):
         if needle not in proc.stderr:

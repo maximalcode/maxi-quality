@@ -60,6 +60,7 @@ from guard import (  # noqa: E402
     fingerprint,
     gate_argv,
     gate_command,
+    is_declared_gate,
     repo_root,
 )
 
@@ -99,6 +100,20 @@ def main(argv: list[str]) -> int:
                   "record-gate.py -- <your gate>", file=sys.stderr)
             return 3
         args = list(gate_argv(declared))
+
+    # A wrapped run of something that is not the declared gate is legal — the
+    # `--` form is there for exactly that — but it produces a receipt the Stop
+    # hook will refuse, and the useful place to say so is here, where the
+    # command was chosen, rather than at the end of the next turn.
+    if not want_gate:
+        declared_here = gate_command(root)
+        if declared_here is not None and not is_declared_gate(
+                {"command": shlex.join(args)}, declared_here):
+            print(f"record-gate: this is not the gate {CONFIG} declares, so "
+                  "the receipt will not satisfy the Stop hook.\n"
+                  f"  declared:  {declared_here}\n"
+                  "  run it with --gate to record the declared gate instead.",
+                  file=sys.stderr)
 
     # BEFORE the command runs — see the module docstring.
     before = fingerprint(root)

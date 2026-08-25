@@ -148,9 +148,12 @@ scripts/check-agent-contract.py  the agent contract is four files that a single
                           a COPY, because a consumer gets a copy, so it can drift
                           here exactly the way it will drift there and no fixture
                           would notice: samples/agent-guard/ runs the source.
+                          G10 (#178) is the same drift one file over: this repo's
+                          own CLAUDE.md region against the fragment it was pasted
+                          from, which nothing refreshes while #177 is open.
                           It READS those numbers
                           and refuses to write them. `selftest` mutates a staged
-                          copy 23 ways and asserts each run names what moved
+                          copy 24 ways and asserts each run names what moved
 scripts/editor-parity.py  the differ for the #121 parity run: a VS Code Problems
                           panel dumped as JSON ("Copy All"), diffed against the
                           manifest README §3 names for that sample. The observing

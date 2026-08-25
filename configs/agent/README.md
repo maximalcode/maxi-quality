@@ -93,13 +93,34 @@ a run whose second half had failed — through the message the guard itself
 printed, so the session had done nothing wrong. `--gate` carries no operators
 and hands the declared string to one shell, whole.
 
+With no `gate_command` declared, the refusal names `--gate` anyway and says to
+declare one. It used to print `-- <the gate command your CLAUDE.md names>`,
+which is the same trap one step further out and the state every freshly adopted
+tree is in, since `--agent` cannot declare a gate for you. `--gate` with nothing
+declared exits 3 and says what to write — a loud wrong answer instead of a quiet
+one.
+
 That fixed the instruction. The receipt is checked too: **a passing, perfectly
 fresh receipt for a command that is not the declared gate is refused.** The
 fingerprint cannot see that case — the content really was checked, by a check
-that was only part of what this repo calls checking. Three spellings count as
-the declared gate and they are the three ways it actually gets run: `--gate`, an
-argv whose joined form is the declared string, and the `bash -c '<gate>'` form
-that was the workaround before `--gate` existed.
+that was only part of what this repo calls checking. Two shapes count as having
+run the gate: `--gate`, which records the declared string in a field of its own,
+and an argv that is either the `bash -c '<gate>'` rendering `--gate` executes —
+also the workaround from before it existed — or the declaration parsed as an
+argv, which is how a one-command gate has always been run.
+
+The comparison is on **argvs, not on strings**, so `bash -c "a && b"` and
+`bash -c 'a && b'` are one gate rather than two. What stops that normalisation
+from going too far is `SHELL_OPERATORS`: `a && b` splits to a list containing a
+bare `&&`, and handing that list to exec runs a program called `a` — so the
+declaration-as-argv shape is refused for any declaration a shell would do more
+with. Without that, the exact case #178 is about walks back in through the door
+the quoting fix opened.
+
+The `--` form stays legal for an ad-hoc run, and with a gate declared it now
+**warns on stderr** that the receipt it is about to write will not satisfy the
+`Stop` hook. The place to say that is where the command was chosen, not at the
+end of the next turn.
 
 **The fingerprint is taken before the command runs, not after.** A formatter is
 a gate that edits; fingerprinting afterwards would record a passing verdict for
@@ -224,7 +245,7 @@ which is the entire argument for §5's structural checker.
 
 ## 5. Evidence
 
-`samples/agent-guard/` is 58 cases. Every hook case runs the real hook as a
+`samples/agent-guard/` is 63 cases. Every hook case runs the real hook as a
 subprocess with a real payload on stdin and parses stdout the way Claude Code
 does; the `stop-` and `edit-` cases build a real git repository first, and the
 `noverify-` cases do not, because a command guard reads a string and has no
@@ -313,11 +334,15 @@ The four scripts, on 2026-08-22 (`sample-guard.py`, `stop-gate.py`,
 | `record-gate.py` hashes after the run instead of before | 1 |
 | `record-gate.py` swallows the gate's exit code | 1 |
 | the refusal interpolates the gate into `--` instead of printing `--gate` | 2 |
-| `--gate` splits the declared string instead of handing it to one shell | 1 |
+| the undeclared case prints an interpolation slot again | 1 |
+| `--gate` splits the declared string instead of handing it to one shell | 3 |
 | `--gate` records a pass when nothing is declared | 1 |
-| the receipt joins its argv with spaces instead of `shlex.join` | 1 |
-| the receipt is not checked against the declared gate at all | 1 |
-| only the `--gate` spelling counts as having run the declared gate | 2 |
+| the receipt joins its argv with spaces instead of `shlex.join` | 3 |
+| the receipt is not checked against the declared gate at all | 3 |
+| the comparison is on the joined strings, not on the argvs | 3 |
+| a bare operator is not treated as a word only a shell can run | 1 |
+| only the `--gate` spelling counts as having run the declared gate | 1 |
+| the wrapper does not warn on a run that is not the declared gate | 1 |
 | a rename's old path is dropped from the changed set | 1 |
 | the edited path is not resolved through symlinks | 1 |
 | manifest removals are not compared | 1 |
@@ -434,7 +459,7 @@ something the baseline itself did not.
 
 It runs from a **copy** under `.claude/agent-guard/`, not a symlink to
 `scripts/agent-guard/`, so this tree drifts exactly the way a consumer's will.
-`check-agent-contract.py` G9 is what notices; nothing else could, because all 58
+`check-agent-contract.py` G9 is what notices; nothing else could, because all 63
 fixtures in `samples/agent-guard/` run the source.
 
 The gate is declared in `.claude/agent-guard.json` as `python3
@@ -452,7 +477,7 @@ tidied, because a record that gets edited to match the current code is no longer
 a record of anything.
 
 **A live session was blocked on 2026-08-25.** This is the observation the
-milestone actually needed, and it is separate from the fixtures: all 58 cases in
+milestone actually needed, and it is separate from the fixtures: all 63 cases in
 `samples/agent-guard/` invoke the hooks as subprocesses on synthetic payloads,
 so none of them can tell you whether Claude Code *wires* them. It was reached
 deliberately — one real uncommitted edit to this file, the gate not run — and

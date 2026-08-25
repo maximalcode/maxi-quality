@@ -1,0 +1,29 @@
+{
+  "why": "`bash -c \"a && b\"` and `bash -c 'a && b'` are two spellings of one command. Comparing the recorded line as TEXT makes them different gates, so one of them is refused forever with a message saying it is not the declared gate. The comparison splits both sides instead.",
+  "hook": "stop",
+  "setup": {
+    "committed": {
+      "a.txt": "one\n"
+    },
+    "worktree": {
+      "a.txt": "one\ntwo\n"
+    },
+    "config": {
+      "gate_command": "bash -c \"true && true\""
+    },
+    "record": {
+      "command": [
+        "bash",
+        "-c",
+        "true && true"
+      ]
+    }
+  },
+  "event": {
+    "hook_event_name": "Stop"
+  },
+  "expect": {
+    "decision": "allow",
+    "record_exit": 0
+  }
+}

@@ -1,6 +1,6 @@
 # The agent guard's test suite
 
-Fifty-eight cases, one JSON file each, in [`cases/`](cases). Run them:
+Sixty-three cases, one JSON file each, in [`cases/`](cases). Run them:
 
 ```bash
 python3 scripts/agent-guard/selftest.py
@@ -67,18 +67,19 @@ a fixture asserting something the hook does not do.
 
 ## The negative controls matter as much as the blocks
 
-Fifteen cases exist to prove the guards stay out of the way: an edit outside
+Seventeen cases exist to prove the guards stay out of the way: an edit outside
 `samples/`, an edit that adds a manifest entry, an edit that grows a fixture, an
 edit to an uncited clean fixture, a brand-new manifest, a tool the matcher should
 never have routed here, an ordinary `git commit -m`, `npm test -- -n`,
 `git push -n` (which is `--dry-run`, not `--no-verify`), and the four shapes
 where a hook-skipping flag is really an option's VALUE — `-m "--no-verify"`,
 `--message --no-verify`, `--message=--no-verify`, and anything after a `--`
-pathspec terminator. Two more arrived with #178, and they are the same
+pathspec terminator. Four more arrived with #178, and they are the same
 argument one level in: the `Stop` hook now checks the receipt against the
-DECLARED gate, so a one-command gate run the ordinary way, and the
-`bash -c '...'` spelling people used before `--gate` existed, both have to keep
-standing. A guard that also objects to ordinary work is a guard someone switches
+DECLARED gate, so every honest spelling of running it has to keep standing — a
+one-command gate run the ordinary way, the `bash -c '...'` form people used
+before `--gate` existed, a plain declaration run wrapped, and a declaration
+quoted with `"` rather than `'`. A guard that also objects to ordinary work is a guard someone switches
 off within a day, and then the real one is not running either.
 
 Five more are the fail-open cases — not a git repo, a payload with no
