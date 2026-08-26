@@ -122,6 +122,20 @@ set -Eeuo pipefail
 
 BASELINE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# How to name THIS script inside a message someone is meant to paste. A message
+# that prints the literal `scripts/adopt.sh` is right for a reader standing in
+# the baseline and `command not found` for everyone else — and every doc here
+# invokes it from the consumer's own repo, as `"$BASELINE"/scripts/adopt.sh`.
+# So it is DERIVED from the invocation rather than assumed, which is the same
+# fix recorder() in scripts/agent-guard/stop-gate.py carries for the same
+# reason: a remedy that does not run is a refusal that gets worked around.
+#
+# The invocation string is kept whenever it still resolves from the caller's
+# cwd — it is what they typed, so it reads back to them — and replaced by an
+# absolute path when it does not, which is the PATH-lookup case.
+SELF_CMD="${BASH_SOURCE[0]}"
+if [ ! -x "$SELF_CMD" ]; then SELF_CMD="$BASELINE/scripts/adopt.sh"; fi
+
 # The cargo-deny version, for the "install it locally to match CI" line in the
 # summary only — this script no longer stamps a Rust job into anyone's workflow
 # (#70), so nothing here installs it. The pins that RUN live in
@@ -149,6 +163,12 @@ EDITOR_CONFLICT=0
 # obvious name can mean two unrelated things (configs/agent/README.md §8).
 WANT_AGENT=0
 AGENT_CONFLICT=0
+
+# Escapes a path for a command line a human will paste. A checkout under
+# "My Documents" is not exotic, and an unquoted path there runs a different
+# command or none at all. printf %q is bash 3.2 and leaves an ordinary path
+# exactly as it was, so the common case reads unchanged.
+shq() { printf '%q' "$1"; }
 
 die() { printf '\033[31merror:\033[0m %s\n' "$1" >&2; exit 3; }
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }
@@ -360,11 +380,26 @@ if [ "$WANT_AGENT" -eq 1 ]; then
   if [ "$WANT_EDITOR" -eq 1 ]; then COMBINED="$COMBINED --editor"; fi
   if [ "$HOOKS" -eq 1 ]; then COMBINED="$COMBINED --hooks"; fi
   if [ -n "$COMBINED" ]; then
-    die "--agent installs the agent contract and NOTHING ELSE, so it cannot share a
+    # Two messages, because there are two trees and "one at a time" is only
+    # true in one of them. Against a consumer's repo both runs work and the
+    # order is theirs to pick. Against THIS one they do not: --editor and
+    # --hooks on the baseline are the self-adopt refusal a few lines below, so
+    # naming that run would walk the reader straight into a second error.
+    # Only --agent runs here, so only --agent is offered.
+    if [ "$TARGET" = "$BASELINE" ]; then
+      die "--agent installs the agent contract and NOTHING ELSE, so it cannot share a
+       run with$COMBINED. And$COMBINED cannot run against this tree at all:
+       adopting maxi-quality into itself is refused for every flag but --agent.
+       So there is one run here rather than two:
+
+         $(shq "$SELF_CMD") $(shq "$TARGET") --agent"
+    else
+      die "--agent installs the agent contract and NOTHING ELSE, so it cannot share a
        run with$COMBINED. Adopt them one at a time, in either order:
 
-         scripts/adopt.sh $TARGET$COMBINED
-         scripts/adopt.sh $TARGET --agent"
+         $(shq "$SELF_CMD") $(shq "$TARGET")$COMBINED
+         $(shq "$SELF_CMD") $(shq "$TARGET") --agent"
+    fi
   fi
 
   SELF=0
@@ -424,8 +459,12 @@ if [ "$WANT_AGENT" -eq 1 ]; then
   elif [ "$SELF" -eq 1 ]; then
     printf '\033[32mADOPTED\033[0m — this repo now runs the contract it ships.\n'
   else
+    # On its own line, and with the same derived path the refusals use: this
+    # is printed to be pasted, and a command sharing a line with prose is one
+    # a reader has to reassemble before it runs.
     printf '\033[32mADOPTED\033[0m — the agent contract, and nothing else. The language\n'
-    printf 'layer is a separate run:  scripts/adopt.sh %s\n' "$TARGET"
+    printf 'layer is a separate run:\n\n'
+    printf '  %s %s\n' "$(shq "$SELF_CMD")" "$(shq "$TARGET")"
   fi
   exit 0
 fi

@@ -3695,6 +3695,177 @@ jobs:
           done
           echo 'OK: the combination is refused with a remedy, not silently resolved'
 
+      # A REMEDY THAT DOES NOT RUN. Both --agent messages print a command for
+      # the reader to paste, and a printed command is a claim: this runs, here.
+      # Two ways it was false. The path was the literal `scripts/adopt.sh`,
+      # which resolves only for a reader standing in the baseline — and every
+      # doc invokes this script from the consumer's own repo, as
+      # `"$BASELINE"/scripts/adopt.sh`. And in THIS tree the combined-flag
+      # refusal named a run the script itself refuses: --editor against the
+      # baseline is the self-adopt rule, so "adopt them one at a time" was
+      # false in the one tree where it was most likely to be read.
+      #
+      # Same class as the hardcoded record-gate.py path in stop-gate.py, so it
+      # is asserted the same way — the printed line is EXTRACTED and RUN from
+      # the cwd it was printed in, rather than read and believed. --dry-run is
+      # appended so the check costs nothing; it does not soften the check,
+      # because a path that does not resolve still exits 127 and a run this
+      # script refuses still exits 3.
+      - name: every command the --agent messages print actually runs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BASE=$PWD
+          consumer() {
+            rm -rf "$1"; mkdir -p "$1"
+            printf '{"name":"demo"}\n' > "$1/package.json"
+            git -C "$1" init -q
+            git -C "$1" config user.email ci@example.invalid
+            git -C "$1" config user.name ci
+            git -C "$1" add -A && git -C "$1" commit -qm init
+          }
+          # A line that IS a command: leading space, then a bare path ending in
+          # adopt.sh. Prose mentioning the script does not match, which is why
+          # every pasteable command in these messages stands on its own line.
+          pasteable() {
+            grep -E '^[[:space:]]+[^[:space:]]*adopt\.sh([[:space:]]|$)' "$1" \
+              | sed 's/^[[:space:]]*//' || true
+          }
+          # $1 log, $2 cwd to paste from, $3 how many commands it must hold.
+          check_printed() {
+            local n=0 line rc
+            while IFS= read -r line; do
+              [[ -n "$line" ]] || continue
+              n=$((n + 1))
+              echo "  pasting from $2: $line"
+              rc=0
+              ( cd "$2" && eval "$line --dry-run" ) > /tmp/paste.log 2>&1 || rc=$?
+              if [[ $rc -ne 0 ]]; then
+                cat /tmp/paste.log
+                echo "::error::the printed remedy exited $rc when pasted in $2: $line"
+                exit 1
+              fi
+            done < <(pasteable "$1")
+            [[ $n -eq $3 ]] || {
+              echo "::error::expected $3 pasteable commands in $1, found $n"
+              cat "$1"; exit 1; }
+          }
+
+          # 1. The documented invocation: an absolute path, run from inside the
+          #    consumer's own repo. This is the one a consumer actually meets.
+          consumer /tmp/ag-rem
+          for combo in "--editor" "--hooks"; do
+            rc=0
+            ( cd /tmp/ag-rem && "$BASE/scripts/adopt.sh" /tmp/ag-rem --agent "$combo" ) \
+              > /tmp/ag-rem.log 2>&1 || rc=$?
+            cat /tmp/ag-rem.log
+            [[ $rc -eq 3 ]] || { echo "::error::[$combo] expected exit 3, got $rc"; exit 1; }
+            check_printed /tmp/ag-rem.log /tmp/ag-rem 2
+            echo "  OK  both runs named for --agent $combo actually run"
+          done
+
+          # 2. Invoked from the baseline with a relative path. The remedy has
+          #    to be runnable from the cwd it was printed in, which here is the
+          #    baseline rather than the target.
+          rc=0
+          ( cd "$BASE" && ./scripts/adopt.sh /tmp/ag-rem --agent --editor ) \
+            > /tmp/ag-rem2.log 2>&1 || rc=$?
+          cat /tmp/ag-rem2.log
+          [[ $rc -eq 3 ]] || { echo "::error::expected exit 3, got $rc"; exit 1; }
+          check_printed /tmp/ag-rem2.log "$BASE" 2
+
+          # 3. THE BASELINE AS THE TARGET. "Adopt them one at a time" is false
+          #    here: --editor against this tree is refused by the self-adopt
+          #    rule, so exactly ONE of the two runs exists, and printing the
+          #    other sends the reader into a second error message.
+          rc=0
+          ( cd "$BASE" && ./scripts/adopt.sh . --agent --editor ) \
+            > /tmp/ag-rem3.log 2>&1 || rc=$?
+          cat /tmp/ag-rem3.log
+          [[ $rc -eq 3 ]] || { echo "::error::expected exit 3, got $rc"; exit 1; }
+          check_printed /tmp/ag-rem3.log "$BASE" 1
+          grep -q -- '--agent' /tmp/ag-rem3.log || {
+            echo '::error::the one run that works in this tree is not the one named'; exit 1; }
+
+          # 4. The SUCCESS footer names the language-layer run, and it is a
+          #    printed command like any other.
+          consumer /tmp/ag-rem-ok
+          ( cd /tmp/ag-rem-ok && "$BASE/scripts/adopt.sh" /tmp/ag-rem-ok --agent ) \
+            > /tmp/ag-rem-ok.log 2>&1
+          cat /tmp/ag-rem-ok.log
+          check_printed /tmp/ag-rem-ok.log /tmp/ag-rem-ok 1
+
+          # 5. A path with a space in it. These strings are printed to be
+          #    pasted into a shell, and a checkout under "My Documents" is not
+          #    exotic — an unquoted path there runs a different command, or
+          #    none.
+          consumer "/tmp/ag rem space"
+          rc=0
+          ( cd "/tmp/ag rem space" && "$BASE/scripts/adopt.sh" "/tmp/ag rem space" --agent --hooks ) \
+            > /tmp/ag-rem-space.log 2>&1 || rc=$?
+          cat /tmp/ag-rem-space.log
+          [[ $rc -eq 3 ]] || { echo "::error::expected exit 3, got $rc"; exit 1; }
+          check_printed /tmp/ag-rem-space.log "/tmp/ag rem space" 2
+          echo 'OK: every printed command ran, in the cwd it was printed in'
+
+      # THE INERT FLAGS, which had no assertion at all. docs/ADOPTION.md and
+      # the script header both promise that --force, --ref and --no-workflow
+      # are REPORTED as doing nothing on an --agent run rather than dropped
+      # quietly, and nothing in CI passed one — this branch removed the last
+      # --no-workflow from the --agent invocations above, so the promise could
+      # stop being kept with every check green.
+      #
+      # --ref is covered first and explicitly. REF_SET exists only so that
+      # `--ref v1` reports honestly: a check written the obvious way, comparing
+      # $REF against the default, stays silent for the one reader most likely
+      # to believe the flag took effect, and passes every other assertion here.
+      - name: --agent reports the language-layer flags as inert, --ref included
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          inert_repo() {
+            rm -rf "$1"; mkdir -p "$1"
+            printf '{"name":"demo"}\n' > "$1/package.json"
+            git -C "$1" init -q
+            git -C "$1" config user.email ci@example.invalid
+            git -C "$1" config user.name ci
+            git -C "$1" add -A && git -C "$1" commit -qm init
+          }
+
+          # --ref carrying THE DEFAULT VALUE. Nothing else in this file would
+          # notice it going silent.
+          inert_repo /tmp/ag-inert-ref
+          out=$(./scripts/adopt.sh /tmp/ag-inert-ref --agent --ref v1 2>&1)
+          echo "$out"
+          grep -q -- '--ref does nothing on this' <<<"$out" || {
+            echo '::error::--agent --ref v1 did not report --ref as inert — the default value is the case REF_SET exists for'
+            exit 1; }
+
+          # All three at once, and a --ref that differs from the default.
+          inert_repo /tmp/ag-inert-all
+          out=$(./scripts/adopt.sh /tmp/ag-inert-all --agent --force --no-workflow --ref v1.0.9 2>&1)
+          echo "$out"
+          for flag in --force --no-workflow --ref; do
+            grep -q -- "$flag" <<<"$out" || {
+              echo "::error::$flag was dropped silently on an --agent run"; exit 1; }
+          done
+          # Reported AND actually inert. A flag that is announced as doing
+          # nothing and then does something is the worse half of this bug.
+          [[ -e /tmp/ag-inert-all/.github ]] \
+            && { echo '::error::--no-workflow was reported inert next to a workflow that got written'; exit 1; }
+          if grep -rqF 'v1.0.9' /tmp/ag-inert-all --exclude-dir=.git; then
+            echo '::error::--ref was reported inert and still reached the tree'; exit 1
+          fi
+
+          # And no false alarm: a bare --agent run reports nothing inert.
+          inert_repo /tmp/ag-inert-none
+          out=$(./scripts/adopt.sh /tmp/ag-inert-none --agent 2>&1)
+          echo "$out"
+          if grep -q 'does nothing on this' <<<"$out"; then
+            echo '::error::a bare --agent run reported an inert flag nobody passed'; exit 1
+          fi
+          echo 'OK: --force, --no-workflow and --ref are reported, inert, and not invented'
+
       # ISSUE #178, end to end and in an ADOPTED tree. The refusal prints a
       # line for a session to paste, so this step PASTES IT — `eval` on the
       # exact string the hook produced, not a re-typed approximation of it.

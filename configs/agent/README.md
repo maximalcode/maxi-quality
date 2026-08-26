@@ -554,6 +554,14 @@ measurement impossible to attribute. It also means a repo in
 a language this baseline has never heard of can adopt the contract, which the
 old behaviour refused to do: it stopped at detection.
 
+The refusal names the runs that do work, and in **this** repo that is one run
+rather than two: `--editor` and `--hooks` against the baseline are the
+self-adopt refusal, so "adopt them one at a time" would be false here and the
+message says so instead. Every command those messages print is run by the
+`adopt` job from the directory it was printed in — a remedy nobody executes is
+how `scripts/agent-guard/stop-gate.py` came to print a path that did not exist
+in an adopted tree.
+
 The merge has ownership: baseline hook entries are matched by their `command`
 string and deny rules by the rule string, and appended to what is already
 there. Nothing of the consumer's is replaced, reordered or removed, and
@@ -563,8 +571,9 @@ It **refuses** a `.claude/settings.json` it cannot fully read — one that does
 not parse, or a `hooks` key whose shape is not the documented one — and the
 refusal skips the whole flag rather than just that file. Half a contract is a
 `CLAUDE.md` that says these rules refuse, in a repo where nothing refuses, and
-the next session reads it and believes it. The run exits 6 and the rest of the
-adoption still happens.
+the next session reads it and believes it. The run exits 6 having written
+nothing at all — since #183 there is no "rest of the adoption" for it to fall
+back on, because an `--agent` run is the contract and only the contract.
 
 ### 7a. What lands, and by hand if you would rather
 
