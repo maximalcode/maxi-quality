@@ -53,9 +53,19 @@ superseded tag twice, and once named `v1.0.3`, which never existed at all. A doc
 that hard-codes a version goes stale on the next release by construction, and a
 `--ref` a reader copies verbatim is the one place that costs them something.
 `--no-workflow` skips the CI scaffold. `--editor` additionally writes the
-`.vscode/` files that make your editor show what CI shows — §5b. `--agent`
-installs the hooks and deny rules that constrain a Claude Code session writing
-in your repo — §5c.
+`.vscode/` files that make your editor show what CI shows — §5b.
+
+`--agent` is the one flag that is **not** an "additionally". It installs the
+hooks and deny rules that constrain a Claude Code session writing in your repo
+— §5c — and **nothing else**: no language config, no `.editorconfig`, no
+workflow. The language layer is a second run without it, in either order, and
+passing `--editor` or `--hooks` alongside it is a usage error rather than a
+silent choice between them:
+
+```bash
+"$BASELINE"/scripts/adopt.sh <repo>            # the language layer
+"$BASELINE"/scripts/adopt.sh <repo> --agent    # the agent contract
+```
 
 CI proves this end-to-end in both directions: a repo adopted by the script builds
 the clean fixture at 0 errors/0 warnings **and** rejects the bad fixture with
@@ -785,6 +795,38 @@ CLAUDE.md                          += the marker-delimited workflow region
 .gitignore                         += .claude/agent-guard-receipt.json
 ```
 
+**That list is the whole of it.** `--agent` is exclusive: unlike `--editor` and
+`--hooks`, which add to an adoption, this run writes no language config, no
+`.editorconfig` and no workflow, in any repo. Adopt the language layer with a
+separate run — `scripts/adopt.sh <repo>` — before or after, and expect a usage
+error if you pass `--editor` or `--hooks` in the same one (`--force`, `--ref`
+and `--no-workflow` belong to that other run too, and this one says so rather
+than dropping them quietly).
+
+Which run does what:
+
+| Invocation | What it writes |
+|---|---|
+| `adopt.sh <repo>` | the language layer: configs, `.editorconfig`, `.maxi-quality.yml`, the workflow |
+| `adopt.sh <repo> --editor` | the language layer **and** `.vscode/` — §5b |
+| `adopt.sh <repo> --hooks` | the language layer **and** the git pre-commit hook |
+| `adopt.sh <repo> --agent` | the agent contract, and nothing else |
+
+Two reasons it is separated rather than bundled, and the second is the one that
+decided it (#183). The contract has no language in it — it is rules about
+sessions, a receipt and a git diff, and it works in languages this baseline does
+not ship. And adopting both at once makes the result **unattributable**: when a
+session or a contributor finds the tree annoying afterwards, nobody can say
+whether it was the guard or two hundred new lints. It also means a repo the
+baseline detects nothing in can still adopt the contract, which the old
+behaviour could not do at all.
+
+**In that repo there is no second run**, and the script says so rather than
+offering one: `scripts/adopt.sh <repo>` with no language detected warns
+"Nothing to do" and exits 1, so neither the success footer nor the
+combined-flag refusal prints it there. The contract still installs — that is
+the whole point of it having no language in it.
+
 What it buys you is one rule every `CLAUDE.md` already asks for and nothing has
 ever enforced: **a session may not call it done on code the gate has not seen.**
 The `Stop` hook fingerprints everything that differs from `HEAD` and compares it
@@ -822,10 +864,10 @@ copied and refreshed rather than pinned to a tag.
 
 If your `settings.json` does not parse, or its `hooks` key is not the shape the
 docs describe, `--agent` writes **nothing at all** — not the scripts, not the
-`CLAUDE.md` region — says why, and exits 6. The rest of the adoption still
-happens. A tree carrying a `CLAUDE.md` that promises refusals nothing performs
-is worse than one with no contract, because the next session reads it and
-believes it.
+`CLAUDE.md` region — says why, and exits 6. Since the run installs only the
+contract, that leaves the tree exactly as it found it. A tree carrying a
+`CLAUDE.md` that promises refusals nothing performs is worse than one with no
+contract, because the next session reads it and believes it.
 
 What this does **not** do is covered honestly and at length in
 [`configs/agent/README.md`](../configs/agent/README.md) §3 — read it before

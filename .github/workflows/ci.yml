@@ -2971,7 +2971,22 @@ jobs:
           if [[ -e /tmp/dry/eslint.base.mjs || -e /tmp/dry/.editorconfig ]]; then
             echo '::error::--dry-run wrote files'; exit 1
           fi
-          echo 'OK: exit codes correct, --dry-run wrote nothing'
+          # --help is printed by LINE NUMBER out of the comment header, so it
+          # goes wrong silently in both directions: a header that grew stops
+          # printing its last rows, and one that shrank starts printing the
+          # code below it. Neither is an error anyone would notice, so assert
+          # the two ends — the last row is present, and no shell reached the
+          # page.
+          rc=0; help=$(./scripts/adopt.sh --help) || rc=$?
+          [[ $rc -eq 0 ]] || { echo "::error::--help exited $rc"; exit 1; }
+          grep -q -- '--agent  *ONLY install the agent contract' <<<"$help" \
+            || { echo '::error::--help no longer reaches the flag list'; exit 1; }
+          [[ "$(grep -v '^[[:space:]]*$' <<<"$help" | tail -1)" == *'.claude/agent-guard-receipt.json'* ]] \
+            || { echo '::error::--help does not end on the last row of the header'; exit 1; }
+          if grep -qE '^(set -|[A-Za-z_]+\(\) \{|BASELINE=)' <<<"$help"; then
+            echo '::error::--help is printing the script instead of the header'; exit 1
+          fi
+          echo 'OK: exit codes correct, --dry-run wrote nothing, --help prints the header and no code'
       - name: Adopted repo must BUILD CLEAN on the clean fixture
         shell: bash
         run: |
@@ -3553,7 +3568,7 @@ jobs:
             git -C "$1" add -A && git -C "$1" commit -qm init
           }
           agent_repo /tmp/ag-fresh
-          ./scripts/adopt.sh /tmp/ag-fresh --no-workflow --agent
+          ./scripts/adopt.sh /tmp/ag-fresh --agent
           for f in .claude/settings.json .claude/agent-guard/guard.py \
                    .claude/agent-guard/stop-gate.py CLAUDE.md .gitignore; do
             [[ -e /tmp/ag-fresh/$f ]] || { echo "::error::--agent did not write $f"; exit 1; }
@@ -3594,6 +3609,355 @@ jobs:
             && { echo '::error::--agent copied the scripts to the baseline path, not .claude/'; exit 1; }
           echo 'OK: adopted from nothing, and the installed Stop hook refuses'
 
+      # ISSUE #183 — --agent is EXCLUSIVE, in every tree and not just this one.
+      # It used to be documented as an ALSO flag and behaved like one everywhere
+      # except the self-adopt branch, so the one invocation that did what people
+      # wanted was the one reserved for the baseline. The contract has no
+      # language in it — it is five rules about sessions, a receipt and a git
+      # diff — and coupling it to two hundred new lints makes the result
+      # unattributable: nobody can say afterwards which half a session found
+      # annoying.
+      #
+      # Asserted by ENUMERATING the tree rather than by naming the configs this
+      # repo happens to ship today. A list of filenames would go stale the next
+      # time a language is added, and go stale silently, which is the same
+      # failure shape as a guard that matches nothing.
+      - name: --agent installs the contract and NOTHING else
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm -rf /tmp/ag-only && mkdir -p /tmp/ag-only/src
+          # Three detectable languages, so a run that adopted the language layer
+          # would leave an unmistakable trail. Note NO --no-workflow: the
+          # workflow scaffold is one of the things exclusivity has to hold back,
+          # and passing the flag that suppresses it would prove nothing.
+          printf '{"name":"demo"}\n' > /tmp/ag-only/package.json
+          printf '{}\n' > /tmp/ag-only/tsconfig.json
+          printf '[project]\nname = "demo"\nversion = "0.1.0"\n' > /tmp/ag-only/pyproject.toml
+          printf '<Project Sdk="Microsoft.NET.Sdk"></Project>\n' > /tmp/ag-only/P.csproj
+          git -C /tmp/ag-only init -q
+          git -C /tmp/ag-only config user.email ci@example.invalid
+          git -C /tmp/ag-only config user.name ci
+          git -C /tmp/ag-only add -A && git -C /tmp/ag-only commit -qm init
+          ./scripts/adopt.sh /tmp/ag-only --agent
+          for f in .claude/settings.json .claude/agent-guard/stop-gate.py \
+                   CLAUDE.md .gitignore; do
+            [[ -e /tmp/ag-only/$f ]] || { echo "::error::--agent did not write $f"; exit 1; }
+          done
+          # --others without --exclude-standard on purpose: the .gitignore line
+          # --agent just wrote would otherwise hide anything it names.
+          # `git -C` rather than `cd &&`: with the `|| true` this needs, a
+          # `cd` on the left of an `&&` is swallowed by it — the substitution
+          # returns empty and the assertion passes having enumerated nothing.
+          # That is SC2015, and it is the failure this step exists to catch,
+          # one level up.
+          stray=$( { git -C /tmp/ag-only ls-files --others
+                     git -C /tmp/ag-only diff --name-only
+                   } | grep -vE '^(\.claude/|CLAUDE\.md$|\.gitignore$)' || true)
+          if [[ -n "$stray" ]]; then
+            echo '::error::--agent wrote the language layer as well as the contract:'
+            echo "$stray"
+            exit 1
+          fi
+          [[ -e /tmp/ag-only/.github/workflows/quality.yml ]] \
+            && { echo '::error::--agent scaffolded a workflow'; exit 1; }
+          echo 'OK: the agent contract, and not one config file beside it'
+
+      # Criterion 4 of #183: combining --agent with another surface must have a
+      # STATED behaviour rather than a silent one. Refusing is the choice, and
+      # the reason is that the alternative reads as a lie either way round —
+      # honour both and --agent is no longer exclusive; honour --agent and a
+      # flag the consumer typed did nothing. A usage error costs them one
+      # re-run and cannot be misread.
+      - name: --agent refuses to be combined with another surface flag
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for combo in "--editor" "--hooks" "--editor --hooks"; do
+            rm -rf /tmp/ag-combo && mkdir -p /tmp/ag-combo
+            printf '{"name":"demo"}\n' > /tmp/ag-combo/package.json
+            git -C /tmp/ag-combo init -q
+            git -C /tmp/ag-combo config user.email ci@example.invalid
+            git -C /tmp/ag-combo config user.name ci
+            git -C /tmp/ag-combo add -A && git -C /tmp/ag-combo commit -qm init
+            rc=0
+            # Unquoted on purpose: "--editor --hooks" must expand to two words.
+            # shellcheck disable=SC2086
+            ./scripts/adopt.sh /tmp/ag-combo --agent ${combo} > /tmp/ag-combo.log 2>&1 || rc=$?
+            cat /tmp/ag-combo.log
+            [[ $rc -eq 3 ]] || {
+              echo "::error::[--agent $combo] must be a usage error (3), got $rc"; exit 1; }
+            # A refusal with no remedy attached is a refusal that gets worked
+            # around, so the message has to name BOTH runs that do work.
+            [[ $(grep -c 'adopt.sh' /tmp/ag-combo.log) -ge 2 ]] || {
+              echo "::error::[--agent $combo] refused without naming the two runs that work"
+              exit 1; }
+            # And a usage error writes nothing, in either half.
+            dirty=$(cd /tmp/ag-combo && git status --porcelain)
+            [[ -z "$dirty" ]] || {
+              echo "::error::[--agent $combo] wrote something before refusing: $dirty"; exit 1; }
+            echo "  OK  --agent $combo refused, exit 3, tree untouched"
+          done
+          echo 'OK: the combination is refused with a remedy, not silently resolved'
+
+      # A REMEDY THAT DOES NOT RUN. Both --agent messages print a command for
+      # the reader to paste, and a printed command is a claim: this runs, here.
+      # Two ways it was false. The path was the literal `scripts/adopt.sh`,
+      # which resolves only for a reader standing in the baseline — and every
+      # doc invokes this script from the consumer's own repo, as
+      # `"$BASELINE"/scripts/adopt.sh`. And in THIS tree the combined-flag
+      # refusal named a run the script itself refuses: --editor against the
+      # baseline is the self-adopt rule, so "adopt them one at a time" was
+      # false in the one tree where it was most likely to be read.
+      #
+      # Same class as the hardcoded record-gate.py path in stop-gate.py, so it
+      # is asserted the same way — the printed line is EXTRACTED and RUN from
+      # the cwd it was printed in, rather than read and believed. --dry-run is
+      # appended so the check costs nothing; it does not soften the check,
+      # because a path that does not resolve still exits 127 and a run this
+      # script refuses still exits 3.
+      - name: every command the --agent messages print actually runs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BASE=$PWD
+          consumer() {
+            rm -rf "$1"; mkdir -p "$1"
+            printf '{"name":"demo"}\n' > "$1/package.json"
+            git -C "$1" init -q
+            git -C "$1" config user.email ci@example.invalid
+            git -C "$1" config user.name ci
+            git -C "$1" add -A && git -C "$1" commit -qm init
+          }
+          # A line that IS a command: leading space, then a bare path ending in
+          # adopt.sh. Prose mentioning the script does not match, which is why
+          # every pasteable command in these messages stands on its own line.
+          pasteable() {
+            grep -E '^[[:space:]]+[^[:space:]]*adopt\.sh([[:space:]]|$)' "$1" \
+              | sed 's/^[[:space:]]*//' || true
+          }
+          # $1 log, $2 cwd to paste from, $3 how many commands it must hold.
+          check_printed() {
+            local n=0 line rc
+            while IFS= read -r line; do
+              [[ -n "$line" ]] || continue
+              n=$((n + 1))
+              echo "  pasting from $2: $line"
+              rc=0
+              ( cd "$2" && eval "$line --dry-run" ) > /tmp/paste.log 2>&1 || rc=$?
+              if [[ $rc -ne 0 ]]; then
+                cat /tmp/paste.log
+                echo "::error::the printed remedy exited $rc when pasted in $2: $line"
+                exit 1
+              fi
+            done < <(pasteable "$1")
+            [[ $n -eq $3 ]] || {
+              echo "::error::expected $3 pasteable commands in $1, found $n"
+              cat "$1"; exit 1; }
+          }
+
+          # 1. The documented invocation: an absolute path, run from inside the
+          #    consumer's own repo. This is the one a consumer actually meets.
+          consumer /tmp/ag-rem
+          for combo in "--editor" "--hooks"; do
+            rc=0
+            ( cd /tmp/ag-rem && "$BASE/scripts/adopt.sh" /tmp/ag-rem --agent "$combo" ) \
+              > /tmp/ag-rem.log 2>&1 || rc=$?
+            cat /tmp/ag-rem.log
+            [[ $rc -eq 3 ]] || { echo "::error::[$combo] expected exit 3, got $rc"; exit 1; }
+            check_printed /tmp/ag-rem.log /tmp/ag-rem 2
+            echo "  OK  both runs named for --agent $combo actually run"
+          done
+
+          # 2. Invoked from the baseline with a relative path. The remedy has
+          #    to be runnable from the cwd it was printed in, which here is the
+          #    baseline rather than the target.
+          rc=0
+          ( cd "$BASE" && ./scripts/adopt.sh /tmp/ag-rem --agent --editor ) \
+            > /tmp/ag-rem2.log 2>&1 || rc=$?
+          cat /tmp/ag-rem2.log
+          [[ $rc -eq 3 ]] || { echo "::error::expected exit 3, got $rc"; exit 1; }
+          check_printed /tmp/ag-rem2.log "$BASE" 2
+
+          # 3. THE BASELINE AS THE TARGET. "Adopt them one at a time" is false
+          #    here: --editor against this tree is refused by the self-adopt
+          #    rule, so exactly ONE of the two runs exists, and printing the
+          #    other sends the reader into a second error message.
+          rc=0
+          ( cd "$BASE" && ./scripts/adopt.sh . --agent --editor ) \
+            > /tmp/ag-rem3.log 2>&1 || rc=$?
+          cat /tmp/ag-rem3.log
+          [[ $rc -eq 3 ]] || { echo "::error::expected exit 3, got $rc"; exit 1; }
+          check_printed /tmp/ag-rem3.log "$BASE" 1
+          grep -q -- '--agent' /tmp/ag-rem3.log || {
+            echo '::error::the one run that works in this tree is not the one named'; exit 1; }
+
+          # 4. The SUCCESS footer names the language-layer run, and it is a
+          #    printed command like any other.
+          consumer /tmp/ag-rem-ok
+          ( cd /tmp/ag-rem-ok && "$BASE/scripts/adopt.sh" /tmp/ag-rem-ok --agent ) \
+            > /tmp/ag-rem-ok.log 2>&1
+          cat /tmp/ag-rem-ok.log
+          check_printed /tmp/ag-rem-ok.log /tmp/ag-rem-ok 1
+
+          # 5. A path with a space in it. These strings are printed to be
+          #    pasted into a shell, and a checkout under "My Documents" is not
+          #    exotic — an unquoted path there runs a different command, or
+          #    none.
+          consumer "/tmp/ag rem space"
+          rc=0
+          ( cd "/tmp/ag rem space" && "$BASE/scripts/adopt.sh" "/tmp/ag rem space" --agent --hooks ) \
+            > /tmp/ag-rem-space.log 2>&1 || rc=$?
+          cat /tmp/ag-rem-space.log
+          [[ $rc -eq 3 ]] || { echo "::error::expected exit 3, got $rc"; exit 1; }
+          check_printed /tmp/ag-rem-space.log "/tmp/ag rem space" 2
+
+          # 6. A TREE WITH NO DETECTABLE LANGUAGE — the blind spot the five
+          #    fixtures above all shared, because every one of them was handed
+          #    a manifest. This is the one tree where the language-layer run
+          #    is not merely unhelpful but WRONG: `adopt.sh TARGET` warns
+          #    "Nothing to do" and exits 1 there. And it is precisely the
+          #    population this branch newly admits — since --agent no longer
+          #    runs detection, a repo in a language the baseline has never
+          #    heard of can adopt the contract, which docs/ADOPTION.md 5c and
+          #    configs/agent/README.md 7 both sell as the point. So the
+          #    fixture the check was least able to fail on was the tree the
+          #    feature was sold on.
+          #
+          #    check_printed asserts rc 0 from every command a message prints,
+          #    so the only way to be right here is to print none — the counts
+          #    below are 0 for the footer and 1 for the refusal, and both are
+          #    the assertion, not a relaxation of it.
+          nolang() {
+            rm -rf "$1"; mkdir -p "$1"
+            printf '# no language here\n' > "$1/README.md"
+          }
+          nolang /tmp/ag-nolang
+          ( cd /tmp/ag-nolang && "$BASE/scripts/adopt.sh" /tmp/ag-nolang --agent ) \
+            > /tmp/ag-nolang.log 2>&1
+          cat /tmp/ag-nolang.log
+          check_printed /tmp/ag-nolang.log /tmp/ag-nolang 0
+
+          #    Same tree, the combined-flag refusal. "Adopt them one at a
+          #    time, in either order" names two runs and only one of them
+          #    exists here, exactly as in the baseline tree — so one command,
+          #    and it is the --agent one.
+          nolang /tmp/ag-nolang2
+          rc=0
+          ( cd /tmp/ag-nolang2 && "$BASE/scripts/adopt.sh" /tmp/ag-nolang2 --agent --editor ) \
+            > /tmp/ag-nolang2.log 2>&1 || rc=$?
+          cat /tmp/ag-nolang2.log
+          [[ $rc -eq 3 ]] || { echo "::error::expected exit 3, got $rc"; exit 1; }
+          check_printed /tmp/ag-nolang2.log /tmp/ag-nolang2 1
+          grep -q -- '--agent' /tmp/ag-nolang2.log || {
+            echo '::error::the one run that works in this tree is not the one named'; exit 1; }
+          echo 'OK: every printed command ran, in the cwd it was printed in'
+
+      # THE PROBE MUST AGREE WITH THE LANGUAGE LAYER. The two messages above
+      # now ask a predicate before offering the second run, and that predicate
+      # carries its own copy of the marker list — so it can drift from the
+      # detection block's. Drift one way prints a command that exits 1, which
+      # is the defect this step exists to hold down; drift the other withholds
+      # a run that would have worked.
+      #
+      # Asserted behaviourally rather than by diffing two lists: for every
+      # marker the language layer detects, and for the trees it refuses
+      # (Gradle-only, and nothing at all), the number of language-layer
+      # commands the --agent footer prints must equal whether that run in fact
+      # succeeds. Nothing here has to be kept in sync by hand.
+      - name: the language-layer run is offered only where it runs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BASE=$PWD
+          for marker in demo.csproj demo.sln demo.slnx tsconfig.json package.json \
+                        pyproject.toml requirements.txt uv.lock Cargo.toml pom.xml \
+                        build.gradle build.gradle.kts __none__; do
+            d=/tmp/ag-probe
+            rm -rf "$d"; mkdir -p "$d"
+            printf '# fixture\n' > "$d/README.md"
+            if [[ "$marker" != "__none__" ]]; then : > "$d/$marker"; fi
+
+            # Does a language-layer run actually do anything in this tree?
+            lang_rc=0
+            ( cd "$d" && "$BASE/scripts/adopt.sh" "$d" --dry-run ) \
+              > /tmp/probe-lang.log 2>&1 || lang_rc=$?
+
+            # How many language-layer commands does the --agent footer offer?
+            ( cd "$d" && "$BASE/scripts/adopt.sh" "$d" --agent ) \
+              > /tmp/probe-agent.log 2>&1
+            offered=$(grep -cE '^[[:space:]]+[^[:space:]]*adopt\.sh([[:space:]]|$)' \
+              /tmp/probe-agent.log || true)
+
+            want=0
+            if [[ $lang_rc -eq 0 ]]; then want=1; fi
+            if [[ "$offered" -ne "$want" ]]; then
+              cat /tmp/probe-lang.log /tmp/probe-agent.log
+              echo "::error::[$marker] language layer exits $lang_rc, footer offered $offered run(s), wanted $want"
+              exit 1
+            fi
+            echo "  OK  $marker: language layer exits $lang_rc, footer offers $offered"
+          done
+          echo 'OK: the footer offers the language-layer run exactly where that run works'
+
+      # THE INERT FLAGS, which had no assertion at all. docs/ADOPTION.md and
+      # the script header both promise that --force, --ref and --no-workflow
+      # are REPORTED as doing nothing on an --agent run rather than dropped
+      # quietly, and nothing in CI passed one — this branch removed the last
+      # --no-workflow from the --agent invocations above, so the promise could
+      # stop being kept with every check green.
+      #
+      # --ref is covered first and explicitly. REF_SET exists only so that
+      # `--ref v1` reports honestly: a check written the obvious way, comparing
+      # $REF against the default, stays silent for the one reader most likely
+      # to believe the flag took effect, and passes every other assertion here.
+      - name: --agent reports the language-layer flags as inert, --ref included
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          inert_repo() {
+            rm -rf "$1"; mkdir -p "$1"
+            printf '{"name":"demo"}\n' > "$1/package.json"
+            git -C "$1" init -q
+            git -C "$1" config user.email ci@example.invalid
+            git -C "$1" config user.name ci
+            git -C "$1" add -A && git -C "$1" commit -qm init
+          }
+
+          # --ref carrying THE DEFAULT VALUE. Nothing else in this file would
+          # notice it going silent.
+          inert_repo /tmp/ag-inert-ref
+          out=$(./scripts/adopt.sh /tmp/ag-inert-ref --agent --ref v1 2>&1)
+          echo "$out"
+          grep -q -- '--ref does nothing on this' <<<"$out" || {
+            echo '::error::--agent --ref v1 did not report --ref as inert — the default value is the case REF_SET exists for'
+            exit 1; }
+
+          # All three at once, and a --ref that differs from the default.
+          inert_repo /tmp/ag-inert-all
+          out=$(./scripts/adopt.sh /tmp/ag-inert-all --agent --force --no-workflow --ref v1.0.9 2>&1)
+          echo "$out"
+          for flag in --force --no-workflow --ref; do
+            grep -q -- "$flag" <<<"$out" || {
+              echo "::error::$flag was dropped silently on an --agent run"; exit 1; }
+          done
+          # Reported AND actually inert. A flag that is announced as doing
+          # nothing and then does something is the worse half of this bug.
+          [[ -e /tmp/ag-inert-all/.github ]] \
+            && { echo '::error::--no-workflow was reported inert next to a workflow that got written'; exit 1; }
+          if grep -rqF 'v1.0.9' /tmp/ag-inert-all --exclude-dir=.git; then
+            echo '::error::--ref was reported inert and still reached the tree'; exit 1
+          fi
+
+          # And no false alarm: a bare --agent run reports nothing inert.
+          inert_repo /tmp/ag-inert-none
+          out=$(./scripts/adopt.sh /tmp/ag-inert-none --agent 2>&1)
+          echo "$out"
+          if grep -q 'does nothing on this' <<<"$out"; then
+            echo '::error::a bare --agent run reported an inert flag nobody passed'; exit 1
+          fi
+          echo 'OK: --force, --no-workflow and --ref are reported, inert, and not invented'
+
       # ISSUE #178, end to end and in an ADOPTED tree. The refusal prints a
       # line for a session to paste, so this step PASTES IT — `eval` on the
       # exact string the hook produced, not a re-typed approximation of it.
@@ -3612,7 +3976,7 @@ jobs:
           git -C /tmp/ag-gate config user.email ci@example.invalid
           git -C /tmp/ag-gate config user.name ci
           git -C /tmp/ag-gate add -A && git -C /tmp/ag-gate commit -qm init
-          ./scripts/adopt.sh /tmp/ag-gate --no-workflow --agent
+          ./scripts/adopt.sh /tmp/ag-gate --agent
 
           # A two-part gate, written the natural way. Its SECOND half is the
           # one that decides, which is the half the defect dropped.
@@ -3714,7 +4078,7 @@ jobs:
           printf '# Their CLAUDE.md\n\ntheir last line, no newline' > /tmp/ag-own/CLAUDE.md
           printf 'node_modules/\n' > /tmp/ag-own/.gitignore
           git -C /tmp/ag-own add -A && git -C /tmp/ag-own commit -qm own
-          ./scripts/adopt.sh /tmp/ag-own --no-workflow --agent
+          ./scripts/adopt.sh /tmp/ag-own --agent
           python3 - <<'PY'
           import json, sys
           s = json.load(open("/tmp/ag-own/.claude/settings.json"))
@@ -3770,7 +4134,7 @@ jobs:
           # — so it happens on every baseline bump, not once. Hooks that double
           # on every re-run would turn the upgrade path into the bug.
           git -C /tmp/ag-own add -A && git -C /tmp/ag-own commit -qm adopted
-          ./scripts/adopt.sh /tmp/ag-own --no-workflow --agent
+          ./scripts/adopt.sh /tmp/ag-own --agent
           if ! git -C /tmp/ag-own diff --exit-code; then
             echo '::error::a second --agent changed the tree'
             exit 1
@@ -3809,7 +4173,7 @@ jobs:
             printf '%s' "$body" > "/tmp/ag-$name/.claude/settings.json"
             before=$(sha256sum "/tmp/ag-$name/.claude/settings.json" | cut -d' ' -f1)
             rc=0
-            ./scripts/adopt.sh "/tmp/ag-$name" --no-workflow --agent > "/tmp/ag-$name.log" 2>&1 || rc=$?
+            ./scripts/adopt.sh "/tmp/ag-$name" --agent > "/tmp/ag-$name.log" 2>&1 || rc=$?
             cat "/tmp/ag-$name.log"
             [[ $rc -eq 6 ]] || { echo "::error::[$name] a refused merge must exit 6, got $rc"; exit 1; }
             after=$(sha256sum "/tmp/ag-$name/.claude/settings.json" | cut -d' ' -f1)
@@ -3824,10 +4188,13 @@ jobs:
               && { echo "::error::[$name] the CLAUDE.md region was written despite the refusal"; exit 1; }
             grep -qs 'agent-guard-receipt' "/tmp/ag-$name/.gitignore" \
               && { echo "::error::[$name] .gitignore was appended to despite the refusal"; exit 1; }
-            # ...but only the AGENT half is held back. A refused merge is not a
-            # reason to abandon the adoption the consumer also asked for.
+            # There is no "rest of the run" to fall back on since #183: an
+            # --agent run is the contract and nothing else, so a refusal leaves
+            # the tree exactly as it found it. The language layer arriving as a
+            # consolation prize for a failed merge would be the coupling this
+            # flag just stopped doing.
             [[ -e "/tmp/ag-$name/.editorconfig" ]] \
-              || { echo "::error::[$name] a refused merge also abandoned the rest of the run"; exit 1; }
+              && { echo "::error::[$name] a refused --agent run adopted the language layer anyway"; exit 1; }
             grep -q 'Traceback (most recent call last)' "/tmp/ag-$name.log" \
               && { echo "::error::[$name] refused with a traceback instead of a sentence"; exit 1; }
             echo "  OK  [$name] refused, exit 6, nothing agent-shaped written"
@@ -3845,7 +4212,7 @@ jobs:
           rm -rf /tmp/ag-empty && mkdir -p /tmp/ag-empty/.claude
           printf '{"name":"demo"}\n' > /tmp/ag-empty/package.json
           : > /tmp/ag-empty/.claude/settings.json
-          ./scripts/adopt.sh /tmp/ag-empty --no-workflow --agent
+          ./scripts/adopt.sh /tmp/ag-empty --agent
           python3 - <<'PY'
           import json, sys
           got = json.load(open("/tmp/ag-empty/.claude/settings.json"))
@@ -3883,7 +4250,7 @@ jobs:
           set -Eeuo pipefail
           rm -rf /tmp/ag-dry && mkdir -p /tmp/ag-dry
           printf '{"name":"demo"}\n' > /tmp/ag-dry/package.json
-          ./scripts/adopt.sh /tmp/ag-dry --no-workflow --agent --dry-run > /tmp/ag-dry.log 2>&1
+          ./scripts/adopt.sh /tmp/ag-dry --agent --dry-run > /tmp/ag-dry.log 2>&1
           cat /tmp/ag-dry.log
           [[ -e /tmp/ag-dry/.claude ]] && { echo '::error::--dry-run created .claude'; exit 1; }
           [[ -e /tmp/ag-dry/CLAUDE.md ]] && { echo '::error::--dry-run created CLAUDE.md'; exit 1; }

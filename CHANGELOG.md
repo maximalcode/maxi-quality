@@ -77,8 +77,11 @@ Two things in this window look like Finding changes and are not:
   to install them. **Not consumed by `@v1`**: nothing in `actions/` or
   `quality.yml` references them, the scripts are copied into the consumer's tree
   rather than pinned to a tag, and adoption cost has not been measured in any
-  consumer. Opt-in, and the only `adopt.sh` flag that MERGES into a file you
-  already own — your hook entries and deny rules are appended to, never replaced
+  consumer. Opt-in, and **exclusive**: `--agent` installs the contract and
+  nothing else — no language config, no `.editorconfig`, no workflow — so the
+  language layer is a separate run and combining it with `--editor` or
+  `--hooks` is a usage error. It is the only `adopt.sh` flag that MERGES into a
+  file you already own — your hook entries and deny rules are appended to, never replaced
   or reordered, and a `.claude/settings.json` it cannot fully read is refused
   with nothing written at all. It is also the only thing the baseline adopts
   into **itself**: this repo now runs the contract it ships, from a copy under

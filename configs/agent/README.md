@@ -540,6 +540,35 @@ consumer may not have, and `.claude/settings.json` is a file a consumer running
 Claude Code almost certainly does. Refuse-if-exists there would mean this never
 adopts anywhere it matters.
 
+It is also the one flag that is **exclusive** (#183). `--hooks` and `--editor`
+add to an adoption; this run installs the contract and writes nothing else — no
+language config, no `.editorconfig`, no workflow — so the language layer is a
+second run without the flag, and passing `--editor` or `--hooks` in the same one
+is a usage error rather than a silent choice between them. Two reasons, and the
+second decided it: the contract has no language in it, and adopting both at once
+makes the result unattributable — nobody can afterwards say whether a session
+found the guard annoying or the two hundred new lints. §6's adoption cost is
+measured by a consumer turning this on and living with the result, and in a repo
+that has not already adopted the language layer the old behaviour made that
+measurement impossible to attribute. It also means a repo in
+a language this baseline has never heard of can adopt the contract, which the
+old behaviour refused to do: it stopped at detection.
+
+The refusal names the runs that do work, and there are **two** trees where that
+is one run rather than two. In this repo, `--editor` and `--hooks` against the
+baseline are the self-adopt refusal. And in a repo with no language the baseline
+detects, the layerless run itself warns "Nothing to do" and exits 1 — which is
+the tree this flag was just opened up for, so the success footer does not offer
+a language-layer run there either. Both messages ask one predicate before
+naming that second run rather than assuming it exists.
+
+Every command those messages print is run by the `adopt` job from the directory
+it was printed in, and the fixtures now include a tree with no detectable
+language — a remedy nobody executes is how `scripts/agent-guard/stop-gate.py`
+came to print a path that did not exist in an adopted tree, and a check whose
+fixtures all carry a manifest is one that cannot catch the same defect in the
+population this flag newly admits.
+
 The merge has ownership: baseline hook entries are matched by their `command`
 string and deny rules by the rule string, and appended to what is already
 there. Nothing of the consumer's is replaced, reordered or removed, and
@@ -549,8 +578,9 @@ It **refuses** a `.claude/settings.json` it cannot fully read — one that does
 not parse, or a `hooks` key whose shape is not the documented one — and the
 refusal skips the whole flag rather than just that file. Half a contract is a
 `CLAUDE.md` that says these rules refuse, in a repo where nothing refuses, and
-the next session reads it and believes it. The run exits 6 and the rest of the
-adoption still happens.
+the next session reads it and believes it. The run exits 6 having written
+nothing at all — since #183 there is no "rest of the adoption" for it to fall
+back on, because an `--agent` run is the contract and only the contract.
 
 ### 7a. What lands, and by hand if you would rather
 
@@ -608,4 +638,7 @@ executable policy arriving in someone's tree should be something they see.
 the only place the two meet. Two unrelated things called hooks, one repo — so
 this one's flag is `--agent`, and `--hooks` still means the git one. Passing
 `--hooks` installs the pre-commit hook and no part of this contract; passing
-`--agent` does the reverse. They compose, and neither implies the other.
+`--agent` does the reverse. Neither implies the other, and since #183 they do
+not compose either — `--agent` is exclusive, so the two are two runs. Both
+surfaces are still available to the same repo; what changed is that asking for
+them in one command is a usage error instead of a bundle.
