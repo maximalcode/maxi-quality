@@ -12,7 +12,10 @@
 #   TARGET_REPO       Repo to adopt into. Default: current directory.
 #
 #   --dry-run         Print every action, write nothing. Do this first.
-#   --force           Overwrite files that already exist. Off by default —
+#   --force           Overwrite files that already exist, and — on an --agent
+#                     run — refresh a CLAUDE.md agent-guard region you have
+#                     edited yourself, which is otherwise refused. Off by
+#                     default —
 #                     a repo with its own Directory.Build.props must be merged
 #                     by hand, not clobbered (docs/ADOPTION.md §3).
 #   --ref REF         Tag/branch consumers pin in the workflow. Default: v1.
@@ -41,7 +44,7 @@
 #                     whether a session found the guard annoying or the two
 #                     hundred new lints. Passing --editor or --hooks alongside
 #                     it is a usage error rather than a silent choice between
-#                     them; --force, --ref and --no-workflow belong to the
+#                     them; --ref and --no-workflow belong to the
 #                     language layer and are reported as doing nothing here.
 #                     Opt-in like the two above, and for the strongest reason of
 #                     the three — this is executable policy arriving in
@@ -96,7 +99,7 @@
 #   .claude/settings.json            += configs/agent/settings.json, merged
 #                                       by scripts/agent-settings.py
 #   CLAUDE.md                        += configs/agent/CLAUDE.fragment.md,
-#                                       marker-guarded
+#                                       marker-guarded and REFRESHED
 #   .gitignore                       += .claude/agent-guard-receipt.json
 #
 # The TS pair is a copy for the same reason Directory.Build.props is: a private
@@ -181,7 +184,7 @@ wrote() { printf '\033[32mwrite\033[0m %s\n' "$1"; }
 # last row of the --agent list, which is the last line of the header that is
 # help text rather than rationale. Verify with `scripts/adopt.sh --help | tail`
 # after editing anything above.
-usage() { sed -n '3,100p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
+usage() { sed -n '3,103p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
 
 # --- the agent contract, only on --agent -------------------------------------
 #
@@ -208,11 +211,28 @@ install_agent_contract() {
   AGENT_SETTINGS="$TARGET/.claude/settings.json"
   AGENT_DIR="$TARGET/.claude/agent-guard"
 
+  # #182 — install only what can fire. Two of the five rules, sample-guard.py
+  # and Edit(/samples/expected/**), are hardcoded to this repo's fixture layout;
+  # in a tree without expectation manifests the hook allows everything and the
+  # deny rule matches no file that exists. Shipped anyway, they produced a
+  # consumer whose CLAUDE.md said it was protected by three hooks and two deny
+  # rules, a third of which could never fire.
+  #
+  # Re-running after a samples/expected/ appears installs both, so this is a
+  # decision about THIS tree today and not a permanent verdict on it.
+  AGENT_SAMPLES=no
+  AGENT_WITHOUT=(--without-samples)
+  if [ -d "$TARGET/samples/expected" ]; then
+    AGENT_SAMPLES=yes
+    AGENT_WITHOUT=()
+  fi
+
   # Preflight. Runs before the first byte is written, so a refusal costs the
   # consumer a message and not a half-adopted tree.
   if ! python3 "$BASELINE/scripts/agent-settings.py" merge \
          --baseline "$BASELINE/configs/agent/settings.json" \
-         --target "$AGENT_SETTINGS" --dry-run >/dev/null; then
+         --target "$AGENT_SETTINGS" "${AGENT_WITHOUT[@]+"${AGENT_WITHOUT[@]}"}" \
+         --dry-run >/dev/null; then
     AGENT_CONFLICT=1
     NEEDS_MERGE=1
   else
@@ -231,7 +251,8 @@ install_agent_contract() {
     # other copy in this script they are refreshed rather than skipped. There
     # is no remote consumption for a hook command — it is a path on disk — so
     # re-running this script IS the upgrade path, the same trade the C# and
-    # Rust configs already make. --force is not needed and would not mean
+    # Rust configs already make. --force does not apply to the scripts and would
+    # not mean
     # anything here.
     for src in "$BASELINE"/scripts/agent-guard/*.py; do
       wrote "$AGENT_DIR/$(basename "$src") (refreshed)"
@@ -240,24 +261,30 @@ install_agent_contract() {
       cp "$src" "$AGENT_DIR/$(basename "$src")"
     done
 
-    # The fragment, marker-guarded. Same discipline as the C# .editorconfig
-    # section and the Rust [lints] block: re-running never appends twice, and
-    # the markers are how a later baseline replaces the region without a merge.
-    AGENT_MARKER='<!-- BEGIN maxi-quality agent-guard -->'
-    if [ -e "$TARGET/CLAUDE.md" ] && grep -qF "$AGENT_MARKER" "$TARGET/CLAUDE.md" 2>/dev/null; then
-      skip "$TARGET/CLAUDE.md — already contains the agent-guard region"
+    # The fragment, marker-guarded, and REFRESHED rather than skipped (#177).
+    # scripts/agent-region.py owns it: it replaces what is between the markers
+    # and nothing outside them, tells an older baseline's text apart from an
+    # edit of your own by the checksum in the BEGIN marker, and refuses the
+    # second rather than overwriting it. --force overrides that refusal, which
+    # is the only thing --force means here.
+    AGENT_REGION_ARGS=(apply
+      --fragment "$BASELINE/configs/agent/CLAUDE.fragment.md"
+      --target "$TARGET/CLAUDE.md" --samples "$AGENT_SAMPLES")
+    if [ "$FORCE" -eq 1 ]; then AGENT_REGION_ARGS+=(--force); fi
+    if [ "$DRY_RUN" -eq 1 ]; then
+      info "$TARGET/CLAUDE.md (dry run) — the region would be checked and refreshed"
     else
-      wrote "$TARGET/CLAUDE.md (append)"
-      if [ "$DRY_RUN" -eq 0 ]; then
-        # Terminate the consumer's last line if they left it unterminated, then
-        # separate with a blank one. Appending straight onto someone's final
-        # paragraph would put an HTML comment inside it, and a heading that
-        # continues the previous line is not a heading at all.
-        if [ -s "$TARGET/CLAUDE.md" ]; then
-          [ -z "$(tail -c 1 "$TARGET/CLAUDE.md")" ] || printf '\n' >> "$TARGET/CLAUDE.md"
-          printf '\n' >> "$TARGET/CLAUDE.md"
-        fi
-        cat "$BASELINE/configs/agent/CLAUDE.fragment.md" >> "$TARGET/CLAUDE.md"
+      AGENT_REGION_RC=0
+      python3 "$BASELINE/scripts/agent-region.py" "${AGENT_REGION_ARGS[@]}" \
+        | sed 's/^/    /' || AGENT_REGION_RC=${PIPESTATUS[0]}
+      if [ "$AGENT_REGION_RC" -ne 0 ]; then
+        # Not fatal, and deliberately so: the hooks and the deny rules are
+        # installed and enforcing by this point. What is stale is the PROSE
+        # describing them, and stopping the run here would leave a tree with
+        # neither. Say it loudly and let the summary carry it.
+        warn "--agent: $TARGET/CLAUDE.md was left alone (see above). The rules"
+        warn "are installed; the text describing them is not current."
+        NEEDS_MERGE=1
       fi
     fi
 
@@ -287,12 +314,14 @@ install_agent_contract() {
       info "$AGENT_SETTINGS (dry run) — the merge would apply:"
       python3 "$BASELINE/scripts/agent-settings.py" merge \
         --baseline "$BASELINE/configs/agent/settings.json" \
-        --target "$AGENT_SETTINGS" --dry-run | sed 's/^/    /'
+        --target "$AGENT_SETTINGS" "${AGENT_WITHOUT[@]+"${AGENT_WITHOUT[@]}"}" \
+        --dry-run | sed 's/^/    /'
     else
       wrote "$AGENT_SETTINGS (merge)"
       python3 "$BASELINE/scripts/agent-settings.py" merge \
         --baseline "$BASELINE/configs/agent/settings.json" \
-        --target "$AGENT_SETTINGS" | sed 's/^/    /' \
+        --target "$AGENT_SETTINGS" "${AGENT_WITHOUT[@]+"${AGENT_WITHOUT[@]}"}" \
+        | sed 's/^/    /' \
         || die "the merge failed after its own dry run passed — this is a bug in maxi-quality, not in your repo"
     fi
   fi
@@ -483,8 +512,11 @@ if [ "$WANT_AGENT" -eq 1 ]; then
   # do nothing. Said out loud rather than ignored: someone who typed --ref here
   # believes they pinned something, and a flag that is quietly dropped is
   # indistinguishable from one that worked.
+  # --force is NOT in this list. It was, until the region became refreshable
+  # (#177): on an --agent run it is now the one way past the refusal on a
+  # CLAUDE.md region you edited yourself, and reporting a flag as doing nothing
+  # while it decides whether your edit survives is the worst of both.
   INERT=""
-  if [ "$FORCE" -eq 1 ]; then INERT="$INERT --force"; fi
   if [ "$NO_WORKFLOW" -eq 1 ]; then INERT="$INERT --no-workflow"; fi
   if [ "$REF_SET" -eq 1 ]; then INERT="$INERT --ref"; fi
   if [ -n "$INERT" ]; then

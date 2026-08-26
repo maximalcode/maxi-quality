@@ -77,6 +77,7 @@ import datetime
 import json
 import pathlib
 import re
+import subprocess
 import shlex
 import shutil
 import sys
@@ -518,23 +519,48 @@ def check(root: pathlib.Path, today: datetime.date) -> list[str]:
     # Compared from BEGIN to END inclusive. The lines above the BEGIN marker
     # are instructions to whoever is pasting it and are not part of the region
     # an upgrade would replace.
-    begin, end = "<!-- BEGIN maxi-quality agent-guard -->", "<!-- END maxi-quality agent-guard -->"
+    # Delegated to scripts/agent-region.py rather than reimplemented here. That
+    # script is what `--agent` runs, so a second copy of "does this region match
+    # the fragment" would be a guard that can disagree with the thing it guards
+    # — which is the drift this file exists to catch, one level up.
+    #
+    # `--samples yes` because THIS repo has samples/expected/, so the full
+    # profile is the one it must carry (#182). A consumer without manifests
+    # gets, and should carry, the other rendering.
+    proc = subprocess.run(
+        (sys.executable, str(root / "scripts" / "agent-region.py"), "check",
+         "--fragment", str(root / "configs" / "agent" / "CLAUDE.fragment.md"),
+         "--target", str(root / "CLAUDE.md"), "--samples", "yes"),
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        bad("CLAUDE.md's agent-guard region is not what the fragment renders "
+            "to. This repo runs its own contract, so re-run "
+            "`scripts/adopt.sh . --agent` to refresh it.\n"
+            + proc.stderr.strip())
 
-    def region(text: str, where: str) -> str | None:
-        i, j = text.find(begin), text.find(end)
-        if i < 0 or j < 0 or j < i:
-            bad(f"{where} has no complete agent-guard region")
-            return None
-        return text[i:j + len(end)]
-
-    own = read(root / "CLAUDE.md")
-    mine, theirs = region(own, "CLAUDE.md"), region(fragment, "configs/agent/CLAUDE.fragment.md")
-    if mine is not None and theirs is not None and mine != theirs:
-        bad("CLAUDE.md's agent-guard region is not configs/agent/"
-            "CLAUDE.fragment.md's. This repo runs its own contract, and "
-            "re-running --agent does not refresh an existing region (#177), so "
-            "the two are kept in step by hand — replace the text between the "
-            "markers in CLAUDE.md with the fragment's.")
+    # --- G11: every conditional block in the fragment has a partner ----------
+    #
+    # The if/unless pair is what makes one fragment serve both profiles. An
+    # `if-samples` with no `unless-samples` beside it does not fail to render —
+    # it renders to NOTHING for a consumer without manifests, silently dropping
+    # a paragraph from the contract text rather than substituting the other
+    # one. That is invisible in this tree, where only the `if` side is ever
+    # produced.
+    opened = re.findall(r"<!-- maxi-quality:(if|unless)-samples -->", fragment)
+    closed = re.findall(r"<!-- /maxi-quality:(if|unless)-samples -->", fragment)
+    if opened != closed:
+        bad(f"configs/agent/CLAUDE.fragment.md's conditional blocks do not "
+            f"nest: opened {opened}, closed {closed}")
+    elif opened.count("if") != opened.count("unless") + 1:
+        # One `if` legitimately has no partner: the samples/ rule paragraph,
+        # which has no counterpart in a tree that cannot run it. Every other
+        # `if` states a rule count or a rule list and MUST have the other
+        # spelling, or one profile loses the sentence entirely.
+        bad(f"configs/agent/CLAUDE.fragment.md has {opened.count('if')} "
+            f"`if-samples` blocks and {opened.count('unless')} `unless-samples` "
+            "— exactly one `if` may stand alone (the samples/ rule itself); "
+            "every other one needs the sentence a consumer sees instead")
 
     # --- G8: every §N citation on this surface resolves ----------------------
     #
@@ -781,6 +807,14 @@ def mutations(cases: int, today: datetime.date) -> list[tuple]:
                          "They are not advice — they refuse.",
                          "They are not advice."),
          ("CLAUDE.md's agent-guard region",)),
+        # AC (#182) — an `unless` block loses its partner, so the sentence a
+        # consumer without manifests would have seen renders to nothing at all
+        # instead of to the other spelling. Invisible in this tree, which only
+        # ever produces the `if` side.
+        ("a conditional block in the fragment loses its partner",
+         lambda r: _edit(r, "configs/agent/CLAUDE.fragment.md",
+                         "<!-- maxi-quality:unless-samples -->\n", "", ),
+         ("conditional blocks",)),
         ("a mutation row names a script that does not exist",
          lambda r: _edit(r, "configs/agent/README.md",
                          "| `stop-gate.py` ignores the fingerprint |",

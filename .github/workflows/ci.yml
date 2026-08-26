@@ -3568,6 +3568,13 @@ jobs:
             git -C "$1" add -A && git -C "$1" commit -qm init
           }
           agent_repo /tmp/ag-fresh
+          # Expectation manifests, so this tree gets the FULL contract and the
+          # comparison below stays a comparison against the baseline itself
+          # (#182). The profile that drops the two samples/ rules is asserted
+          # separately, against hardcoded expectations rather than against the
+          # script that produces it.
+          mkdir -p /tmp/ag-fresh/samples/expected
+          printf '{}\n' > /tmp/ag-fresh/samples/expected/demo.json
           ./scripts/adopt.sh /tmp/ag-fresh --agent
           for f in .claude/settings.json .claude/agent-guard/guard.py \
                    .claude/agent-guard/stop-gate.py CLAUDE.md .gitignore; do
@@ -3585,8 +3592,12 @@ jobs:
               print(json.dumps(got, indent=2))
               sys.exit(1)
           PY
-          grep -qF '<!-- BEGIN maxi-quality agent-guard -->' /tmp/ag-fresh/CLAUDE.md \
-            || { echo '::error::the CLAUDE.md region was not appended'; exit 1; }
+          # Prefix, not the whole marker: since #177 the BEGIN marker carries
+          # a checksum of the region as installed, so an exact match here would
+          # be asserting the absence of the thing that makes a refresh safe.
+          grep -q '<!-- BEGIN maxi-quality agent-guard sha256:[0-9a-f]\+ -->' \
+            /tmp/ag-fresh/CLAUDE.md \
+            || { echo '::error::the CLAUDE.md region was not written with a checksum'; exit 1; }
           grep -qxF '.claude/agent-guard-receipt.json' /tmp/ag-fresh/.gitignore \
             || { echo '::error::the receipt was not gitignored'; exit 1; }
           # The whole point, end to end. One modified file, no receipt: the Stop
@@ -3933,14 +3944,22 @@ jobs:
             echo '::error::--agent --ref v1 did not report --ref as inert — the default value is the case REF_SET exists for'
             exit 1; }
 
-          # All three at once, and a --ref that differs from the default.
+          # Both at once, and a --ref that differs from the default.
+          #
+          # --force IS NOT IN THIS LIST, and that is the assertion. It was
+          # inert until the CLAUDE.md region became refreshable (#177); it is
+          # now the one way past the refusal on a region you edited yourself,
+          # so reporting it as doing nothing would be a lie about the flag that
+          # decides whether your edit survives.
           inert_repo /tmp/ag-inert-all
           out=$(./scripts/adopt.sh /tmp/ag-inert-all --agent --force --no-workflow --ref v1.0.9 2>&1)
           echo "$out"
-          for flag in --force --no-workflow --ref; do
+          for flag in --no-workflow --ref; do
             grep -q -- "$flag" <<<"$out" || {
               echo "::error::$flag was dropped silently on an --agent run"; exit 1; }
           done
+          grep -q -- '--force does nothing' <<<"$out" \
+            && { echo '::error::--force was reported inert, and it decides whether an edited region survives'; exit 1; }
           # Reported AND actually inert. A flag that is announced as doing
           # nothing and then does something is the worse half of this bug.
           [[ -e /tmp/ag-inert-all/.github ]] \
@@ -3956,7 +3975,7 @@ jobs:
           if grep -q 'does nothing on this' <<<"$out"; then
             echo '::error::a bare --agent run reported an inert flag nobody passed'; exit 1
           fi
-          echo 'OK: --force, --no-workflow and --ref are reported, inert, and not invented'
+          echo 'OK: --no-workflow and --ref are reported, inert, and not invented; --force is not claimed inert'
 
       # ISSUE #178, end to end and in an ADOPTED tree. The refusal prints a
       # line for a session to paste, so this step PASTES IT — `eval` on the
@@ -4041,6 +4060,146 @@ jobs:
             || { echo "::error::the stop was still refused after a passing gate: $out"; exit 1; }
           echo 'OK: the printed line ran both halves, both times, inside the recorder'
 
+      # ISSUE #182 — install only what can fire. sample-guard.py and the
+      # Edit(/samples/expected/**) deny rule are hardcoded to THIS repo's
+      # fixture layout. Shipped into a tree without manifests they are
+      # reachable, run, and allow everything — while the CLAUDE.md region
+      # asserts the tree is protected by three hooks and two deny rules. What
+      # is asserted here is that the rules installed and the prose describing
+      # them are the same set, in both directions.
+      - name: what --agent installs and what it claims are the same set
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          profile_repo() {
+            rm -rf "$1"; mkdir -p "$1"
+            printf '# consumer\n\nOur own rules.\n' > "$1/CLAUDE.md"
+            printf '{"name":"demo"}\n' > "$1/package.json"
+            git -C "$1" init -q
+            git -C "$1" config user.email ci@example.invalid
+            git -C "$1" config user.name ci
+            git -C "$1" add -A && git -C "$1" commit -qm init
+          }
+          # A tree with NO expectation manifests.
+          profile_repo /tmp/ag-nosamples
+          ./scripts/adopt.sh /tmp/ag-nosamples --agent >/dev/null
+          python3 - <<'PY'
+          import json, sys
+          d = json.load(open("/tmp/ag-nosamples/.claude/settings.json"))
+          cmds = [e["command"] for g in d["hooks"].values() for grp in g for e in grp["hooks"]]
+          deny = d["permissions"]["deny"]
+          bad = []
+          if any("sample-guard.py" in c for c in cmds):
+              bad.append("sample-guard.py was installed in a tree with no samples/")
+          if any("samples/expected" in r for r in deny):
+              bad.append("the samples/expected deny rule was installed in a tree with no samples/")
+          if not any("stop-gate.py" in c for c in cmds):
+              bad.append("the Stop gate was NOT installed — the half that always applies")
+          if not any("no-verify" in c for c in cmds):
+              bad.append("the no-verify guard was NOT installed")
+          if not any("agent-guard-receipt" in r for r in deny):
+              bad.append("the receipt deny rule was NOT installed")
+          for b in bad:
+              print(f"::error::{b}")
+          sys.exit(1 if bad else 0)
+          PY
+          # And the prose has to match. A region that still describes the
+          # samples/ rule is the defect this issue is about.
+          grep -qF 'two hooks and one deny rule' /tmp/ag-nosamples/CLAUDE.md \
+            || { echo '::error::the region does not state the rule count that was installed'; exit 1; }
+          if grep -q 'samples/' /tmp/ag-nosamples/CLAUDE.md; then
+            echo '::error::the region describes a samples/ rule this tree cannot run:'
+            grep -n 'samples/' /tmp/ag-nosamples/CLAUDE.md
+            exit 1
+          fi
+          grep -qF 'Our own rules.' /tmp/ag-nosamples/CLAUDE.md \
+            || { echo "::error::the consumer's own prose was lost"; exit 1; }
+
+          # A tree WITH manifests gets all five, and says so.
+          profile_repo /tmp/ag-samples
+          mkdir -p /tmp/ag-samples/samples/expected
+          printf '{}\n' > /tmp/ag-samples/samples/expected/demo.json
+          ./scripts/adopt.sh /tmp/ag-samples --agent >/dev/null
+          grep -qF 'three hooks and two deny rules' /tmp/ag-samples/CLAUDE.md \
+            || { echo '::error::a tree WITH manifests did not get the full contract text'; exit 1; }
+          grep -qF 'samples/expected/**' /tmp/ag-samples/.claude/settings.json \
+            || { echo '::error::a tree WITH manifests did not get the samples deny rule'; exit 1; }
+          echo 'OK: the rules installed and the rules described are one set'
+
+      # ISSUE #177 — re-running --agent REFRESHES the CLAUDE.md region instead
+      # of skipping it, so re-adoption is the upgrade path for the prose the
+      # way it already is for the scripts and the settings merge. And it
+      # refuses a region the consumer edited rather than overwriting it.
+      - name: the CLAUDE.md region refreshes, and refuses an edit
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          d=/tmp/ag-region
+          rm -rf $d; mkdir -p $d
+          printf '# consumer\n\nOur own rules.\n' > $d/CLAUDE.md
+          printf '{"name":"demo"}\n' > $d/package.json
+          git -C $d init -q
+          git -C $d config user.email ci@example.invalid
+          git -C $d config user.name ci
+          git -C $d add -A && git -C $d commit -qm init
+          ./scripts/adopt.sh $d --agent >/dev/null
+          git -C $d add -A && git -C $d commit -qm adopted
+
+          # 1. A second run changes NOTHING — the same assertion the rest of
+          #    --agent already carries, now true of the region too.
+          ./scripts/adopt.sh $d --agent >/dev/null
+          git -C $d diff --exit-code >/dev/null \
+            || { echo '::error::a second --agent rewrote the region'; git -C $d diff; exit 1; }
+
+          # 2. A STALE region is refreshed. Modelled by planting the OTHER
+          #    profile's text — unedited by the consumer, correctly checksummed,
+          #    and not what this tree should be carrying. That is the shape of a
+          #    region installed by an older baseline, and the direction matters:
+          #    this tree has no manifests, so it must come back to the two-rule
+          #    text rather than keep the three-rule one.
+          python3 scripts/agent-region.py apply \
+            --fragment configs/agent/CLAUDE.fragment.md \
+            --target $d/CLAUDE.md --samples yes >/dev/null
+          grep -qF 'three hooks and two deny rules' $d/CLAUDE.md \
+            || { echo '::error::the fixture did not plant a stale region'; exit 1; }
+          ./scripts/adopt.sh $d --agent >/dev/null
+          grep -qF 'two hooks and one deny rule' $d/CLAUDE.md \
+            || { echo '::error::--agent did not refresh a stale region'; exit 1; }
+          grep -qF 'Our own rules.' $d/CLAUDE.md \
+            || { echo "::error::the refresh disturbed prose outside the markers"; exit 1; }
+
+          # 3. A region the consumer EDITED is refused, and nothing is written.
+          python3 - "$d/CLAUDE.md" <<'PY'
+          import pathlib, sys
+          p = pathlib.Path(sys.argv[1]); t = p.read_text(encoding="utf-8")
+          p.write_text(t.replace("They are not advice", "MY EDIT. They are not advice", 1),
+                       encoding="utf-8")
+          PY
+          before=$(sha256sum $d/CLAUDE.md | cut -d' ' -f1)
+          out=$(./scripts/adopt.sh $d --agent 2>&1) || true
+          after=$(sha256sum $d/CLAUDE.md | cut -d' ' -f1)
+          [[ "$before" == "$after" ]] \
+            || { echo '::error::an edited region was overwritten'; exit 1; }
+          grep -qF 'MY EDIT' $d/CLAUDE.md \
+            || { echo "::error::the consumer's edit was lost"; exit 1; }
+          grep -q 'edited since it was installed' <<<"$out" \
+            || { echo '::error::the refusal did not say why'; echo "$out"; exit 1; }
+
+          # 4. --force is the documented way through, and only that.
+          ./scripts/adopt.sh $d --agent --force >/dev/null
+          grep -qF 'MY EDIT' $d/CLAUDE.md \
+            && { echo '::error::--force did not refresh the region'; exit 1; }
+
+          # 5. Half a region is refused rather than half-replaced.
+          printf '# x\n<!-- BEGIN maxi-quality agent-guard sha256:dead -->\nbody\n' > $d/half.md
+          rc=0
+          python3 scripts/agent-region.py apply \
+            --fragment configs/agent/CLAUDE.fragment.md \
+            --target $d/half.md --samples yes >/dev/null 2>&1 || rc=$?
+          [[ $rc -eq 4 ]] \
+            || { echo "::error::a BEGIN with no END exited $rc, expected 4"; exit 1; }
+          echo 'OK: refreshed when stale, silent when current, refused when edited'
+
       - name: --agent merges, and a consumer keeps everything they had
         shell: bash
         run: |
@@ -4078,6 +4237,11 @@ jobs:
           printf '# Their CLAUDE.md\n\ntheir last line, no newline' > /tmp/ag-own/CLAUDE.md
           printf 'node_modules/\n' > /tmp/ag-own/.gitignore
           git -C /tmp/ag-own add -A && git -C /tmp/ag-own commit -qm own
+          # Manifests, so the comparison below is against the WHOLE baseline.
+          # This step is about a consumer keeping what they had, not about
+          # which profile they get (#182) — that has its own step.
+          mkdir -p /tmp/ag-own/samples/expected
+          printf '{}\n' > /tmp/ag-own/samples/expected/demo.json
           ./scripts/adopt.sh /tmp/ag-own --agent
           python3 - <<'PY'
           import json, sys
@@ -4212,6 +4376,10 @@ jobs:
           rm -rf /tmp/ag-empty && mkdir -p /tmp/ag-empty/.claude
           printf '{"name":"demo"}\n' > /tmp/ag-empty/package.json
           : > /tmp/ag-empty/.claude/settings.json
+          # Manifests: this step is about an EMPTY settings.json being merged
+          # into rather than refused, so it compares against the whole baseline.
+          mkdir -p /tmp/ag-empty/samples/expected
+          printf '{}\n' > /tmp/ag-empty/samples/expected/demo.json
           ./scripts/adopt.sh /tmp/ag-empty --agent
           python3 - <<'PY'
           import json, sys

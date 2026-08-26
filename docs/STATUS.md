@@ -153,7 +153,7 @@ scripts/check-agent-contract.py  the agent contract is four files that a single
                           from, which nothing refreshes while #177 is open.
                           It READS those numbers
                           and refuses to write them. `selftest` mutates a staged
-                          copy 24 ways and asserts each run names what moved
+                          copy 25 ways and asserts each run names what moved
 scripts/editor-parity.py  the differ for the #121 parity run: a VS Code Problems
                           panel dumped as JSON ("Copy All"), diffed against the
                           manifest README §3 names for that sample. The observing
@@ -173,6 +173,20 @@ scripts/editor-settings.py  composes .vscode/settings.json and .vscode/extension
                           json.dump would ship the plausible-and-pins-nothing file the
                           guard above exists to prevent. Also prints the key-by-key
                           delta adopt.sh shows instead of merging
+scripts/agent-region.py   owns the agent-guard region in a consumer's CLAUDE.md
+                          (#177): renders configs/agent/CLAUDE.fragment.md for
+                          the tree's profile, replaces what is between the
+                          markers and nothing outside them, and is the reason
+                          re-adoption upgrades the PROSE as well as the scripts.
+                          The BEGIN marker carries a checksum of the text as
+                          installed, which is the only way to tell an older
+                          baseline's fragment (refresh it) from an edit of the
+                          consumer's own (refuse, print the diff, exit 4).
+                          A current region with no checksum is stamped rather
+                          than left permanently unverifiable — without that
+                          branch it is stuck, never refreshed because it is
+                          current and never stamped because it is never
+                          refreshed
 scripts/agent-settings.py merges configs/agent/settings.json into a consumer's own
                           .claude/settings.json (#165). The one adopt.sh path that
                           MERGES rather than refusing, because unlike .vscode/ this
