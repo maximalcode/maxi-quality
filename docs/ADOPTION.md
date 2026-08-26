@@ -821,6 +821,12 @@ whether it was the guard or two hundred new lints. It also means a repo the
 baseline detects nothing in can still adopt the contract, which the old
 behaviour could not do at all.
 
+**In that repo there is no second run**, and the script says so rather than
+offering one: `scripts/adopt.sh <repo>` with no language detected warns
+"Nothing to do" and exits 1, so neither the success footer nor the
+combined-flag refusal prints it there. The contract still installs — that is
+the whole point of it having no language in it.
+
 What it buys you is one rule every `CLAUDE.md` already asks for and nothing has
 ever enforced: **a session may not call it done on code the gate has not seen.**
 The `Stop` hook fingerprints everything that differs from `HEAD` and compares it

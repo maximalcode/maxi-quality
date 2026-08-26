@@ -348,6 +348,52 @@ done
 [ -d "$TARGET" ] || die "not a directory: $TARGET"
 TARGET="$(cd "$TARGET" && pwd)"
 
+# --- may a language-layer run be OFFERED here? --------------------------------
+#
+# ONE predicate, asked by every message that names the second run, because
+# printing a command is a claim that the command runs and this script has now
+# been wrong about that claim three times. Neither call site decides for
+# itself; both ask here. That is the point of the function existing at all —
+# two string edits would have fixed the two messages that are wrong today and
+# left the next message free to be wrong again.
+#
+# `adopt.sh TARGET` without --agent does nothing and exits 1 in exactly two
+# trees, and both of them read these messages:
+#
+#   - THIS one. Adopting maxi-quality into itself is refused for every flag but
+#     --agent, so "adopt them one at a time" names a run that cannot happen.
+#   - A tree with no language marker in it. That is the population --agent
+#     newly admits: detection no longer runs on an --agent run, so a repo in a
+#     language the baseline has never heard of can adopt the contract, and
+#     docs/ADOPTION.md §5c and configs/agent/README.md §7 both sell exactly
+#     that. It is therefore the likeliest reader of the footer, not an edge
+#     case — the footer's advice is wrong in the one tree the feature is for.
+#
+# THE EARLY RETURN IS INTACT. This answers only "may that line be printed". It
+# never decides what gets installed, never sets a HAS_* flag, and --agent still
+# writes the contract and nothing else in a tree with five languages and in a
+# tree with none — which is why the probe lives here and detection still does
+# not run on an --agent run. It is also cheaper than the detection it stands in
+# for: ONE find over every marker in a single -o chain, `-print -quit`, so it
+# stops at the first hit rather than walking the tree once per marker.
+#
+# Gradle markers are deliberately absent. A Gradle-only repo gets the
+# Maven-only refusal and exits 1 too, so it is a tree with no runnable language
+# layer and must not be offered one.
+lang_layer_runs() {
+  if [ "$TARGET" = "$BASELINE" ]; then return 1; fi
+  [ -n "$(find "$TARGET" \
+    \( -name node_modules -o -name obj -o -name bin -o -name dist -o -name .git \) -prune -o \
+    \( -name '*.csproj' -o -name '*.sln' -o -name '*.slnx' \
+       -o -name 'tsconfig.json' -o -name 'package.json' \
+       -o -name 'pyproject.toml' -o -name 'requirements.txt' -o -name 'uv.lock' \
+       -o -name 'Cargo.toml' -o -name 'pom.xml' \) -print -quit 2>/dev/null | head -1)" ]
+}
+
+# The languages the layer covers, named the same way in every message that has
+# to explain why it is not offering a run.
+LANG_LAYER_SCOPE='TypeScript, C#, Python, Rust and Java/Maven'
+
 # --- --agent: the contract, and NOTHING else (#183) ---------------------------
 #
 # EXCLUSIVE, in every tree. This branch used to exist only for `TARGET =
@@ -380,13 +426,20 @@ if [ "$WANT_AGENT" -eq 1 ]; then
   if [ "$WANT_EDITOR" -eq 1 ]; then COMBINED="$COMBINED --editor"; fi
   if [ "$HOOKS" -eq 1 ]; then COMBINED="$COMBINED --hooks"; fi
   if [ -n "$COMBINED" ]; then
-    # Two messages, because there are two trees and "one at a time" is only
-    # true in one of them. Against a consumer's repo both runs work and the
-    # order is theirs to pick. Against THIS one they do not: --editor and
-    # --hooks on the baseline are the self-adopt refusal a few lines below, so
-    # naming that run would walk the reader straight into a second error.
-    # Only --agent runs here, so only --agent is offered.
-    if [ "$TARGET" = "$BASELINE" ]; then
+    # Three messages, because "one at a time" is only true where the other run
+    # exists. It does in a consumer's repo, and the order is theirs to pick.
+    # It does not in the two trees lang_layer_runs() names — this one, where
+    # --editor and --hooks meet the self-adopt refusal a few lines below, and a
+    # tree with no language in it, where they warn "Nothing to do" and exit 1.
+    # In both, naming the second run walks the reader straight into a second
+    # error, so only the run that works is offered.
+    if lang_layer_runs; then
+      die "--agent installs the agent contract and NOTHING ELSE, so it cannot share a
+       run with$COMBINED. Adopt them one at a time, in either order:
+
+         $(shq "$SELF_CMD") $(shq "$TARGET")$COMBINED
+         $(shq "$SELF_CMD") $(shq "$TARGET") --agent"
+    elif [ "$TARGET" = "$BASELINE" ]; then
       die "--agent installs the agent contract and NOTHING ELSE, so it cannot share a
        run with$COMBINED. And$COMBINED cannot run against this tree at all:
        adopting maxi-quality into itself is refused for every flag but --agent.
@@ -395,9 +448,12 @@ if [ "$WANT_AGENT" -eq 1 ]; then
          $(shq "$SELF_CMD") $(shq "$TARGET") --agent"
     else
       die "--agent installs the agent contract and NOTHING ELSE, so it cannot share a
-       run with$COMBINED. Adopt them one at a time, in either order:
+       run with$COMBINED. And$COMBINED has nothing to write here: the
+       language layer covers $LANG_LAYER_SCOPE, and none
+       of them was found under $TARGET — that run warns
+       \"Nothing to do\" and exits 1. The contract has no language in it, so
+       this run works anyway, and it is the only one:
 
-         $(shq "$SELF_CMD") $(shq "$TARGET")$COMBINED
          $(shq "$SELF_CMD") $(shq "$TARGET") --agent"
     fi
   fi
@@ -458,13 +514,22 @@ if [ "$WANT_AGENT" -eq 1 ]; then
     printf '\033[33mDRY RUN\033[0m — nothing written. Re-run without --dry-run to apply.\n'
   elif [ "$SELF" -eq 1 ]; then
     printf '\033[32mADOPTED\033[0m — this repo now runs the contract it ships.\n'
-  else
+  elif lang_layer_runs; then
     # On its own line, and with the same derived path the refusals use: this
     # is printed to be pasted, and a command sharing a line with prose is one
     # a reader has to reassemble before it runs.
     printf '\033[32mADOPTED\033[0m — the agent contract, and nothing else. The language\n'
     printf 'layer is a separate run:\n\n'
     printf '  %s %s\n' "$(shq "$SELF_CMD")" "$(shq "$TARGET")"
+  else
+    # No command, because there is no command that works. Offering one here
+    # would be the same defect the predicate exists to prevent, printed by the
+    # message a consumer is most likely to read to the end.
+    printf '\033[32mADOPTED\033[0m — the agent contract, and nothing else. There is no\n'
+    printf 'language layer to add: it covers %s,\n' "$LANG_LAYER_SCOPE"
+    printf 'and none of them was found here. The contract has no language in it,\n'
+    printf 'which is why this run worked anyway. If this repo grows one of those,\n'
+    printf 'adopt the language layer then — see docs/ADOPTION.md.\n'
   fi
   exit 0
 fi

@@ -554,13 +554,20 @@ measurement impossible to attribute. It also means a repo in
 a language this baseline has never heard of can adopt the contract, which the
 old behaviour refused to do: it stopped at detection.
 
-The refusal names the runs that do work, and in **this** repo that is one run
-rather than two: `--editor` and `--hooks` against the baseline are the
-self-adopt refusal, so "adopt them one at a time" would be false here and the
-message says so instead. Every command those messages print is run by the
-`adopt` job from the directory it was printed in — a remedy nobody executes is
-how `scripts/agent-guard/stop-gate.py` came to print a path that did not exist
-in an adopted tree.
+The refusal names the runs that do work, and there are **two** trees where that
+is one run rather than two. In this repo, `--editor` and `--hooks` against the
+baseline are the self-adopt refusal. And in a repo with no language the baseline
+detects, the layerless run itself warns "Nothing to do" and exits 1 — which is
+the tree this flag was just opened up for, so the success footer does not offer
+a language-layer run there either. Both messages ask one predicate before
+naming that second run rather than assuming it exists.
+
+Every command those messages print is run by the `adopt` job from the directory
+it was printed in, and the fixtures now include a tree with no detectable
+language — a remedy nobody executes is how `scripts/agent-guard/stop-gate.py`
+came to print a path that did not exist in an adopted tree, and a check whose
+fixtures all carry a manifest is one that cannot catch the same defect in the
+population this flag newly admits.
 
 The merge has ownership: baseline hook entries are matched by their `command`
 string and deny rules by the rule string, and appended to what is already

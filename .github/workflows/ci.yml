@@ -3806,7 +3806,94 @@ jobs:
           cat /tmp/ag-rem-space.log
           [[ $rc -eq 3 ]] || { echo "::error::expected exit 3, got $rc"; exit 1; }
           check_printed /tmp/ag-rem-space.log "/tmp/ag rem space" 2
+
+          # 6. A TREE WITH NO DETECTABLE LANGUAGE — the blind spot the five
+          #    fixtures above all shared, because every one of them was handed
+          #    a manifest. This is the one tree where the language-layer run
+          #    is not merely unhelpful but WRONG: `adopt.sh TARGET` warns
+          #    "Nothing to do" and exits 1 there. And it is precisely the
+          #    population this branch newly admits — since --agent no longer
+          #    runs detection, a repo in a language the baseline has never
+          #    heard of can adopt the contract, which docs/ADOPTION.md 5c and
+          #    configs/agent/README.md 7 both sell as the point. So the
+          #    fixture the check was least able to fail on was the tree the
+          #    feature was sold on.
+          #
+          #    check_printed asserts rc 0 from every command a message prints,
+          #    so the only way to be right here is to print none — the counts
+          #    below are 0 for the footer and 1 for the refusal, and both are
+          #    the assertion, not a relaxation of it.
+          nolang() {
+            rm -rf "$1"; mkdir -p "$1"
+            printf '# no language here\n' > "$1/README.md"
+          }
+          nolang /tmp/ag-nolang
+          ( cd /tmp/ag-nolang && "$BASE/scripts/adopt.sh" /tmp/ag-nolang --agent ) \
+            > /tmp/ag-nolang.log 2>&1
+          cat /tmp/ag-nolang.log
+          check_printed /tmp/ag-nolang.log /tmp/ag-nolang 0
+
+          #    Same tree, the combined-flag refusal. "Adopt them one at a
+          #    time, in either order" names two runs and only one of them
+          #    exists here, exactly as in the baseline tree — so one command,
+          #    and it is the --agent one.
+          nolang /tmp/ag-nolang2
+          rc=0
+          ( cd /tmp/ag-nolang2 && "$BASE/scripts/adopt.sh" /tmp/ag-nolang2 --agent --editor ) \
+            > /tmp/ag-nolang2.log 2>&1 || rc=$?
+          cat /tmp/ag-nolang2.log
+          [[ $rc -eq 3 ]] || { echo "::error::expected exit 3, got $rc"; exit 1; }
+          check_printed /tmp/ag-nolang2.log /tmp/ag-nolang2 1
+          grep -q -- '--agent' /tmp/ag-nolang2.log || {
+            echo '::error::the one run that works in this tree is not the one named'; exit 1; }
           echo 'OK: every printed command ran, in the cwd it was printed in'
+
+      # THE PROBE MUST AGREE WITH THE LANGUAGE LAYER. The two messages above
+      # now ask a predicate before offering the second run, and that predicate
+      # carries its own copy of the marker list — so it can drift from the
+      # detection block's. Drift one way prints a command that exits 1, which
+      # is the defect this step exists to hold down; drift the other withholds
+      # a run that would have worked.
+      #
+      # Asserted behaviourally rather than by diffing two lists: for every
+      # marker the language layer detects, and for the trees it refuses
+      # (Gradle-only, and nothing at all), the number of language-layer
+      # commands the --agent footer prints must equal whether that run in fact
+      # succeeds. Nothing here has to be kept in sync by hand.
+      - name: the language-layer run is offered only where it runs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BASE=$PWD
+          for marker in demo.csproj demo.sln demo.slnx tsconfig.json package.json \
+                        pyproject.toml requirements.txt uv.lock Cargo.toml pom.xml \
+                        build.gradle build.gradle.kts __none__; do
+            d=/tmp/ag-probe
+            rm -rf "$d"; mkdir -p "$d"
+            printf '# fixture\n' > "$d/README.md"
+            if [[ "$marker" != "__none__" ]]; then : > "$d/$marker"; fi
+
+            # Does a language-layer run actually do anything in this tree?
+            lang_rc=0
+            ( cd "$d" && "$BASE/scripts/adopt.sh" "$d" --dry-run ) \
+              > /tmp/probe-lang.log 2>&1 || lang_rc=$?
+
+            # How many language-layer commands does the --agent footer offer?
+            ( cd "$d" && "$BASE/scripts/adopt.sh" "$d" --agent ) \
+              > /tmp/probe-agent.log 2>&1
+            offered=$(grep -cE '^[[:space:]]+[^[:space:]]*adopt\.sh([[:space:]]|$)' \
+              /tmp/probe-agent.log || true)
+
+            want=0
+            if [[ $lang_rc -eq 0 ]]; then want=1; fi
+            if [[ "$offered" -ne "$want" ]]; then
+              cat /tmp/probe-lang.log /tmp/probe-agent.log
+              echo "::error::[$marker] language layer exits $lang_rc, footer offered $offered run(s), wanted $want"
+              exit 1
+            fi
+            echo "  OK  $marker: language layer exits $lang_rc, footer offers $offered"
+          done
+          echo 'OK: the footer offers the language-layer run exactly where that run works'
 
       # THE INERT FLAGS, which had no assertion at all. docs/ADOPTION.md and
       # the script header both promise that --force, --ref and --no-workflow
