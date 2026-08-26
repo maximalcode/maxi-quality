@@ -3646,9 +3646,14 @@ jobs:
           done
           # --others without --exclude-standard on purpose: the .gitignore line
           # --agent just wrote would otherwise hide anything it names.
-          stray=$(cd /tmp/ag-only \
-                  && { git ls-files --others; git diff --name-only; } \
-                  | grep -vE '^(\.claude/|CLAUDE\.md$|\.gitignore$)' || true)
+          # `git -C` rather than `cd &&`: with the `|| true` this needs, a
+          # `cd` on the left of an `&&` is swallowed by it — the substitution
+          # returns empty and the assertion passes having enumerated nothing.
+          # That is SC2015, and it is the failure this step exists to catch,
+          # one level up.
+          stray=$( { git -C /tmp/ag-only ls-files --others
+                     git -C /tmp/ag-only diff --name-only
+                   } | grep -vE '^(\.claude/|CLAUDE\.md$|\.gitignore$)' || true)
           if [[ -n "$stray" ]]; then
             echo '::error::--agent wrote the language layer as well as the contract:'
             echo "$stray"
