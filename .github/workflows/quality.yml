@@ -17,8 +17,20 @@
 # which stayed private. They record why something was decided. They are NOT
 # this repo's issue numbers, which start fresh at #1.
 #
-# Version coupling: this file references actions/layer2@v1. The v1 tag pins
-# BOTH the workflow and the action — they move together, never independently.
+# Version coupling, settled in #81:
+#
+# - `actions/layer2` is pinned by commit-SHA below (line ~1032), with a `# v1`
+#   comment. The version tag still travels because a consumer needs to know
+#   which release lineage they are on, but SHA-pinning means a moved tag cannot
+#   silently change what runs inside an already-pinned consumer workflow.
+# - This file is itself consumed BY COMMIT-SHA, not by tag, when a consumer
+#   wants the Scorecard pinning check to pass. The documented adoption snippet
+#   offers both: `@v1` for the easy path, and a SHA with `# v1` for the pinned
+#   one. The pinned SHA is published alongside each release; see README.md.
+#
+# The v1 tag still exists and still moves — it is the "latest v1.x" pointer. A
+# consumer on `@v1` accepts the Scorecard finding and the supply-chain trade-off
+# it describes. A consumer on a SHA gets end-to-end immutability.
 #
 # v1 scope (deliberate): TypeScript (npm, or pnpm with a packageManager field),
 # C#, Python (uv or pip), Rust (a committed Cargo.lock) and Java (MAVEN, with
@@ -1012,10 +1024,12 @@ jobs:
         with:
           # Gitleaks scans commit history, not just the tree.
           fetch-depth: 0
-      # Pinned to the same tag that pins this workflow — v1 moves both
-      # together, never independently. (Acceptance ran against @main first;
-      # this line flipped in the commit that got tagged v1.)
-      - uses: maximalcode/maxi-quality/actions/layer2@v1
+      # Pinned by commit-SHA: the v1 tag still names which release lineage this is,
+      # but a SHA means a moved tag cannot change which action revision runs
+      # inside a consumer workflow that is itself SHA-pinned to this file.
+      # Bump the two together: the SHA is the v1 tag's commit, and the comment
+      # records the lineage the SHA was taken from.
+      - uses: maximalcode/maxi-quality/actions/layer2@27d3c69c4f9b9319e2974871f8c46605b4930a44 # v1
         with:
           changed-only: ${{ inputs.changed-only }}
           licenses: ${{ inputs.licenses }}
