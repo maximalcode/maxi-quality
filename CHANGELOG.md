@@ -87,7 +87,12 @@ Two things in this window look like Finding changes and are not:
   into **itself**: this repo now runs the contract it ships, from a copy under
   `.claude/agent-guard/` that `check-agent-contract.py` holds against its
   source — which is how #178 was found in the first hour and fixed inside the
-  same window, before any of this reached a tag. Declare your gate once in
+  same window, before any of this reached a tag. Two more found the same way,
+  by installing it into a repo that was not this one: the two rules hardcoded to
+  `samples/` are now installed only where they can fire, and the text describing
+  them says what landed (#182); and re-running refreshes the `CLAUDE.md` region
+  instead of skipping it, refusing an edit of your own rather than overwriting
+  it (#177). Declare your gate once in
   `.claude/agent-guard.json` and run it as
   `record-gate.py --gate`: the wrapper then executes the whole declared string
   through one shell, and the `Stop` hook refuses a receipt that records

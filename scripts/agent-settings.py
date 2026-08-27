@@ -290,12 +290,57 @@ def write_atomically(path: str, text: str) -> None:
         raise
 
 
+# The two rules that only fire in a tree with expectation manifests: the hook
+# that refuses a weakening edit under `samples/`, and the deny rule over
+# `samples/expected/`. Named by the substring that identifies each, because a
+# rule is identified by its command/rule string everywhere else in this file
+# and adding a second identity scheme is how the two drift apart.
+SAMPLES_ONLY_COMMAND = "sample-guard.py"
+SAMPLES_ONLY_DENY = "/samples/expected/"
+
+
+def without_samples(baseline: dict) -> dict:
+    """The baseline minus the two rules a tree with no manifests cannot use.
+
+    WHY THIS IS DROPPED RATHER THAN SHIPPED-AND-INERT (#182)
+
+    `sample-guard.py` hardcodes `samples/` and `samples/expected/`. In a
+    consumer that has neither, the hook is reachable, runs, and allows
+    everything — and the deny rule matches no file that exists. Installed
+    anyway, they made a tree whose CLAUDE.md stated it was protected by three
+    hooks and two deny rules, a third of which could never fire. That is the
+    "looks adopted and enforces nothing" outcome adopt.sh's own comments say it
+    exists to avoid, one level in.
+
+    Not made configurable, though a consumer pointing this at their own fixture
+    manifests is the obvious next idea: no consumer has asked, and CLAUDE.md §4
+    is explicit that a config with no real project behind it is dead weight.
+    Re-running `--agent` after a `samples/expected/` appears installs both.
+    """
+    out = json.loads(json.dumps(baseline))
+    groups = (out.get("hooks") or {}).get("PreToolUse") or []
+    for group in groups:
+        group["hooks"] = [e for e in group.get("hooks", [])
+                          if SAMPLES_ONLY_COMMAND not in e.get("command", "")]
+    out.setdefault("hooks", {})["PreToolUse"] = [g for g in groups if g.get("hooks")]
+    deny = ((out.get("permissions") or {}).get("deny")) or []
+    out.setdefault("permissions", {})["deny"] = [
+        r for r in deny if not (isinstance(r, str) and SAMPLES_ONLY_DENY in r)]
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(add_help=True, description=__doc__)
     sub = parser.add_subparsers(dest="mode", required=True)
     m = sub.add_parser("merge", help="merge the baseline into a target settings.json")
     m.add_argument("--baseline", required=True)
     m.add_argument("--target", required=True)
+    m.add_argument(
+        "--without-samples",
+        action="store_true",
+        help="omit the two rules that only fire in a tree with expectation "
+             "manifests under samples/expected/ (#182)",
+    )
     m.add_argument(
         "--dry-run",
         action="store_true",
@@ -315,6 +360,8 @@ def main(argv: list[str] | None = None) -> int:
         return 3  # unreachable; keeps the type checker and the reader honest
     if not baseline:
         die(f"{args.baseline}: not found")
+    if args.without_samples:
+        baseline = without_samples(baseline)
 
     try:
         target = load(args.target)

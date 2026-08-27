@@ -133,6 +133,26 @@ removing entries from a manifest in `samples/expected/`, and removing lines from
 a fixture file some manifest cites. Everything else passes, including adding a
 new failing case to an existing fixture.
 
+### Two of the five only fire where they can (#182)
+
+`sample-guard.py` and `Edit(/samples/expected/**)` are hardcoded to this repo's
+fixture layout — `samples/` and `samples/expected/`, as module constants, not
+config. In a consumer that has neither, the hook is reachable, runs, and allows
+everything; the deny rule matches no file that exists.
+
+So `--agent` installs them **only in a tree that has `samples/expected/`**, and
+the `CLAUDE.md` region describes what actually landed: three hooks and two deny
+rules where they can fire, two hooks and one deny rule where they cannot. The
+defect this fixes is not the inert pair — it is a consumer's `CLAUDE.md`
+stating, confidently and specifically, that it is protected by a rule that can
+never run.
+
+They are not made configurable. A consumer pointing this at their own fixture
+manifests is the obvious next idea and nobody has asked for it; CLAUDE.md §4 is
+explicit that a config with no real project behind it is dead weight. Re-running
+`--agent` after a `samples/expected/` appears installs both, and refreshes the
+prose to match.
+
 ### `permissions.deny` — the file tools may not touch the receipt or a manifest
 
 Two rules, and the spelling of each is load-bearing:
@@ -519,7 +539,8 @@ fixture had reached:
   cases.
 - **Re-running `--agent` skips an existing `CLAUDE.md` region rather than
   refreshing it**, so the one part of the contract that says what the rules ARE
-  is the one part re-adoption does not upgrade. §7a and #177.
+  is the one part re-adoption does not upgrade. §7a and #177 — **since fixed**:
+  the region refreshes, and refuses an edit of yours rather than overwriting it.
 
 Both are recorded rather than fixed here, which is the rule this dogfood is
 run under: a cost found by living with it is the measurement, and fixing it in
@@ -595,14 +616,23 @@ back on, because an `--agent` run is the contract and only the contract.
    state. Nothing breaks if you forget; it is excluded from the fingerprint
    either way.
 
-**Re-running `--agent` does not refresh the `CLAUDE.md` region.** The markers
-make an in-place replacement possible — that is what `scripts/pom-region.py`
-does for the Java block in an XML file that has no append — but nothing performs
-it here yet: a region that is already present is skipped, so a later baseline's
-fragment never reaches a tree that already adopted one. Replace the text between
-the markers by hand when `CLAUDE.fragment.md` changes. Tracked as #177; the
-scripts and the settings merge DO refresh, and this is the one part that does
-not.
+**Re-running `--agent` refreshes the `CLAUDE.md` region** (#177), so
+re-adoption is the upgrade path for the prose exactly as it already is for the
+scripts and the settings merge. `scripts/agent-region.py` owns it, the same
+shape `scripts/pom-region.py` uses for the Java block: everything between the
+markers is replaced, everything outside them comes back byte-identical, and a
+region that is already current is not rewritten at all.
+
+**A region you edited yourself is refused, not overwritten.** The BEGIN marker
+carries a checksum of the text as it was installed, which is the only way to
+tell an older baseline's fragment — refresh it, that is the point — from your
+own edit, which nobody asked us to touch. The refusal prints the diff and
+writes nothing; `--force` is the way through, and on an `--agent` run that is
+the only thing `--force` means.
+
+A region installed before this existed carries no checksum. It is refused the
+same way, once, with a message saying so — and a region whose text is already
+current is *stamped* with one rather than left permanently unverifiable.
 
 One thing `--agent` does not do, and cannot: declare what your gate command is.
 Write `.claude/agent-guard.json` as `{ "gate_command": "<your gate>" }` once.

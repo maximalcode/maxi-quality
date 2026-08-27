@@ -854,6 +854,17 @@ shell, which is why the declaration is not optional: a gate written the natural
 way for two checks, `a && b`, cannot be interpolated into an argv without the
 `&&` binding outside the wrapper (#178).
 
+**Two of the five rules are installed only where they can fire.**
+`sample-guard.py` and the `samples/expected/` deny rule are hardcoded to this
+baseline's fixture layout, so a repo without `samples/expected/` gets the other
+three — and a `CLAUDE.md` region that says three rather than five. A tree that
+grows manifests later gets both on the next run (#182).
+
+**Re-running refreshes the `CLAUDE.md` region, and refuses your edits.** The
+BEGIN marker carries a checksum of the text as installed, so an older
+baseline's fragment is replaced and an edit of your own is not. The refusal
+prints the diff; `--force` overrides it (#177).
+
 **This is the one flag that merges.** `--editor` refuses when the target
 exists; `.claude/settings.json` is a file you probably already have, so refusing
 there would mean never adopting. Your hook entries and deny rules are appended

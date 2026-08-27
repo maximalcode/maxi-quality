@@ -368,7 +368,7 @@ Single-context — `CONTEXT.md` + `docs/adr/` at the repo root, with
      so a later baseline does not reach this text on its own: replace what is
      between the markers with configs/agent/CLAUDE.fragment.md by hand when it
      changes (configs/agent/README.md §7a). -->
-<!-- BEGIN maxi-quality agent-guard -->
+<!-- BEGIN maxi-quality agent-guard sha256:82b84a2c0a81f4c2 -->
 
 ## The gate, and how a session ends
 
