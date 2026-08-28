@@ -337,6 +337,33 @@ def without_samples(baseline: dict) -> dict:
 UNWIRED_BUT_NEEDED = ("guard.py", "record-gate.py")
 
 
+SHIM = "shim.py"
+
+
+def shared(baseline: dict) -> dict:
+    """The same wiring, routed through the shim instead of the scripts (#193).
+
+    `.../stop-gate.py`  ->  `.../shim.py stop-gate`
+
+    Derived from the same baseline rather than kept as a second settings file,
+    for the reason the profile is: two files drift, and the drift is invisible
+    because no consumer holds both. A repo installed with --shared and one
+    installed without must wire the SAME rules; only where the code lives
+    differs.
+    """
+    out = json.loads(json.dumps(baseline))
+    for groups in (out.get("hooks") or {}).values():
+        for group in groups:
+            for entry in group.get("hooks", []):
+                cmd = entry.get("command", "")
+                if not cmd.endswith('.py"'):
+                    continue
+                head, _, tail = cmd.rpartition("/")
+                name = tail[:-len('.py"')]
+                entry["command"] = f'{head}/{SHIM}" {name}'
+    return out
+
+
 def scripts_for(baseline: dict) -> list[str]:
     """The .py files a tree wired with `baseline` actually needs.
 
@@ -373,6 +400,11 @@ def main(argv: list[str] | None = None) -> int:
     m.add_argument("--baseline", required=True)
     m.add_argument("--target", required=True)
     m.add_argument(
+        "--shared",
+        action="store_true",
+        help="wire the shim instead of copied scripts (#193)",
+    )
+    m.add_argument(
         "--without-samples",
         action="store_true",
         help="omit the two rules that only fire in a tree with expectation "
@@ -388,6 +420,8 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("scripts", help="the .py files a profile actually needs")
     s.add_argument("--baseline", required=True)
     s.add_argument("--without-samples", action="store_true")
+    s.add_argument("--shared", action="store_true",
+                   help="ignored; the shared body carries every script")
     args = parser.parse_args(argv)
 
     try:
@@ -402,6 +436,8 @@ def main(argv: list[str] | None = None) -> int:
         die(f"{args.baseline}: not found")
     if args.without_samples:
         baseline = without_samples(baseline)
+    if getattr(args, "shared", False) and args.mode == "merge":
+        baseline = shared(baseline)
     if args.mode == "scripts":
         print("\n".join(scripts_for(baseline)))
         return 0

@@ -145,6 +145,43 @@ removing entries from a manifest in `samples/expected/`, and removing lines from
 a fixture file some manifest cites. Everything else passes, including adding a
 new failing case to an existing fixture.
 
+### One install for many repos — `--shared` (#193)
+
+`adopt.sh <repo> --agent` copies four scripts, 984 lines, into every consumer.
+Across a fleet that is the same fix committed once per repo. `--shared` puts
+**101 lines** there instead — a single `shim.py` — and the scripts live once:
+
+```bash
+scripts/adopt.sh --install-shared          # once per machine
+scripts/adopt.sh <repo> --agent --shared   # once per repo
+```
+
+The wiring routes through the shim (`shim.py stop-gate`) and the shim `execv`s
+the real script out of `~/.claude/agent-guard/`, so stdin, stdout and the exit
+code are the child's. Re-running `--install-shared` after a `git pull` updates
+every `--shared` repo at once.
+
+**Copying stays the default**, and that is an ADR 0001 decision rather than a
+preference: an outside adopter runs one command and gets a tree that works,
+with no second install step and nothing to go missing.
+
+**A missing shared body REFUSES.** Everything else here fails open on plumbing
+— `guard.py`'s header explains why, and it is right — but a missing body is not
+plumbing, it is the guard being absent, and absence that allows is the silent
+failure this whole design exists to prevent. So it is graded by what each hook
+protects: `stop-gate` blocks the turn and names the install; `no-verify-guard`
+denies a `git commit`/`push` and nothing else, because a missing guard must not
+make every Bash call refuse; `sample-guard` warns and allows, since the Stop
+hook above is already refusing; `record-gate` exits 3, because a recorder that
+cannot run must not look like one that ran.
+
+That property is why this is a shim and not a Claude Code plugin. A plugin
+cannot carry `permissions.deny` at all — its `settings.json` takes only `agent`
+and `subagentStatusLine`, and unknown keys are silently ignored — and with a
+plugin uninstalled a repo holds a config claiming it is adopted and nothing
+else: no hook, no rule, no message. The shim is committed, so the repo can say
+what it expects.
+
 ### The guard's own state is never a change
 
 Two things under `.claude/` are written by the guard rather than by you, and

@@ -4299,6 +4299,79 @@ jobs:
             || { echo "::error::the baseline's own recorder refused a legitimate run (exit $rc2)"; exit 1; }
           echo 'OK: it records for the repo it belongs to, or for nobody'
 
+      # ISSUE #193 — --shared installs 101 lines instead of 984, and the
+      # scripts live once at ~/.claude/agent-guard/. HOME is redirected so the
+      # absent-body path is reachable: that path is the entire reason this
+      # design was chosen over a plugin, which cannot be absent LOUDLY.
+      - name: --shared installs a shim, and a missing body refuses loudly
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export HOME=/tmp/ag-home
+          rm -rf /tmp/ag-home /tmp/ag-shared
+          mkdir -p /tmp/ag-home /tmp/ag-shared
+          printf '{"name":"demo"}\n' > /tmp/ag-shared/package.json
+          printf 'hi\n' > /tmp/ag-shared/f.txt
+          git -C /tmp/ag-shared init -q
+          git -C /tmp/ag-shared config user.email ci@example.invalid
+          git -C /tmp/ag-shared config user.name ci
+          git -C /tmp/ag-shared add -A && git -C /tmp/ag-shared commit -qm init
+          ./scripts/adopt.sh /tmp/ag-shared --agent --shared >/dev/null
+          printf '{"gate_command": "true"}\n' > /tmp/ag-shared/.claude/agent-guard.json
+
+          # 1. One file, and it is the shim.
+          got=$(cd /tmp/ag-shared/.claude/agent-guard && ls)
+          [[ "$got" == "shim.py" ]] \
+            || { echo "::error::--shared installed [$got], expected shim.py alone"; exit 1; }
+          n=$(wc -l < /tmp/ag-shared/.claude/agent-guard/shim.py)
+          [[ $n -lt 150 ]] \
+            || { echo "::error::the shim is $n lines; it is meant to be small"; exit 1; }
+          grep -q 'shim[.]py.*stop-gate' /tmp/ag-shared/.claude/settings.json \
+            || { echo '::error::the wiring does not route through the shim'; exit 1; }
+
+          # 2. THE BODY IS ABSENT. The Stop hook must BLOCK and name the fix.
+          printf 'ungated\n' >> /tmp/ag-shared/f.txt
+          out=$(cd /tmp/ag-shared && printf '{"cwd":"/tmp/ag-shared","hook_event_name":"Stop"}' \
+                | python3 .claude/agent-guard/shim.py stop-gate)
+          grep -q '"decision": *"block"' <<<"$out" \
+            || { echo '::error::a missing shared body allowed the stop — the exact silent absence this design exists to prevent'; exit 1; }
+          grep -q 'install-shared' <<<"$out" \
+            || { echo '::error::the refusal does not say how to fix it'; exit 1; }
+
+          # 3. A commit is denied; an ordinary command is not.
+          deny=$(cd /tmp/ag-shared && printf '{"tool_input":{"command":"git commit -m x"}}' \
+                 | python3 .claude/agent-guard/shim.py no-verify-guard)
+          grep -q '"permissionDecision": *"deny"' <<<"$deny" \
+            || { echo '::error::a commit was allowed with no guard present'; exit 1; }
+          ok=$(cd /tmp/ag-shared && printf '{"tool_input":{"command":"ls -la"}}' \
+               | python3 .claude/agent-guard/shim.py no-verify-guard)
+          [[ -z "${ok//[[:space:]]/}" ]] \
+            || { echo "::error::an ordinary Bash command was refused: $ok"; exit 1; }
+
+          # 4. Install the body; the whole loop works, and the printed remedy runs.
+          ./scripts/adopt.sh --install-shared >/dev/null
+          [[ -e /tmp/ag-home/.claude/agent-guard/stop-gate.py ]] \
+            || { echo '::error::--install-shared wrote no body'; exit 1; }
+          [[ -e /tmp/ag-home/.claude/agent-guard/selftest.py ]] \
+            && { echo '::error::the shared body carries selftest.py, which runs nowhere'; exit 1; }
+          out=$(cd /tmp/ag-shared && printf '{"cwd":"/tmp/ag-shared","hook_event_name":"Stop"}' \
+                | python3 .claude/agent-guard/shim.py stop-gate)
+          line=$(python3 - "$out" <<'PY'
+          import json, sys
+          print([l.strip() for l in json.loads(sys.argv[1])["reason"].splitlines()
+                 if "record-gate" in l][0])
+          PY
+          )
+          echo "pasting: $line"
+          (cd /tmp/ag-shared && eval "$line") >/dev/null
+          [[ -e /tmp/ag-shared/.claude/agent-guard-receipt.json ]] \
+            || { echo '::error::the printed remedy wrote no receipt into the repo it was run in'; exit 1; }
+          out=$(cd /tmp/ag-shared && printf '{"cwd":"/tmp/ag-shared","hook_event_name":"Stop"}' \
+                | python3 .claude/agent-guard/shim.py stop-gate)
+          [[ -z "${out//[[:space:]]/}" ]] \
+            || { echo "::error::the stop was still refused after a passing gate: $out"; exit 1; }
+          echo 'OK: 101 lines, refuses when absent, and the whole loop runs when present'
+
       - name: --agent merges, and a consumer keeps everything they had
         shell: bash
         run: |
