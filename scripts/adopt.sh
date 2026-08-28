@@ -56,6 +56,15 @@
 #                     settings.json that does not parse, or whose `hooks` key is
 #                     not the documented shape, is REFUSED — nothing --agent
 #                     would have written gets written at all, and the run exits 6.
+#   --shared          With --agent: install a 101-line shim instead of the four
+#                     scripts (984 lines), and run the real ones from
+#                     ~/.claude/agent-guard/. One fix updates every --shared
+#                     repo. Copying is still the default so an outside adopter
+#                     gets a working tree from one command (#193).
+#   --install-shared  Populate ~/.claude/agent-guard/ and exit. Takes no target;
+#                     re-run it after a git pull to update every --shared repo
+#                     at once. A --shared repo whose body is missing REFUSES —
+#                     it does not fail open.
 #   -h, --help        This text.
 #
 # What gets written, per detected language:
@@ -166,6 +175,9 @@ EDITOR_CONFLICT=0
 # Not named AGENT either: --hooks already taught this script that a short,
 # obvious name can mean two unrelated things (configs/agent/README.md §8).
 WANT_AGENT=0
+WANT_SHARED=0
+INSTALL_SHARED=0
+SHARED_DIR="$HOME/.claude/agent-guard"
 AGENT_CONFLICT=0
 
 # Escapes a path for a command line a human will paste. A checkout under
@@ -185,7 +197,7 @@ wrote() { printf '\033[32mwrite\033[0m %s\n' "$1"; }
 # last row of the --agent list, which is the last line of the header that is
 # help text rather than rationale. Verify with `scripts/adopt.sh --help | tail`
 # after editing anything above.
-usage() { sed -n '3,104p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
+usage() { sed -n '3,113p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
 
 # --- the agent contract, only on --agent -------------------------------------
 #
@@ -221,6 +233,8 @@ install_agent_contract() {
   #
   # Re-running after a samples/expected/ appears installs both, so this is a
   # decision about THIS tree today and not a permanent verdict on it.
+  AGENT_SHARED=()
+  [ "$WANT_SHARED" -eq 1 ] && AGENT_SHARED=(--shared)
   AGENT_SAMPLES=no
   AGENT_WITHOUT=(--without-samples)
   if [ -d "$TARGET/samples/expected" ]; then
@@ -233,7 +247,7 @@ install_agent_contract() {
   if ! python3 "$BASELINE/scripts/agent-settings.py" merge \
          --baseline "$BASELINE/configs/agent/settings.json" \
          --target "$AGENT_SETTINGS" "${AGENT_WITHOUT[@]+"${AGENT_WITHOUT[@]}"}" \
-         --dry-run >/dev/null; then
+         "${AGENT_SHARED[@]+"${AGENT_SHARED[@]}"}" --dry-run >/dev/null; then
     AGENT_CONFLICT=1
     NEEDS_MERGE=1
   else
@@ -268,15 +282,32 @@ install_agent_contract() {
     # #182 stopped wiring it in a tree with no manifests. 43% of the install
     # could not run. agent-settings.py holds the one definition of the set.
     AGENT_WANT=()
-    while IFS= read -r n; do AGENT_WANT+=("$n"); done < <(
-      python3 "$BASELINE/scripts/agent-settings.py" scripts \
-        --baseline "$BASELINE/configs/agent/settings.json" \
-        "${AGENT_WITHOUT[@]+"${AGENT_WITHOUT[@]}"}")
+    if [ "$WANT_SHARED" -eq 1 ]; then
+      # --shared: one file, and the scripts live once at ~/.claude/agent-guard.
+      # 101 lines instead of 984, and a guard fix is one `--install-shared`
+      # rather than one commit per repo (#193).
+      AGENT_WANT=(shim.py)
+      if [ ! -d "$SHARED_DIR" ] && [ "$DRY_RUN" -eq 0 ]; then
+        warn "--shared: $SHARED_DIR does not exist yet. The wiring will be"
+        warn "installed and will REFUSE until you run:"
+        warn "  $SELF_CMD --install-shared"
+        NEEDS_MERGE=1
+      fi
+    else
+      while IFS= read -r n; do AGENT_WANT+=("$n"); done < <(
+        python3 "$BASELINE/scripts/agent-settings.py" scripts \
+          --baseline "$BASELINE/configs/agent/settings.json" \
+          "${AGENT_WITHOUT[@]+"${AGENT_WITHOUT[@]}"}")
+    fi
     for n in "${AGENT_WANT[@]}"; do
       wrote "$AGENT_DIR/$n (refreshed)"
       [ "$DRY_RUN" -eq 1 ] && continue
       mkdir -p "$AGENT_DIR"
-      cp "$BASELINE/scripts/agent-guard/$n" "$AGENT_DIR/$n"
+      if [ "$n" = "shim.py" ]; then
+        cp "$BASELINE/configs/agent/shim.py" "$AGENT_DIR/$n"
+      else
+        cp "$BASELINE/scripts/agent-guard/$n" "$AGENT_DIR/$n"
+      fi
     done
 
     # An orphan from an earlier adoption — a script this profile no longer
@@ -285,7 +316,7 @@ install_agent_contract() {
     # script no command names. Deleting a file from someone's tree is a bigger
     # act than adding one, so the blast radius is fixed: only names that exist
     # under scripts/agent-guard/, never anything else in that directory.
-    for src in "$BASELINE"/scripts/agent-guard/*.py; do
+    for src in "$BASELINE"/scripts/agent-guard/*.py "$BASELINE"/configs/agent/shim.py; do
       n="$(basename "$src")"
       case " ${AGENT_WANT[*]} " in *" $n "*) continue ;; esac
       [ -e "$AGENT_DIR/$n" ] || continue
@@ -356,13 +387,13 @@ install_agent_contract() {
       python3 "$BASELINE/scripts/agent-settings.py" merge \
         --baseline "$BASELINE/configs/agent/settings.json" \
         --target "$AGENT_SETTINGS" "${AGENT_WITHOUT[@]+"${AGENT_WITHOUT[@]}"}" \
-        --dry-run | sed 's/^/    /'
+        "${AGENT_SHARED[@]+"${AGENT_SHARED[@]}"}" --dry-run | sed 's/^/    /'
     else
       wrote "$AGENT_SETTINGS (merge)"
       python3 "$BASELINE/scripts/agent-settings.py" merge \
         --baseline "$BASELINE/configs/agent/settings.json" \
         --target "$AGENT_SETTINGS" "${AGENT_WITHOUT[@]+"${AGENT_WITHOUT[@]}"}" \
-        | sed 's/^/    /' \
+        "${AGENT_SHARED[@]+"${AGENT_SHARED[@]}"}" | sed 's/^/    /' \
         || die "the merge failed after its own dry run passed — this is a bug in maxi-quality, not in your repo"
     fi
   fi
@@ -403,6 +434,8 @@ while [ $# -gt 0 ]; do
     --hooks) HOOKS=1; shift ;;
     --editor) WANT_EDITOR=1; shift ;;
     --agent) WANT_AGENT=1; shift ;;
+    --shared) WANT_SHARED=1; shift ;;
+    --install-shared) INSTALL_SHARED=1; shift ;;
     --ref)
       [ $# -ge 2 ] || die "--ref needs a value"
       REF="$2"; REF_SET=1; shift 2 ;;
@@ -413,6 +446,28 @@ while [ $# -gt 0 ]; do
       TARGET="$1"; shift ;;
   esac
 done
+
+# --install-shared takes no target: it populates the ONE directory every
+# --shared repo executes from. Handled before target resolution because it is
+# not an adoption at all — nothing is written into a consuming repo.
+if [ "$INSTALL_SHARED" -eq 1 ]; then
+  info "shared agent guard -> $SHARED_DIR"
+  if [ "$DRY_RUN" -eq 0 ]; then
+    mkdir -p "$SHARED_DIR"
+    # EVERY script, not the per-repo profile: one directory serves repos with
+    # and without expectation manifests, and the shim picks by name. selftest.py
+    # is still excluded — it needs samples/agent-guard/, which no consumer has.
+    for src in "$BASELINE"/scripts/agent-guard/*.py; do
+      [ "$(basename "$src")" = "selftest.py" ] && continue
+      cp "$src" "$SHARED_DIR/$(basename "$src")"
+      wrote "$SHARED_DIR/$(basename "$src")"
+    done
+  fi
+  printf '\n'
+  info "every repo adopted with --agent --shared now runs this copy."
+  info "re-run this after pulling maxi-quality to update all of them at once."
+  exit 0
+fi
 
 [ -n "$TARGET" ] || TARGET="$(pwd)"
 [ -d "$TARGET" ] || die "not a directory: $TARGET"
