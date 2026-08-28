@@ -586,8 +586,10 @@ def check(root: pathlib.Path, today: datetime.date) -> list[str]:
     # This repo runs its own contract (#166), and it runs it from a COPY under
     # .claude/agent-guard/ rather than a symlink to scripts/agent-guard/. That
     # is deliberate: a consumer gets a copy, because a hook `command` is a path
-    # on disk and Claude Code has no remote consumption, so re-running
-    # `adopt.sh --agent` is the only upgrade path there is. A symlink here would
+    # on disk, so re-running `adopt.sh --agent` is the upgrade path. (Not "the
+    # only one there is" — plugin hooks are fetched from a git source and pin
+    # by SHA. A plugin cannot carry `permissions.deny`, which is why the copy
+    # stands; the earlier claim that no remote mechanism existed did not.) A symlink here would
     # make this the one tree in the world that cannot drift, which is the one
     # property a dogfood must not have.
     #
@@ -604,7 +606,23 @@ def check(root: pathlib.Path, today: datetime.date) -> list[str]:
         bad(".claude/agent-guard/ does not exist — this repo stopped running "
             "the contract it ships (#166). Re-run `scripts/adopt.sh . --agent`.")
     else:
-        want = {f.name: f.read_bytes() for f in hooks_dir.glob("*.py")}
+        # The expected SET comes from the same place adopt.sh gets it, so
+        # "which scripts does this profile install" has one answer (#191). A
+        # glob here would demand selftest.py back the moment adopt.sh stopped
+        # shipping it, and a hardcoded list would be the second source of truth
+        # this whole script exists to prevent.
+        listed = subprocess.run(
+            (sys.executable, str(root / "scripts" / "agent-settings.py"), "scripts",
+             "--baseline", str(root / "configs" / "agent" / "settings.json")),
+            capture_output=True, text=True)
+        if listed.returncode != 0:
+            bad("agent-settings.py could not list the scripts a profile needs: "
+                + listed.stderr.strip())
+            names = set()
+        else:
+            names = {n for n in listed.stdout.split() if n}
+        want = {f.name: f.read_bytes() for f in hooks_dir.glob("*.py")
+                if f.name in names}
         have = {f.name: f.read_bytes() for f in adopted.glob("*.py")}
         for name in sorted(set(want) - set(have)):
             bad(f".claude/agent-guard/{name} is missing — scripts/agent-guard/ "
@@ -612,10 +630,11 @@ def check(root: pathlib.Path, today: datetime.date) -> list[str]:
                 "contract with a hole its own fixtures cannot see. Re-run "
                 "`scripts/adopt.sh . --agent`.")
         for name in sorted(set(have) - set(want)):
-            bad(f".claude/agent-guard/{name} has no source under "
-                "scripts/agent-guard/ — it is either a script that was deleted "
-                "from the baseline and left running here, or one that never "
-                "came from it")
+            bad(f".claude/agent-guard/{name} is not wired by this tree's "
+                "profile — it is a script deleted from the baseline and left "
+                "running here, one that never came from it, or an orphan an "
+                "earlier adoption left behind (#191). Re-run "
+                "`scripts/adopt.sh . --agent`, which removes its own orphans.")
         for name in sorted(set(want) & set(have)):
             if want[name] != have[name]:
                 bad(f".claude/agent-guard/{name} has drifted from "

@@ -871,8 +871,10 @@ exists; `.claude/settings.json` is a file you probably already have, so refusing
 there would mean never adopting. Your hook entries and deny rules are appended
 to, never replaced and never reordered, and re-running adds nothing twice —
 which matters because re-running **is** the upgrade path: a hook command is a
-path on disk and Claude Code has no remote consumption, so the scripts are
-copied and refreshed rather than pinned to a tag.
+path on disk, so the scripts are copied and refreshed rather than pinned to a
+tag. A plugin *can* ship hooks from a git source pinned by SHA — but not
+`permissions.deny` rules, so two of this contract's four rules could not travel
+that way.
 
 If your `settings.json` does not parse, or its `hooks` key is not the shape the
 docs describe, `--agent` writes **nothing at all** — not the scripts, not the

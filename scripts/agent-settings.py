@@ -329,6 +329,43 @@ def without_samples(baseline: dict) -> dict:
     return out
 
 
+# The two scripts no hook command names, and why each is still installed.
+#   guard.py       — imported by every hook; nothing runs it directly.
+#   record-gate.py — the CLI a human or CI runs to produce the receipt. The
+#                    Stop hook's refusal prints it by name, so a tree without
+#                    it has a remedy that does not exist.
+UNWIRED_BUT_NEEDED = ("guard.py", "record-gate.py")
+
+
+def scripts_for(baseline: dict) -> list[str]:
+    """The .py files a tree wired with `baseline` actually needs.
+
+    Derived from the hook commands rather than listed, so there is ONE place
+    that decides what a profile installs. adopt.sh copies this set and
+    check-agent-contract.py G9 compares against it; a hardcoded list in either
+    would be a second source of truth for the question the first one answers,
+    which is the drift this whole script exists to prevent (#191).
+
+    What this excludes, deliberately:
+
+      * `selftest.py` — the baseline's own corpus runner. It needs
+        samples/agent-guard/, which adoption does not carry, so it can never
+        run in a consumer. 508 lines, 29% of the old install, in every tree
+        that would ever exist. Both `adopt.sh` and configs/agent/README.md
+        described it as dead weight and copied it anyway.
+      * `sample-guard.py` in a tree with no expectation manifests — #182
+        stopped WIRING it there and the copy loop was not revisited, so a
+        consumer got a hook script nothing referenced. That is the condition
+        `check-agent-contract.py` G1 fails the baseline for.
+    """
+    names = {c.rsplit("/", 1)[-1].rstrip('"')
+             for groups in (baseline.get("hooks") or {}).values()
+             for group in groups
+             for entry in group.get("hooks", [])
+             for c in [entry.get("command", "")] if c.endswith('.py"') or c.endswith(".py")}
+    return sorted(names | set(UNWIRED_BUT_NEEDED))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(add_help=True, description=__doc__)
     sub = parser.add_subparsers(dest="mode", required=True)
@@ -348,6 +385,9 @@ def main(argv: list[str] | None = None) -> int:
              "first on every run, so a refusal costs the consumer no half-"
              "adopted tree.",
     )
+    s = sub.add_parser("scripts", help="the .py files a profile actually needs")
+    s.add_argument("--baseline", required=True)
+    s.add_argument("--without-samples", action="store_true")
     args = parser.parse_args(argv)
 
     try:
@@ -362,6 +402,9 @@ def main(argv: list[str] | None = None) -> int:
         die(f"{args.baseline}: not found")
     if args.without_samples:
         baseline = without_samples(baseline)
+    if args.mode == "scripts":
+        print("\n".join(scripts_for(baseline)))
+        return 0
 
     try:
         target = load(args.target)

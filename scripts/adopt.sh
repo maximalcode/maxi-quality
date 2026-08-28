@@ -249,17 +249,48 @@ install_agent_contract() {
     fi
 
     # The scripts are BASELINE CODE, not your configuration, so unlike every
-    # other copy in this script they are refreshed rather than skipped. There
-    # is no remote consumption for a hook command — it is a path on disk — so
-    # re-running this script IS the upgrade path, the same trade the C# and
-    # Rust configs already make. --force does not apply to the scripts and would
+    # other copy in this script they are refreshed rather than skipped. A hook
+    # `command` is a path on disk, so re-running this script IS the upgrade
+    # path, the same trade the C# and Rust configs already make.
+    #
+    # This used to say Claude Code has "no remote consumption". That is FALSE:
+    # a plugin can ship hooks from a git source, pinned by SHA. The decision to
+    # copy is unchanged — a plugin cannot carry `permissions.deny` at all, so
+    # two of the contract's rules could not travel in one — but the reason had
+    # to be corrected, because a wrong reason for a right decision is how the
+    # decision gets overturned later (CLAUDE.md §2). --force does not apply to the scripts and would
     # not mean
     # anything here.
-    for src in "$BASELINE"/scripts/agent-guard/*.py; do
-      wrote "$AGENT_DIR/$(basename "$src") (refreshed)"
+    # WHAT gets copied is derived from the wiring, not from a glob (#191). A
+    # `*.py` loop shipped selftest.py — the baseline's own corpus runner, which
+    # needs samples/agent-guard/ and so can never run in a consumer — into
+    # every tree, 508 lines of it; and it kept shipping sample-guard.py after
+    # #182 stopped wiring it in a tree with no manifests. 43% of the install
+    # could not run. agent-settings.py holds the one definition of the set.
+    AGENT_WANT=()
+    while IFS= read -r n; do AGENT_WANT+=("$n"); done < <(
+      python3 "$BASELINE/scripts/agent-settings.py" scripts \
+        --baseline "$BASELINE/configs/agent/settings.json" \
+        "${AGENT_WITHOUT[@]+"${AGENT_WITHOUT[@]}"}")
+    for n in "${AGENT_WANT[@]}"; do
+      wrote "$AGENT_DIR/$n (refreshed)"
       [ "$DRY_RUN" -eq 1 ] && continue
       mkdir -p "$AGENT_DIR"
-      cp "$src" "$AGENT_DIR/$(basename "$src")"
+      cp "$BASELINE/scripts/agent-guard/$n" "$AGENT_DIR/$n"
+    done
+
+    # An orphan from an earlier adoption — a script this profile no longer
+    # wires — is REMOVED, and only if the baseline is the thing that put it
+    # there. Leaving it is the condition G1 fails the baseline for: a hook
+    # script no command names. Deleting a file from someone's tree is a bigger
+    # act than adding one, so the blast radius is fixed: only names that exist
+    # under scripts/agent-guard/, never anything else in that directory.
+    for src in "$BASELINE"/scripts/agent-guard/*.py; do
+      n="$(basename "$src")"
+      case " ${AGENT_WANT[*]} " in *" $n "*) continue ;; esac
+      [ -e "$AGENT_DIR/$n" ] || continue
+      wrote "$AGENT_DIR/$n (removed — this tree does not wire it)"
+      [ "$DRY_RUN" -eq 1 ] || rm -f "$AGENT_DIR/$n"
     done
 
     # The fragment, marker-guarded, and REFRESHED rather than skipped (#177).

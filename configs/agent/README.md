@@ -660,10 +660,19 @@ a refusal with no remedy attached is a refusal that gets worked around — and
 `--gate` has nothing to run, so it exits 3 and writes no receipt rather than
 recording a pass for a gate nobody named.
 
-**`selftest.py` is copied along with the rest and does not run in your tree.**
-It is this repo's own corpus runner and it needs `samples/agent-guard/`, which
-adoption does not carry. Nothing in an adopted tree invokes it; it is named
-here so its presence is a known fact rather than a discovery.
+**`selftest.py` is no longer copied at all** (#191). It is this repo's own
+corpus runner, it needs `samples/agent-guard/` which adoption does not carry,
+and it could never run in a consumer — 508 lines, 29% of what the old install
+weighed, in every tree that would ever exist. Both this section and `adopt.sh`'s
+completion text used to describe it as dead weight and ship it anyway.
+
+**What lands is derived from what your tree wires**, not from a glob:
+`agent-settings.py scripts` reads the hook commands for your profile and names
+the files, so a tree with no `samples/expected/` gets four scripts rather than
+six. `adopt.sh` also removes an orphan a previous adoption left behind — a hook
+script no command names is the condition `check-agent-contract.py` G1 fails the
+baseline for, and it should not be tolerable in a consumer either. Only names
+that exist under `scripts/agent-guard/` are ever removed.
 
 **Check the startup output once after merging.** A deny rule Claude Code will
 not consult — the `Write(...)` spelling, a tool name that does not exist — warns
