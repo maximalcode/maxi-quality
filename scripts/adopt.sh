@@ -395,6 +395,23 @@ install_agent_contract() {
         --target "$AGENT_SETTINGS" "${AGENT_WITHOUT[@]+"${AGENT_WITHOUT[@]}"}" \
         "${AGENT_SHARED[@]+"${AGENT_SHARED[@]}"}" | sed 's/^/    /' \
         || die "the merge failed after its own dry run passed — this is a bug in maxi-quality, not in your repo"
+
+      # POST-CONDITION, not a step (#196). Every hook command in the file we
+      # just wrote must name a file that exists.
+      #
+      # A hook whose script is missing fails at exec, BEFORE any of guard.py's
+      # fail-open handling can run, and Claude Code treats a PreToolUse hook
+      # error as blocking. The result is a repo where every Bash, Write and
+      # Edit call fails, and a session inside it cannot repair itself. That
+      # state reached a consumer's default branch before this check existed.
+      #
+      # Asserted as a property of the RESULT rather than by fixing the two
+      # paths that produced it — a profile that narrows, and a mode change —
+      # because the next one will not be either of those.
+      if ! python3 "$BASELINE/scripts/agent-settings.py" verify \
+             --target "$AGENT_SETTINGS" --root "$TARGET"; then
+        die "the wiring names a file that does not exist. Nothing further was written; this is a bug in maxi-quality, not in your repo"
+      fi
     fi
   fi
 }

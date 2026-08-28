@@ -182,6 +182,28 @@ plugin uninstalled a repo holds a config claiming it is adopted and nothing
 else: no hook, no rule, no message. The shim is committed, so the repo can say
 what it expects.
 
+### What fail-open does not cover
+
+The hooks fail open on their own plumbing — `guard.py`'s header gives the
+reason and it is right. That guarantee covers a script that **runs and fails**.
+It cannot cover a script that is **not there**: a `settings.json` naming a
+missing file fails at exec, before any of that code is reached, and Claude Code
+treats a `PreToolUse` hook error as blocking. Every `Bash`, `Write` and `Edit`
+call in the repo then fails, and a session inside it cannot repair itself.
+
+That is not hypothetical. Two ordinary paths produced it — a profile that
+narrows (#182) and a mode change (#193) — because the settings merge is
+append-only and the orphan sweep is not, so the wiring kept naming scripts
+adoption had stopped installing. It reached a consumer's default branch before
+anything caught it (#196).
+
+`--agent` now reclaims the entries it previously wrote, and checks a
+post-condition after every run: **every command it wrote names a file that
+exists.** Asserted as a property of the result rather than of the two paths
+that produced it, because the next one will not be either of those. A
+consumer's own hooks are neither reclaimed nor checked — they predate the run
+and are not ours to refuse over.
+
 ### The guard's own state is never a change
 
 Two things under `.claude/` are written by the guard rather than by you, and

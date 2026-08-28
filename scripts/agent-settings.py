@@ -198,6 +198,52 @@ def commands_in(groups: list) -> set:
     }
 
 
+# Every command this script has ever written points inside this directory. A
+# consumer's own hooks do not, so the marker is what separates "ours to
+# reclaim" from "theirs to leave alone" — the distinction the append-only rule
+# was missing (#196).
+OURS = "/.claude/agent-guard/"
+
+
+def prune_ours(target: dict, keep: set) -> list[str]:
+    """Drop hook entries WE wrote that this run no longer wires.
+
+    THE FAILURE THIS EXISTS FOR (#196)
+
+    `merge_hooks` appends and never removes, deliberately: it must not delete a
+    consumer's own entries. But entries pointing into `.claude/agent-guard/`
+    are not the consumer's, they are this script's, and leaving a stale one is
+    not conservative — it is a `settings.json` naming a file that adoption has
+    since stopped installing.
+
+    That is not a cosmetic inconsistency. A hook whose script is missing fails
+    at exec, before any of guard.py's fail-open handling can run, and Claude
+    Code treats a PreToolUse hook error as blocking. The result is a repo where
+    every Bash, Write and Edit call fails — observed, in this repo and in a
+    consumer whose broken state had already been committed and merged.
+
+    Reached by two ordinary paths, neither of them a mistake on its own: a
+    profile that narrows (#182 stopped wiring the samples rules in a tree with
+    no manifests) and a mode change (#193's --shared wires a shim instead of
+    the scripts).
+    """
+    removed = []
+    for event, groups in list((target.get("hooks") or {}).items()):
+        for group in groups:
+            surviving = []
+            for entry in group.get("hooks", []):
+                cmd = entry.get("command", "")
+                if OURS in cmd and cmd not in keep:
+                    removed.append(f"hooks.{event}: - {cmd}")
+                    continue
+                surviving.append(entry)
+            group["hooks"] = surviving
+        # A group we emptied is ours too; one the consumer emptied was already
+        # empty and is left exactly as found.
+        target["hooks"][event] = [g for g in groups if g.get("hooks")]
+    return removed
+
+
 def merge_hooks(target: dict, baseline: dict) -> list[str]:
     """Append the baseline's hook entries to the target's. Returns what changed.
 
@@ -417,12 +463,47 @@ def main(argv: list[str] | None = None) -> int:
              "first on every run, so a refusal costs the consumer no half-"
              "adopted tree.",
     )
+    v = sub.add_parser("verify", help="every hook command names a file that exists")
+    v.add_argument("--target", required=True, help="the settings.json to check")
+    v.add_argument("--root", required=True, help="what ${CLAUDE_PROJECT_DIR} means")
     s = sub.add_parser("scripts", help="the .py files a profile actually needs")
     s.add_argument("--baseline", required=True)
     s.add_argument("--without-samples", action="store_true")
     s.add_argument("--shared", action="store_true",
                    help="ignored; the shared body carries every script")
     args = parser.parse_args(argv)
+
+    if args.mode == "verify":
+        # Deliberately NOT going through load(): this asks whether the file we
+        # just wrote is usable, and a file too broken to parse is the loudest
+        # possible answer to that.
+        try:
+            with open(args.target, encoding="utf-8") as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError) as exc:
+            print(f"agent-settings: cannot read {args.target}: {exc}",
+                  file=sys.stderr)
+            return 1
+        missing = []
+        for groups in ((doc.get("hooks") or {}) if isinstance(doc, dict) else {}).values():
+            for group in groups:
+                for entry in group.get("hooks", []):
+                    cmd = entry.get("command", "")
+                    if '"' not in cmd:
+                        continue
+                    if OURS not in cmd:
+                        # A consumer's own hook pointing at their own missing
+                        # script is their business and predates this run.
+                        # Refusing their adoption over it would be this script
+                        # taking responsibility for a file it never wrote.
+                        continue
+                    path = cmd.split('"')[1].replace("${CLAUDE_PROJECT_DIR}", args.root)
+                    if not os.path.isfile(path):
+                        missing.append(path)
+        for m in missing:
+            print(f"agent-settings: a hook command names a missing file: {m}",
+                  file=sys.stderr)
+        return 1 if missing else 0
 
     try:
         baseline = load(args.baseline)
@@ -448,7 +529,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"agent-settings: refused. {exc}", file=sys.stderr)
         return 1
 
-    changed = merge_hooks(target, baseline) + merge_deny(target, baseline)
+    keep = {e.get("command", "")
+            for groups in (baseline.get("hooks") or {}).values()
+            for g in groups for e in g.get("hooks", [])}
+    changed = prune_ours(target, keep) + merge_hooks(target, baseline) \
+        + merge_deny(target, baseline)
     for line in changed:
         print(line)
     if not changed:
