@@ -44,6 +44,18 @@ NOT bypassable by the party it constrains. The model cannot pass `--no-verify`.
 So a plumbing failure — no git, unreadable receipt, malformed stdin — must
 exit 0 with a warning, or a broken install becomes a session nobody can end.
 A policy failure — the gate did not run, the fixture was weakened — exits 2.
+
+WHAT FAIL-OPEN DOES NOT COVER
+
+It covers a script that RUNS and fails. It cannot cover a script that is not
+there: a `settings.json` naming a missing file fails at exec, before any of
+this module is imported, and Claude Code treats a PreToolUse hook error as
+blocking. Every Bash, Write and Edit call in the repo then fails, and a session
+inside it cannot repair itself — observed, and it reached a consumer's default
+branch (#196). The guarantee is real and it has an edge, and stating it without
+the edge is how the edge gets found the hard way. `adopt.sh` closes it with a
+post-condition: after any --agent run, every command it wrote names a file that
+exists.
 """
 
 from __future__ import annotations
