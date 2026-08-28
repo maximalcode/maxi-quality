@@ -133,6 +133,25 @@ removing entries from a manifest in `samples/expected/`, and removing lines from
 a fixture file some manifest cites. Everything else passes, including adding a
 new failing case to an existing fixture.
 
+### The guard's own state is never a change
+
+Two things under `.claude/` are written by the guard rather than by you, and
+both are excluded from the fingerprint: the receipt, and the `__pycache__`
+Python writes beside the hook scripts the first time one is imported.
+
+The receipt's exclusion was found by `stop-02-receipt-pass-fresh` before any of
+this ran in CI — it is written *after* the fingerprint it records, so leaving it
+in changed the very hash it was storing and no session could ever have ended.
+The cache is the same bug wearing different clothes, and it was invisible here
+for a year because this repo's `.gitignore` already had `__pycache__/`. A Rust,
+C# or TypeScript consumer has no reason to, and got a refused stop over a file
+no human touched.
+
+`adopt.sh` writes both `.gitignore` lines as well. That is deliberate belt and
+braces: the ignore line is tidier, the fingerprint exclusion is the half that
+still works when someone deletes it, and a guard whose correctness depends on a
+line anyone can remove is not guarding.
+
 ### Two of the five only fire where they can (#182)
 
 `sample-guard.py` and `Edit(/samples/expected/**)` are hardcoded to this repo's
@@ -265,7 +284,7 @@ which is the entire argument for §5's structural checker.
 
 ## 5. Evidence
 
-`samples/agent-guard/` is 63 cases. Every hook case runs the real hook as a
+`samples/agent-guard/` is 64 cases. Every hook case runs the real hook as a
 subprocess with a real payload on stdin and parses stdout the way Claude Code
 does; the `stop-` and `edit-` cases build a real git repository first, and the
 `noverify-` cases do not, because a command guard reads a string and has no
@@ -479,7 +498,7 @@ something the baseline itself did not.
 
 It runs from a **copy** under `.claude/agent-guard/`, not a symlink to
 `scripts/agent-guard/`, so this tree drifts exactly the way a consumer's will.
-`check-agent-contract.py` G9 is what notices; nothing else could, because all 63
+`check-agent-contract.py` G9 is what notices; nothing else could, because all 64
 fixtures in `samples/agent-guard/` run the source.
 
 The gate is declared in `.claude/agent-guard.json` as `python3
@@ -497,7 +516,7 @@ tidied, because a record that gets edited to match the current code is no longer
 a record of anything.
 
 **A live session was blocked on 2026-08-25.** This is the observation the
-milestone actually needed, and it is separate from the fixtures: all 63 cases in
+milestone actually needed, and it is separate from the fixtures: all 64 cases in
 `samples/agent-guard/` invoke the hooks as subprocesses on synthetic payloads,
 so none of them can tell you whether Claude Code *wires* them. It was reached
 deliberately — one real uncommitted edit to this file, the gate not run — and
@@ -641,10 +660,19 @@ a refusal with no remedy attached is a refusal that gets worked around — and
 `--gate` has nothing to run, so it exits 3 and writes no receipt rather than
 recording a pass for a gate nobody named.
 
-**`selftest.py` is copied along with the rest and does not run in your tree.**
-It is this repo's own corpus runner and it needs `samples/agent-guard/`, which
-adoption does not carry. Nothing in an adopted tree invokes it; it is named
-here so its presence is a known fact rather than a discovery.
+**`selftest.py` is no longer copied at all** (#191). It is this repo's own
+corpus runner, it needs `samples/agent-guard/` which adoption does not carry,
+and it could never run in a consumer — 508 lines, 29% of what the old install
+weighed, in every tree that would ever exist. Both this section and `adopt.sh`'s
+completion text used to describe it as dead weight and ship it anyway.
+
+**What lands is derived from what your tree wires**, not from a glob:
+`agent-settings.py scripts` reads the hook commands for your profile and names
+the files, so a tree with no `samples/expected/` gets four scripts rather than
+six. `adopt.sh` also removes an orphan a previous adoption left behind — a hook
+script no command names is the condition `check-agent-contract.py` G1 fails the
+baseline for, and it should not be tolerable in a consumer either. Only names
+that exist under `scripts/agent-guard/` are ever removed.
 
 **Check the startup output once after merging.** A deny rule Claude Code will
 not consult — the `Write(...)` spelling, a tool name that does not exist — warns

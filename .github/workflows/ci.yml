@@ -2981,7 +2981,7 @@ jobs:
           [[ $rc -eq 0 ]] || { echo "::error::--help exited $rc"; exit 1; }
           grep -q -- '--agent  *ONLY install the agent contract' <<<"$help" \
             || { echo '::error::--help no longer reaches the flag list'; exit 1; }
-          [[ "$(grep -v '^[[:space:]]*$' <<<"$help" | tail -1)" == *'.claude/agent-guard-receipt.json'* ]] \
+          [[ "$(grep -v '^[[:space:]]*$' <<<"$help" | tail -1)" == *'.claude/agent-guard/__pycache__/'* ]] \
             || { echo '::error::--help does not end on the last row of the header'; exit 1; }
           if grep -qE '^(set -|[A-Za-z_]+\(\) \{|BASELINE=)' <<<"$help"; then
             echo '::error::--help is printing the script instead of the header'; exit 1
@@ -3618,6 +3618,24 @@ jobs:
             || { echo '::error::the refusal names a record-gate.py path that does not exist here'; exit 1; }
           [[ -e /tmp/ag-fresh/scripts/agent-guard ]] \
             && { echo '::error::--agent copied the scripts to the baseline path, not .claude/'; exit 1; }
+          # The guard's own __pycache__, which the hook run above just created.
+          # It must be ignored AND excluded from the fingerprint: a consumer
+          # with no Python section in their .gitignore would otherwise have
+          # `git add -A` commit .pyc files, and the first stop after adoption
+          # refused over a file no human touched.
+          [[ -d /tmp/ag-fresh/.claude/agent-guard/__pycache__ ]] \
+            || { echo '::error::the fixture never created a __pycache__, so this asserts nothing'; exit 1; }
+          if git -C /tmp/ag-fresh status --porcelain | grep -q pycache; then
+            echo '::error::the adopted tree does not gitignore the guard-own __pycache__:'
+            git -C /tmp/ag-fresh status --porcelain | grep pycache
+            exit 1
+          fi
+          seen=$(cd /tmp/ag-fresh && python3 -c "
+          import sys; sys.path.insert(0, '.claude/agent-guard')
+          from guard import changed_files
+          print([p for p in changed_files('.') if 'pycache' in p])")
+          [[ "$seen" == '[]' ]] \
+            || { echo "::error::the fingerprint still counts the guard's own cache: $seen"; exit 1; }
           echo 'OK: adopted from nothing, and the installed Stop hook refuses'
 
       # ISSUE #183 — --agent is EXCLUSIVE, in every tree and not just this one.
@@ -4124,6 +4142,28 @@ jobs:
             || { echo '::error::a tree WITH manifests did not get the full contract text'; exit 1; }
           grep -qF 'samples/expected/**' /tmp/ag-samples/.claude/settings.json \
             || { echo '::error::a tree WITH manifests did not get the samples deny rule'; exit 1; }
+          # ISSUE #191 — and the same set again, one level down: every .py
+          # that lands must be one this tree wires. Enumerated, not named, so a
+          # script added to the baseline later cannot slip in unwired.
+          for d in /tmp/ag-nosamples /tmp/ag-samples; do
+            for f in "$d"/.claude/agent-guard/*.py; do
+              n=$(basename "$f")
+              [[ "$n" == selftest.py ]] \
+                && { echo "::error::$d got selftest.py, which cannot run in any consumer"; exit 1; }
+              grep -q "$n" "$d/.claude/settings.json" \
+                || [[ "$n" == guard.py || "$n" == record-gate.py ]] \
+                || { echo "::error::$d got $n, which no hook command names"; exit 1; }
+            done
+          done
+          [[ -e /tmp/ag-nosamples/.claude/agent-guard/sample-guard.py ]] \
+            && { echo '::error::a tree with no manifests got sample-guard.py'; exit 1; }
+          [[ -e /tmp/ag-samples/.claude/agent-guard/sample-guard.py ]] \
+            || { echo '::error::a tree WITH manifests did not get sample-guard.py'; exit 1; }
+          # And an orphan from an earlier adoption is removed, not left running.
+          cp "$PWD/scripts/agent-guard/selftest.py" /tmp/ag-nosamples/.claude/agent-guard/
+          ./scripts/adopt.sh /tmp/ag-nosamples --agent >/dev/null
+          [[ -e /tmp/ag-nosamples/.claude/agent-guard/selftest.py ]] \
+            && { echo '::error::an orphan script survived a re-adoption'; exit 1; }
           echo 'OK: the rules installed and the rules described are one set'
 
       # ISSUE #177 — re-running --agent REFRESHES the CLAUDE.md region instead

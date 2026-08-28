@@ -101,6 +101,7 @@
 #   CLAUDE.md                        += configs/agent/CLAUDE.fragment.md,
 #                                       marker-guarded and REFRESHED
 #   .gitignore                       += .claude/agent-guard-receipt.json
+#                                       and .claude/agent-guard/__pycache__/
 #
 # The TS pair is a copy for the same reason Directory.Build.props is: a private
 # git devDep cannot npm-install in a consumer's CI. The Rust trio is a copy for
@@ -184,7 +185,7 @@ wrote() { printf '\033[32mwrite\033[0m %s\n' "$1"; }
 # last row of the --agent list, which is the last line of the header that is
 # help text rather than rationale. Verify with `scripts/adopt.sh --help | tail`
 # after editing anything above.
-usage() { sed -n '3,103p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
+usage() { sed -n '3,104p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
 
 # --- the agent contract, only on --agent -------------------------------------
 #
@@ -248,17 +249,48 @@ install_agent_contract() {
     fi
 
     # The scripts are BASELINE CODE, not your configuration, so unlike every
-    # other copy in this script they are refreshed rather than skipped. There
-    # is no remote consumption for a hook command — it is a path on disk — so
-    # re-running this script IS the upgrade path, the same trade the C# and
-    # Rust configs already make. --force does not apply to the scripts and would
+    # other copy in this script they are refreshed rather than skipped. A hook
+    # `command` is a path on disk, so re-running this script IS the upgrade
+    # path, the same trade the C# and Rust configs already make.
+    #
+    # This used to say Claude Code has "no remote consumption". That is FALSE:
+    # a plugin can ship hooks from a git source, pinned by SHA. The decision to
+    # copy is unchanged — a plugin cannot carry `permissions.deny` at all, so
+    # two of the contract's rules could not travel in one — but the reason had
+    # to be corrected, because a wrong reason for a right decision is how the
+    # decision gets overturned later (CLAUDE.md §2). --force does not apply to the scripts and would
     # not mean
     # anything here.
-    for src in "$BASELINE"/scripts/agent-guard/*.py; do
-      wrote "$AGENT_DIR/$(basename "$src") (refreshed)"
+    # WHAT gets copied is derived from the wiring, not from a glob (#191). A
+    # `*.py` loop shipped selftest.py — the baseline's own corpus runner, which
+    # needs samples/agent-guard/ and so can never run in a consumer — into
+    # every tree, 508 lines of it; and it kept shipping sample-guard.py after
+    # #182 stopped wiring it in a tree with no manifests. 43% of the install
+    # could not run. agent-settings.py holds the one definition of the set.
+    AGENT_WANT=()
+    while IFS= read -r n; do AGENT_WANT+=("$n"); done < <(
+      python3 "$BASELINE/scripts/agent-settings.py" scripts \
+        --baseline "$BASELINE/configs/agent/settings.json" \
+        "${AGENT_WITHOUT[@]+"${AGENT_WITHOUT[@]}"}")
+    for n in "${AGENT_WANT[@]}"; do
+      wrote "$AGENT_DIR/$n (refreshed)"
       [ "$DRY_RUN" -eq 1 ] && continue
       mkdir -p "$AGENT_DIR"
-      cp "$src" "$AGENT_DIR/$(basename "$src")"
+      cp "$BASELINE/scripts/agent-guard/$n" "$AGENT_DIR/$n"
+    done
+
+    # An orphan from an earlier adoption — a script this profile no longer
+    # wires — is REMOVED, and only if the baseline is the thing that put it
+    # there. Leaving it is the condition G1 fails the baseline for: a hook
+    # script no command names. Deleting a file from someone's tree is a bigger
+    # act than adding one, so the blast radius is fixed: only names that exist
+    # under scripts/agent-guard/, never anything else in that directory.
+    for src in "$BASELINE"/scripts/agent-guard/*.py; do
+      n="$(basename "$src")"
+      case " ${AGENT_WANT[*]} " in *" $n "*) continue ;; esac
+      [ -e "$AGENT_DIR/$n" ] || continue
+      wrote "$AGENT_DIR/$n (removed — this tree does not wire it)"
+      [ "$DRY_RUN" -eq 1 ] || rm -f "$AGENT_DIR/$n"
     done
 
     # The fragment, marker-guarded, and REFRESHED rather than skipped (#177).
@@ -293,9 +325,18 @@ install_agent_contract() {
     # line is missing — the receipt is excluded from the fingerprint either
     # way — which is exactly why it is worth writing for people rather than
     # leaving as a step nobody notices they skipped.
+    # Two lines, not one. The receipt is per-checkout state; __pycache__ is
+    # written by Python beside the scripts the moment a hook imports one, so a
+    # consumer with no Python section in their .gitignore — a Rust, C# or
+    # TypeScript repo, which is most of them — gets untracked noise the guard
+    # itself created, and `git add -A` commits .pyc files. guard.py also
+    # excludes it from the fingerprint; this is the tidier half of that pair,
+    # and neither is sufficient alone.
     AGENT_IGNORE='.claude/agent-guard-receipt.json'
-    if [ -e "$TARGET/.gitignore" ] && grep -qxF "$AGENT_IGNORE" "$TARGET/.gitignore" 2>/dev/null; then
-      skip "$TARGET/.gitignore — already ignores the receipt"
+    AGENT_IGNORE2='.claude/agent-guard/__pycache__/'
+    if [ -e "$TARGET/.gitignore" ] && grep -qxF "$AGENT_IGNORE" "$TARGET/.gitignore" 2>/dev/null \
+       && grep -qxF "$AGENT_IGNORE2" "$TARGET/.gitignore" 2>/dev/null; then
+      skip "$TARGET/.gitignore — already ignores the guard's own state"
     else
       wrote "$TARGET/.gitignore (append)"
       if [ "$DRY_RUN" -eq 0 ]; then
@@ -303,8 +344,8 @@ install_agent_contract() {
           [ -z "$(tail -c 1 "$TARGET/.gitignore")" ] || printf '\n' >> "$TARGET/.gitignore"
           printf '\n' >> "$TARGET/.gitignore"
         fi
-        printf '# maxi-quality agent guard — per-checkout state, never committed\n%s\n' \
-          "$AGENT_IGNORE" >> "$TARGET/.gitignore"
+        printf '# maxi-quality agent guard — per-checkout state, never committed\n%s\n%s\n' \
+          "$AGENT_IGNORE" "$AGENT_IGNORE2" >> "$TARGET/.gitignore"
       fi
     fi
 
