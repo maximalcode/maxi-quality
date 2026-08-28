@@ -793,6 +793,7 @@ executable policy landing in your tree:
 .claude/settings.json              MERGED — the hook wiring and two deny rules
 CLAUDE.md                          += the marker-delimited workflow region
 .gitignore                         += .claude/agent-guard-receipt.json
+                                      .claude/agent-guard/__pycache__/
 ```
 
 **That list is the whole of it.** `--agent` is exclusive: unlike `--editor` and

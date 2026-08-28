@@ -101,6 +101,7 @@
 #   CLAUDE.md                        += configs/agent/CLAUDE.fragment.md,
 #                                       marker-guarded and REFRESHED
 #   .gitignore                       += .claude/agent-guard-receipt.json
+#                                       and .claude/agent-guard/__pycache__/
 #
 # The TS pair is a copy for the same reason Directory.Build.props is: a private
 # git devDep cannot npm-install in a consumer's CI. The Rust trio is a copy for
@@ -184,7 +185,7 @@ wrote() { printf '\033[32mwrite\033[0m %s\n' "$1"; }
 # last row of the --agent list, which is the last line of the header that is
 # help text rather than rationale. Verify with `scripts/adopt.sh --help | tail`
 # after editing anything above.
-usage() { sed -n '3,103p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
+usage() { sed -n '3,104p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
 
 # --- the agent contract, only on --agent -------------------------------------
 #
@@ -293,9 +294,18 @@ install_agent_contract() {
     # line is missing — the receipt is excluded from the fingerprint either
     # way — which is exactly why it is worth writing for people rather than
     # leaving as a step nobody notices they skipped.
+    # Two lines, not one. The receipt is per-checkout state; __pycache__ is
+    # written by Python beside the scripts the moment a hook imports one, so a
+    # consumer with no Python section in their .gitignore — a Rust, C# or
+    # TypeScript repo, which is most of them — gets untracked noise the guard
+    # itself created, and `git add -A` commits .pyc files. guard.py also
+    # excludes it from the fingerprint; this is the tidier half of that pair,
+    # and neither is sufficient alone.
     AGENT_IGNORE='.claude/agent-guard-receipt.json'
-    if [ -e "$TARGET/.gitignore" ] && grep -qxF "$AGENT_IGNORE" "$TARGET/.gitignore" 2>/dev/null; then
-      skip "$TARGET/.gitignore — already ignores the receipt"
+    AGENT_IGNORE2='.claude/agent-guard/__pycache__/'
+    if [ -e "$TARGET/.gitignore" ] && grep -qxF "$AGENT_IGNORE" "$TARGET/.gitignore" 2>/dev/null \
+       && grep -qxF "$AGENT_IGNORE2" "$TARGET/.gitignore" 2>/dev/null; then
+      skip "$TARGET/.gitignore — already ignores the guard's own state"
     else
       wrote "$TARGET/.gitignore (append)"
       if [ "$DRY_RUN" -eq 0 ]; then
@@ -303,8 +313,8 @@ install_agent_contract() {
           [ -z "$(tail -c 1 "$TARGET/.gitignore")" ] || printf '\n' >> "$TARGET/.gitignore"
           printf '\n' >> "$TARGET/.gitignore"
         fi
-        printf '# maxi-quality agent guard — per-checkout state, never committed\n%s\n' \
-          "$AGENT_IGNORE" >> "$TARGET/.gitignore"
+        printf '# maxi-quality agent guard — per-checkout state, never committed\n%s\n%s\n' \
+          "$AGENT_IGNORE" "$AGENT_IGNORE2" >> "$TARGET/.gitignore"
       fi
     fi
 

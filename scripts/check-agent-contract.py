@@ -830,7 +830,7 @@ def mutations(cases: int, today: datetime.date) -> list[tuple]:
          ("§9",)),
         ("the samples README's spelled-out count drifts",
          lambda r: _edit(r, "samples/agent-guard/README.md",
-                         "Sixty-three cases", "Sixty-two cases"),
+                         "Sixty-four cases", "Sixty-three cases"),
          (str(cases), str(cases - 1))),
         ("a link in the contract points at nothing",
          lambda r: _edit(r, "configs/agent/README.md",

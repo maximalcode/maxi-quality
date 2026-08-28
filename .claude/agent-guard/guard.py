@@ -64,6 +64,30 @@ RECEIPT = ".claude/agent-guard-receipt.json"
 # Never part of a fingerprint — see changed_files().
 EXCLUDED = frozenset({RECEIPT, RECEIPT + ".tmp"})
 
+# Nor is anything under here. Python writes `__pycache__` beside a script the
+# first time it imports one, so the guard's own directory grows files THE GUARD
+# ITSELF just created — and `changed_files()` counts anything git does not
+# ignore. In a consumer whose .gitignore has no Python section (a Rust, C# or
+# TypeScript repo: most of them) that made the first stop after adoption a
+# refusal over a file no human touched.
+#
+# This is the receipt's bug in a second costume, and it gets the receipt's fix.
+# adopt.sh also writes a .gitignore line, which is the tidier half; this is the
+# half that works regardless of what the consumer's .gitignore says, and the two
+# are deliberately not one — a guard whose correctness depends on a line someone
+# can delete is not guarding.
+#
+# A path prefix rather than a location derived from __file__, for the same
+# reason RECEIPT is a constant: it is the path adopt.sh writes, it is assertable
+# from a fixture, and a self-locating version would be right in this tree and
+# untestable in the one it is written for.
+PYCACHE = ".claude/agent-guard/__pycache__/"
+
+
+def excluded(path: str) -> bool:
+    """Is this path the guard's own state rather than the consumer's work?"""
+    return path in EXCLUDED or path.startswith(PYCACHE)
+
 # Exit codes, named because the numbers are a Claude Code contract and not
 # ours to choose: 0 lets the tool call or the stop proceed, 2 blocks it and
 # feeds stderr back to the model. Any other non-zero is a non-blocking error.
@@ -127,14 +151,14 @@ def changed_files(root: str) -> list[str]:
         # storing, so a passing gate's receipt never matches the next stop and
         # the session can never end. Found by samples/agent-guard, not by
         # reading this — which is the whole argument for the fixture.
-        if path not in EXCLUDED:
+        if not excluded(path):
             paths.add(path)
         # 'R' or 'C' in either column means the ORIGINAL path is the next
         # field. Consuming it is not optional: leave it in the stream and it
         # gets parsed as a status entry and silently mangles the rest.
         if "R" in status or "C" in status:
             if i < len(fields):
-                if fields[i] not in EXCLUDED:
+                if not excluded(fields[i]):
                     paths.add(fields[i])
                 i += 1
     return sorted(paths)

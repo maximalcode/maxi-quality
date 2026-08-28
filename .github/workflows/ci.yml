@@ -2981,7 +2981,7 @@ jobs:
           [[ $rc -eq 0 ]] || { echo "::error::--help exited $rc"; exit 1; }
           grep -q -- '--agent  *ONLY install the agent contract' <<<"$help" \
             || { echo '::error::--help no longer reaches the flag list'; exit 1; }
-          [[ "$(grep -v '^[[:space:]]*$' <<<"$help" | tail -1)" == *'.claude/agent-guard-receipt.json'* ]] \
+          [[ "$(grep -v '^[[:space:]]*$' <<<"$help" | tail -1)" == *'.claude/agent-guard/__pycache__/'* ]] \
             || { echo '::error::--help does not end on the last row of the header'; exit 1; }
           if grep -qE '^(set -|[A-Za-z_]+\(\) \{|BASELINE=)' <<<"$help"; then
             echo '::error::--help is printing the script instead of the header'; exit 1
@@ -3618,6 +3618,24 @@ jobs:
             || { echo '::error::the refusal names a record-gate.py path that does not exist here'; exit 1; }
           [[ -e /tmp/ag-fresh/scripts/agent-guard ]] \
             && { echo '::error::--agent copied the scripts to the baseline path, not .claude/'; exit 1; }
+          # The guard's own __pycache__, which the hook run above just created.
+          # It must be ignored AND excluded from the fingerprint: a consumer
+          # with no Python section in their .gitignore would otherwise have
+          # `git add -A` commit .pyc files, and the first stop after adoption
+          # refused over a file no human touched.
+          [[ -d /tmp/ag-fresh/.claude/agent-guard/__pycache__ ]] \
+            || { echo '::error::the fixture never created a __pycache__, so this asserts nothing'; exit 1; }
+          if git -C /tmp/ag-fresh status --porcelain | grep -q pycache; then
+            echo '::error::the adopted tree does not gitignore the guard-own __pycache__:'
+            git -C /tmp/ag-fresh status --porcelain | grep pycache
+            exit 1
+          fi
+          seen=$(cd /tmp/ag-fresh && python3 -c "
+          import sys; sys.path.insert(0, '.claude/agent-guard')
+          from guard import changed_files
+          print([p for p in changed_files('.') if 'pycache' in p])")
+          [[ "$seen" == '[]' ]] \
+            || { echo "::error::the fingerprint still counts the guard's own cache: $seen"; exit 1; }
           echo 'OK: adopted from nothing, and the installed Stop hook refuses'
 
       # ISSUE #183 — --agent is EXCLUSIVE, in every tree and not just this one.
