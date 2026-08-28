@@ -83,6 +83,42 @@ def main(argv: list[str]) -> int:
         print("record-gate: not inside a git working tree", file=sys.stderr)
         return 3
 
+    # WHICH REPO IS THIS FOR? (#192)
+    #
+    # `repo_root()` with no argument answers "whichever tree the shell happens
+    # to be standing in". For the two hooks that is right — they get the repo
+    # from the payload's `cwd`, which is where Claude is working. This script
+    # has no payload, so it used cwd alone, and running one repo's recorder
+    # from inside another wrote a PASSING receipt into the bystander: the
+    # intended repo stayed ungated, and the other one's next stop was allowed.
+    # Reproduced before this was written.
+    #
+    # An adopted install names its repo unambiguously — the script sits at
+    # `<repo>/.claude/agent-guard/`, so the tree above it IS the answer, and a
+    # cwd that disagrees is a mistake rather than a choice. Refusing is right
+    # there: guessing either way silently gates the wrong tree.
+    #
+    # Any other layout falls through to cwd deliberately. That covers this
+    # repo's own `scripts/agent-guard/` (which the fixtures run with cwd set to
+    # a temp repo, legitimately) and leaves room for a shared install outside
+    # any working tree, which #193 is about. The rule is deliberately narrow:
+    # it closes the case where the script KNOWS better, and stays silent where
+    # it does not.
+    here = os.path.dirname(os.path.abspath(__file__))
+    if os.path.basename(here) == "agent-guard" \
+            and os.path.basename(os.path.dirname(here)) == ".claude":
+        owner = repo_root(os.path.dirname(os.path.dirname(here)))
+        if owner is not None and os.path.realpath(owner) != os.path.realpath(root):
+            print("record-gate: this recorder belongs to\n"
+                  f"  {owner}\n"
+                  "but it was run from\n"
+                  f"  {root}\n\n"
+                  "Recording here would write a passing receipt into a repo "
+                  "whose gate nobody ran, and leave the other one ungated. "
+                  "Nothing was written. cd into the repo you meant, and run "
+                  "its own recorder.", file=sys.stderr)
+            return 3
+
     if want_gate:
         if len(args) > 1:
             print("record-gate: --gate takes no command; it runs the one "

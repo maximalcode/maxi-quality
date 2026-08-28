@@ -122,6 +122,18 @@ The `--` form stays legal for an ad-hoc run, and with a gate declared it now
 `Stop` hook. The place to say that is where the command was chosen, not at the
 end of the next turn.
 
+**The recorder records for the repo it belongs to, or for nobody** (#192). An
+adopted copy sits at `<repo>/.claude/agent-guard/`, so the tree above it names
+the repo unambiguously; a cwd that disagrees is a mistake, and it is refused
+with nothing written. Before that, running one repo's recorder from inside
+another wrote a *passing* receipt into the bystander and left the intended repo
+ungated — silent, and permissive in the wrong direction.
+
+The rule is deliberately narrow. This repo's own scripts live in
+`scripts/agent-guard/`, not `.claude/agent-guard/`, so it does not fire for
+them — which is why every `record` fixture, all of which run the baseline's
+scripts against a temp repo, still passes.
+
 **The fingerprint is taken before the command runs, not after.** A formatter is
 a gate that edits; fingerprinting afterwards would record a passing verdict for
 content no tool had read.
