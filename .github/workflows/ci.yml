@@ -4240,6 +4240,65 @@ jobs:
             || { echo "::error::a BEGIN with no END exited $rc, expected 4"; exit 1; }
           echo 'OK: refreshed when stale, silent when current, refused when edited'
 
+      # ISSUE #192 — which repo is the recorder recording FOR?
+      #
+      # It had no answer but the process cwd, so running one adopted repo's
+      # recorder from inside another wrote a PASSING receipt into the
+      # bystander and left the intended repo ungated. Two real adopted trees,
+      # because that is the only way to express it — the fixture corpus builds
+      # one repo per case, and this defect needs the script to live in a
+      # different tree from the one the shell is standing in.
+      - name: a recorder run from the wrong repo writes nothing
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          two_repos() {
+            for n in A B; do
+              d=/tmp/ag-$1$n
+              rm -rf "$d"; mkdir -p "$d"; printf 'x\n' > "$d/f.txt"
+              git -C "$d" init -q
+              git -C "$d" config user.email ci@example.invalid
+              git -C "$d" config user.name ci
+              git -C "$d" add -A && git -C "$d" commit -qm init
+              ./scripts/adopt.sh "$d" --agent >/dev/null
+              printf '{"gate_command": "true"}\n' > "$d/.claude/agent-guard.json"
+            done
+          }
+          two_repos w
+          # B is dirty and has never run its gate. A is clean.
+          printf 'ungated\n' >> /tmp/ag-wB/f.txt
+
+          rc=0
+          (cd /tmp/ag-wA && python3 /tmp/ag-wB/.claude/agent-guard/record-gate.py --gate) \
+            > /tmp/ag-cross.log 2>&1 || rc=$?
+          cat /tmp/ag-cross.log
+          [[ $rc -eq 3 ]] \
+            || { echo "::error::a cross-repo record exited $rc, expected 3"; exit 1; }
+          [[ -e /tmp/ag-wA/.claude/agent-guard-receipt.json ]] \
+            && { echo '::error::it wrote a receipt into the repo it was run FROM'; exit 1; }
+          [[ -e /tmp/ag-wB/.claude/agent-guard-receipt.json ]] \
+            && { echo '::error::it wrote a receipt into the repo it belongs to, from the wrong cwd'; exit 1; }
+          grep -q 'belongs to' /tmp/ag-cross.log \
+            || { echo '::error::the refusal did not name both repos'; exit 1; }
+
+          # The ordinary invocation is untouched — this is the half a
+          # too-broad rule would break.
+          (cd /tmp/ag-wB && python3 .claude/agent-guard/record-gate.py --gate) >/dev/null
+          [[ -e /tmp/ag-wB/.claude/agent-guard-receipt.json ]] \
+            || { echo '::error::a correct in-repo record wrote no receipt'; exit 1; }
+
+          # And the baseline's own layout still resolves from cwd: these
+          # scripts live in scripts/agent-guard/, not .claude/agent-guard/, so
+          # the rule must not fire for them. Every `record` fixture depends on
+          # this, and so does any future shared install (#193).
+          rc2=0
+          base=$PWD
+          (cd /tmp/ag-wA && python3 "$base/scripts/agent-guard/record-gate.py" --gate) \
+            >/dev/null 2>&1 || rc2=$?
+          [[ $rc2 -eq 0 ]] \
+            || { echo "::error::the baseline's own recorder refused a legitimate run (exit $rc2)"; exit 1; }
+          echo 'OK: it records for the repo it belongs to, or for nobody'
+
       - name: --agent merges, and a consumer keeps everything they had
         shell: bash
         run: |
