@@ -693,6 +693,19 @@ the next session reads it and believes it. The run exits 6 having written
 nothing at all — since #183 there is no "rest of the adoption" for it to fall
 back on, because an `--agent` run is the contract and only the contract.
 
+The **mirror image** is exit 7, and it is the weaker refusal on purpose. If the
+`CLAUDE.md` region cannot be written — edited since install, no checksum, half a
+region, or a `CLAUDE.md` symlink that dangles or points out of the repo (#198) —
+the hooks and deny rules stay installed and enforcing, and the run says so and
+exits 7. The asymmetry is the point: rules with no text is a tree that refuses
+things a session was not told about, which is confusing; text with no rules is a
+tree that promises refusals nothing performs, which is a lie. Only the second is
+worth unwinding the whole run for.
+
+Until #198 that case returned **0, under the word ADOPTED**. It was found by
+adopting a repo whose `CLAUDE.md` is a symlink to its `AGENTS.md`, where the
+region write both destroyed the link and — before the fix — reported success.
+
 ### 7a. What lands, and by hand if you would rather
 
 1. `scripts/agent-guard/*.py` to the consumer's `.claude/agent-guard/`.

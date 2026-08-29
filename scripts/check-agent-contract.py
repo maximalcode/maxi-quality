@@ -562,6 +562,39 @@ def check(root: pathlib.Path, today: datetime.date) -> list[str]:
             "— exactly one `if` may stand alone (the samples/ rule itself); "
             "every other one needs the sentence a consumer sees instead")
 
+    # --- G12: the two copies of resolve_write_target still agree -------------
+    #
+    # #198: `os.replace` replaces a symlink rather than its target, so writing
+    # a CLAUDE.md that is a link to AGENTS.md deleted the arrangement, put the
+    # region in the file the repo does not treat as canonical, and exited 0.
+    # Both writing scripts carry the fix, and they carry it as two copies:
+    # these are standalone CLIs with hyphenated names, so neither can import
+    # the other, and the alternative — a third module both import — buys one
+    # shared function at the cost of a new file on every adoption path.
+    #
+    # Two copies drift, and the drift is invisible because no consumer holds
+    # both. This is the tripwire. It compares the BODY, not the docstring: the
+    # region script carries the long rationale and the settings script points
+    # at it, which is right, and a check that demanded identical prose would
+    # force the rationale to be duplicated too.
+    bodies = {}
+    for name in ("agent-region.py", "agent-settings.py"):
+        src = read(root / "scripts" / name)
+        m = re.search(r"def resolve_write_target\(path: str\) -> str:\n"
+                      r"    \"\"\".*?\"\"\"\n(.*?)(?=\n\ndef |\n\nclass )",
+                      src, re.S)
+        if not m:
+            bad(f"scripts/{name} has no resolve_write_target — #198's fix is "
+                "gone from one of the two writing scripts, and a symlinked "
+                "target would be replaced rather than followed")
+        else:
+            bodies[name] = m.group(1).rstrip()
+    if len(bodies) == 2 and len(set(bodies.values())) != 1:
+        bad("scripts/agent-region.py and scripts/agent-settings.py carry "
+            "different resolve_write_target bodies. They must stay identical: "
+            "a symlink followed by one and replaced by the other is #198 back "
+            "on whichever path was not fixed")
+
     # --- G8: every §N citation on this surface resolves ----------------------
     #
     # Scoped to the agent surface rather than repo-wide, unlike

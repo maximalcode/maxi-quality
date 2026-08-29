@@ -883,6 +883,13 @@ contract, that leaves the tree exactly as it found it. A tree carrying a
 `CLAUDE.md` that promises refusals nothing performs is worse than one with no
 contract, because the next session reads it and believes it.
 
+If instead the **region** cannot be written — you edited it, it predates
+checksums, or your `CLAUDE.md` is a symlink that dangles or leaves the repo —
+the rules are installed and enforcing and only the text is missing, so the run
+keeps them, says which half it left, and exits **7**. A symlinked `CLAUDE.md`
+that resolves normally is fine and always was intended to be: the region lands
+in the file the link points at, and the link survives.
+
 What this does **not** do is covered honestly and at length in
 [`configs/agent/README.md`](../configs/agent/README.md) §3 — read it before
 trusting it. The short version: it guards drift, not malice. A shell command can

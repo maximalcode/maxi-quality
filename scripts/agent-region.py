@@ -91,6 +91,47 @@ def render(fragment: str, samples: bool) -> str:
     return COND.sub(pick, fragment)
 
 
+def resolve_write_target(path: str) -> str:
+    """The file the bytes should land in, following a symlinked `path` (#198).
+
+    A repo that wants one instruction file under two names symlinks one to the
+    other, and the direction is a free choice. `os.replace` replaces the LINK,
+    so writing naively deletes that arrangement, leaves two copies to diverge,
+    puts the region in the file the repo does NOT treat as canonical, and exits
+    0 — every property that made this worth trusting failing at once, quietly.
+
+    Reading already follows the link, so resolving here makes the write agree
+    with the read rather than changing what the run means.
+
+    Two edges are decided rather than discovered:
+
+      outside the tree  a link resolving out of the target's own directory is
+                        REFUSED. "Adopt this repo" must not write elsewhere,
+                        and no legitimate layout needs it.
+      dangling          also refused. Materialising the far end of a broken
+                        link is a repair nobody asked for, and the broken link
+                        is the thing worth reporting.
+    """
+    if not os.path.islink(path):
+        return path
+    real = os.path.realpath(path)
+    if not os.path.exists(real):
+        raise Refused(
+            f"{path} is a symlink to {os.readlink(path)}, which does not exist. "
+            "Nothing was written — fix the link first, so the write lands in a "
+            "file the repo actually has.")
+    base = os.path.realpath(os.path.dirname(os.path.abspath(path)))
+    try:
+        inside = os.path.commonpath([real, base]) == base
+    except ValueError:
+        inside = False
+    if not inside:
+        raise Refused(
+            f"{path} is a symlink to {real}, which is outside {base}. Adopting "
+            "this repo must not write outside it, so nothing was written.")
+    return real
+
+
 def body_of(fragment: str) -> str:
     """Everything between the markers, markers excluded, of a RENDERED text."""
     i, j = fragment.find(BEGIN), fragment.find(END)
@@ -134,9 +175,17 @@ def find_region(text: str) -> tuple[int, int, str, str | None]:
     return (i, j + len(END) + 1, text[close + len("-->"):j], m.group(1) if m else None)
 
 
-def apply(path: str, fragment: str, samples: bool, force: bool) -> tuple[str, str]:
-    """(verdict, detail). Verdicts: created, refreshed, current, refused."""
+def apply(path: str, fragment: str, samples: bool, force: bool) -> tuple[str, str, str]:
+    """(verdict, detail, written-path). Verdicts: created, refreshed, current, stamped.
+
+    The third element is where the bytes went, which is not always `path` — see
+    resolve_write_target.
+    """
     wanted = body_of(render(fragment, samples))
+    # Before the read, not just before the write: a resolved path that differs
+    # from the argument is the file this run is actually about, and every later
+    # message naming `path` would otherwise name the link instead of it.
+    path = resolve_write_target(path)
     try:
         with open(path, encoding="utf-8") as fh:
             text = fh.read()
@@ -159,7 +208,7 @@ def apply(path: str, fragment: str, samples: bool, force: bool) -> tuple[str, st
         new = head + block(wanted)
     else:
         if body == wanted and recorded == digest(body):
-            return ("current", "")
+            return ("current", "", path)
         if body == wanted:
             # The text is current but the marker cannot vouch for it — either
             # it predates checksums or someone rewrote the marker. Stamping it
@@ -172,7 +221,7 @@ def apply(path: str, fragment: str, samples: bool, force: bool) -> tuple[str, st
             with open(tmp, "w", encoding="utf-8") as fh:
                 fh.write(new)
             os.replace(tmp, path)
-            return ("stamped", "")
+            return ("stamped", "", path)
         if not force:
             if recorded is None:
                 raise Refused(
@@ -195,7 +244,7 @@ def apply(path: str, fragment: str, samples: bool, force: bool) -> tuple[str, st
     with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(new)
     os.replace(tmp, path)
-    return ("created" if start < 0 else "refreshed", diff(body, wanted))
+    return ("created" if start < 0 else "refreshed", diff(body, wanted), path)
 
 
 def diff(old: str, new: str) -> str:
@@ -235,8 +284,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if a.mode == "check":
             wanted = body_of(render(fragment, samples))
+            # check follows the link for the same reason apply does: a repo
+            # whose CLAUDE.md is a link is correctly adopted, and a check that
+            # cannot see that would fail a tree that is right.
             try:
-                with open(a.target, encoding="utf-8") as fh:
+                with open(resolve_write_target(a.target), encoding="utf-8") as fh:
                     text = fh.read()
             except OSError as exc:
                 raise Refused(f"cannot read {a.target}: {exc}") from exc
@@ -251,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             return 0
 
-        verdict, detail = apply(a.target, fragment, samples, a.force)
+        verdict, detail, written = apply(a.target, fragment, samples, a.force)
     except Refused as exc:
         print(f"agent-region: {exc}", file=sys.stderr)
         return 4
@@ -259,7 +311,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"agent-region: {exc}", file=sys.stderr)
         return 3
 
-    print(f"{verdict} {a.target}")
+    # The resolved path, not the argument: a success line naming the link
+    # while the bytes went to its target is the same silent lie #198 was.
+    print(f"{verdict} {written}" if written != a.target
+          else f"{verdict} {a.target}")
     if detail and verdict == "refreshed":
         sys.stdout.write(detail)
     return 0
