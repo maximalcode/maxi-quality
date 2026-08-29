@@ -124,6 +124,14 @@
 #             5 --editor refused: a .vscode file already existed and was left
 #               alone. Everything else still adopted; only the editor files
 #               were held back, and the delta was printed.
+#             7 --agent adopted, but the CLAUDE.md region was NOT written: the
+#               region was edited since install (use --force), predates
+#               checksums, is half a region, or CLAUDE.md is a symlink that
+#               dangles or leaves the repo (#198). The hooks and deny rules ARE
+#               installed and enforcing — what is missing is the text saying so,
+#               which is the half a reader sees. Mirrors 5: everything else
+#               adopted, one part held back, the reason printed. Before #198
+#               this returned 0 under the word ADOPTED.
 #             6 --agent refused: .claude/settings.json could not be merged into.
 #               Nothing was written — not the scripts, not the fragment —
 #               because half an agent contract is a CLAUDE.md that promises
@@ -172,6 +180,11 @@ HOOKS=0
 # shadows someone's $EDITOR is a script that surprises them elsewhere.
 WANT_EDITOR=0
 EDITOR_CONFLICT=0
+# Beside EDITOR_CONFLICT and not beside NEEDS_MERGE, which is declared far
+# below: the --agent branch READS this one and exits before that point, so
+# initialising it there is an unbound variable under `set -u` on the success
+# path — a refusal flag that fails the runs it was supposed to leave alone.
+REGION_REFUSED=0
 # Not named AGENT either: --hooks already taught this script that a short,
 # obvious name can mean two unrelated things (configs/agent/README.md §8).
 WANT_AGENT=0
@@ -347,7 +360,14 @@ install_agent_contract() {
         # neither. Say it loudly and let the summary carry it.
         warn "--agent: $TARGET/CLAUDE.md was left alone (see above). The rules"
         warn "are installed; the text describing them is not current."
-        NEEDS_MERGE=1
+        # NOT NEEDS_MERGE: that says "a file already existed and was left
+        # untouched", which is a different thing and reads as routine. This is a
+        # refusal, and until #198 it ended the run at exit 0 under the word
+        # ADOPTED — a tree with enforcing hooks and no text telling any session
+        # they exist, reported as success. --editor's exit 5 is the precedent
+        # and the shape is identical: everything else adopted, one part held
+        # back, the reason printed, and a code a caller can branch on.
+        REGION_REFUSED=1
       fi
     fi
 
@@ -675,6 +695,16 @@ if [ "$WANT_AGENT" -eq 1 ]; then
     printf 'and none of them was found here. The contract has no language in it,\n'
     printf 'which is why this run worked anyway. If this repo grows one of those,\n'
     printf 'adopt the language layer then — see docs/ADOPTION.md.\n'
+  fi
+  # #198. The --agent branch exits here rather than falling through to the
+  # tail, so this is the ONLY place the verdict can be corrected — putting it
+  # beside --editor's exit 5 looks right and never runs.
+  if [ "$REGION_REFUSED" -eq 1 ]; then
+    printf '\n\033[31mEXCEPT the CLAUDE.md region, which was NOT written\033[0m — the reason\n'
+    printf 'is above. The hooks and deny rules ARE installed and enforcing. What is\n'
+    printf 'missing is the text that tells a session they exist, which is the half a\n'
+    printf 'reader sees. Fix the reason and re-run; the rest is idempotent.\n'
+    exit 7
   fi
   exit 0
 fi
@@ -1496,3 +1526,4 @@ fi
 if [ "$EDITOR_CONFLICT" -eq 1 ]; then
   exit 5
 fi
+

@@ -4238,7 +4238,63 @@ jobs:
             --target $d/half.md --samples yes >/dev/null 2>&1 || rc=$?
           [[ $rc -eq 4 ]] \
             || { echo "::error::a BEGIN with no END exited $rc, expected 4"; exit 1; }
-          echo 'OK: refreshed when stale, silent when current, refused when edited'
+          # 6. ISSUE #198 — a CLAUDE.md that is a SYMLINK.
+          #
+          # A repo that wants one instruction file under two names symlinks one
+          # to the other, and the direction is a free choice. os.replace
+          # replaces the LINK: the arrangement died, the two files became
+          # divergent copies, the region landed in the file the repo does not
+          # treat as canonical, and the run exited 0 saying ADOPTED. It survived
+          # four real adoptions because the OTHER direction — AGENTS.md as the
+          # link — is correct by accident.
+          #
+          # This fixture is the direction that broke. It asserts the mode is
+          # still a symlink, the region is in the TARGET, and the success line
+          # names where the bytes actually went.
+          s=$(mktemp -d)/repo; mkdir -p "$s"; git -C "$s" init -q .
+          printf '# Real\n\nProse.\n' > "$s/AGENTS.md"
+          ln -s AGENTS.md "$s/CLAUDE.md"
+          git -C "$s" add -A
+          git -C "$s" -c user.email=t@t -c user.name=t commit -qm init
+          out=$(./scripts/adopt.sh "$s" --agent)
+          [[ -L "$s/CLAUDE.md" ]] \
+            || { echo '::error::--agent replaced a symlinked CLAUDE.md with a regular file (#198)'; exit 1; }
+          grep -qF 'BEGIN maxi-quality agent-guard' "$s/AGENTS.md" \
+            || { echo '::error::the region did not reach the symlink target'; exit 1; }
+          grep -qF "$s/AGENTS.md" <<<"$out" \
+            || { echo '::error::the success line named the link, not the file written'; echo "$out"; exit 1; }
+
+          # 7. A region that cannot be written is no longer reported as ADOPTED.
+          #
+          # Every refusal above left the hooks installed, printed its reason,
+          # exited 0 and said ADOPTED — a tree enforcing rules no text mentions,
+          # reported as a clean run. Exit 7 is --editor's exit 5 for the other
+          # half. Asserted on BOTH reachable causes, because the edited-region
+          # path predates #198 and the dangling-symlink path is new.
+          # Case 4's --force repaired $d's region, so plant the edit again —
+          # asserting an exit code against a tree that is already current would
+          # pass for the wrong reason and never fail.
+          python3 - "$d/CLAUDE.md" <<'PY'
+          import pathlib, sys
+          p = pathlib.Path(sys.argv[1]); t = p.read_text(encoding="utf-8")
+          p.write_text(t.replace("They are not advice", "EDIT AGAIN. They are not advice", 1),
+                       encoding="utf-8")
+          PY
+          rc=0; ./scripts/adopt.sh $d --agent >/dev/null 2>&1 || rc=$?
+          [[ $rc -eq 7 ]] \
+            || { echo "::error::an edited region exited $rc, expected 7"; exit 1; }
+          grep -qF 'EDIT AGAIN' $d/CLAUDE.md \
+            || { echo '::error::the exit-7 run overwrote the edit it refused'; exit 1; }
+          l=$(mktemp -d)/repo; mkdir -p "$l"; git -C "$l" init -q .
+          ln -s NOPE.md "$l/CLAUDE.md"; printf 'x\n' > "$l/f.txt"
+          git -C "$l" add -A
+          git -C "$l" -c user.email=t@t -c user.name=t commit -qm init
+          rc=0; ./scripts/adopt.sh "$l" --agent >/dev/null 2>&1 || rc=$?
+          [[ $rc -eq 7 ]] \
+            || { echo "::error::a dangling symlinked CLAUDE.md exited $rc, expected 7"; exit 1; }
+
+          echo 'OK: refreshed when stale, silent when current, refused when edited,'
+          echo '    a symlink followed not replaced, and a held-back region exits 7'
 
       # ISSUE #192 — which repo is the recorder recording FOR?
       #

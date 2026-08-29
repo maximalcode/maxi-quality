@@ -312,6 +312,33 @@ def render(settings: dict) -> str:
     return json.dumps(settings, indent=2, ensure_ascii=False) + "\n"
 
 
+def resolve_write_target(path: str) -> str:
+    """The file the bytes should land in, following a symlinked `path` (#198).
+
+    Kept identical to scripts/agent-region.py's copy. See the note there for
+    why a link is followed rather than replaced, and why the two edges below
+    are refusals rather than best-effort repairs.
+    """
+    if not os.path.islink(path):
+        return path
+    real = os.path.realpath(path)
+    if not os.path.exists(real):
+        raise Refused(
+            f"{path} is a symlink to {os.readlink(path)}, which does not exist. "
+            "Nothing was written — fix the link first, so the write lands in a "
+            "file the repo actually has.")
+    base = os.path.realpath(os.path.dirname(os.path.abspath(path)))
+    try:
+        inside = os.path.commonpath([real, base]) == base
+    except ValueError:
+        inside = False
+    if not inside:
+        raise Refused(
+            f"{path} is a symlink to {real}, which is outside {base}. Adopting "
+            "this repo must not write outside it, so nothing was written.")
+    return real
+
+
 def write_atomically(path: str, text: str) -> None:
     """Write via a temp file, and parse the result back before moving it.
 
@@ -320,6 +347,14 @@ def write_atomically(path: str, text: str) -> None:
     as though the file said nothing. The read-back is cheap and turns "we
     produced something unreadable" into an error at the moment it happens.
     """
+    # A settings.json can be a symlink for the same reason CLAUDE.md can be —
+    # one file, two names. os.replace would replace the LINK, so the arrangement
+    # dies silently and the real file never gets the wiring. See #198 and the
+    # long note on resolve_write_target in scripts/agent-region.py; the two
+    # copies are deliberate (these are standalone CLIs with hyphenated names,
+    # which cannot import one another) and check-agent-contract.py G12 asserts
+    # they still agree.
+    path = resolve_write_target(path)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = f"{path}.maxi-quality.{os.getpid()}"
     try:
