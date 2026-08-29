@@ -429,6 +429,15 @@ def run_case(path: str) -> list[str]:
             input=json.dumps(event), cwd=root,
             capture_output=True, text=True, timeout=60,
         )
+        # Read INSIDE the try: the fixture tree is removed in `finally`, before
+        # any assertion runs, so a check that opened this path afterwards would
+        # find nothing and pass for the wrong reason.
+        try:
+            with open(os.path.join(root, ".claude", "agent-guard-ledger.jsonl"),
+                      encoding="utf-8") as fh:
+                setup["_ledger"] = [json.loads(l) for l in fh if l.strip()]
+        except (FileNotFoundError, ValueError):
+            setup["_ledger"] = []
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -477,6 +486,28 @@ def run_case(path: str) -> list[str]:
     for needle in expect.get("stderr_contains", []):
         if needle not in proc.stderr:
             fails.append(f"stderr never mentioned {needle!r}")
+
+    # The ledger (#167). Two assertions, and the second is the one that matters
+    # more: the OUTCOME CODE, so a decision that silently stops being logged is
+    # a failure rather than a gap; and the KEY SET, because this file's summary
+    # is meant to be pasteable into a public issue by construction. A field
+    # added later that carried a path or a command would leak from a private
+    # tree into the baseline, and nobody would notice at the moment it was
+    # written — which is the failure CLAUDE.md §2 says has no cleanup pass.
+    if "ledger" in expect:
+        rows = setup.get("_ledger") or []
+        got = [r.get("outcome") for r in rows]
+        if got != expect["ledger"]:
+            fails.append(f"ledger outcomes {got}, expected {expect['ledger']}")
+        allowed = {"ts", "outcome", "blocked", "changed", "session"}
+        for r in rows:
+            extra = set(r) - allowed
+            if extra:
+                fails.append(
+                    f"ledger row carries {sorted(extra)}, which is not in the "
+                    "allowed key set. Every field here is copied into a public "
+                    "summary; add it to `allowed` only once it cannot carry "
+                    "content from the consumer's tree")
 
     return fails
 

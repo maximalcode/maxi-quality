@@ -23,3 +23,4 @@ __pycache__/
 # maxi-quality agent guard — per-checkout state, never committed
 .claude/agent-guard-receipt.json
 .claude/agent-guard/__pycache__/
+.claude/agent-guard-ledger.jsonl

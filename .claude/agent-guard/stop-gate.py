@@ -30,10 +30,13 @@ where no session can end.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from datetime import datetime, timezone  # noqa: E402
 
 from guard import (  # noqa: E402
     ALLOW,
@@ -43,6 +46,8 @@ from guard import (  # noqa: E402
     changed_files,
     is_declared_gate,
     fingerprint,
+    ledger_append,
+    LEDGER,
     gate_command,
     read_event,
     read_receipt,
@@ -105,27 +110,127 @@ def instruction(root: str) -> str:
     )
 
 
+# Every way main() can end, as a CODE — never as text from the tree (#167).
+# `blocked` says whether that outcome refused the stop, so a summary does not
+# have to re-derive it from the code and get it wrong later.
+OUTCOMES = {
+    "payload-unreadable": False,   # plumbing: allowed
+    "loop-guard":         False,   # stop_hook_active, the documented override
+    "not-a-repo":         False,   # plumbing: allowed
+    "clean":              False,   # nothing differs from HEAD
+    "pass":               False,   # gate ran, passed, still describes this tree
+    "no-receipt":         True,
+    "gate-failed":        True,
+    "not-the-gate":       True,
+    "content-changed":    True,
+}
+
+
+def record(event: dict, root: str | None, outcome: str, changed: int = 0) -> int:
+    """Log this decision and return it. Called at EVERY exit from main().
+
+    Returning ALLOW from here rather than beside each call is the point: an
+    exit that forgets to log is an exit that silently drops a data point, and
+    the four numbers #167 wants are only trustworthy if nothing is missing from
+    them. Threading the return through the logger makes forgetting impossible
+    rather than merely discouraged.
+
+    `session` is what makes "sessions run" different from "stops seen": one
+    session that is blocked and then stops again is two events and one session.
+    Claude Code supplies it; when it does not, the field is absent and the
+    summary says how many events it could not attribute.
+    """
+    if root is not None:
+        # A UTC timestamp is not tree content and #167 asks for a period, so
+        # it is the one field beyond codes and counts that is allowed here.
+        entry = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                 "outcome": outcome, "blocked": OUTCOMES[outcome],
+                 "changed": changed}
+        sid = event.get("session_id")
+        if isinstance(sid, str) and sid:
+            entry["session"] = sid
+        ledger_append(root, entry)
+    return ALLOW
+
+
+def summarise(root: str) -> int:
+    """Print what the ledger can prove, and say plainly what it cannot (#167).
+
+    Two of the milestone's four integers are counting, and this does them.
+    The other two — blocks that were CORRECT and blocks that were WRONG — are a
+    judgement about whether the gate had genuinely not run, or whether the guard
+    misfired on its own plumbing, a formatter-shaped gate or a Claude Code
+    change. No file can settle that, so this prints the breakdown a person needs
+    to classify and refuses to guess the split. A number invented here would be
+    indistinguishable from a measured one the moment it reached STATUS §5, which
+    is the exact failure #167's acceptance criteria name.
+    """
+    path = os.path.join(root, LEDGER)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            rows = [json.loads(l) for l in fh if l.strip()]
+    except FileNotFoundError:
+        print(f"no ledger at {LEDGER} — nothing has stopped in this checkout yet")
+        return 1
+    except (OSError, ValueError) as exc:
+        print(f"{LEDGER} is unreadable: {exc}", file=sys.stderr)
+        return 3
+    if not rows:
+        print(f"{LEDGER} is empty")
+        return 1
+
+    stamps = sorted(r["ts"] for r in rows if "ts" in r)
+    sessions = {r["session"] for r in rows if "session" in r}
+    unattributed = sum(1 for r in rows if "session" not in r)
+    blocked = [r for r in rows if r.get("blocked")]
+    by_reason: dict[str, int] = {}
+    for r in blocked:
+        by_reason[r["outcome"]] = by_reason.get(r["outcome"], 0) + 1
+
+    print(f"period          {stamps[0][:10]} .. {stamps[-1][:10]}"
+          if stamps else "period          (no timestamps)")
+    print(f"sessions run    {len(sessions)}"
+          + (f"   (+{unattributed} event(s) with no session id)" if unattributed else ""))
+    print(f"stops seen      {len(rows)}")
+    print(f"stops blocked   {len(blocked)}")
+    for reason in sorted(by_reason):
+        print(f"                  {by_reason[reason]:>4}  {reason}")
+    print()
+    print("blocks correct  ?   these two are a judgement, not a count. Read the")
+    print("blocks wrong    ?   breakdown above and split it yourself: a block is")
+    print("                    WRONG when the guard misfired — its own plumbing,")
+    print("                    a gate that rewrites files, a Claude Code change —")
+    print("                    and CORRECT when the gate genuinely had not run.")
+    print()
+    print("Nothing above names a file, a command or a branch. It is safe to")
+    print("paste into a public issue as it stands.")
+    return 0
+
+
 def main() -> int:
     event = read_event()
     if event is None:
         warn("stop: unreadable hook payload; allowing the stop")
+        # No payload means no cwd, so there is no repo to log into. The one
+        # outcome the ledger cannot see, and it is named here so a reader of
+        # OUTCOMES does not go looking for it in the data.
         return ALLOW
 
     # Documented loop guard. Checked before anything else, so a repo that
     # cannot pass its own gate costs one blocked turn rather than eight.
     if event.get("stop_hook_active") is True:
-        return ALLOW
+        return record(event, repo_root(event.get("cwd")), "loop-guard")
 
     root = repo_root(event.get("cwd"))
     if root is None:
         warn("stop: not inside a git working tree; allowing the stop")
-        return ALLOW
+        return ALLOW  # nowhere to write; same case as an unreadable payload
 
     changed = changed_files(root)
     if not changed:
         # Nothing differs from HEAD. There is no such thing as an ungated
         # change here, and a read-only session must not be made to run a gate.
-        return ALLOW
+        return record(event, root, "clean")
 
     receipt = read_receipt(root)
     current = fingerprint(root)
@@ -137,7 +242,7 @@ def main() -> int:
             f"{instruction(root)}\n\nIf it fails, fix what it reports — do not "
             "record a receipt by hand."
         )
-        return ALLOW
+        return record(event, root, "no-receipt", len(changed))
 
     if receipt.get("verdict") != "pass":
         block_stop(
@@ -146,7 +251,7 @@ def main() -> int:
             + ".\n\nFix what it reported and run it again:\n\n  "
             f"{instruction(root)}"
         )
-        return ALLOW
+        return record(event, root, "gate-failed", len(changed))
 
     declared = gate_command(root)
     if declared is not None and not is_declared_gate(receipt, declared):
@@ -162,7 +267,7 @@ def main() -> int:
             "of it cannot stand in for the whole, and a superset is a different "
             f"claim. Run it, then stop:\n\n  {instruction(root)}"
         )
-        return ALLOW
+        return record(event, root, "not-the-gate", len(changed))
 
     if receipt.get("fingerprint") != current:
         block_stop(
@@ -170,10 +275,21 @@ def main() -> int:
             "recorded verdict describes code that no longer exists.\n\nRun it "
             f"again, then stop:\n\n  {instruction(root)}"
         )
-        return ALLOW
+        return record(event, root, "content-changed", len(changed))
 
-    return ALLOW
+    return record(event, root, "pass", len(changed))
 
 
 if __name__ == "__main__":
+    # A mode, not a second script: the copied set is derived from the wiring
+    # (#191), so a new file here would either go unwired and unshipped or force
+    # the derivation to grow a special case. The thing that writes the ledger
+    # is the right thing to read it.
+    if "--summary" in sys.argv[1:]:
+        here = repo_root(os.getcwd())
+        if here is None:
+            print("stop-gate: --summary must run inside a git working tree",
+                  file=sys.stderr)
+            sys.exit(3)
+        sys.exit(summarise(here))
     sys.exit(main())
