@@ -345,7 +345,12 @@ install_agent_contract() {
     # is the only thing --force means here.
     AGENT_REGION_ARGS=(apply
       --fragment "$BASELINE/configs/agent/CLAUDE.fragment.md"
-      --target "$TARGET/CLAUDE.md" --samples "$AGENT_SAMPLES")
+      --target "$TARGET/CLAUDE.md" --samples "$AGENT_SAMPLES"
+      # The region's recorder line names shim.py in a --shared tree and
+      # record-gate.py otherwise. Passing the WRONG one produced text that told
+      # a session to run a file the install does not have, which is why
+      # agent-region.py requires this rather than defaulting it.
+      --shared "$([ "$WANT_SHARED" -eq 1 ] && echo yes || echo no)")
     if [ "$FORCE" -eq 1 ]; then AGENT_REGION_ARGS+=(--force); fi
     if [ "$DRY_RUN" -eq 1 ]; then
       info "$TARGET/CLAUDE.md (dry run) — the region would be checked and refreshed"

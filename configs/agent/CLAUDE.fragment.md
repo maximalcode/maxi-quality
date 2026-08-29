@@ -18,9 +18,21 @@ This repo's quality baseline is enforced by two hooks and one deny rule in
 
 **Run the gate through the recorder, not directly:**
 
+<!-- maxi-quality:unless-shared -->
 ```bash
 python3 .claude/agent-guard/record-gate.py --gate
 ```
+<!-- /maxi-quality:unless-shared -->
+<!-- maxi-quality:if-shared -->
+```bash
+python3 .claude/agent-guard/shim.py record-gate --gate
+```
+
+The scripts themselves live once, at `~/.claude/agent-guard/`, and `shim.py`
+runs them from there — so this repo commits one file instead of four and a fix
+is one commit rather than one per repo. If that shared install is missing, the
+shim says so and refuses; it never lets a gate look like it ran.
+<!-- /maxi-quality:if-shared -->
 
 `--gate` runs the command this repo declares in `.claude/agent-guard.json`,
 whole and through one shell, so a gate written as `a && b` is recorded as a
