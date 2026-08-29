@@ -1,0 +1,58 @@
+{
+  // maxi-quality — Python editor parity, against layer1-python.
+  //
+  // Merge into .vscode/settings.json. See ./README.md.
+
+  // DIVERGENCE (verified, #120). ms-python.mypy-type-checker defaults
+  // `importStrategy` to "useBundled" — it runs a mypy that ships with the
+  // extension, not the one the repo pins. layer1-python runs the environment's
+  // mypy against configs/python/mypy.ini and asserts an exact finding set
+  // (samples/expected/mypy.json, 11 errors). A different mypy version produces
+  // a different set, so this is the difference between parity and coincidence.
+  "mypy-type-checker.importStrategy": "fromEnvironment",
+
+  // DIVERGENCE (verified, #120 — NOT one of the four #111 named). The same
+  // extension defaults `reportingScope` to "file": it type-checks only the
+  // file in the active editor. layer1-python runs mypy over samples/python/src
+  // — a whole tree — and mypy is a whole-program checker, so a per-file scope
+  // does not merely show less, it can show DIFFERENT results for the same
+  // line. "workspace" is the setting that matches the gate.
+  "mypy-type-checker.reportingScope": "workspace",
+
+  // mypy has no extend mechanism, so adopt.sh copies mypy.ini whole to the
+  // target root and mypy discovers it from the working directory. This key
+  // already defaults to ${workspaceFolder}; it is pinned because the discovery
+  // is the whole reason the copy is at the root, and a repo that moves the
+  // extension's cwd silently stops reading the shipped config.
+  "mypy-type-checker.cwd": "${workspaceFolder}",
+
+  // Not a divergence — charliermarsh.ruff already defaults to
+  // "fromEnvironment". Pinned anyway because it is exactly the failure the
+  // mypy key above exists to prevent, and it is one setting away: a future
+  // default flip, or a user who set it globally, substitutes a different ruff
+  // than the one layer1-python asserts 13 rule families against.
+  "ruff.importStrategy": "fromEnvironment",
+
+  // The extension defaults to "editorFirst", which lets `ruff.lint.args` and
+  // friends override the config FILE. CI reads only the file: adopt.sh writes
+  // a one-line ruff.toml that extends the copied ruff.base.toml, and
+  // layer1-python runs `ruff check` / `ruff format --check --config
+  // configs/python/ruff.toml`. "filesystemFirst" makes the file win in the
+  // editor too, so a stray user setting cannot quietly widen the ruleset.
+  "ruff.configurationPreference": "filesystemFirst",
+
+  // layer1-python gates `ruff format --check` on both Python samples, with a
+  // line-length ablation proving 100 is not ruff's default 88. The formatter
+  // is configured entirely by ruff.base.toml, so this only routes saves to it.
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      // `ruff check --fix` is NOT what the gate runs — layer1-python runs
+      // `ruff check` and asserts findings. Organising imports on save is the
+      // one fix that is safe here because ruff.base.toml selects "I", so an
+      // unsorted import is a finding the gate WILL report.
+      "source.organizeImports.ruff": "explicit"
+    }
+  }
+}

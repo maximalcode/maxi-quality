@@ -10,6 +10,7 @@ Where to start:
 - **Existing repo** → §5 with `changed-only`, which grandfathers your backlog.
   Come back to §§1–4b when you have the time budgeted.
 - **Layer 1 by hand** → §§1–4b, one section per language.
+- **The same findings while typing** → §5b, once CI is green.
 
 Every command below refers to the baseline as `$BASELINE`, so this is the only
 line that depends on where you put it:
@@ -51,7 +52,20 @@ current one. Deliberately not a version number here: this line has named a
 superseded tag twice, and once named `v1.0.3`, which never existed at all. A doc
 that hard-codes a version goes stale on the next release by construction, and a
 `--ref` a reader copies verbatim is the one place that costs them something.
-`--no-workflow` skips the CI scaffold.
+`--no-workflow` skips the CI scaffold. `--editor` additionally writes the
+`.vscode/` files that make your editor show what CI shows — §5b.
+
+`--agent` is the one flag that is **not** an "additionally". It installs the
+hooks and deny rules that constrain a Claude Code session writing in your repo
+— §5c — and **nothing else**: no language config, no `.editorconfig`, no
+workflow. The language layer is a second run without it, in either order, and
+passing `--editor` or `--hooks` alongside it is a usage error rather than a
+silent choice between them:
+
+```bash
+"$BASELINE"/scripts/adopt.sh <repo>            # the language layer
+"$BASELINE"/scripts/adopt.sh <repo> --agent    # the agent contract
+```
 
 CI proves this end-to-end in both directions: a repo adopted by the script builds
 the clean fixture at 0 errors/0 warnings **and** rejects the bad fixture with
@@ -683,6 +697,206 @@ installed and do nothing.
 
 ---
 
+## 5b. The editor — the same findings while typing
+
+Everything above shows up at PR time. `--editor` is what makes it show up while
+you type, and it is **opt-in**:
+
+```bash
+"$BASELINE"/scripts/adopt.sh <repo> --editor
+```
+
+It writes two files, composed from the baseline's `configs/editor/` fragments
+for **the languages detection actually found** — a TypeScript-and-Python repo
+gets no Rust, C# or Java keys:
+
+```
+.vscode/settings.json      the settings that close a measured divergence
+.vscode/extensions.json    the extensions those settings configure
+```
+
+Why this needs writing down at all: the official extensions, installed unaided,
+do not show what CI shows. Measured against their own published manifests — the
+Semgrep extension scans only lines changed since the last commit; the mypy
+extension runs a mypy it bundles rather than your pin and type-checks only the
+active tab; rust-analyzer runs `cargo check`, so not one clippy lint appears;
+the C# extension reports analyzer findings for open files only; and VS Code
+type-checks with the TypeScript it ships rather than the one in your
+`node_modules`. Every key written carries the CI behaviour it pins as a comment
+directly above it — VS Code parses these files as JSONC, so the reasons survive
+the copy. Delete what you disagree with; the comment is there so that is a
+decision rather than a guess.
+
+### Four things to know before you run it
+
+**It refuses rather than merging.** If either file already exists, nothing is
+written to it, the delta it would have applied is printed key by key, and the
+run exits **5**. Everything else in the adoption still happened. Merge by hand,
+or delete the file and re-run — `--force` overwrites if that is what you want.
+Your editor configuration is yours, and clobbering it is the one unrecoverable
+thing this flag could do.
+
+**TypeScript needs one action no settings file can perform.** Run
+`TypeScript: Select TypeScript Version` and choose the **workspace** version.
+`typescript.tsdk` only allows the switch; accepting it is deliberately a human
+decision, because it is code execution out of your `node_modules`. Until you do,
+the editor type-checks with the compiler VS Code ships and CI uses yours.
+
+**Java gets build wiring only, and that is architecture rather than an
+oversight.** The Java gate is Error Prone and NullAway, which are javac plugins;
+the extension compiles with the Eclipse compiler. No setting routes one into the
+other, so the Java findings cannot reach the Problems panel at all.
+
+**Semgrep is deliberately not configured, and that is settled.** Its rules live
+in this baseline, not in your tree — `adopt.sh` writes configs and a workflow
+call, and the rules reach the scan from inside the composite action. Pointing the
+extension at paths that do not resolve, or installing it with no rules
+configured, are both worse than leaving it out. Copying the rules in and fetching
+them by URL were both weighed and rejected in
+[ADR 0002](adr/0002-no-in-editor-semgrep-parity.md).
+
+The half of that worth knowing **even if you wire the extension up yourself**:
+your `.maxi-quality.yml` can disable a rule, demote it to a warning or switch a
+whole group off, and the extension has no rule-level filter at all — its only
+filters are
+`semgrep.scan.exclude` and `semgrep.scan.include`, both path-based. So a
+hand-configured extension shows you findings your own policy switched off, at
+full severity. Semgrep still runs in CI, and locally `scripts/scan.sh` is the
+policy-aware path: it resolves `.maxi-quality.yml` before it runs, which is the
+one thing no settings file can do.
+
+The prettier rows — the extension recommendation and the `[typescript]` /
+`[typescriptreact]` formatter blocks — are written **only if your repo already
+has a prettier config** (§2a). With the extension installed and no config
+present, the editor formats at Prettier's default width against a gate that pins
+100, so every save would fight `prettier --check`.
+
+Full detail, including what each key is and is not evidence for:
+[`configs/editor/README.md`](../configs/editor/README.md).
+
+---
+
+## 5c. The agent — the session that writes the code
+
+CI gates the pull request and the editor shows you the same findings while you
+type. Neither reaches the surface where the code is now being written: an agent
+session, which reads your `CLAUDE.md` as advice and can drift from it. `--agent`
+is **opt-in**, and more emphatically than the two flags above, because it is
+executable policy landing in your tree:
+
+```bash
+"$BASELINE"/scripts/adopt.sh <repo> --agent
+```
+
+```
+.claude/agent-guard/*.py           three hooks, the recorder, and their shared module
+.claude/settings.json              MERGED — the hook wiring and two deny rules
+CLAUDE.md                          += the marker-delimited workflow region
+.gitignore                         += .claude/agent-guard-receipt.json
+                                      .claude/agent-guard/__pycache__/
+```
+
+**That list is the whole of it.** `--agent` is exclusive: unlike `--editor` and
+`--hooks`, which add to an adoption, this run writes no language config, no
+`.editorconfig` and no workflow, in any repo. Adopt the language layer with a
+separate run — `scripts/adopt.sh <repo>` — before or after, and expect a usage
+error if you pass `--editor` or `--hooks` in the same one (`--force`, `--ref`
+and `--no-workflow` belong to that other run too, and this one says so rather
+than dropping them quietly).
+
+Which run does what:
+
+| Invocation | What it writes |
+|---|---|
+| `adopt.sh <repo>` | the language layer: configs, `.editorconfig`, `.maxi-quality.yml`, the workflow |
+| `adopt.sh <repo> --editor` | the language layer **and** `.vscode/` — §5b |
+| `adopt.sh <repo> --hooks` | the language layer **and** the git pre-commit hook |
+| `adopt.sh <repo> --agent` | the agent contract, and nothing else |
+
+Two reasons it is separated rather than bundled, and the second is the one that
+decided it (#183). The contract has no language in it — it is rules about
+sessions, a receipt and a git diff, and it works in languages this baseline does
+not ship. And adopting both at once makes the result **unattributable**: when a
+session or a contributor finds the tree annoying afterwards, nobody can say
+whether it was the guard or two hundred new lints. It also means a repo the
+baseline detects nothing in can still adopt the contract, which the old
+behaviour could not do at all.
+
+**In that repo there is no second run**, and the script says so rather than
+offering one: `scripts/adopt.sh <repo>` with no language detected warns
+"Nothing to do" and exits 1, so neither the success footer nor the
+combined-flag refusal prints it there. The contract still installs — that is
+the whole point of it having no language in it.
+
+What it buys you is one rule every `CLAUDE.md` already asks for and nothing has
+ever enforced: **a session may not call it done on code the gate has not seen.**
+The `Stop` hook fingerprints everything that differs from `HEAD` and compares it
+against a receipt, so it refuses in four distinct cases — the gate never ran, it
+ran and failed, it ran something that was not the declared gate, or it ran
+against different content. Two `PreToolUse` hooks
+and two `permissions.deny` rules cover the rest: an edit that weakens the test
+suite, and a `git commit --no-verify` that routes around the pre-commit hook.
+
+Two things to do once, after the run:
+
+```bash
+echo '{ "gate_command": "<your gate>" }' > .claude/agent-guard.json
+```
+
+and then run your gate through the recorder from now on — same command, same
+exit code, plus a receipt of what it saw:
+
+```bash
+python3 .claude/agent-guard/record-gate.py --gate
+```
+
+`--gate` reads the line you just declared and runs the whole of it through one
+shell, which is why the declaration is not optional: a gate written the natural
+way for two checks, `a && b`, cannot be interpolated into an argv without the
+`&&` binding outside the wrapper (#178).
+
+**Two of the five rules are installed only where they can fire.**
+`sample-guard.py` and the `samples/expected/` deny rule are hardcoded to this
+baseline's fixture layout, so a repo without `samples/expected/` gets the other
+three — and a `CLAUDE.md` region that says three rather than five. A tree that
+grows manifests later gets both on the next run (#182).
+
+**Re-running refreshes the `CLAUDE.md` region, and refuses your edits.** The
+BEGIN marker carries a checksum of the text as installed, so an older
+baseline's fragment is replaced and an edit of your own is not. The refusal
+prints the diff; `--force` overrides it (#177).
+
+**This is the one flag that merges.** `--editor` refuses when the target
+exists; `.claude/settings.json` is a file you probably already have, so refusing
+there would mean never adopting. Your hook entries and deny rules are appended
+to, never replaced and never reordered, and re-running adds nothing twice —
+which matters because re-running **is** the upgrade path: a hook command is a
+path on disk, so the scripts are copied and refreshed rather than pinned to a
+tag. A plugin *can* ship hooks from a git source pinned by SHA — but not
+`permissions.deny` rules, so two of this contract's four rules could not travel
+that way.
+
+If your `settings.json` does not parse, or its `hooks` key is not the shape the
+docs describe, `--agent` writes **nothing at all** — not the scripts, not the
+`CLAUDE.md` region — says why, and exits 6. Since the run installs only the
+contract, that leaves the tree exactly as it found it. A tree carrying a
+`CLAUDE.md` that promises refusals nothing performs is worse than one with no
+contract, because the next session reads it and believes it.
+
+If instead the **region** cannot be written — you edited it, it predates
+checksums, or your `CLAUDE.md` is a symlink that dangles or leaves the repo —
+the rules are installed and enforcing and only the text is missing, so the run
+keeps them, says which half it left, and exits **7**. A symlinked `CLAUDE.md`
+that resolves normally is fine and always was intended to be: the region lands
+in the file the link points at, and the link survives.
+
+What this does **not** do is covered honestly and at length in
+[`configs/agent/README.md`](../configs/agent/README.md) §3 — read it before
+trusting it. The short version: it guards drift, not malice. A shell command can
+still write the receipt, and the receipt is the guard's own input.
+
+---
+
 ## 6. Adopting on an existing repo — the ratchet
 
 Do not big-bang-fix legacy findings. Start new-code-only, then tighten:
@@ -813,21 +1027,84 @@ OSV-Scanner are deliberately not configurable.
 
 ---
 
-## 8. Coverage — a ratchet, not a threshold
+## 8. Coverage — a ratchet on the repo, a threshold on the diff
 
-A fixed threshold is unusable on an existing repo. Below where you already are it
-gates nothing; above it, every PR is red until someone does a coverage sprint.
-Both end with the number being ignored.
+A fixed threshold is unusable on an existing **repo**. Below where you already
+are it gates nothing; above it, every PR is red until someone does a coverage
+sprint. Both end with the number being ignored. On the lines a change **adds**
+the same argument runs the other way, which is why there are two numbers here
+and not one.
 
 So the gate asks the only question that is always answerable: **did this change
 make it worse?** The floor is whatever the repo already achieves, it lives in a
 committed file, and it only ever goes up. Same shape as `--changed-only`:
 grandfather the backlog, refuse to grow it.
 
+**There is a threshold, and it is on the new lines only.** The paragraph above
+is about the *aggregate*, and the aggregate has a blind spot big enough to drive
+a release through: one entirely untested function added to a large well-covered
+repo moves the number by rounding error, so the ratchet stays green over exactly
+the code nobody tested. The lines a change **adds** are a different case
+altogether — they are new, so "you are already below it" cannot be true of them,
+and a fixed bar is sound there for the same reason it is unusable on the whole
+repo. Both run from the same report and the same one line of wiring: the
+aggregate ratchets, the added lines have to clear `coverage-patch-threshold`
+(default **50**; `0` keeps the measurement and drops the gate).
+
 The consumer runs its own tests — this baseline cannot drive a test suite that
 needs services, fixtures and a database, and every attempt to guess a "standard"
 test command produces a gate that is skipped or wrong. It runs the part that is
-genuinely shared:
+genuinely shared.
+
+**If you already call `quality.yml`, it is one line.** Your test job uploads the
+report as an artifact; you name that artifact:
+
+```yaml
+# .github/workflows/quality.yml — in YOUR repo
+name: quality
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: pnpm test --coverage.reporter=lcov   # or your own test command
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage
+          path: coverage/
+
+  quality:
+    needs: test          # <-- REQUIRED. Without it the gate can start before
+                         #     the upload finishes and find no artifact.
+    uses: maximalcode/maxi-quality/.github/workflows/quality.yml@v1
+    with:
+      coverage-report: coverage
+```
+
+The two third-party actions are SHA-pinned with the tag in a comment, which is
+the form this baseline gates other repos for and therefore the form it prints
+here. A tag is mutable — whoever controls `@v7` can repoint it, and that code
+runs in your CI with your token. Dependabot reads the trailing comment and
+bumps them anyway.
+
+Report files are found inside the artifact **by content**, so it does not matter
+where in it they sit or what they are called. With `coverage-report` unset there
+is no coverage job at all — nothing changes for a repo that has not opted in.
+
+Two knobs, both optional: `coverage-patch-threshold` (default `50`, the minimum
+coverage of the lines a change ADDS — `0` keeps the measurement and drops the
+gate) and `coverage-floor-file` (default `.maxi-quality/coverage.json`).
+
+A change with **no measurable added lines** — a docs-only PR, a pure deletion —
+reports `n/a` and gates nothing. Never 0%, which would gate on something no test
+can fix, and never 100%, which would be a lie about a question with no
+denominator.
+
+Copyable, and asserted by CI:
+[`examples/typescript-npm/`](../examples/typescript-npm/).
+
+**Or call the action directly**, if you are not using the reusable workflow:
 
 ```yaml
       - run: pnpm test --coverage.reporter=lcov     # or dotnet test --collect:"XPlat Code Coverage"
@@ -838,11 +1115,18 @@ genuinely shared:
             **/coverage.cobertura.xml
 ```
 
-**One-time setup: record a floor.** Run it once with `raise: 'true'` and commit
-the `.maxi-quality/coverage.json` it writes. Until that file exists the step
+**One-time setup: record a floor.** Until the floor file exists the step
 **fails** — a ratchet with nothing to compare against reports ok at any coverage
 at all, and that is what the snippet above silently did before, because `raise`
 defaults to false and nothing else ever wrote the file.
+
+Through `quality.yml`: add `coverage-raise: 'true'`, push, and the run prints
+the file under **RECORDED FLOOR** in the log and the job summary. Commit that as
+`.maxi-quality/coverage.json` and remove the input. Calling the action directly:
+run it once with `raise: 'true'` and commit the file it writes.
+
+Either way it does not commit for you — that is a write to your default branch,
+and this baseline does not take that permission on your behalf.
 
 lcov and Cobertura are both accepted, detected **by content, not by filename** —
 `coverage.xml`, `cobertura.xml`, `lcov.info` and `coverage.info` are all in

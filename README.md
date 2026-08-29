@@ -41,10 +41,17 @@ because someone outside asks for it. What the tag promises:
 - A **new finding is not a breaking change.** New rules, analyzer bumps and
   tightened configs land on `@v1` and can turn a green build red. That is the
   product working — ratcheting up is the point — and `--changed-only` is how you
-  grandfather an existing backlog on day one.
+  grandfather an existing backlog on day one. Every one of them is listed under
+  **Rule changes** in [`CHANGELOG.md`](CHANGELOG.md); read that section before
+  you bump, because it is the whole mitigation for this permission.
 - A **mechanism change is breaking**, and gets a new major tag instead: an input
   removed or renamed, a job renamed, detection behaviour altered, or anything
   new you must have in your own repo.
+- **The minor position means something now.** A **minor** bump is a new
+  capability reaching you — a new input, language, gate or config. A **patch**
+  is fixes and Finding changes that add no new capability. Neither is breaking,
+  and both can turn a build red, so read **Rule changes** rather than the
+  number.
 - **Do not SHA-pin `quality.yml`.** Your Scorecard will ask you to. The pinned
   workflow text still resolves `actions/layer2@v1` one level down, so the pin
   would look real and protect nothing. Pin a **`v1.0.x`** tag instead if you
@@ -211,11 +218,13 @@ one language at a time, when someone has the week to spend on it.
 | PR feedback | findings annotated on the diff, on by default | [#40](https://github.com/maximalcode/maxi-quality/issues/40) |
 | Per-repo policy | disable or downgrade rules, exclude paths, add your own | `.maxi-quality.yml` |
 | Pre-commit hook | opt-in, runs on staged content, `--no-verify` always works | `adopt.sh --hooks` |
-| Coverage ratchet | remembers the number and refuses to let it fall | [`actions/coverage/`](actions/coverage/) |
+| Coverage | a ratchet on the whole repo, plus a threshold on the lines a change adds. One line once your test job uploads a report | [ADOPTION §8](docs/ADOPTION.md#8-coverage--a-ratchet-on-the-repo-a-threshold-on-the-diff) |
 | SBOM and licence gate | both from OSV-Scanner; the SBOM never gates | [`docs/REFERENCE.md`](docs/REFERENCE.md) |
 | Formatting | Prettier, `ruff format`, `dotnet format whitespace`, gated in CI | [#42](https://github.com/maximalcode/maxi-quality/issues/42) |
 | Editor defaults | one shared `.editorconfig` | [`configs/editorconfig`](configs/editorconfig) |
-| Copyable examples | six complete consumer repos, each asserted by CI | [`examples/`](examples/) |
+| Editor parity | `adopt.sh --editor` writes the settings that make the official extensions show what CI shows, for the languages you actually have | [`configs/editor/`](configs/editor/) |
+| Agent guard | `adopt.sh --agent` installs hooks that refuse to end a session on code the gate has not seen, refuse an edit that weakens the test suite, and refuse `--no-verify` | [`configs/agent/`](configs/agent/) |
+| Copyable examples | seven complete consumer repos, each asserted by CI | [`examples/`](examples/) |
 | Test suite | planted-bug samples per language; a sample that stops failing means the config regressed | [`samples/`](samples/) |
 
 ---
@@ -235,7 +244,30 @@ one language at a time, when someone has the week to spend on it.
 - **There is no dashboard.** SonarQube CE was measured and dropped: 1 of 8
   planted TypeScript bugs, and no rule id for `no-floating-promises`
   ([the evaluation](docs/EVAL-vs-sonarqube.md)). A weekly report written into a
-  GitHub issue replaced it.
+  GitHub issue replaced it. Detection is settled; whether a presentation layer
+  is worth adding is being measured separately, and until it reports, the
+  answer is still no.
+- **Your editor does not show what CI shows, and installing the official
+  extensions does not fix it.** Measured against the extensions' own manifests:
+  the Semgrep extension scans only lines changed since the last commit; the
+  mypy extension runs a mypy it bundles rather than your pin, and type-checks
+  only the file in the active tab; rust-analyzer runs `cargo check`, so not one
+  clippy lint appears; the C# extension reports analyzer findings for open
+  files only; and VS Code type-checks with the TypeScript it ships rather than
+  the one in your `node_modules`. Six divergences —
+  [`configs/editor/`](configs/editor/) is the frozen contract, and it does not
+  close all of them evenly: most are one settings line, the TypeScript one
+  still needs you to accept the workspace-compiler prompt once, and Java has no
+  in-editor parity at all (Error Prone is a javac plugin; the extension uses
+  the Eclipse compiler). `adopt.sh --editor` writes the settings for you, and
+  it refuses rather than merging if you already have a `.vscode/settings.json`.
+  Semgrep is the one row it leaves out on purpose, and permanently: the rules
+  live in this baseline, not in your tree, so the extension would scan with
+  rules you have not got. Fixing that would not be enough anyway — the
+  extension's only filters are path-based, so it cannot honour the
+  `rules.disable` and `rules.warn` in your `.maxi-quality.yml`, and would report
+  findings you switched off. `scripts/scan.sh` is the policy-aware path
+  ([ADR 0002](docs/adr/0002-no-in-editor-semgrep-parity.md)).
 - **Java is Maven only, and Gradle fails loud rather than skipping.** Gradle
   gets built when a Gradle consumer exists
   ([#10](https://github.com/maximalcode/maxi-quality/issues/10)).
@@ -310,7 +342,7 @@ one language at a time, when someone has the week to spend on it.
 | look up an input, flag or rule id | [`docs/REFERENCE.md`](docs/REFERENCE.md) |
 | know why it is shaped this way | [`docs/CONCEPT.md`](docs/CONCEPT.md) |
 | see what is proven, and what it cost | [`docs/STATUS.md`](docs/STATUS.md) |
-| check the tool choices against the field | [`docs/EVAL-vs-oss-tools.md`](docs/EVAL-vs-oss-tools.md) · [`docs/EVAL-vs-sonarqube.md`](docs/EVAL-vs-sonarqube.md) |
+| check the tool choices against the field | [`docs/EVAL-vs-oss-tools.md`](docs/EVAL-vs-oss-tools.md) · [`docs/EVAL-vs-sonarqube.md`](docs/EVAL-vs-sonarqube.md) · [`docs/EVAL-vs-diff-cover.md`](docs/EVAL-vs-diff-cover.md) |
 | change something here | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 
 Anything still to be built lives in the

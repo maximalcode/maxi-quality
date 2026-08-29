@@ -1,0 +1,67 @@
+{
+  // maxi-quality — TypeScript editor parity, against layer1-typescript.
+  //
+  // Merge into .vscode/settings.json. Every key names the CI behaviour it
+  // pins; keys whose editor default already matches CI are NOT listed, so
+  // everything here is load-bearing. See ./README.md.
+
+  // DIVERGENCE (verified, #120). VS Code type-checks with the TypeScript it
+  // ships itself; `typescript.tsdk` has no default at all. layer1-typescript
+  // runs ./node_modules/.bin/tsc, so without this the editor's errors and the
+  // gate's come from two different compilers — and samples/expected/tsc.json
+  // pins the gate's to a specific TS version's diagnostics.
+  "typescript.tsdk": "node_modules/typescript/lib",
+
+  // ...and this is the half that makes the line above reachable. As a
+  // WORKSPACE setting, tsdk only "allows you to switch to use that workspace
+  // version" via the `TypeScript: Select TypeScript version` command; it does
+  // not switch on its own. This setting defaults to false, so by default the
+  // editor never even offers. Even with both, accepting the prompt once per
+  // workspace is a human action no settings file can perform — see README §6.
+  "typescript.enablePromptUseWorkspaceTsdk": true,
+
+  // configs/typescript/eslint.config.mjs is a FLAT config, and the extension's
+  // default for this key is null, meaning "probe". The probe's answer has
+  // changed with ESLint major versions; the gate's has not. layer1-typescript
+  // runs `eslint src -f json`, which is flat-config-only.
+  "eslint.useFlatConfig": true,
+
+  // layer1-typescript runs eslint from INSIDE the package directory
+  // (`cd samples/typescript && eslint src`), so config and plugin resolution
+  // start at the package, not the repo root. `auto` makes the extension do the
+  // same. This is the key that decides whether a repo with more than one
+  // package sees the same findings in both places.
+  "eslint.workingDirectories": [{ "mode": "auto" }],
+
+  // The flat config's last block applies tseslint's disableTypeChecked to
+  // **/*.{js,mjs,cjs}, which only means anything if the extension actually
+  // lints those files. The extension's `validate` default is null (probe), and
+  // the probe has historically not covered every extension the config does.
+  "eslint.validate": [
+    "javascript",
+    "javascriptreact",
+    "typescript",
+    "typescriptreact"
+  ],
+
+  // OPTIONAL — only if the repo took adopt.sh's optional prettier step and has
+  // a prettier.config.mjs. layer1-typescript asserts `prettier --check` with
+  // configs/typescript/prettier.config.mjs, including a printWidth ablation
+  // (samples/format/needs-width-100.ts is clean at 100 and dirty at Prettier's
+  // default 80). With the extension installed and NO config file present, the
+  // editor formats at the default width and every save fights the gate. Drop
+  // both keys if prettier is not adopted — `adopt.sh --editor` does exactly
+  // that for you, writing neither unless the target has a prettier config.
+  "[typescript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.formatOnSave": true
+  },
+  // The same, for TSX. Listed separately rather than folded in because VS
+  // Code keys formatter settings by language id and there is no "both": a
+  // repo that formats .ts but not .tsx fails `prettier --check` on exactly
+  // the files most likely to be edited.
+  "[typescriptreact]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.formatOnSave": true
+  }
+}

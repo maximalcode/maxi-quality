@@ -1,0 +1,28 @@
+{
+  "why": "Deleting an expected finding makes the gate agree with the regression. This is the shape CONTRIBUTING.md forbids in one line.",
+  "hook": "sample",
+  "setup": {
+    "committed": {
+      "samples/typescript/src/bad.ts": "export function f(a: any) {\n  if (a == 1) {\n    return a;\n  }\n  return null;\n}\n",
+      "samples/expected/eslint.json": "{\n  \"tool\": \"eslint\",\n  \"findings\": [\n    {\n      \"rule\": \"eqeqeq\",\n      \"file\": \"samples/typescript/src/bad.ts\",\n      \"line\": 2\n    },\n    {\n      \"rule\": \"@typescript-eslint/no-explicit-any\",\n      \"file\": \"samples/typescript/src/bad.ts\",\n      \"line\": 1\n    }\n  ]\n}\n",
+      "src/app.ts": "const x = 1;\nconst y = 2;\nconst z = 3;\n",
+      "samples/typescript-clean/src/ok.ts": "export const ok = 1;\n"
+    }
+  },
+  "event": {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Edit",
+    "tool_input": {
+      "file_path": "{{ROOT}}/samples/expected/eslint.json",
+      "old_string": "    {\n      \"rule\": \"eqeqeq\",\n      \"file\": \"samples/typescript/src/bad.ts\",\n      \"line\": 2\n    },\n",
+      "new_string": ""
+    }
+  },
+  "expect": {
+    "decision": "deny",
+    "reason_contains": [
+      "eqeqeq",
+      "expectation manifest"
+    ]
+  }
+}

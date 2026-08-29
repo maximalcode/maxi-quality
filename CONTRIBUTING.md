@@ -8,7 +8,7 @@ a merge here does not surprise anyone downstream.
 ## Rule 1 — the ruleset is capped at 12 conventions
 
 Twelve. Not "twelve for now". The budget is **fully spent**, and the inventory
-is in [`docs/REFERENCE.md`](docs/REFERENCE.md#the-ruleset--12-conventions-28-rule-ids).
+is in [`docs/REFERENCE.md`](docs/REFERENCE.md#the-ruleset--12-conventions-40-rule-ids).
 
 Adding a thirteenth convention means **removing one**. This is not gatekeeping
 for its own sake: rule-writing is infinitely expandable and feels productive, so
@@ -20,10 +20,18 @@ incident, the PR, or the outage. It is never justified by "this would be nice to
 catch". If your rule is genuinely better than one of the twelve, say which one it
 replaces and why.
 
-Note the distinction: **12 conventions, currently 28 rule ids.** Semgrep patterns
+Note the distinction: **12 conventions, currently 40 rule ids.** Semgrep patterns
 are language-specific, so one convention needs a separate id per language when
 the syntax differs. Splitting an existing convention into a per-language id is
 not new scope. Inventing a new convention is.
+
+**Any rule change needs a `CHANGELOG.md` entry, under Rule changes.** A new
+rule id, a severity raised, an analyzer version bumped, a config tightened —
+each of those is a **Finding change**, which the version contract permits to
+land on the moving `@v1` tag and turn a consumer's green build red. That
+permission is not free-standing: the changelog entry IS the mitigation for it.
+A rule change buried among ordinary entries makes the contract unenforceable in
+practice even though it is stated, so the section is separate on purpose.
 
 ## Rule 2 — `samples/` is the test suite, and you may not weaken it
 
@@ -31,6 +39,31 @@ Every config is proven by an intentionally-bad sample that must fail, with an
 **exact expected set of findings**, plus a `-clean` counterpart that must pass with zero
 findings. Both halves matter: a config that flags everything is as useless as one
 that flags nothing.
+
+**Two things are exempt, and only two.** Both enforce inside a program this
+repo cannot drive headlessly, so no sample can fail without them. Each exemption
+is paid for rather than granted — a checker asserts internal consistency
+instead, and both checkers are required checks like every other:
+
+- **`configs/editor/`.** Editor settings, and there is no headless VS Code here.
+  `editor-contract` is the checker; see
+  [`configs/editor/README.md`](configs/editor/README.md).
+- **The `permissions.deny` array in `configs/agent/settings.json`.** A Claude
+  Code deny rule is evaluated inside Claude Code and cannot be made to fire from
+  a fixture. The `permissions` mode in `agent-guard` is the checker; see
+  [`configs/agent/README.md`](configs/agent/README.md) §5, which also records a
+  dated live observation of the rules refusing a real `Edit`.
+
+A new config that *could* have a sample and does not is still a violation.
+
+Note what the exemptions do **not** cover. Since `adopt.sh --editor` (#126),
+the *composition* of the editor fragments into a consumer's `.vscode/` files is
+ordinary behaviour and is proven end-to-end in the `adopt` job — right languages
+in, wrong ones out, a pre-existing settings file never touched. What stays
+unprovable here is only what the settings *do inside an editor*. And the agent
+exemption reaches the two deny strings and nothing else: every hook in that same
+file is an executable, and `samples/agent-guard/` runs each one as a subprocess
+on a real payload.
 
 If a sample stops failing, **the config regressed — fix the config.** Never make
 a sample pass by adding a disable comment, a `NoWarn`, or a suppression inside
@@ -88,8 +121,14 @@ So the flow is:
 
 `develop` is the default branch, so `gh pr create` and the web UI already target
 it — you should not have to change the base. Both branches carry the same
-protection: 20 required checks, admins included, branch must be up to date, no
-force-pushes, no direct commits.
+28 required checks, admins included, with no force-pushes and no direct
+commits.
+
+They differ in exactly one setting, and only maintainers ever meet it:
+`develop` requires a branch to be up to date before merging, and `main` does
+not. Requiring it on `main` deadlocked every release — the reasoning is #89 and
+CLAUDE.md §5. Nothing about contributing changes: a PR into `develop` must
+still be up to date, and all 28 checks must still pass.
 
 Promoting `develop` to `main` is a maintainer decision, because it is where the
 version gets chosen. It is not part of a contribution, and a PR that targets
@@ -122,6 +161,22 @@ silence it with a disable comment or a `NoWarn` inside the fixture.
 It runs in about two minutes and needs Node, the .NET SDK, Python, the pinned
 Rust toolchain (plus cargo-deny), and either the Layer 2 tools natively or
 Docker. The full command list is in [`docs/STATUS.md`](docs/STATUS.md) §3.
+
+### The editor contract
+
+The one gate with no sample behind it, for the reason in Rule 2. It needs
+nothing installed:
+
+```bash
+python3 scripts/check-editor-contract.py
+```
+
+What the fragments compose *into* is ordinary behaviour and is checked in the
+`adopt` job. Locally:
+
+```bash
+scripts/adopt.sh /tmp/demo --editor --dry-run
+```
 
 ### TypeScript
 
@@ -339,7 +394,7 @@ measurement, not an edit** — the same rule Rule 1 puts on the Semgrep cap.
 ### Layer 2 and the policy file
 
 ```bash
-./scripts/scan.sh          # expect exit 1, 100 findings across all 28 rule ids
+./scripts/scan.sh          # expect exit 1, 130 findings across all 40 rule ids
 ```
 
 Each Semgrep sample carries **negative controls** that must stay silent, so the

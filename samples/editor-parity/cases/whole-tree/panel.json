@@ -1,0 +1,26 @@
+[
+	{
+		"resource": "/checkout/samples/semgrep/Bad.cs",
+		"owner": "semgrep",
+		"code": { "value": "sql-string-concat-cs", "target": null },
+		"severity": 8,
+		"message": "SQL built by string concatenation",
+		"source": "Semgrep",
+		"startLineNumber": 12,
+		"startColumn": 9,
+		"endLineNumber": 12,
+		"endColumn": 44
+	},
+	{
+		"resource": "/elsewhere/not-in-this-checkout/Other.cs",
+		"owner": "semgrep",
+		"code": { "value": "sql-string-concat-cs", "target": null },
+		"severity": 8,
+		"message": "from some other tree entirely",
+		"source": "Semgrep",
+		"startLineNumber": 3,
+		"startColumn": 1,
+		"endLineNumber": 3,
+		"endColumn": 9
+	}
+]

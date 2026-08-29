@@ -1,0 +1,14 @@
+{
+  "why": "`/usr/bin/git` is the same program. A guard that compares the token to the literal string `git` is bypassed by a path, and a PATH-qualified git is what a script writes.",
+  "hook": "noverify",
+  "setup": { "git": false },
+  "event": {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": { "command": "/usr/bin/git commit --no-verify -m x" }
+  },
+  "expect": {
+    "decision": "deny",
+    "reason_contains": ["--no-verify"]
+  }
+}

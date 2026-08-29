@@ -1,0 +1,21 @@
+{
+  "why": "The core case. `--no-verify` on a commit skips hooks/pre-commit, which is this baseline's own gate \u2014 the one thing a session must not be able to switch off while calling the work done.",
+  "hook": "noverify",
+  "setup": {
+    "git": false
+  },
+  "event": {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "git commit --no-verify -m x"
+    }
+  },
+  "expect": {
+    "decision": "deny",
+    "reason_contains": [
+      "--no-verify",
+      "hooks/pre-commit"
+    ]
+  }
+}

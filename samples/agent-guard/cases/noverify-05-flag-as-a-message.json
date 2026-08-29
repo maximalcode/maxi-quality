@@ -1,0 +1,11 @@
+{
+  "why": "NEGATIVE CONTROL, and the one that decides whether this is a tokenizer or a substring search. `-m` consumes the next word, so this commit message is the literal text `--no-verify` and the commit verifies normally.",
+  "hook": "noverify",
+  "setup": { "git": false },
+  "event": {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": { "command": "git commit -m \"--no-verify\"" }
+  },
+  "expect": { "decision": "allow" }
+}

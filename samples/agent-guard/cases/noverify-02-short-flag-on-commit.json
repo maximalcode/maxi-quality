@@ -1,0 +1,14 @@
+{
+  "why": "`-n` is the documented short spelling of `--no-verify` for `git commit`. A guard that only knows the long form is a guard with a one-character bypass.",
+  "hook": "noverify",
+  "setup": { "git": false },
+  "event": {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": { "command": "git commit -n -m x" }
+  },
+  "expect": {
+    "decision": "deny",
+    "reason_contains": ["-n"]
+  }
+}

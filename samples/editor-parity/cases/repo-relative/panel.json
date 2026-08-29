@@ -1,0 +1,14 @@
+[
+	{
+		"resource": "/checkout/samples/python/src/bad_strict.py",
+		"owner": "_generated_diagnostic_collection_name_#1",
+		"code": "no-any-return",
+		"severity": 8,
+		"message": "Returning Any from function declared to return \"int\"",
+		"source": "Mypy",
+		"startLineNumber": 30,
+		"startColumn": 12,
+		"endLineNumber": 30,
+		"endColumn": 24
+	}
+]

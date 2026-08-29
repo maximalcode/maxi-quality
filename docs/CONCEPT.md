@@ -192,7 +192,8 @@ maxi-quality/
 └── scripts/
     ├── adopt.sh                  # bootstrap a repo: detect languages, copy stubs
     ├── check-pins.sh             # bump policy: pin consistency + upstream drift
-    ├── coverage.py               # coverage ratchet (§12) — lcov + Cobertura
+    ├── coverage.py               # coverage ratchet (§12) — lcov + Cobertura,
+    │                             #   plus --diff-file patch coverage
     ├── policy.py                 # resolve a consumer's .maxi-quality.yml (§13)
     ├── quality-report.py         # renders the standing report body (§11)
     └── scan.sh                   # run full Layer 2 locally (semgrep+gitleaks+osv)
@@ -321,6 +322,13 @@ trigger is **void**. Reaching three consumers is not a reason to build it; only
 new evidence would be. Full measurement in
 [`EVAL-vs-sonarqube.md`](EVAL-vs-sonarqube.md).
 
+**Re-opened for the presentation layer only, 2026-08-18.** Detection is settled
+and is not re-run — the 1-of-8 result above stands. What is being measured is
+the layer §11 substitutes for: dashboard, new-code period, report import and
+connected-mode editor findings, under the milestone *sonarqube — presentation
+layer, measured*. The standing answer stays **no** until that eval reports
+numbers against a bar written before it ran.
+
 ---
 
 ## 7. The reusable CI workflow
@@ -425,7 +433,7 @@ Constraints that are not negotiable here:
 
 ---
 
-## 12. Coverage — a ratchet, not a threshold
+## 12. Coverage — a ratchet on the repo, a threshold on the diff
 
 A fixed threshold on an existing repo either sits below where you already are
 (gating nothing) or above it (every PR red until someone does a coverage sprint).
@@ -448,6 +456,24 @@ question: *did this change make it worse?*
 - A broken coverage run, a missing report and an unparseable floor are all
   **errors**, never passes. Each one otherwise turns the ratchet permanently
   green, which is the shape of every gate bug this repo has actually hit.
+- **The aggregate cannot see a new untested function**, and that is not fixable
+  by tuning it: four uncovered lines against 8,000 move the number by 0.05pp,
+  inside the tolerance that exists so refactors do not fire it.
+  `samples/coverage/patch` is that change, committed, with the ratchet green on
+  it. `--diff-file` reports the number that does see it — the added lines of a
+  unified diff intersected with the per-line hits the reports already carry.
+  Building that rather than depending on `diff-cover` was decided by running
+  both against the fixture:
+  [`EVAL-vs-diff-cover.md`](EVAL-vs-diff-cover.md).
+- **The added lines are the one place a fixed threshold is right**, and it is
+  the same argument as the section title, not an exception to it. A bar on the
+  aggregate fails because the repo is already wherever it is; added lines have
+  no "already", so `coverage-patch-threshold` is a plain number (default 50,
+  `0` measures without gating). The ratchet grandfathers the backlog; the
+  threshold refuses to grow it — the same pair as `--changed-only`.
+- **No measurable changed lines is `n/a`.** Not 0%, which gates on something no
+  test can fix, and not 100%, which gates on a lie. A docs-only PR has no
+  denominator, and a percentage is not an answer to that question.
 
 ---
 

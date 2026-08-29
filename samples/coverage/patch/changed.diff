@@ -1,0 +1,20 @@
+diff --git a/samples/coverage/patch/src/rollup.ts b/samples/coverage/patch/src/rollup.ts
+index 1111111..2222222 100644
+--- a/samples/coverage/patch/src/rollup.ts
++++ b/samples/coverage/patch/src/rollup.ts
+@@ -56,6 +56,15 @@
+   return ordered.slice(0, limit);
+ }
+ 
++/**
++ * Added by the fixture change: computes the median absolute deviation.
++ */
++export function medianAbsoluteDeviation(values: readonly number[]): number {
++  const middle = percentile(values, 50);
++  const spread = values.map((value) => Math.abs(value - middle));
++  return percentile(spread, 50);
++}
++
+ export function rollup(samples: readonly Sample[]): Rollup {
+   const durations = samples.map((sample) => sample.ms);
+   return {

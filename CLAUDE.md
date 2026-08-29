@@ -119,6 +119,13 @@ wearing the costume of rigour:
 - **`eslint-plugin-sonarjs` was measured and ADOPTED** (#11) — five bug classes
   typescript-eslint has no rule for, zero findings on the clean fixtures. Nine
   of ten candidates were declined; one was not.
+- **`diff-cover` tied on detection and was still not adopted as a dependency**
+  (#123, `docs/EVAL-vs-diff-cover.md`). It agrees with `scripts/coverage.py`
+  line for line on `samples/coverage/patch`, and lost on what it costs to hold:
+  six packages and a PyPI install on every consumer's gate, and it cannot read
+  lcov and Cobertura in one run — which is the shape of Consumer A. It stays as
+  the cross-check CI runs against our own number. A tie on detection is decided
+  by cost, not by preference for our own code.
 
 **One correction to a claim this file used to make.** It said the free Semgrep
 registry "ships no C# rules". That is true of **`p/security-audit` specifically**
@@ -127,6 +134,15 @@ at all — and false of the registry as a whole: `p/owasp-top-ten` runs 27 C#
 rules and `p/csharp` is a 27-rule C# pack (`EVAL-vs-oss-tools.md` §2d). Neither
 changes the verdict, and both are worth stating correctly, because a wrong
 reason for a right decision is how the decision gets overturned later.
+
+**Infrastructure artifacts follow the same rule as consumer identity.** The
+presentation-layer eval commits compose and scanner config so the run is
+reproducible. Those artifacts carry **placeholder hosts and no credentials**,
+runs are against `samples/` only, and no consumer repo is scanned, connected or
+named. The deployment itself — real hostnames, tokens, which repos are wired,
+backup and restore — is **not published here**. The recipe is public; the
+deployment is not. §2 has always covered *who the consumers are*; this covers
+*where the analysis runs*, which the pseudonym rules do not reach.
 
 **Free/OSS only still holds.** Public makes branch protection free, which is the
 one thing that was genuinely blocked on spend. It does not relax §5.
@@ -232,13 +248,57 @@ per-language id is not new scope; inventing a new convention is.
   moves `v1` on a green push to it, so a merge to `main` is not a checkpoint —
   it ships to every consumer pinning `@v1`. Promoting `develop` to `main` is
   the user's decision, not yours; do not open or merge that PR unasked. Both
-  branches carry the same 22 required checks, admins included — one per job in
-  `ci.yml`, and that equality is the point. A job that runs but is not on the
-  required list reports and blocks nothing, which is indistinguishable from a
-  passing gate in the PR UI. This drifted once: `layer1-rust`, `layer1-java`,
-  `policy` and `examples` all shipped without being added, so the two newest
-  languages could not fail a merge. **Adding a job to `ci.yml` is not done until
-  it is a required context on both branches.**
+  branches carry the same 28 required checks, admins included — one per
+  context `ci.yml` produces, and that equality is the point. A job that runs but
+  is not on the required list reports and blocks nothing, which is
+  indistinguishable from a passing gate in the PR UI. This drifted twice:
+  `layer1-rust`, `layer1-java`, `policy` and `examples` shipped without being
+  added, so the two newest languages could not fail a merge; then
+  `patch-coverage` and `coverage-input` did the same, so the coverage gate this
+  repo had just built could not fail one either. **Adding a job to `ci.yml` is
+  not done until it is a required context on both branches.**
+
+  Count **contexts, not jobs** — `layer2` is a two-leg matrix, so the job count
+  and the context count differ by one, and "one per job" was the wording that
+  hid that before anything drifted.
+  `workflow-lint` asserts that this number matches `ci.yml`; it cannot read the
+  protection API (that needs admin rights a read-only CI token does not have),
+  so the number here is the tripwire and setting the contexts is still a
+  deliberate act.
+- **`main` does not require branches to be up to date; `develop` does.** The
+  asymmetry is deliberate, and #89 is why. Promoting `develop` to `main`
+  creates a merge commit **on `main`** that `develop` never receives, so every
+  release leaves `develop` one commit further behind. With the up-to-date
+  requirement on, the next promotion is then unmergeable no matter how green it
+  is — and GitHub reports that as `BLOCKED`, the same word it uses for a
+  failing check or a missing review, so the symptom points nowhere near the
+  cause. It reached three commits, and #87 sat fully green and unmergeable
+  until someone queried the compare API by hand.
+
+  **Every required context stays required on both branches.** The only thing
+  dropped is the up-to-date requirement, and only on `main`.
+
+  Two alternatives were rejected, and both reasons are worth keeping.
+  Automating the back-merge needs the PR opened by something other than
+  `GITHUB_TOKEN` — GitHub creates no workflow runs for events that token
+  triggers, so `ci` would never run on the PR and its required contexts would
+  never report. That is the same deadlock, permanent instead of clearable, and
+  the only fix for it is a stored PAT with `pull-requests: write`: a long-lived
+  credential bought to save one merge per release, in the repo whose release
+  workflow declines a checkout `ref:` over exactly this kind of blast radius.
+  A fast-forward-only promotion was the other, and GitHub's PR UI has no
+  fast-forward merge.
+
+  **So `develop` sitting a few commits behind `main` is expected, and those
+  commits are empty.** The promotion merges carried `develop`'s own tree into
+  `main`; only the merge commit itself is missing. Back-merging before a
+  release is optional tidying, never a gate, and never a step anything waits
+  on.
+
+  What this gives up: a commit that lands on `main` and not on `develop` can be
+  reverted by the next promotion, because nothing forces that promotion to have
+  seen it. That is a reason not to commit to `main` directly — which this file
+  already says — and not a reason to turn the requirement back on.
 - **Tags gate the consumers.** Projects pin the baseline by tag (`@v1`), so an
   updated ruleset never silently breaks an old project. Do not tag until the
   step that the tag represents is actually verified working. The immutable
@@ -247,6 +307,36 @@ per-language id is not new scope; inventing a new convention is.
 - **`samples/` is the test suite.** Every config in `configs/` must be proven by
   an intentionally-bad sample that fails. If a sample stops failing, the config
   regressed — fix the config, do not weaken the sample.
+
+  **Two documented exceptions, and they are the only two.** Both are the same
+  shape — a config whose enforcement lives inside a program this repo cannot
+  drive headlessly, so no sample can fail without it — which is exactly the
+  shape this rule exists to catch. Neither is granted; both are paid for the
+  same way, and the price is a checker that asserts internal consistency plus a
+  README section stating what evidence each claim does and does not rest on:
+
+  - **`configs/editor/`.** A `.vscode/settings.json` cannot be exercised here,
+    because there is no headless VS Code. `scripts/check-editor-contract.py` is
+    the checker; `configs/editor/README.md` §1 is the statement.
+  - **The `permissions.deny` array in `configs/agent/settings.json`** (#161). A
+    deny rule is enforced by Claude Code before any hook is consulted, and there
+    is no way to make one fire from a fixture. `selftest.py`'s `permissions`
+    mode is the checker; `configs/agent/README.md` §5 is the statement, and §5a
+    adds one dated live observation, because a structurally consistent rule that
+    is not actually enforced still protects nothing.
+
+  Do not read either as a precedent — a new config that could have a sample and
+  does not is still a violation.
+
+  Read both exemptions narrowly, because the wording is what a later session
+  will act on. The first covers **what the settings do inside an editor**, and
+  nothing else: since #126 the *composition* of those fragments into a
+  consumer's `.vscode/` files is ordinary behaviour with ordinary end-to-end
+  assertions in the `adopt` job, and `configs/editor/` is no longer a directory
+  nothing runs. The second covers **the two deny strings and nothing around
+  them**: the hooks in the same file are executables, and
+  `samples/agent-guard/` runs every one of them as a subprocess on a real
+  payload.
 
 ---
 
@@ -272,3 +362,52 @@ The five canonical roles, each label string equal to its name (`needs-triage`,
 Single-context — `CONTEXT.md` + `docs/adr/` at the repo root, with
 `docs/CONCEPT.md` remaining the source of truth (§3). See
 [`docs/agents/domain.md`](docs/agents/domain.md).
+
+<!-- maxi-quality: agent guard — written by `adopt.sh --agent`.
+     Keep the markers. Re-running --agent SKIPS a region that is already here,
+     so a later baseline does not reach this text on its own: replace what is
+     between the markers with configs/agent/CLAUDE.fragment.md by hand when it
+     changes (configs/agent/README.md §7a). -->
+<!-- BEGIN maxi-quality agent-guard sha256:82b84a2c0a81f4c2 -->
+
+## The gate, and how a session ends
+
+This repo's quality baseline is enforced by three hooks and two deny rules in
+`.claude/settings.json`. They are not advice — they refuse.
+
+**Run the gate through the recorder, not directly:**
+
+```bash
+python3 .claude/agent-guard/record-gate.py --gate
+```
+
+`--gate` runs the command this repo declares in `.claude/agent-guard.json`,
+whole and through one shell, so a gate written as `a && b` is recorded as a
+gate rather than as its first half. It passes the gate's exit code straight
+through. (`-- <command>` still works for an ad-hoc run, and is what you want
+when the thing you are running is not the declared gate.)
+
+A session cannot end while the working tree holds changes the gate has not
+seen. If it refuses, the message says which of the four cases you are in: never
+ran, ran and failed, ran something that was not this repo's gate, or ran against
+different content.
+
+**Do not write `.claude/agent-guard-receipt.json` by hand.** The `Edit` tool is
+refused on it, and so is any edit under `samples/expected/` — those are deny
+rules in `.claude/settings.json`, not advice. A shell command still reaches both
+files, and for the receipt nothing downstream can tell: it is the gate's own
+input, so a hand-written one passes. It is the single action here that turns a
+guard into a lie.
+
+**Do not pass `--no-verify` to `git commit` or `git push`.** That is refused
+too. It switches off this repo's commit hook, which is the last check before
+content the gate has not seen becomes a commit. If the hook is failing for a
+reason that is not your change, say so — do not route around it.
+
+**`samples/` is the test suite, and it may not be weakened.** An edit that
+removes an expected finding from `samples/expected/`, or removes lines from a
+fixture a manifest cites, is refused. If a rule genuinely should stop firing,
+change the config that stopped firing it and regenerate the manifest, so the
+diff shows why. Adding a new failing case is always allowed and always welcome.
+
+<!-- END maxi-quality agent-guard -->

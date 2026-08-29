@@ -1,0 +1,25 @@
+{
+  "why": "A refusal that does not say what to run is a refusal the session works around. The line it prints is `--gate`, which takes no operators and so cannot be pasted wrong (#178) — and it still names the declared command, because an instruction that hides what it will run is a different way of not saying it.",
+  "hook": "stop",
+  "setup": {
+    "committed": {
+      "a.txt": "one\n"
+    },
+    "worktree": {
+      "a.txt": "one\ntwo\n"
+    },
+    "config": {
+      "gate_command": "npm run gate"
+    }
+  },
+  "event": {
+    "hook_event_name": "Stop"
+  },
+  "expect": {
+    "decision": "block",
+    "reason_contains": [
+      "--gate",
+      "npm run gate"
+    ]
+  }
+}

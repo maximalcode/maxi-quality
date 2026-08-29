@@ -1,0 +1,18 @@
+diff --git a/samples/coverage/patch/src/rollup.ts b/samples/coverage/patch/src/rollup.ts
+index 6666666..2222222 100644
+--- a/samples/coverage/patch/src/rollup.ts
++++ b/samples/coverage/patch/src/rollup.ts
+@@ -26,6 +26,13 @@
+   return total;
+ }
+ 
++export function mean(values: readonly number[]): number {
++  if (values.length === 0) {
++    return 0;
++  }
++  return sum(values) / values.length;
++}
++
+ export function percentile(values: readonly number[], p: number): number {
+   if (values.length === 0) {
+     return 0;

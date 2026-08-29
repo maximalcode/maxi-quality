@@ -1,0 +1,29 @@
+{
+  "why": "The declared gate is plain `a && b` and the run was `bash -c 'a && b'` — the same command, spelled the way --gate spells it. This is the branch a reader reaches by following the docs rather than the flag, and without a case for it, deleting that branch leaves every other case green.",
+  "hook": "stop",
+  "setup": {
+    "committed": {
+      "a.txt": "one\n"
+    },
+    "worktree": {
+      "a.txt": "one\ntwo\n"
+    },
+    "config": {
+      "gate_command": "true && true"
+    },
+    "record": {
+      "command": [
+        "bash",
+        "-c",
+        "true && true"
+      ]
+    }
+  },
+  "event": {
+    "hook_event_name": "Stop"
+  },
+  "expect": {
+    "decision": "allow",
+    "record_exit": 0
+  }
+}

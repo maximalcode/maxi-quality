@@ -1,7 +1,40 @@
 name: quality
 on: [push, pull_request]
 jobs:
+  # YOUR job. The baseline never runs your tests (CONCEPT §12) — it cannot know
+  # what services, fixtures or database a suite needs, and every guess at a
+  # "standard" test command produces a gate that is skipped or wrong. The only
+  # thing this job owes the coverage gate is an uploaded report.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # SHA-pinned, tag in the comment, because that is what this baseline
+      # gates other repos for. A tag is mutable: whoever controls `@v7` can
+      # repoint it, and that code then runs here with your GITHUB_TOKEN.
+      # Dependabot still bumps these — it reads the trailing comment.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24'
+      # `npm ci` needs a lockfile, and YOUR repo has one. This directory does
+      # not: nothing here is ever installed, which is also why there is no
+      # node_modules to review.
+      - run: npm ci
+      - run: npm test
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          # This name is what `coverage-report:` below refers to. The files
+          # INSIDE it are found by content, so their path and filename do not
+          # matter — lcov and Cobertura are both recognised wherever they sit.
+          name: coverage
+          path: coverage/
+
   quality:
+    # REQUIRED once coverage-report is set, and easy to leave out because
+    # nothing else here needs it: without this edge the gate can start before
+    # the upload finishes, and then it fails on a missing artifact rather than
+    # on coverage.
+    needs: test
     uses: maximalcode/maxi-quality/.github/workflows/quality.yml@v1
     with:
       # A fully adopted APPLICATION, which is what makes both of these safe
@@ -19,3 +52,19 @@ jobs:
       # real-code findings in the evaluation were exactly that class, and
       # gating them there ships a finding nobody can fix.
       dead-code-exports: true
+      # The whole coverage gate, in one line: the aggregate ratchet (did this
+      # change make it worse?) plus the patch gate over the lines the change
+      # ADDS, which is the one the ratchet cannot see.
+      coverage-report: coverage
+      # Optional. Default 50 — the minimum coverage of the added lines. '0'
+      # keeps the measurement and drops the gate.
+      # coverage-patch-threshold: '80'
+      #
+      # FIRST RUN ONLY, and it is deliberately not committed here. Until
+      # .maxi-quality/coverage.json exists the gate FAILS — a ratchet with
+      # nothing to compare against reports ok at any coverage at all. Uncomment
+      # the line below, push once, commit what the log prints under RECORDED
+      # FLOOR, then remove it again. It does not commit for you: that is a write
+      # to your default branch, and this baseline does not take that permission
+      # on your behalf.
+      # coverage-raise: 'true'

@@ -1939,6 +1939,507 @@ jobs:
           fi
           echo 'OK: a missing report is an error'
 
+  # Patch coverage — the number the aggregate ratchet cannot see (#112, #123).
+  #
+  # samples/coverage/patch is a change that adds an entirely untested function
+  # to a well-covered repo. This job asserts that the aggregate ratchet PASSES
+  # it. That reads backwards and is the point: a fixture that failed the
+  # aggregate would prove nothing about changed lines, and the first way this
+  # evidence rots is somebody "fixing" the fixture until the ratchet goes red.
+  #
+  # It also runs the pinned diff-cover against the identical input. Two
+  # independent implementations agreeing with a hand-count is what
+  # docs/EVAL-vs-diff-cover.md rests on, and a decision recorded from a run
+  # nobody repeats is a claim, not evidence.
+  patch-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Both implementations, both formats, against the hand-count
+        shell: bash
+        run: scripts/patch-coverage-demo.sh
+
+      - name: The defect itself — a green aggregate over 0.00% changed lines
+        shell: bash
+        run: |
+          set -uo pipefail
+          F=samples/coverage/patch/floor.json
+
+          for report in lcov.info cobertura.xml; do
+            out=$(python3 scripts/coverage.py --report "samples/coverage/patch/$report" \
+                    --floor-file "$F" --diff-file samples/coverage/patch/changed.diff 2>/dev/null)
+            rc=$?
+            [[ "$rc" == "0" ]] || {
+              echo "::error::the ratchet exited $rc on $report — the fixture must PASS the aggregate"; exit 1; }
+            # status=ok and coverage=94.95 are the step above's job — it runs
+            # first in this job and stops it dead. What is asserted here is the
+            # machine-readable half the demo does not read: the exact keys the
+            # composite action will hand to $GITHUB_OUTPUT.
+            grep -qx 'patch_coverage=0.00' <<<"$out" || {
+              echo "::error::$report reported the wrong patch number"; echo "$out"; exit 1; }
+            grep -qx 'patch_lines_found=4' <<<"$out" || {
+              echo "::error::$report measured the wrong number of changed lines"; echo "$out"; exit 1; }
+          done
+          echo 'OK: the aggregate is green, the four lines it added are untested, both formats say so'
+
+      - name: Nothing measurable is n/a — never 0%, never 100%
+        shell: bash
+        run: |
+          set -uo pipefail
+          F=samples/coverage/patch/floor.json
+          patch() {
+            python3 scripts/coverage.py --report samples/coverage/patch/lcov.info \
+              --floor-file "$F" --diff-file "$1" 2>/dev/null | sed -n 's/^patch_coverage=//p'
+          }
+
+          # A docs-only change, and a change that added nothing at all. Both
+          # have zero measurable added lines, and a percentage is not an answer
+          # to a question with no denominator: 0% gates on something no test can
+          # fix, 100% gates on a lie. Either one gets the gate switched off.
+          for diff in samples/coverage/patch/docs-only.diff /dev/null; do
+            got=$(patch "$diff")
+            [[ "$got" == "n/a" ]] || {
+              echo "::error::$diff reported patch_coverage=$got, expected n/a"; exit 1; }
+          done
+
+          # And the covered case still computes, so `n/a` is not just what this
+          # script always says.
+          got=$(patch samples/coverage/patch/partial.diff)
+          [[ "$got" == "33.33" ]] || {
+            echo "::error::the partially-covered diff reported $got, expected 33.33"; exit 1; }
+          echo 'OK: no denominator is n/a, and a real denominator still divides'
+
+      - name: A diff that cannot be parsed is an error, not a passing gate
+        shell: bash
+        run: |
+          set -uo pipefail
+          run() {
+            python3 scripts/coverage.py --report samples/coverage/patch/lcov.info \
+              --floor-file samples/coverage/patch/floor.json --diff-file "$1" >/dev/null 2>&1
+            echo $?
+          }
+
+          [[ "$(run /does/not/exist.diff)" == "3" ]] || {
+            echo '::error::a missing diff did not error'; exit 1; }
+
+          printf '+++ b/x.ts\n@@ this is not a hunk header @@\n+const a = 1;\n' > /tmp/bad.diff
+          [[ "$(run /tmp/bad.diff)" == "3" ]] || {
+            echo '::error::an unparseable hunk header was accepted — every added line would silently vanish'; exit 1; }
+
+          # A hunk holding fewer lines than it declared is a truncated diff. Its
+          # missing added lines would otherwise be counted as "not added at
+          # all", which reads as a smaller denominator and a better score.
+          printf '+++ b/x.ts\n@@ -1,2 +1,9 @@\n+const a = 1;\n' > /tmp/short.diff
+          [[ "$(run /tmp/short.diff)" == "3" ]] || {
+            echo '::error::a hunk shorter than its header was accepted'; exit 1; }
+
+          # And the ambiguity that makes the hunk lengths necessary: a change
+          # adding a line that begins with `++` emits `+++ x`, which is a file
+          # header by prefix and an added line by position. Both of these lines
+          # are line 62-63 of the fixture, which the report measures at 0 hits.
+          {
+            printf 'diff --git a/samples/coverage/patch/src/rollup.ts b/samples/coverage/patch/src/rollup.ts\n'
+            printf -- '--- a/samples/coverage/patch/src/rollup.ts\n+++ b/samples/coverage/patch/src/rollup.ts\n'
+            printf '@@ -62,2 +62,4 @@\n+++ marker\n+const x = 1;\n'
+            printf ' export function medianAbsoluteDeviation(values: readonly number[]): number {\n'
+            printf '   const middle = percentile(values, 50);\n'
+          } > /tmp/plusplus.diff
+          got=$(python3 scripts/coverage.py --report samples/coverage/patch/lcov.info \
+                  --floor-file samples/coverage/patch/floor.json \
+                  --diff-file /tmp/plusplus.diff 2>/dev/null | sed -n 's/^patch_lines_found=//p')
+          [[ "$got" == "2" ]] || {
+            echo "::error::a diff adding a ++ line measured $got added lines, expected 2"; exit 1; }
+          echo 'OK: an unreadable diff errors instead of reporting a number for it'
+
+      - name: The ratchet output is unchanged when no diff is passed
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # The composite action parses this stdout into $GITHUB_OUTPUT. Every
+          # consumer on @v1 runs without --diff-file, and must see exactly what
+          # it saw before patch coverage existed.
+          out=$(python3 scripts/coverage.py --report samples/coverage/patch/lcov.info \
+                  --floor-file samples/coverage/patch/floor.json 2>/dev/null)
+          if grep -q '^patch_' <<<"$out"; then
+            echo '::error::patch_* outputs appeared without --diff-file'; echo "$out"; exit 1
+          fi
+          diff <(printf 'coverage=94.95\nfloor=95.00\nlines_hit=7600\nlines_found=8004\nraised=false\nstatus=ok\n') \
+               <(printf '%s\n' "$out") || {
+            echo '::error::the ratchet output changed shape'; exit 1; }
+          echo 'OK: without --diff-file the output is byte-for-byte what it was'
+
+      # ---- the gate (#127) -------------------------------------------------
+      #
+      # Everything above MEASURES. These assert that the number now FAILS a run,
+      # and — the part that matters more — that it fails only when it should.
+      - name: The bar decides, and the boundary passes
+        shell: bash
+        run: |
+          set -uo pipefail
+          F=samples/coverage/patch
+          rc() {
+            python3 scripts/coverage.py --report $F/lcov.info \
+              --floor-file $F/floor.json "$@" >/dev/null 2>&1; echo $?
+          }
+          want() { # description, expected-rc, args...
+            d="$1"; e="$2"; shift 2
+            got=$(rc "$@")
+            [[ "$got" == "$e" ]] || {
+              echo "::error::$d — exit $got, expected $e"; exit 1; }
+          }
+
+          # 0 of 4 covered. The defect, now red.
+          want '0% at the default bar'   1 --diff-file $F/changed.diff  --patch-threshold 50
+          # 2 of 6 = 33.33%.
+          want '33% at the default bar'  1 --diff-file $F/partial.diff  --patch-threshold 50
+          # 3 of 4 = 75.00%. Above the default, below 80.
+          want '75% at the default bar'  0 --diff-file $F/majority.diff --patch-threshold 50
+          want '75% at an 80 bar'        1 --diff-file $F/majority.diff --patch-threshold 80
+          # Exactly at the bar passes: >=, not >. If this ever flips, a repo
+          # sitting precisely on its threshold goes red for no reason it can fix.
+          want '75% at a 75 bar'         0 --diff-file $F/majority.diff --patch-threshold 75
+          # 0 keeps the measurement and switches the gate off.
+          want '0% with the gate off'    0 --diff-file $F/changed.diff  --patch-threshold 0
+          # Nothing measurable added: not 0%, not 100%, not a failure.
+          want 'docs-only at a bar'      0 --diff-file $F/docs-only.diff --patch-threshold 50
+          want 'empty diff at a bar'     0 --diff-file /dev/null         --patch-threshold 50
+          # A bar with no diff would pass everything while looking like a gate.
+          want 'a bar with no diff'      3 --patch-threshold 50
+          echo 'OK: the bar fires below it, holds at it, and never fires on n/a'
+
+      - name: A red patch gate has to say which lines to test
+        shell: bash
+        run: |
+          set -uo pipefail
+          F=samples/coverage/patch
+          # `msg=$(failing-command)` aborts under the runner's `bash -e`, which
+          # `set -uo pipefail` does not switch off — the step would die before
+          # asserting anything. The `|| rc=$?` puts it in a tested context, and
+          # the exit code is worth asserting anyway.
+          rc=0
+          msg=$(python3 scripts/coverage.py --report $F/lcov.info \
+                  --floor-file $F/floor.json --diff-file $F/changed.diff \
+                  --patch-threshold 50 2>&1 >/dev/null) || rc=$?
+          [[ "$rc" == '1' ]] || {
+            echo "::error::the red patch gate exited $rc, expected 1"; exit 1; }
+
+          # The aggregate must still be GREEN in the same run. This pairing is
+          # the whole of #112: if the ratchet ever goes red here the fixture has
+          # been broken and the gate is no longer proving anything.
+          grep -q 'coverage held at 94.95%' <<<"$msg" || {
+            echo '::error::the aggregate did not stay green — the fixture regressed'
+            printf '%s\n' "$msg"; exit 1; }
+
+          for want in 'PATCH COVERAGE BELOW THE BAR' '0.00%' 'bar is 50.00%' \
+                      'src/rollup.ts: 62-65'; do
+            grep -qF "$want" <<<"$msg" || {
+              echo "::error::the failure message never says: $want"
+              printf '%s\n' "$msg"; exit 1; }
+          done
+          echo 'OK: green aggregate, red patch, and the exact lines named'
+
+      # ---- through the action, against a real git history -------------------
+      #
+      # The steps above hand the script a committed .diff. This one builds an
+      # actual two-commit history whose diff IS that fixture change, so the
+      # action's own base-ref resolution and `git diff` are what produce the
+      # changed lines — the part no committed fixture can exercise.
+      - name: Build a repo whose history is the fixture change
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          R=/tmp/patchrepo; rm -rf $R; mkdir -p $R/samples/coverage/patch/src
+          cp samples/coverage/patch/src/rollup.ts $R/samples/coverage/patch/src/
+          cd $R
+          git init -q . && git config user.email t@t && git config user.name t
+          # Reverse the fixture change to get the "before" tree.
+          git apply -R "$GITHUB_WORKSPACE/samples/coverage/patch/changed.diff"
+          git add -A && git commit -qm 'well-covered module'
+          git branch -q base-branch
+          git apply "$GITHUB_WORKSPACE/samples/coverage/patch/changed.diff"
+          git add -A && git commit -qm 'add a function no test calls'
+          # grep -v '^+++' rather than '^+[^+]': the change ends with a blank
+          # added line, which the second form silently drops. Off by one against
+          # the hand-count in the fixture README is exactly the kind of drift
+          # this assertion exists to catch, so it must count what that README
+          # counts.
+          added=$(git diff base-branch HEAD | grep '^+' | grep -cv '^+++' || true)
+          [[ "$added" == '9' ]] || {
+            echo "::error::the built history adds $added lines, expected 9"; exit 1; }
+          echo 'OK: two commits, and their diff is the fixture change'
+
+      - name: A real git diff measures the same as the committed fixture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          F="$GITHUB_WORKSPACE/samples/coverage/patch"
+          cd /tmp/patchrepo
+          # git's own output, not a hand-written .diff. If the two ever
+          # disagree, the committed fixtures have drifted from what git
+          # actually produces and every number above is measuring the wrong
+          # thing.
+          git diff base-branch HEAD > /tmp/real.diff
+          rc=0
+          out=$(python3 "$GITHUB_WORKSPACE/scripts/coverage.py" \
+                  --report "$F/lcov.info" --floor-file "$F/floor.json" \
+                  --diff-file /tmp/real.diff --patch-threshold 50 2>/dev/null) || rc=$?
+          [[ "$rc" == '1' ]] || {
+            echo "::error::a real git diff of the fixture change exited $rc, expected 1"
+            printf '%s\n' "$out"; exit 1; }
+          grep -q '^patch_coverage=0.00' <<<"$out" || {
+            echo '::error::a real git diff measured something other than 0.00%'
+            printf '%s\n' "$out"; exit 1; }
+          grep -q '^status=ok' <<<"$out" || {
+            echo '::error::the aggregate went red on the real diff'
+            printf '%s\n' "$out"; exit 1; }
+          echo 'OK: git diff and the committed fixture measure identically'
+
+      # ---- the action's own half: resolving the base ------------------------
+      #
+      # Both cases below are event-independent on purpose. A test whose outcome
+      # depends on whether CI happened to run from a push or a pull request is
+      # a test that reports something different on the two branches.
+      - id: badbase
+        uses: ./actions/coverage
+        continue-on-error: true
+        with:
+          report: samples/coverage/patch/lcov.info
+          floor-file: samples/coverage/patch/floor.json
+          base-ref: no-such-ref-anywhere
+      - name: A named base that cannot be resolved must fail, not pass empty
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.badbase.outcome }}
+          STATUS: ${{ steps.badbase.outputs.patch-status }}
+        run: |
+          set -Eeuo pipefail
+          # An unresolvable base yields an empty diff; an empty diff has no
+          # measurable added lines; no measurable added lines reports
+          # not-applicable and exits 0. So a broken checkout would render as a
+          # passing patch gate, run after run, and nothing would ever say so.
+          if [[ "$OUTCOME" != 'failure' ]]; then
+            echo "::error::an unresolvable base ref gave outcome '$OUTCOME' and patch-status '$STATUS' — a broken checkout must not read as a passing gate"
+            exit 1
+          fi
+          echo 'OK: a base that cannot be resolved is an error'
+
+      - id: gateoff
+        uses: ./actions/coverage
+        with:
+          report: samples/coverage/patch/lcov.info
+          floor-file: samples/coverage/patch/floor.json
+          patch-threshold: '0'
+      - name: patch-threshold 0 keeps the ratchet and drops the gate
+        shell: bash
+        env:
+          STATUS: ${{ steps.gateoff.outputs.patch-status }}
+          COVERAGE: ${{ steps.gateoff.outputs.coverage }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$STATUS" == 'off' ]] || {
+            echo "::error::patch-status was '$STATUS', expected 'off'"; exit 1; }
+          [[ "$COVERAGE" == '94.95' ]] || {
+            echo "::error::the aggregate reported $COVERAGE with the gate off"; exit 1; }
+          echo 'OK: 0 disables the gate and the ratchet still ran'
+
+  # quality.yml's coverage-report input (#124).
+  #
+  # WHY THIS DOES NOT CALL quality.yml. It cannot. This repo's tree is
+  # deliberately full of planted bugs, so Layer 2 fails on it BY DESIGN — the
+  # layer2 job above runs with continue-on-error and asserts the scan goes red.
+  # A `uses: ./.github/workflows/quality.yml` job therefore always fails here,
+  # and GitHub does not support continue-on-error on a reusable-workflow call,
+  # so it could never be a green check. Measured, not assumed: the first attempt
+  # ran, and both calls failed on layer2 with 130 findings from samples/.
+  #
+  # So the coverage job is tested two ways that together cover what a call would
+  # have, and #128 owns the true end-to-end once it can be run against a tree
+  # that is not this one:
+  #
+  #   1. its shell bodies are EXTRACTED from quality.yml by step name and run
+  #      here, so there is no copy to drift;
+  #   2. its wiring — the `if:` and the `with:` mapping — is asserted
+  #      structurally, which is what catches "plumbed but never reaches the
+  #      action".
+  coverage-input:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Extract the coverage job's own step bodies
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ruby -ryaml -e '
+            d = YAML.load_file(".github/workflows/quality.yml")
+            steps = d["jobs"]["coverage"]["steps"]
+            {
+              "Find the reports inside the artifact" => "/tmp/find.sh",
+              "A missing floor must say exactly how to record one" => "/tmp/floor.sh",
+            }.each do |name, out|
+              st = steps.find { |x| x["name"] == name }
+              abort "no step named #{name}" if st.nil?
+              File.write(out, st["run"])
+            end
+          '
+          [[ -s /tmp/find.sh && -s /tmp/floor.sh ]]
+          echo 'OK: extracted by step name, so this cannot test a stale copy'
+
+      # A real round trip, because "the artifact hand-off works" is the one
+      # claim a local directory cannot make.
+      - name: Upload a report the way a consumer's test job does
+        run: |
+          mkdir -p /tmp/up/coverage/nested
+          cp samples/coverage/patch/lcov.info /tmp/up/coverage/nested/
+          cp samples/coverage/patch/cobertura.xml /tmp/up/coverage/
+          echo 'not a report' > /tmp/up/coverage/notes.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-coverage
+          path: /tmp/up
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: e2e-coverage
+          path: /tmp/down
+
+      - name: Reports are found by content, wherever they sit
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export GITHUB_OUTPUT=/tmp/find.out; : > "$GITHUB_OUTPUT"
+          DIR=/tmp/down ARTIFACT=e2e-coverage bash /tmp/find.sh
+          # Both reports, neither the .txt — nested and root, two formats.
+          grep -q 'nested/lcov.info' /tmp/find.out || {
+            echo '::error::the nested lcov was not found'; cat /tmp/find.out; exit 1; }
+          grep -q 'cobertura.xml' /tmp/find.out || {
+            echo '::error::the cobertura report was not found'; cat /tmp/find.out; exit 1; }
+          if grep -q 'notes.txt' /tmp/find.out; then
+            echo '::error::a non-report file was passed to the action as a report'
+            cat /tmp/find.out; exit 1
+          fi
+          echo 'OK: two formats, one nested, and the plain text left out'
+
+      - name: An artifact holding no report is an error, not a pass
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p /tmp/empty-art && echo hi > /tmp/empty-art/notes.txt
+          export GITHUB_OUTPUT=/tmp/empty.out; : > "$GITHUB_OUTPUT"
+          rc=0
+          DIR=/tmp/empty-art ARTIFACT=e2e-coverage bash /tmp/find.sh >/tmp/empty.log 2>&1 || rc=$?
+          [[ "$rc" != '0' ]] || {
+            echo '::error::an artifact with no coverage report passed'; exit 1; }
+          grep -q "e2e-coverage" /tmp/empty.log || {
+            echo '::error::the failure never named the artifact it looked in'
+            cat /tmp/empty.log; exit 1; }
+          echo 'OK: an empty artifact fails, naming itself'
+
+      # #75's third question: a first run must not look like a broken gate.
+      - name: A missing floor prints the bootstrap, verbatim and followable
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          FLOOR_FILE=/tmp/no-such-floor.json bash /tmp/floor.sh >/tmp/floor.log 2>&1 || rc=$?
+          [[ "$rc" != '0' ]] || {
+            echo '::error::a missing floor passed — the ratchet compared against nothing'; exit 1; }
+          for want in "coverage-raise: 'true'" 'RECORDED FLOOR' '/tmp/no-such-floor.json'; do
+            grep -qF "$want" /tmp/floor.log || {
+              echo "::error::the bootstrap never says: $want"; cat /tmp/floor.log; exit 1; }
+          done
+          # And the way out has to actually work.
+          echo '{"line": 95.00}' > /tmp/real-floor.json
+          FLOOR_FILE=/tmp/real-floor.json bash /tmp/floor.sh >/dev/null || {
+            echo '::error::following the instruction still failed'; exit 1; }
+          echo 'OK: the bootstrap names the input, and following it clears it'
+
+      # The gate itself, over the reports discovery just produced.
+      #
+      # The floor is written HERE rather than left absent: without it the action
+      # fails on --require-floor, the step still goes red, and the assertion
+      # below would pass for entirely the wrong reason.
+      - name: A floor the downloaded report cannot meet
+        run: |
+          echo '{"line": 99.00}' > /tmp/high-floor.json
+      - id: red
+        uses: ./actions/coverage
+        continue-on-error: true
+        with:
+          report: |
+            /tmp/down/coverage/nested/lcov.info
+          floor-file: /tmp/high-floor.json
+          patch-threshold: '0'
+      - name: The discovered report is what actually gets gated
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.red.outcome }}
+          COVERAGE: ${{ steps.red.outputs.coverage }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$COVERAGE" == '94.95' ]] || {
+            echo "::error::the downloaded artifact measured $COVERAGE, expected 94.95 — the wrong file was gated"; exit 1; }
+          [[ "$OUTCOME" == 'failure' ]] || {
+            echo '::error::94.95% against a 99% floor passed'; exit 1; }
+          echo 'OK: the artifact round trip ends in a real verdict'
+
+      # What a call would have caught and these cannot: that the job is wired to
+      # the inputs at all.
+      - name: The job's wiring is what the inputs say
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # A quoted heredoc: no shell escaping, and — deliberately — the
+          # expected values are matched as expression NAMES rather than written
+          # out as literal interpolations, because actionlint parses any it
+          # finds in a run block against THIS workflow's context, where
+          # quality.yml's inputs do not exist.
+          cat > /tmp/wiring.rb <<'RUBY'
+          require 'yaml'
+          j = YAML.load_file('.github/workflows/quality.yml')['jobs']['coverage']
+          bad = ->(m) { STDERR.puts "::error::#{m}"; exit 1 }
+
+          # With the input unset there must be no coverage job AT ALL. A job
+          # that merely skipped would still appear as a new box in every
+          # adopted consumer's PR checks the morning v1 moves.
+          cond = j['if'].to_s
+          bad.("the coverage job if: is #{cond.inspect}, not a guard on the input") \
+            unless cond.include?('inputs.coverage-report') && cond.include?('!=')
+
+          dl = j['steps'].find { |s| s['uses'].to_s.include?('download-artifact') }
+          bad.('no download-artifact step') if dl.nil?
+          bad.("the download step takes name=#{dl['with']['name'].inspect}, not the input") \
+            unless dl['with']['name'].to_s =~ /inputs\.coverage-report/
+
+          cov = j['steps'].find { |s| s['uses'].to_s.include?('actions/coverage') }
+          bad.('no step calls actions/coverage') if cov.nil?
+
+          # "plumbed but never reaches the action" is the failure a call would
+          # have caught; this is what catches it without one.
+          {
+            'report'          => /steps\.find\.outputs\.reports/,
+            'floor-file'      => /inputs\.coverage-floor-file/,
+            'patch-threshold' => /inputs\.coverage-patch-threshold/,
+            'raise'           => /inputs\.coverage-raise/,
+          }.each do |key, want|
+            got = cov['with'][key].to_s
+            bad.("actions/coverage gets #{key}=#{got.inspect}, which does not carry #{want.source}") \
+              unless got =~ want
+          end
+          # The default is stated in six documents. Only two places make it
+          # BEHAVE, and if those two disagree a consumer's gate silently sits
+          # at a bar nobody wrote down.
+          w = YAML.load_file('.github/workflows/quality.yml')['on'] ||
+              YAML.load_file('.github/workflows/quality.yml')[true]
+          wf = w['workflow_call']['inputs']['coverage-patch-threshold']['default'].to_s
+          act = YAML.load_file('actions/coverage/action.yml')['inputs']['patch-threshold']['default'].to_s
+          bad.("quality.yml defaults the patch bar to #{wf.inspect} and the action to #{act.inspect}") \
+            unless wf == act
+          puts "OK: if: guards the input, all four inputs reach the action, " \
+               "and both defaults are #{wf}"
+          RUBY
+          ruby /tmp/wiring.rb
+
   # The three tool ladders are now ONE function. This job is what stops them
   # drifting apart again — the last time they did, the docker path set semgrep's
   # working directory and the native path did not, so `--changed-only` reported
@@ -2059,6 +2560,178 @@ jobs:
           env PATH="$SAFE" ./scripts/scan.sh "$R" --require-tools > /tmp/req.log 2>&1 || rc=$?
           [[ $rc -eq 2 ]] || { echo "::error::--require-tools should exit 2 when a tool is missing, got $rc"; exit 1; }
           echo 'OK: missing tools skip loudly, and --require-tools turns that into a failure'
+
+  # The semgrep install ladder (#131).
+  #
+  # Layer 2 pinned semgrep and then installed it with the AMBIENT python3. On
+  # ubuntu-latest that is >= 3.11 and nothing ever fired; on a stock macOS
+  # self-hosted runner it is 3.9.6, semgrep >= 1.137.0 needs >= 3.10, and the
+  # job died in three seconds having scanned nothing.
+  #
+  # WHY SHIMS RATHER THAN A REAL OLD PYTHON: no runner this repo can rent has
+  # an inadequate interpreter — a GitHub macOS image ships 3.12+ — so the only
+  # honest way to hold the regression is to fake the host. Same shim-PATH
+  # pattern `tool-resolution` uses above. The real install path is covered by
+  # the layer2 job, which runs the action end to end on both platforms.
+  semgrep-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: A too-old interpreter must fail with ONE line, not a pip wall
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          VER=$(sed -n 's/^SEMGREP_PIN="\([0-9.]*\)".*/\1/p' scripts/scan.sh | head -1)
+          [[ -n "$VER" ]] || { echo '::error::could not read SEMGREP_PIN'; exit 1; }
+
+          S=/tmp/shim-old; rm -rf "$S"; mkdir -p "$S"
+          # A HERMETIC PATH, and it is the whole test rather than tidiness.
+          # /usr/bin on a GitHub runner holds a real python3.12: leave it on
+          # PATH and the ladder finds an adequate interpreter, installs happily,
+          # and this step passes while asserting nothing — the premise it exists
+          # to set up (a host with NO adequate interpreter) silently never held.
+          # It passes on macOS either way, which is exactly how a test like this
+          # rots. Only the utilities install-semgrep.sh actually uses are linked.
+          for u in bash env mkdir head cat chmod grep sed; do
+            ln -sf "$(command -v "$u")" "$S/$u"
+          done
+          # A python3 that reports 3.9.6 and records any attempt to use it as an
+          # installer. Apple's interpreter, as it presents on a stock macOS box.
+          cat > "$S/python3" <<'SH'
+          #!/usr/bin/env bash
+          [[ "$1" == "-V" ]] && echo "Python 3.9.6" && exit 0
+          echo "used as installer: $*" >> /tmp/old-python-used.log
+          exit 0
+          SH
+          chmod +x "$S/python3"
+          : > /tmp/old-python-used.log
+
+          rc=0
+          env PATH="$S" ./scripts/install-semgrep.sh "$VER" /tmp/b1 \
+            > /tmp/old.log 2>&1 || rc=$?
+          cat /tmp/old.log
+          [[ $rc -ne 0 ]] || { echo '::error::an inadequate interpreter was accepted'; exit 1; }
+          # The message is the fix as much as the ladder is: the old failure
+          # buried "requires >= 3.10" under every semgrep release ever published.
+          grep -q "requires Python >= 3.10" /tmp/old.log || {
+            echo '::error::failure does not name the required version'; exit 1; }
+          grep -q "3.9.6" /tmp/old.log || {
+            echo '::error::failure does not name the version actually found'; exit 1; }
+          [[ $(grep -c . /tmp/old.log) -le 2 ]] || {
+            echo '::error::failure is more than the one line it promises'; exit 1; }
+          # And it must not have TRIED — a pip invocation here is the 400-line
+          # wall coming back.
+          [[ ! -s /tmp/old-python-used.log ]] || {
+            echo '::error::attempted an install with the inadequate interpreter'; exit 1; }
+          echo 'OK: a 3.9 host fails in one line, before pip is ever reached'
+
+      - name: uv installs the pin on a FETCHED interpreter, not the host's
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          VER=$(sed -n 's/^SEMGREP_PIN="\([0-9.]*\)".*/\1/p' scripts/scan.sh | head -1)
+          PY=$(sed -n 's/^PINNED_PYTHON="\([0-9.]*\)".*/\1/p' scripts/install-semgrep.sh | head -1)
+          S=/tmp/shim-uv; rm -rf "$S"; mkdir -p "$S"
+          for u in bash env mkdir head cat chmod grep sed; do
+            ln -sf "$(command -v "$u")" "$S/$u"
+          done
+          cat > "$S/python3" <<'SH'
+          #!/usr/bin/env bash
+          [[ "$1" == "-V" ]] && echo "Python 3.9.6" && exit 0
+          exit 0
+          SH
+          # The uv shim records its argv and stages a semgrep that reports the
+          # version it was asked for, so the script's own verification runs.
+          cat > "$S/uv" <<'SH'
+          #!/usr/bin/env bash
+          echo "UV: $* | bin=$UV_TOOL_BIN_DIR dl=$UV_PYTHON_DOWNLOADS" >> /tmp/uv.log
+          for a in "$@"; do case "$a" in semgrep==*) v="${a#semgrep==}";; esac; done
+          printf '#!/usr/bin/env bash\necho %s\n' "$v" > "$UV_TOOL_BIN_DIR/semgrep"
+          chmod +x "$UV_TOOL_BIN_DIR/semgrep"
+          SH
+          chmod +x "$S/python3" "$S/uv"; : > /tmp/uv.log
+
+          env PATH="$S" ./scripts/install-semgrep.sh "$VER" /tmp/b2
+          cat /tmp/uv.log
+          # THE PINNED INTERPRETER IS READ BACK FROM THE SCRIPT, not written out
+          # here — a hardcoded copy is the same two-sources-of-truth bug the pin
+          # itself has, and check-pins.sh already holds it against scan.sh.
+          grep -q -- "--python $PY" /tmp/uv.log || {
+            echo "::error::uv was not given the pinned interpreter ($PY)"; exit 1; }
+          grep -q "semgrep==$VER" /tmp/uv.log || {
+            echo '::error::uv was not given the pinned semgrep'; exit 1; }
+          grep -q "bin=/tmp/b2" /tmp/uv.log || {
+            echo '::error::semgrep was not installed into the bin dir the action controls'; exit 1; }
+          # Explicit, because a machine-level uv.toml can turn downloads off and
+          # a fallback that depends on host config is the bug being fixed.
+          grep -q "dl=automatic" /tmp/uv.log || {
+            echo '::error::UV_PYTHON_DOWNLOADS was not set explicitly'; exit 1; }
+          echo "OK: uv fetches Python $PY regardless of the host's 3.9"
+
+      - name: Without uv, pipx gets a CHECKED interpreter — and a wrong version still fails
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          VER=$(sed -n 's/^SEMGREP_PIN="\([0-9.]*\)".*/\1/p' scripts/scan.sh | head -1)
+          S=/tmp/shim-pipx; rm -rf "$S"; mkdir -p "$S"
+          for u in bash env mkdir head cat chmod grep sed; do
+            ln -sf "$(command -v "$u")" "$S/$u"
+          done
+          # The self-hosted macOS shape after someone installs a newer Python
+          # but leaves /usr/bin/python3 as the default: both exist, and the
+          # ladder has to pick the one that can actually satisfy the pin.
+          cat > "$S/python3" <<'SH'
+          #!/usr/bin/env bash
+          [[ "$1" == "-V" ]] && echo "Python 3.9.6" && exit 0
+          exit 0
+          SH
+          cat > "$S/python3.12" <<'SH'
+          #!/usr/bin/env bash
+          [[ "$1" == "-V" ]] && echo "Python 3.12.7" && exit 0
+          exit 0
+          SH
+          cat > "$S/pipx" <<'SH'
+          #!/usr/bin/env bash
+          echo "PIPX: $* | bin=$PIPX_BIN_DIR" >> /tmp/pipx.log
+          for a in "$@"; do case "$a" in semgrep==*) v="${a#semgrep==}";; esac; done
+          printf '#!/usr/bin/env bash\necho %s\n' "$v" > "$PIPX_BIN_DIR/semgrep"
+          chmod +x "$PIPX_BIN_DIR/semgrep"
+          SH
+          chmod +x "$S/python3" "$S/python3.12" "$S/pipx"; : > /tmp/pipx.log
+
+          env PATH="$S" ./scripts/install-semgrep.sh "$VER" /tmp/b3
+          cat /tmp/pipx.log
+          grep -q -- "--python python3.12" /tmp/pipx.log || {
+            echo '::error::pipx inherited the ambient interpreter instead of the adequate one'; exit 1; }
+          grep -q "bin=/tmp/b3" /tmp/pipx.log || {
+            echo '::error::pipx did not install into the bin dir the action controls'; exit 1; }
+
+          # An installer that "succeeds" on the wrong version is the failure the
+          # pin exists to prevent, and it would otherwise surface as rules that
+          # quietly stopped existing.
+          W=/tmp/shim-wrong; rm -rf "$W"; mkdir -p "$W"
+          for u in bash env mkdir head cat chmod grep sed; do
+            ln -sf "$(command -v "$u")" "$W/$u"
+          done
+          cat > "$W/python3" <<'SH'
+          #!/usr/bin/env bash
+          [[ "$1" == "-V" ]] && echo "Python 3.12.7" && exit 0
+          exit 0
+          SH
+          cat > "$W/uv" <<'SH'
+          #!/usr/bin/env bash
+          printf '#!/usr/bin/env bash\necho 1.136.0\n' > "$UV_TOOL_BIN_DIR/semgrep"
+          chmod +x "$UV_TOOL_BIN_DIR/semgrep"
+          SH
+          chmod +x "$W/python3" "$W/uv"
+          rc=0
+          env PATH="$W" ./scripts/install-semgrep.sh "$VER" /tmp/b4 \
+            > /tmp/wrong.log 2>&1 || rc=$?
+          cat /tmp/wrong.log
+          [[ $rc -ne 0 ]] || { echo '::error::a semgrep other than the pin was accepted'; exit 1; }
+          grep -q "expected '$VER'" /tmp/wrong.log || {
+            echo '::error::verification failure does not name the expected version'; exit 1; }
+          echo 'OK: pipx gets a checked interpreter, and an off-pin install is refused'
 
   # SBOM + licence gate, against this repo's own real dependency tree.
   #
@@ -2187,6 +2860,74 @@ jobs:
           done
           echo 'OK: both sample .editorconfigs match configs/'
 
+  # #120 — the editor contract. configs/editor/ is the only directory here that
+  # nothing executes: there is no headless VS Code, so a .vscode/settings.json
+  # cannot be proven by a sample the way every other config is. That makes it
+  # the exact shape CONTRIBUTING.md warns about — present, plausible, gating
+  # nothing — so the assertions are about the contract's INTERNAL consistency
+  # instead: every key justified, every verified divergence still pinned at the
+  # value README.md §1 records, the C# Dev Kit licensing trap still excluded,
+  # and every expectation manifest still named in the table step 3 will measure
+  # against. The reasoning is in the script's docstring.
+  editor-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: The editor contract must still say what it claims
+        shell: bash
+        run: python3 scripts/check-editor-contract.py
+      # #121 — the parity run itself needs a human at a VS Code, but the
+      # arithmetic done on what they paste does not. The sample exemption above
+      # covers what the settings do INSIDE an editor and nothing else, so the
+      # differ gets an ordinary fixture corpus. A step in this job rather than a
+      # job of its own: it needs no toolchain, and a new context would have to
+      # be added to branch protection on both branches to gate anything.
+      - name: The parity differ must still compute the cells it claims
+        shell: bash
+        run: python3 scripts/editor-parity.py selftest
+
+  # #158 — the third surface. CI is the gate and configs/editor/ freezes what
+  # the editor shows; neither reaches the agent session that writes the code.
+  # The two hooks in configs/agent/ do, and this is their test suite.
+  #
+  # A JOB rather than a step, unlike the parity differ next door, and the
+  # difference is worth stating because the comment above argues the other way.
+  # That differ is editor work and there was an editor job to put it in. There
+  # is no agent job, and hanging a second surface's contract off the first one's
+  # context would make a failure here report as "editor-contract failed".
+  #
+  # It needs no toolchain — python3 and git, both already on the runner — so the
+  # 50-minute argument that keeps configs/editor/ out of samples/ does not apply
+  # here, and configs/agent/ takes an ordinary fixture corpus like every other
+  # config in this repo.
+  agent-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # The fixtures build real git repositories and commit to them. A runner
+      # has no user.email, and without an identity the failure reads as a broken
+      # fixture rather than as missing config — so selftest.py sets one per
+      # invocation and this job deliberately does NOT configure a global one.
+      - name: The agent hooks must still block what they claim, and only that
+        shell: bash
+        run: python3 scripts/agent-guard/selftest.py
+      # #163 — the seams between the parts, which the corpus above cannot see.
+      # selftest.py runs each hook as a subprocess, so it never routes through a
+      # `matcher` and never reads a `command`: narrow the matcher, rename a
+      # script, and every case above still passes while the hook stops firing in
+      # every tree that adopted it. STEPS rather than a job, for the reason the
+      # parity differ next door is one — no toolchain, and a new context would
+      # have to be added to branch protection on both branches to gate anything.
+      - name: The agent contract's four parts must still agree
+        shell: bash
+        run: python3 scripts/check-agent-contract.py
+      # And the checker itself, because a guard that stopped guarding makes
+      # exactly the same green run as a contract that holds. Each mutation is an
+      # acceptance criterion made executable rather than recorded.
+      - name: The contract checker must still catch the drift it claims
+        shell: bash
+        run: python3 scripts/check-agent-contract.py selftest
+
   # #11 — adopt.sh, proven end-to-end rather than by reading it. The assertion
   # that matters is not "it copied some files", it is "a repo adopted by the
   # script behaves exactly like the hand-configured sample" — in BOTH
@@ -2230,7 +2971,22 @@ jobs:
           if [[ -e /tmp/dry/eslint.base.mjs || -e /tmp/dry/.editorconfig ]]; then
             echo '::error::--dry-run wrote files'; exit 1
           fi
-          echo 'OK: exit codes correct, --dry-run wrote nothing'
+          # --help is printed by LINE NUMBER out of the comment header, so it
+          # goes wrong silently in both directions: a header that grew stops
+          # printing its last rows, and one that shrank starts printing the
+          # code below it. Neither is an error anyone would notice, so assert
+          # the two ends — the last row is present, and no shell reached the
+          # page.
+          rc=0; help=$(./scripts/adopt.sh --help) || rc=$?
+          [[ $rc -eq 0 ]] || { echo "::error::--help exited $rc"; exit 1; }
+          grep -q -- '--agent  *ONLY install the agent contract' <<<"$help" \
+            || { echo '::error::--help no longer reaches the flag list'; exit 1; }
+          [[ "$(grep -v '^[[:space:]]*$' <<<"$help" | tail -1)" == *'.claude/agent-guard/__pycache__/'* ]] \
+            || { echo '::error::--help does not end on the last row of the header'; exit 1; }
+          if grep -qE '^(set -|[A-Za-z_]+\(\) \{|BASELINE=)' <<<"$help"; then
+            echo '::error::--help is printing the script instead of the header'; exit 1
+          fi
+          echo 'OK: exit codes correct, --dry-run wrote nothing, --help prints the header and no code'
       - name: Adopted repo must BUILD CLEAN on the clean fixture
         shell: bash
         run: |
@@ -2435,6 +3191,1565 @@ jobs:
           grep -q 'skip' /tmp/rerun.log || { echo '::error::re-run did not report skips'; exit 1; }
           echo 'OK: re-run is idempotent and non-destructive'
 
+      # #126 — `adopt.sh --editor`. These files are the first thing the baseline
+      # writes that GATES NOTHING, so no sample can fail without them; that is
+      # why configs/editor/ is CONTRIBUTING.md's one documented exemption from
+      # the sample rule. What CAN be proven end-to-end is the COMPOSITION, and
+      # it is proven here rather than read: the right languages in, the wrong
+      # ones out, and a consumer's own settings never touched. The last of those
+      # is the only unrecoverable thing this flag can do, so it is asserted from
+      # both sides — the file is byte-identical AND the run says what it would
+      # have changed.
+      - name: --editor writes only the detected languages, as valid JSONC
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # An INDEPENDENT JSONC reader, deliberately not the composer's own:
+          # validating a writer with its own parser proves they agree, not that
+          # the file is right. Reused by the steps below.
+          cat > /tmp/jsonc.py <<'PY'
+          import json, sys
+          def strip(text):
+              out, i, n, s, e = [], 0, len(text), False, False
+              while i < n:
+                  c = text[i]
+                  if s:
+                      out.append(c)
+                      if e: e = False
+                      elif c == "\\": e = True
+                      elif c == '"': s = False
+                      i += 1; continue
+                  if c == '"':
+                      s = True; out.append(c); i += 1; continue
+                  if c == "/" and i + 1 < n and text[i+1] == "/":
+                      while i < n and text[i] != "\n": i += 1
+                      continue
+                  if c == "/" and i + 1 < n and text[i+1] == "*":
+                      i += 2
+                      while i + 1 < n and not (text[i] == "*" and text[i+1] == "/"): i += 1
+                      i += 2; continue
+                  out.append(c); i += 1
+              return "".join(out)
+          def load(path):
+              return json.loads(strip(open(path).read()))
+          def keys(path):
+              # object_pairs_hook so a DUPLICATE key cannot hide behind dict
+              # collapsing — VS Code takes the last one and says nothing.
+              got = []
+              json.loads(strip(open(path).read()),
+                         object_pairs_hook=lambda kv: got.extend(k for k, _ in kv) or dict(kv))
+              return got
+          if __name__ == "__main__":
+              print("\n".join(load(sys.argv[1]).keys()))
+          PY
+          rm -rf /tmp/ed-tspy && mkdir -p /tmp/ed-tspy/src
+          printf '{"name":"demo"}\n' > /tmp/ed-tspy/package.json
+          printf '{}\n' > /tmp/ed-tspy/tsconfig.json
+          printf '[project]\nname = "demo"\nversion = "0.1.0"\n' > /tmp/ed-tspy/pyproject.toml
+          ./scripts/adopt.sh /tmp/ed-tspy --no-workflow --editor
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "/tmp")
+          import jsonc
+          s = "/tmp/ed-tspy/.vscode/settings.json"
+          e = "/tmp/ed-tspy/.vscode/extensions.json"
+          doc, ext = jsonc.load(s), jsonc.load(e)
+          bad = []
+          for k in ("typescript.tsdk", "typescript.enablePromptUseWorkspaceTsdk",
+                    "eslint.useFlatConfig", "eslint.workingDirectories",
+                    "mypy-type-checker.importStrategy",
+                    "mypy-type-checker.reportingScope",
+                    "ruff.configurationPreference", "[python]"):
+              if k not in doc:
+                  bad.append(f"settings.json is missing {k}")
+          for k in doc:
+              if k.startswith(("rust-analyzer", "dotnet.", "java.", "semgrep.")) \
+                 or k in ("[rust]", "[csharp]", "[java]"):
+                  bad.append(f"settings.json carries {k} for a language this repo "
+                             "does not have")
+          # Duplicates matter more here than anywhere else in this repo: VS Code
+          # takes the LAST occurrence, silently, so two fragments owning one key
+          # would produce a file whose behaviour depends on fragment order.
+          seen = jsonc.keys(s)
+          for k in set(seen):
+              if seen.count(k) > 1:
+                  bad.append(f"settings.json defines {k} {seen.count(k)} times")
+          rec = ext["recommendations"]
+          for want in ("EditorConfig.EditorConfig", "dbaeumer.vscode-eslint",
+                       "ms-python.python", "charliermarsh.ruff",
+                       "ms-python.mypy-type-checker"):
+              if want not in rec:
+                  bad.append(f"extensions.json does not recommend {want}")
+          for never in ("rust-lang.rust-analyzer", "ms-dotnettools.csharp",
+                        "redhat.java", "Semgrep.semgrep"):
+              if never in rec:
+                  bad.append(f"extensions.json recommends {never} in a repo with "
+                             "no such language")
+          # The C# Dev Kit row is C#-gated like every other C# row, so a
+          # TypeScript+Python tree carries no unwantedRecommendations at all.
+          if ext.get("unwantedRecommendations"):
+              bad.append("extensions.json carries the C# Dev Kit row with no C# "
+                         "in the repo")
+          # The comments ARE the contract (configs/editor/README.md's opening
+          # claim). A composer that parsed and re-dumped would pass every
+          # assertion above and ship a file that justifies nothing.
+          text = open(s).read()
+          if "DIVERGENCE (verified, #120)" not in text:
+              bad.append("the composed settings.json lost its justification "
+                         "comments — a settings line whose reason lives "
+                         "somewhere else is one nobody dares delete")
+          for b in bad:
+              print(f"::error::{b}")
+          sys.exit(1 if bad else 0)
+          PY
+          echo 'OK: --editor composed TypeScript + Python only, with the comments intact'
+
+      - name: --editor refuses rather than merging, and says what it would have done
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm -rf /tmp/ed-conflict && mkdir -p /tmp/ed-conflict/.vscode
+          printf '{"name":"demo"}\n' > /tmp/ed-conflict/package.json
+          printf '[project]\nname = "demo"\nversion = "0.1.0"\n' > /tmp/ed-conflict/pyproject.toml
+          cat > /tmp/ed-conflict/.vscode/settings.json <<'JSON'
+          {
+            // mine, and none of the baseline's business
+            "editor.fontSize": 13,
+            "eslint.useFlatConfig": true,
+            "typescript.tsdk": "somewhere/else"
+          }
+          JSON
+          before=$(sha256sum /tmp/ed-conflict/.vscode/settings.json | cut -d' ' -f1)
+          rc=0
+          ./scripts/adopt.sh /tmp/ed-conflict --no-workflow --editor > /tmp/ed-conflict.log 2>&1 || rc=$?
+          cat /tmp/ed-conflict.log
+          after=$(sha256sum /tmp/ed-conflict/.vscode/settings.json | cut -d' ' -f1)
+          [[ "$before" == "$after" ]] || {
+            echo '::error::--editor rewrote a settings.json that already existed — that is the one unrecoverable thing it can do'
+            exit 1; }
+          [[ $rc -eq 5 ]] || { echo "::error::a refused editor file must exit 5, got $rc"; exit 1; }
+          # The refusal is only useful if it says what it withheld. Every key the
+          # composition would have applied must be named — including the ones
+          # that already match, so the reader can tell "yours differs" from
+          # "already fine" without re-deriving it.
+          python3 scripts/editor-settings.py settings --languages typescript,python > /tmp/ed-want.json
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "/tmp")
+          import jsonc
+          log = open("/tmp/ed-conflict.log").read()
+          missing = [k for k in jsonc.load("/tmp/ed-want.json") if f'"{k}"' not in log]
+          for k in missing:
+              print(f"::error::the printed delta never names {k}")
+          sys.exit(1 if missing else 0)
+          PY
+          # The other file had no conflict, so it must still have been written.
+          # A refusal on one file is not a reason to abandon the other.
+          [[ -f /tmp/ed-conflict/.vscode/extensions.json ]] || {
+            echo '::error::a conflict on settings.json also skipped extensions.json'; exit 1; }
+          echo 'OK: refused, byte-identical, delta printed in full, exit 5'
+
+      - name: A conflict on extensions.json names every extension, not an ellipsis
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # The settings delta above is one key per line and reads fine. The
+          # extensions file is the opposite shape — its whole content is one
+          # long array — so an elided value there would print
+          # `+ "recommendations": ["Editor...` and name not one extension. A
+          # refusal that does not say what it withheld is a refusal with no
+          # remedy attached, so it is asserted separately rather than assumed to
+          # follow from the settings case.
+          rm -rf /tmp/ed-extconf && mkdir -p /tmp/ed-extconf/.vscode
+          printf '{"name":"demo"}\n' > /tmp/ed-extconf/package.json
+          printf '[project]\nname = "demo"\nversion = "0.1.0"\n' > /tmp/ed-extconf/pyproject.toml
+          printf '{"recommendations":["dbaeumer.vscode-eslint"]}\n' \
+            > /tmp/ed-extconf/.vscode/extensions.json
+          before=$(sha256sum /tmp/ed-extconf/.vscode/extensions.json | cut -d' ' -f1)
+          rc=0
+          ./scripts/adopt.sh /tmp/ed-extconf --no-workflow --editor > /tmp/ed-extconf.log 2>&1 || rc=$?
+          cat /tmp/ed-extconf.log
+          [[ $rc -eq 5 ]] || { echo "::error::a refused extensions.json must exit 5, got $rc"; exit 1; }
+          after=$(sha256sum /tmp/ed-extconf/.vscode/extensions.json | cut -d' ' -f1)
+          [[ "$before" == "$after" ]] || {
+            echo '::error::--editor rewrote an extensions.json that already existed'; exit 1; }
+          python3 scripts/editor-settings.py extensions --languages typescript,python > /tmp/ed-want-ext.json
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "/tmp")
+          import jsonc
+          log = open("/tmp/ed-extconf.log").read()
+          want = jsonc.load("/tmp/ed-want-ext.json")
+          missing = [i for i in want["recommendations"] if i not in log]
+          for i in missing:
+              print(f"::error::the printed delta never names {i} — an elided "
+                    "value is a refusal with no remedy attached")
+          sys.exit(1 if missing else 0)
+          PY
+          # And the file with no conflict still gets written. A refusal on one
+          # is not a reason to abandon the other, in either direction.
+          [[ -f /tmp/ed-extconf/.vscode/settings.json ]] || {
+            echo '::error::a conflict on extensions.json also skipped settings.json'; exit 1; }
+          echo 'OK: every withheld extension is named, and settings.json was still written'
+
+      - name: Only --force overwrites, and only --editor writes .vscode at all
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # Opt-in has to hold under every other flag, not just the bare run:
+          # "it only writes .vscode when you ask" is the whole reason this is a
+          # flag, and --force is the flag most likely to be reached for blindly.
+          for variant in "" "--hooks" "--force" "--dry-run"; do
+            rm -rf /tmp/ed-optin
+            mkdir -p /tmp/ed-optin
+            printf '{"name":"demo"}\n' > /tmp/ed-optin/package.json
+            git -C /tmp/ed-optin init -q
+            # Unquoted on purpose: the empty first iteration must expand to NO
+            # argument at all. Quoted, it would pass "" as a second target and
+            # adopt.sh would (correctly) refuse the whole run as a usage error.
+            ./scripts/adopt.sh /tmp/ed-optin --no-workflow ${variant} >/dev/null 2>&1
+            [[ -e /tmp/ed-optin/.vscode ]] && {
+              echo "::error::.vscode was created without --editor (with '${variant:-no flags}')"
+              exit 1; }
+            echo "  OK  no .vscode with '${variant:-no flags}'"
+          done
+          # And --dry-run --editor must predict without writing, same as
+          # everywhere else in this script.
+          rm -rf /tmp/ed-dry && mkdir -p /tmp/ed-dry
+          printf '{"name":"demo"}\n' > /tmp/ed-dry/package.json
+          ./scripts/adopt.sh /tmp/ed-dry --no-workflow --editor --dry-run >/dev/null
+          [[ -e /tmp/ed-dry/.vscode ]] && { echo '::error::--dry-run --editor wrote files'; exit 1; }
+          # --force is the documented escape hatch. It has to actually work, or
+          # the refusal above is a dead end rather than a fork in the road.
+          rm -rf /tmp/ed-force && mkdir -p /tmp/ed-force/.vscode
+          printf '{"name":"demo"}\n' > /tmp/ed-force/package.json
+          printf '{}\n' > /tmp/ed-force/.vscode/settings.json
+          ./scripts/adopt.sh /tmp/ed-force --no-workflow --editor --force >/dev/null
+          grep -q 'typescript.tsdk' /tmp/ed-force/.vscode/settings.json || {
+            echo '::error::--force did not overwrite the existing settings.json'; exit 1; }
+          echo 'OK: opt-in holds under every other flag, --dry-run writes nothing, --force overwrites'
+
+      - name: The prettier rows are written only where a prettier config exists
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # adopt.sh prints the prettier install as an OPTIONAL step, so a TS
+          # repo can legitimately have no config. With the extension installed
+          # and none present, VS Code formats at Prettier's default 80 against a
+          # gate that pins 100 — every save would fight `prettier --check`. That
+          # is strictly worse than no formatter routing, so the rows are
+          # conditional rather than recommended-with-a-caveat.
+          for state in without with; do
+            rm -rf /tmp/ed-pret
+            mkdir -p /tmp/ed-pret
+            printf '{"name":"demo"}\n' > /tmp/ed-pret/package.json
+            if [[ "$state" == with ]]; then
+              cp configs/typescript/prettier.config.mjs /tmp/ed-pret/prettier.config.mjs
+            fi
+            ./scripts/adopt.sh /tmp/ed-pret --no-workflow --editor >/dev/null
+            s=/tmp/ed-pret/.vscode/settings.json
+            e=/tmp/ed-pret/.vscode/extensions.json
+            if [[ "$state" == with ]]; then
+              for k in '"\[typescript\]"' '"\[typescriptreact\]"'; do
+                grep -q "$k" "$s" || { echo "::error::[with a prettier config] $k was not written"; exit 1; }
+              done
+              grep -q 'esbenp.prettier-vscode' "$e" || {
+                echo '::error::[with a prettier config] the prettier extension was not recommended'; exit 1; }
+            else
+              for k in '"\[typescript\]"' '"\[typescriptreact\]"'; do
+                grep -q "$k" "$s" && { echo "::error::[no prettier config] $k was written anyway — every save would fight prettier --check"; exit 1; }
+              done
+              grep -q 'esbenp.prettier-vscode' "$e" && {
+                echo '::error::[no prettier config] the prettier extension was recommended anyway'; exit 1; }
+            fi
+            echo "  OK  $state a prettier config"
+          done
+          echo 'OK: the prettier rows follow the config file, not the language'
+
+      - name: Nothing detected — --editor writes nothing and says why
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # Every key in configs/editor/ belongs to a language; there is no
+          # language-independent half. So a tree with nothing detected must get
+          # NO settings file rather than an empty one — an empty
+          # .vscode/settings.json shadows nothing, explains nothing, and looks
+          # configured, which is this whole directory's failure mode.
+          rm -rf /tmp/ed-none && mkdir -p /tmp/ed-none
+          echo hi > /tmp/ed-none/README.md
+          rc=0
+          out=$(./scripts/adopt.sh /tmp/ed-none --editor 2>&1) || rc=$?
+          echo "$out"
+          [[ $rc -eq 1 ]] || { echo "::error::a no-language repo must still exit 1 with --editor, got $rc"; exit 1; }
+          [[ -e /tmp/ed-none/.vscode ]] && { echo '::error::--editor created .vscode with no language detected'; exit 1; }
+          grep -q 'vscode' <<<"$out" || {
+            echo '::error::--editor wrote nothing and did not say so — "nothing to do" does not answer "where are my .vscode files"'
+            exit 1; }
+          echo 'OK: nothing written, and it says why'
+
+      - name: All five languages compose into one file, end to end
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # The composer is exercised on every fragment by the editor-contract
+          # job; this is the same thing THROUGH adopt.sh, so detection, the
+          # language tokens it passes, and the fragment map cannot disagree.
+          rm -rf /tmp/ed-all && mkdir -p /tmp/ed-all/src
+          printf '{"name":"demo"}\n' > /tmp/ed-all/package.json
+          printf '[project]\nname = "demo"\nversion = "0.1.0"\n' > /tmp/ed-all/pyproject.toml
+          printf '[package]\nname = "demo"\nversion = "0.1.0"\n' > /tmp/ed-all/Cargo.toml
+          : > /tmp/ed-all/Cargo.lock
+          printf 'fn main() {}\n' > /tmp/ed-all/src/main.rs
+          printf '<Project Sdk="Microsoft.NET.Sdk"></Project>\n' > /tmp/ed-all/P.csproj
+          cat > /tmp/ed-all/pom.xml <<'POM'
+          <project xmlns="http://maven.apache.org/POM/4.0.0">
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>demo</groupId><artifactId>demo</artifactId><version>1</version>
+            <build><plugins></plugins></build>
+          </project>
+          POM
+          ./scripts/adopt.sh /tmp/ed-all --no-workflow --editor >/dev/null
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "/tmp")
+          import jsonc
+          doc = jsonc.load("/tmp/ed-all/.vscode/settings.json")
+          ext = jsonc.load("/tmp/ed-all/.vscode/extensions.json")
+          bad = []
+          for k in ("typescript.tsdk", "mypy-type-checker.reportingScope",
+                    "rust-analyzer.check.command",
+                    "dotnet.backgroundAnalysis.analyzerDiagnosticsScope",
+                    "dotnet.backgroundAnalysis.compilerDiagnosticsScope",
+                    "java.configuration.updateBuildConfiguration"):
+              if k not in doc:
+                  bad.append(f"a five-language adoption is missing {k}")
+          # Semgrep stays out even here. Its rule paths resolve only inside a
+          # checkout of the baseline, and the extension with none configured
+          # scans with whatever the CLI is set to — findings no gate produces.
+          # configs/editor/README.md §5, decided in
+          # docs/adr/0002-no-in-editor-semgrep-parity.md.
+          if any(k.startswith("semgrep.") for k in doc):
+              bad.append("the non-portable semgrep fragment was written into a "
+                         "consumer's tree")
+          if "Semgrep.semgrep" in ext["recommendations"]:
+              bad.append("the Semgrep extension was recommended with no rules to "
+                         "point it at")
+          if "ms-dotnettools.csdevkit" not in ext.get("unwantedRecommendations", []):
+              bad.append("a C# repo did not get the C# Dev Kit row as UNWANTED — "
+                         "VS Code offers it unprompted (configs/editor/README.md §2)")
+          for b in bad:
+              print(f"::error::{b}")
+          sys.exit(1 if bad else 0)
+          PY
+          echo 'OK: five languages composed, semgrep held back, Dev Kit still unwanted'
+
+      # #165 — `adopt.sh --agent`. This is the one flag that MERGES into a file
+      # the consumer already owns, and the two things it could do wrong are both
+      # unrecoverable in someone else's repo: drop their own hooks, or write a
+      # settings.json Claude Code cannot read. Both are asserted here rather
+      # than argued for in a comment, and from both sides — what survived, and
+      # what the run refused to do.
+      #
+      # The adopted tree is exercised for real: the Stop hook is run as a
+      # subprocess from where --agent put it, against a dirty worktree. That is
+      # the assertion samples/agent-guard cannot make, because the corpus runs
+      # the scripts in THIS repo's layout and --agent's whole job is to produce
+      # a different one.
+      - name: --agent installs a contract that actually refuses
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          agent_repo() {
+            rm -rf "$1"; mkdir -p "$1"
+            printf '{"name":"demo"}\n' > "$1/package.json"
+            git -C "$1" init -q
+            git -C "$1" config user.email ci@example.invalid
+            git -C "$1" config user.name ci
+            git -C "$1" add -A && git -C "$1" commit -qm init
+          }
+          agent_repo /tmp/ag-fresh
+          # Expectation manifests, so this tree gets the FULL contract and the
+          # comparison below stays a comparison against the baseline itself
+          # (#182). The profile that drops the two samples/ rules is asserted
+          # separately, against hardcoded expectations rather than against the
+          # script that produces it.
+          mkdir -p /tmp/ag-fresh/samples/expected
+          printf '{}\n' > /tmp/ag-fresh/samples/expected/demo.json
+          ./scripts/adopt.sh /tmp/ag-fresh --agent
+          for f in .claude/settings.json .claude/agent-guard/guard.py \
+                   .claude/agent-guard/stop-gate.py CLAUDE.md .gitignore; do
+            [[ -e /tmp/ag-fresh/$f ]] || { echo "::error::--agent did not write $f"; exit 1; }
+          done
+          # A tree with no settings.json of its own must end up with the
+          # baseline exactly — if the merge can transform the file on the empty
+          # case, every other case is guesswork.
+          python3 - <<'PY'
+          import json, sys
+          got = json.load(open("/tmp/ag-fresh/.claude/settings.json"))
+          want = json.load(open("configs/agent/settings.json"))
+          if got != want:
+              print("::error::a fresh --agent produced something other than the baseline")
+              print(json.dumps(got, indent=2))
+              sys.exit(1)
+          PY
+          # Prefix, not the whole marker: since #177 the BEGIN marker carries
+          # a checksum of the region as installed, so an exact match here would
+          # be asserting the absence of the thing that makes a refresh safe.
+          grep -q '<!-- BEGIN maxi-quality agent-guard sha256:[0-9a-f]\+ -->' \
+            /tmp/ag-fresh/CLAUDE.md \
+            || { echo '::error::the CLAUDE.md region was not written with a checksum'; exit 1; }
+          grep -qxF '.claude/agent-guard-receipt.json' /tmp/ag-fresh/.gitignore \
+            || { echo '::error::the receipt was not gitignored'; exit 1; }
+          # The whole point, end to end. One modified file, no receipt: the Stop
+          # hook must refuse, from the path --agent copied it to. The failure
+          # this catches is a copy that lands the scripts somewhere the
+          # `command` in settings.json does not point — which looks like a
+          # successful adoption and gates nothing.
+          echo 'ungated' >> /tmp/ag-fresh/package.json
+          out=$(cd /tmp/ag-fresh && printf '{"cwd":"%s","hook_event_name":"Stop"}' /tmp/ag-fresh \
+                | python3 /tmp/ag-fresh/.claude/agent-guard/stop-gate.py)
+          echo "$out"
+          grep -q '"decision": *"block"' <<<"$out" \
+            || { echo '::error::the adopted Stop hook allowed a stop on ungated changes'; exit 1; }
+          # And its remedy has to name a file that EXISTS in the adopted tree.
+          # A refusal telling the session to run scripts/agent-guard/ — this
+          # repo's layout, not theirs — is a refusal with no remedy attached.
+          grep -q '\.claude/agent-guard/record-gate\.py' <<<"$out" \
+            || { echo '::error::the refusal names a record-gate.py path that does not exist here'; exit 1; }
+          [[ -e /tmp/ag-fresh/scripts/agent-guard ]] \
+            && { echo '::error::--agent copied the scripts to the baseline path, not .claude/'; exit 1; }
+          # The guard's own __pycache__, which the hook run above just created.
+          # It must be ignored AND excluded from the fingerprint: a consumer
+          # with no Python section in their .gitignore would otherwise have
+          # `git add -A` commit .pyc files, and the first stop after adoption
+          # refused over a file no human touched.
+          [[ -d /tmp/ag-fresh/.claude/agent-guard/__pycache__ ]] \
+            || { echo '::error::the fixture never created a __pycache__, so this asserts nothing'; exit 1; }
+          if git -C /tmp/ag-fresh status --porcelain | grep -q pycache; then
+            echo '::error::the adopted tree does not gitignore the guard-own __pycache__:'
+            git -C /tmp/ag-fresh status --porcelain | grep pycache
+            exit 1
+          fi
+          seen=$(cd /tmp/ag-fresh && python3 -c "
+          import sys; sys.path.insert(0, '.claude/agent-guard')
+          from guard import changed_files
+          print([p for p in changed_files('.') if 'pycache' in p])")
+          [[ "$seen" == '[]' ]] \
+            || { echo "::error::the fingerprint still counts the guard's own cache: $seen"; exit 1; }
+          echo 'OK: adopted from nothing, and the installed Stop hook refuses'
+
+      # ISSUE #183 — --agent is EXCLUSIVE, in every tree and not just this one.
+      # It used to be documented as an ALSO flag and behaved like one everywhere
+      # except the self-adopt branch, so the one invocation that did what people
+      # wanted was the one reserved for the baseline. The contract has no
+      # language in it — it is five rules about sessions, a receipt and a git
+      # diff — and coupling it to two hundred new lints makes the result
+      # unattributable: nobody can say afterwards which half a session found
+      # annoying.
+      #
+      # Asserted by ENUMERATING the tree rather than by naming the configs this
+      # repo happens to ship today. A list of filenames would go stale the next
+      # time a language is added, and go stale silently, which is the same
+      # failure shape as a guard that matches nothing.
+      - name: --agent installs the contract and NOTHING else
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm -rf /tmp/ag-only && mkdir -p /tmp/ag-only/src
+          # Three detectable languages, so a run that adopted the language layer
+          # would leave an unmistakable trail. Note NO --no-workflow: the
+          # workflow scaffold is one of the things exclusivity has to hold back,
+          # and passing the flag that suppresses it would prove nothing.
+          printf '{"name":"demo"}\n' > /tmp/ag-only/package.json
+          printf '{}\n' > /tmp/ag-only/tsconfig.json
+          printf '[project]\nname = "demo"\nversion = "0.1.0"\n' > /tmp/ag-only/pyproject.toml
+          printf '<Project Sdk="Microsoft.NET.Sdk"></Project>\n' > /tmp/ag-only/P.csproj
+          git -C /tmp/ag-only init -q
+          git -C /tmp/ag-only config user.email ci@example.invalid
+          git -C /tmp/ag-only config user.name ci
+          git -C /tmp/ag-only add -A && git -C /tmp/ag-only commit -qm init
+          ./scripts/adopt.sh /tmp/ag-only --agent
+          for f in .claude/settings.json .claude/agent-guard/stop-gate.py \
+                   CLAUDE.md .gitignore; do
+            [[ -e /tmp/ag-only/$f ]] || { echo "::error::--agent did not write $f"; exit 1; }
+          done
+          # --others without --exclude-standard on purpose: the .gitignore line
+          # --agent just wrote would otherwise hide anything it names.
+          # `git -C` rather than `cd &&`: with the `|| true` this needs, a
+          # `cd` on the left of an `&&` is swallowed by it — the substitution
+          # returns empty and the assertion passes having enumerated nothing.
+          # That is SC2015, and it is the failure this step exists to catch,
+          # one level up.
+          stray=$( { git -C /tmp/ag-only ls-files --others
+                     git -C /tmp/ag-only diff --name-only
+                   } | grep -vE '^(\.claude/|CLAUDE\.md$|\.gitignore$)' || true)
+          if [[ -n "$stray" ]]; then
+            echo '::error::--agent wrote the language layer as well as the contract:'
+            echo "$stray"
+            exit 1
+          fi
+          [[ -e /tmp/ag-only/.github/workflows/quality.yml ]] \
+            && { echo '::error::--agent scaffolded a workflow'; exit 1; }
+          echo 'OK: the agent contract, and not one config file beside it'
+
+      # Criterion 4 of #183: combining --agent with another surface must have a
+      # STATED behaviour rather than a silent one. Refusing is the choice, and
+      # the reason is that the alternative reads as a lie either way round —
+      # honour both and --agent is no longer exclusive; honour --agent and a
+      # flag the consumer typed did nothing. A usage error costs them one
+      # re-run and cannot be misread.
+      - name: --agent refuses to be combined with another surface flag
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for combo in "--editor" "--hooks" "--editor --hooks"; do
+            rm -rf /tmp/ag-combo && mkdir -p /tmp/ag-combo
+            printf '{"name":"demo"}\n' > /tmp/ag-combo/package.json
+            git -C /tmp/ag-combo init -q
+            git -C /tmp/ag-combo config user.email ci@example.invalid
+            git -C /tmp/ag-combo config user.name ci
+            git -C /tmp/ag-combo add -A && git -C /tmp/ag-combo commit -qm init
+            rc=0
+            # Unquoted on purpose: "--editor --hooks" must expand to two words.
+            # shellcheck disable=SC2086
+            ./scripts/adopt.sh /tmp/ag-combo --agent ${combo} > /tmp/ag-combo.log 2>&1 || rc=$?
+            cat /tmp/ag-combo.log
+            [[ $rc -eq 3 ]] || {
+              echo "::error::[--agent $combo] must be a usage error (3), got $rc"; exit 1; }
+            # A refusal with no remedy attached is a refusal that gets worked
+            # around, so the message has to name BOTH runs that do work.
+            [[ $(grep -c 'adopt.sh' /tmp/ag-combo.log) -ge 2 ]] || {
+              echo "::error::[--agent $combo] refused without naming the two runs that work"
+              exit 1; }
+            # And a usage error writes nothing, in either half.
+            dirty=$(cd /tmp/ag-combo && git status --porcelain)
+            [[ -z "$dirty" ]] || {
+              echo "::error::[--agent $combo] wrote something before refusing: $dirty"; exit 1; }
+            echo "  OK  --agent $combo refused, exit 3, tree untouched"
+          done
+          echo 'OK: the combination is refused with a remedy, not silently resolved'
+
+      # A REMEDY THAT DOES NOT RUN. Both --agent messages print a command for
+      # the reader to paste, and a printed command is a claim: this runs, here.
+      # Two ways it was false. The path was the literal `scripts/adopt.sh`,
+      # which resolves only for a reader standing in the baseline — and every
+      # doc invokes this script from the consumer's own repo, as
+      # `"$BASELINE"/scripts/adopt.sh`. And in THIS tree the combined-flag
+      # refusal named a run the script itself refuses: --editor against the
+      # baseline is the self-adopt rule, so "adopt them one at a time" was
+      # false in the one tree where it was most likely to be read.
+      #
+      # Same class as the hardcoded record-gate.py path in stop-gate.py, so it
+      # is asserted the same way — the printed line is EXTRACTED and RUN from
+      # the cwd it was printed in, rather than read and believed. --dry-run is
+      # appended so the check costs nothing; it does not soften the check,
+      # because a path that does not resolve still exits 127 and a run this
+      # script refuses still exits 3.
+      - name: every command the --agent messages print actually runs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BASE=$PWD
+          consumer() {
+            rm -rf "$1"; mkdir -p "$1"
+            printf '{"name":"demo"}\n' > "$1/package.json"
+            git -C "$1" init -q
+            git -C "$1" config user.email ci@example.invalid
+            git -C "$1" config user.name ci
+            git -C "$1" add -A && git -C "$1" commit -qm init
+          }
+          # A line that IS a command: leading space, then a bare path ending in
+          # adopt.sh. Prose mentioning the script does not match, which is why
+          # every pasteable command in these messages stands on its own line.
+          pasteable() {
+            grep -E '^[[:space:]]+[^[:space:]]*adopt\.sh([[:space:]]|$)' "$1" \
+              | sed 's/^[[:space:]]*//' || true
+          }
+          # $1 log, $2 cwd to paste from, $3 how many commands it must hold.
+          check_printed() {
+            local n=0 line rc
+            while IFS= read -r line; do
+              [[ -n "$line" ]] || continue
+              n=$((n + 1))
+              echo "  pasting from $2: $line"
+              rc=0
+              ( cd "$2" && eval "$line --dry-run" ) > /tmp/paste.log 2>&1 || rc=$?
+              if [[ $rc -ne 0 ]]; then
+                cat /tmp/paste.log
+                echo "::error::the printed remedy exited $rc when pasted in $2: $line"
+                exit 1
+              fi
+            done < <(pasteable "$1")
+            [[ $n -eq $3 ]] || {
+              echo "::error::expected $3 pasteable commands in $1, found $n"
+              cat "$1"; exit 1; }
+          }
+
+          # 1. The documented invocation: an absolute path, run from inside the
+          #    consumer's own repo. This is the one a consumer actually meets.
+          consumer /tmp/ag-rem
+          for combo in "--editor" "--hooks"; do
+            rc=0
+            ( cd /tmp/ag-rem && "$BASE/scripts/adopt.sh" /tmp/ag-rem --agent "$combo" ) \
+              > /tmp/ag-rem.log 2>&1 || rc=$?
+            cat /tmp/ag-rem.log
+            [[ $rc -eq 3 ]] || { echo "::error::[$combo] expected exit 3, got $rc"; exit 1; }
+            check_printed /tmp/ag-rem.log /tmp/ag-rem 2
+            echo "  OK  both runs named for --agent $combo actually run"
+          done
+
+          # 2. Invoked from the baseline with a relative path. The remedy has
+          #    to be runnable from the cwd it was printed in, which here is the
+          #    baseline rather than the target.
+          rc=0
+          ( cd "$BASE" && ./scripts/adopt.sh /tmp/ag-rem --agent --editor ) \
+            > /tmp/ag-rem2.log 2>&1 || rc=$?
+          cat /tmp/ag-rem2.log
+          [[ $rc -eq 3 ]] || { echo "::error::expected exit 3, got $rc"; exit 1; }
+          check_printed /tmp/ag-rem2.log "$BASE" 2
+
+          # 3. THE BASELINE AS THE TARGET. "Adopt them one at a time" is false
+          #    here: --editor against this tree is refused by the self-adopt
+          #    rule, so exactly ONE of the two runs exists, and printing the
+          #    other sends the reader into a second error message.
+          rc=0
+          ( cd "$BASE" && ./scripts/adopt.sh . --agent --editor ) \
+            > /tmp/ag-rem3.log 2>&1 || rc=$?
+          cat /tmp/ag-rem3.log
+          [[ $rc -eq 3 ]] || { echo "::error::expected exit 3, got $rc"; exit 1; }
+          check_printed /tmp/ag-rem3.log "$BASE" 1
+          grep -q -- '--agent' /tmp/ag-rem3.log || {
+            echo '::error::the one run that works in this tree is not the one named'; exit 1; }
+
+          # 4. The SUCCESS footer names the language-layer run, and it is a
+          #    printed command like any other.
+          consumer /tmp/ag-rem-ok
+          ( cd /tmp/ag-rem-ok && "$BASE/scripts/adopt.sh" /tmp/ag-rem-ok --agent ) \
+            > /tmp/ag-rem-ok.log 2>&1
+          cat /tmp/ag-rem-ok.log
+          check_printed /tmp/ag-rem-ok.log /tmp/ag-rem-ok 1
+
+          # 5. A path with a space in it. These strings are printed to be
+          #    pasted into a shell, and a checkout under "My Documents" is not
+          #    exotic — an unquoted path there runs a different command, or
+          #    none.
+          consumer "/tmp/ag rem space"
+          rc=0
+          ( cd "/tmp/ag rem space" && "$BASE/scripts/adopt.sh" "/tmp/ag rem space" --agent --hooks ) \
+            > /tmp/ag-rem-space.log 2>&1 || rc=$?
+          cat /tmp/ag-rem-space.log
+          [[ $rc -eq 3 ]] || { echo "::error::expected exit 3, got $rc"; exit 1; }
+          check_printed /tmp/ag-rem-space.log "/tmp/ag rem space" 2
+
+          # 6. A TREE WITH NO DETECTABLE LANGUAGE — the blind spot the five
+          #    fixtures above all shared, because every one of them was handed
+          #    a manifest. This is the one tree where the language-layer run
+          #    is not merely unhelpful but WRONG: `adopt.sh TARGET` warns
+          #    "Nothing to do" and exits 1 there. And it is precisely the
+          #    population this branch newly admits — since --agent no longer
+          #    runs detection, a repo in a language the baseline has never
+          #    heard of can adopt the contract, which docs/ADOPTION.md 5c and
+          #    configs/agent/README.md 7 both sell as the point. So the
+          #    fixture the check was least able to fail on was the tree the
+          #    feature was sold on.
+          #
+          #    check_printed asserts rc 0 from every command a message prints,
+          #    so the only way to be right here is to print none — the counts
+          #    below are 0 for the footer and 1 for the refusal, and both are
+          #    the assertion, not a relaxation of it.
+          nolang() {
+            rm -rf "$1"; mkdir -p "$1"
+            printf '# no language here\n' > "$1/README.md"
+          }
+          nolang /tmp/ag-nolang
+          ( cd /tmp/ag-nolang && "$BASE/scripts/adopt.sh" /tmp/ag-nolang --agent ) \
+            > /tmp/ag-nolang.log 2>&1
+          cat /tmp/ag-nolang.log
+          check_printed /tmp/ag-nolang.log /tmp/ag-nolang 0
+
+          #    Same tree, the combined-flag refusal. "Adopt them one at a
+          #    time, in either order" names two runs and only one of them
+          #    exists here, exactly as in the baseline tree — so one command,
+          #    and it is the --agent one.
+          nolang /tmp/ag-nolang2
+          rc=0
+          ( cd /tmp/ag-nolang2 && "$BASE/scripts/adopt.sh" /tmp/ag-nolang2 --agent --editor ) \
+            > /tmp/ag-nolang2.log 2>&1 || rc=$?
+          cat /tmp/ag-nolang2.log
+          [[ $rc -eq 3 ]] || { echo "::error::expected exit 3, got $rc"; exit 1; }
+          check_printed /tmp/ag-nolang2.log /tmp/ag-nolang2 1
+          grep -q -- '--agent' /tmp/ag-nolang2.log || {
+            echo '::error::the one run that works in this tree is not the one named'; exit 1; }
+          echo 'OK: every printed command ran, in the cwd it was printed in'
+
+      # THE PROBE MUST AGREE WITH THE LANGUAGE LAYER. The two messages above
+      # now ask a predicate before offering the second run, and that predicate
+      # carries its own copy of the marker list — so it can drift from the
+      # detection block's. Drift one way prints a command that exits 1, which
+      # is the defect this step exists to hold down; drift the other withholds
+      # a run that would have worked.
+      #
+      # Asserted behaviourally rather than by diffing two lists: for every
+      # marker the language layer detects, and for the trees it refuses
+      # (Gradle-only, and nothing at all), the number of language-layer
+      # commands the --agent footer prints must equal whether that run in fact
+      # succeeds. Nothing here has to be kept in sync by hand.
+      - name: the language-layer run is offered only where it runs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BASE=$PWD
+          for marker in demo.csproj demo.sln demo.slnx tsconfig.json package.json \
+                        pyproject.toml requirements.txt uv.lock Cargo.toml pom.xml \
+                        build.gradle build.gradle.kts __none__; do
+            d=/tmp/ag-probe
+            rm -rf "$d"; mkdir -p "$d"
+            printf '# fixture\n' > "$d/README.md"
+            if [[ "$marker" != "__none__" ]]; then : > "$d/$marker"; fi
+
+            # Does a language-layer run actually do anything in this tree?
+            lang_rc=0
+            ( cd "$d" && "$BASE/scripts/adopt.sh" "$d" --dry-run ) \
+              > /tmp/probe-lang.log 2>&1 || lang_rc=$?
+
+            # How many language-layer commands does the --agent footer offer?
+            ( cd "$d" && "$BASE/scripts/adopt.sh" "$d" --agent ) \
+              > /tmp/probe-agent.log 2>&1
+            offered=$(grep -cE '^[[:space:]]+[^[:space:]]*adopt\.sh([[:space:]]|$)' \
+              /tmp/probe-agent.log || true)
+
+            want=0
+            if [[ $lang_rc -eq 0 ]]; then want=1; fi
+            if [[ "$offered" -ne "$want" ]]; then
+              cat /tmp/probe-lang.log /tmp/probe-agent.log
+              echo "::error::[$marker] language layer exits $lang_rc, footer offered $offered run(s), wanted $want"
+              exit 1
+            fi
+            echo "  OK  $marker: language layer exits $lang_rc, footer offers $offered"
+          done
+          echo 'OK: the footer offers the language-layer run exactly where that run works'
+
+      # THE INERT FLAGS, which had no assertion at all. docs/ADOPTION.md and
+      # the script header both promise that --force, --ref and --no-workflow
+      # are REPORTED as doing nothing on an --agent run rather than dropped
+      # quietly, and nothing in CI passed one — this branch removed the last
+      # --no-workflow from the --agent invocations above, so the promise could
+      # stop being kept with every check green.
+      #
+      # --ref is covered first and explicitly. REF_SET exists only so that
+      # `--ref v1` reports honestly: a check written the obvious way, comparing
+      # $REF against the default, stays silent for the one reader most likely
+      # to believe the flag took effect, and passes every other assertion here.
+      - name: --agent reports the language-layer flags as inert, --ref included
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          inert_repo() {
+            rm -rf "$1"; mkdir -p "$1"
+            printf '{"name":"demo"}\n' > "$1/package.json"
+            git -C "$1" init -q
+            git -C "$1" config user.email ci@example.invalid
+            git -C "$1" config user.name ci
+            git -C "$1" add -A && git -C "$1" commit -qm init
+          }
+
+          # --ref carrying THE DEFAULT VALUE. Nothing else in this file would
+          # notice it going silent.
+          inert_repo /tmp/ag-inert-ref
+          out=$(./scripts/adopt.sh /tmp/ag-inert-ref --agent --ref v1 2>&1)
+          echo "$out"
+          grep -q -- '--ref does nothing on this' <<<"$out" || {
+            echo '::error::--agent --ref v1 did not report --ref as inert — the default value is the case REF_SET exists for'
+            exit 1; }
+
+          # Both at once, and a --ref that differs from the default.
+          #
+          # --force IS NOT IN THIS LIST, and that is the assertion. It was
+          # inert until the CLAUDE.md region became refreshable (#177); it is
+          # now the one way past the refusal on a region you edited yourself,
+          # so reporting it as doing nothing would be a lie about the flag that
+          # decides whether your edit survives.
+          inert_repo /tmp/ag-inert-all
+          out=$(./scripts/adopt.sh /tmp/ag-inert-all --agent --force --no-workflow --ref v1.0.9 2>&1)
+          echo "$out"
+          for flag in --no-workflow --ref; do
+            grep -q -- "$flag" <<<"$out" || {
+              echo "::error::$flag was dropped silently on an --agent run"; exit 1; }
+          done
+          grep -q -- '--force does nothing' <<<"$out" \
+            && { echo '::error::--force was reported inert, and it decides whether an edited region survives'; exit 1; }
+          # Reported AND actually inert. A flag that is announced as doing
+          # nothing and then does something is the worse half of this bug.
+          [[ -e /tmp/ag-inert-all/.github ]] \
+            && { echo '::error::--no-workflow was reported inert next to a workflow that got written'; exit 1; }
+          if grep -rqF 'v1.0.9' /tmp/ag-inert-all --exclude-dir=.git; then
+            echo '::error::--ref was reported inert and still reached the tree'; exit 1
+          fi
+
+          # And no false alarm: a bare --agent run reports nothing inert.
+          inert_repo /tmp/ag-inert-none
+          out=$(./scripts/adopt.sh /tmp/ag-inert-none --agent 2>&1)
+          echo "$out"
+          if grep -q 'does nothing on this' <<<"$out"; then
+            echo '::error::a bare --agent run reported an inert flag nobody passed'; exit 1
+          fi
+          echo 'OK: --no-workflow and --ref are reported, inert, and not invented; --force is not claimed inert'
+
+      # ISSUE #178, end to end and in an ADOPTED tree. The refusal prints a
+      # line for a session to paste, so this step PASTES IT — `eval` on the
+      # exact string the hook produced, not a re-typed approximation of it.
+      # That is the whole defect: the old instruction interpolated the declared
+      # gate into an argv, so an `&&` in it bound OUTSIDE the recorder, the
+      # second half ran unrecorded, and the receipt said "pass" for a gate that
+      # had failed. No fixture can catch that, because a fixture runs the
+      # command it meant rather than the one the message asked for.
+      - name: the line the refusal prints runs the WHOLE gate when pasted
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm -rf /tmp/ag-gate; mkdir -p /tmp/ag-gate
+          printf '{"name":"demo"}\n' > /tmp/ag-gate/package.json
+          git -C /tmp/ag-gate init -q
+          git -C /tmp/ag-gate config user.email ci@example.invalid
+          git -C /tmp/ag-gate config user.name ci
+          git -C /tmp/ag-gate add -A && git -C /tmp/ag-gate commit -qm init
+          ./scripts/adopt.sh /tmp/ag-gate --agent
+
+          # A two-part gate, written the natural way. Its SECOND half is the
+          # one that decides, which is the half the defect dropped.
+          printf '{"gate_command": "test -f package.json && test -f %s"}\n' \
+            NOPE > /tmp/ag-gate/.claude/agent-guard.json
+          echo 'ungated' >> /tmp/ag-gate/package.json
+
+          stop_out() {
+            (cd /tmp/ag-gate && printf '{"cwd":"%s","hook_event_name":"Stop"}' /tmp/ag-gate \
+             | python3 /tmp/ag-gate/.claude/agent-guard/stop-gate.py)
+          }
+
+          # Extracts the ONE line a reader would paste, and asserts it is one
+          # line and that it holds no shell operator. That second assertion is
+          # the defect stated directly: an instruction carrying `&&`, `;` or
+          # `|` cannot survive being pasted, however well it reads.
+          instruction() {
+            local out; out=$(stop_out); echo "$out" >&2
+            python3 - "$out" <<'PY'
+          import json, sys
+          doc = json.loads(sys.argv[1])
+          if doc.get("decision") != "block":
+              print("::error::the stop was not blocked", file=sys.stderr); sys.exit(1)
+          lines = [l.strip() for l in doc["reason"].splitlines() if "record-gate.py" in l]
+          if len(lines) != 1:
+              print(f"::error::{len(lines)} lines name record-gate.py; a paste target is one",
+                    file=sys.stderr)
+              sys.exit(1)
+          bad = [c for c in "&|;<>`" if c in lines[0]]
+          if bad:
+              print(f"::error::the pasteable line carries shell operators {bad} — #178",
+                    file=sys.stderr)
+              sys.exit(1)
+          print(lines[0])
+          PY
+          }
+
+          line=$(instruction)
+          echo "pasting: $line"
+          rc=0
+          (cd /tmp/ag-gate && eval "$line") || rc=$?
+          [[ $rc -ne 0 ]] \
+            || { echo '::error::the pasted line reported success for a gate whose second half fails'; exit 1; }
+          verdict=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["verdict"])' \
+                    /tmp/ag-gate/.claude/agent-guard-receipt.json)
+          [[ $verdict == fail ]] \
+            || { echo "::error::the receipt says $verdict for a gate that failed"; exit 1; }
+
+          # And the stop is STILL refused, on the failing verdict rather than
+          # on an absent receipt.
+          out=$(stop_out)
+          grep -q 'FAILED' <<<"$out" \
+            || { echo '::error::a failing recorded gate did not refuse the stop'; exit 1; }
+
+          # Now the same gate, passing. Same pasted line, no edits to it.
+          printf '{"gate_command": "test -f package.json && test -f .gitignore"}\n' \
+            > /tmp/ag-gate/.claude/agent-guard.json
+          line=$(instruction)
+          (cd /tmp/ag-gate && eval "$line")
+          out=$(stop_out)
+          [[ -z ${out//[[:space:]]/} ]] \
+            || { echo "::error::the stop was still refused after a passing gate: $out"; exit 1; }
+          echo 'OK: the printed line ran both halves, both times, inside the recorder'
+
+      # ISSUE #182 — install only what can fire. sample-guard.py and the
+      # Edit(/samples/expected/**) deny rule are hardcoded to THIS repo's
+      # fixture layout. Shipped into a tree without manifests they are
+      # reachable, run, and allow everything — while the CLAUDE.md region
+      # asserts the tree is protected by three hooks and two deny rules. What
+      # is asserted here is that the rules installed and the prose describing
+      # them are the same set, in both directions.
+      - name: what --agent installs and what it claims are the same set
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          profile_repo() {
+            rm -rf "$1"; mkdir -p "$1"
+            printf '# consumer\n\nOur own rules.\n' > "$1/CLAUDE.md"
+            printf '{"name":"demo"}\n' > "$1/package.json"
+            git -C "$1" init -q
+            git -C "$1" config user.email ci@example.invalid
+            git -C "$1" config user.name ci
+            git -C "$1" add -A && git -C "$1" commit -qm init
+          }
+          # A tree with NO expectation manifests.
+          profile_repo /tmp/ag-nosamples
+          ./scripts/adopt.sh /tmp/ag-nosamples --agent >/dev/null
+          python3 - <<'PY'
+          import json, sys
+          d = json.load(open("/tmp/ag-nosamples/.claude/settings.json"))
+          cmds = [e["command"] for g in d["hooks"].values() for grp in g for e in grp["hooks"]]
+          deny = d["permissions"]["deny"]
+          bad = []
+          if any("sample-guard.py" in c for c in cmds):
+              bad.append("sample-guard.py was installed in a tree with no samples/")
+          if any("samples/expected" in r for r in deny):
+              bad.append("the samples/expected deny rule was installed in a tree with no samples/")
+          if not any("stop-gate.py" in c for c in cmds):
+              bad.append("the Stop gate was NOT installed — the half that always applies")
+          if not any("no-verify" in c for c in cmds):
+              bad.append("the no-verify guard was NOT installed")
+          if not any("agent-guard-receipt" in r for r in deny):
+              bad.append("the receipt deny rule was NOT installed")
+          for b in bad:
+              print(f"::error::{b}")
+          sys.exit(1 if bad else 0)
+          PY
+          # And the prose has to match. A region that still describes the
+          # samples/ rule is the defect this issue is about.
+          grep -qF 'two hooks and one deny rule' /tmp/ag-nosamples/CLAUDE.md \
+            || { echo '::error::the region does not state the rule count that was installed'; exit 1; }
+          if grep -q 'samples/' /tmp/ag-nosamples/CLAUDE.md; then
+            echo '::error::the region describes a samples/ rule this tree cannot run:'
+            grep -n 'samples/' /tmp/ag-nosamples/CLAUDE.md
+            exit 1
+          fi
+          grep -qF 'Our own rules.' /tmp/ag-nosamples/CLAUDE.md \
+            || { echo "::error::the consumer's own prose was lost"; exit 1; }
+
+          # A tree WITH manifests gets all five, and says so.
+          profile_repo /tmp/ag-samples
+          mkdir -p /tmp/ag-samples/samples/expected
+          printf '{}\n' > /tmp/ag-samples/samples/expected/demo.json
+          ./scripts/adopt.sh /tmp/ag-samples --agent >/dev/null
+          grep -qF 'three hooks and two deny rules' /tmp/ag-samples/CLAUDE.md \
+            || { echo '::error::a tree WITH manifests did not get the full contract text'; exit 1; }
+          grep -qF 'samples/expected/**' /tmp/ag-samples/.claude/settings.json \
+            || { echo '::error::a tree WITH manifests did not get the samples deny rule'; exit 1; }
+          # ISSUE #191 — and the same set again, one level down: every .py
+          # that lands must be one this tree wires. Enumerated, not named, so a
+          # script added to the baseline later cannot slip in unwired.
+          for d in /tmp/ag-nosamples /tmp/ag-samples; do
+            for f in "$d"/.claude/agent-guard/*.py; do
+              n=$(basename "$f")
+              [[ "$n" == selftest.py ]] \
+                && { echo "::error::$d got selftest.py, which cannot run in any consumer"; exit 1; }
+              grep -q "$n" "$d/.claude/settings.json" \
+                || [[ "$n" == guard.py || "$n" == record-gate.py ]] \
+                || { echo "::error::$d got $n, which no hook command names"; exit 1; }
+            done
+          done
+          [[ -e /tmp/ag-nosamples/.claude/agent-guard/sample-guard.py ]] \
+            && { echo '::error::a tree with no manifests got sample-guard.py'; exit 1; }
+          [[ -e /tmp/ag-samples/.claude/agent-guard/sample-guard.py ]] \
+            || { echo '::error::a tree WITH manifests did not get sample-guard.py'; exit 1; }
+          # And an orphan from an earlier adoption is removed, not left running.
+          cp "$PWD/scripts/agent-guard/selftest.py" /tmp/ag-nosamples/.claude/agent-guard/
+          ./scripts/adopt.sh /tmp/ag-nosamples --agent >/dev/null
+          [[ -e /tmp/ag-nosamples/.claude/agent-guard/selftest.py ]] \
+            && { echo '::error::an orphan script survived a re-adoption'; exit 1; }
+          echo 'OK: the rules installed and the rules described are one set'
+
+      # ISSUE #177 — re-running --agent REFRESHES the CLAUDE.md region instead
+      # of skipping it, so re-adoption is the upgrade path for the prose the
+      # way it already is for the scripts and the settings merge. And it
+      # refuses a region the consumer edited rather than overwriting it.
+      - name: the CLAUDE.md region refreshes, and refuses an edit
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          d=/tmp/ag-region
+          rm -rf $d; mkdir -p $d
+          printf '# consumer\n\nOur own rules.\n' > $d/CLAUDE.md
+          printf '{"name":"demo"}\n' > $d/package.json
+          git -C $d init -q
+          git -C $d config user.email ci@example.invalid
+          git -C $d config user.name ci
+          git -C $d add -A && git -C $d commit -qm init
+          ./scripts/adopt.sh $d --agent >/dev/null
+          git -C $d add -A && git -C $d commit -qm adopted
+
+          # 1. A second run changes NOTHING — the same assertion the rest of
+          #    --agent already carries, now true of the region too.
+          ./scripts/adopt.sh $d --agent >/dev/null
+          git -C $d diff --exit-code >/dev/null \
+            || { echo '::error::a second --agent rewrote the region'; git -C $d diff; exit 1; }
+
+          # 2. A STALE region is refreshed. Modelled by planting the OTHER
+          #    profile's text — unedited by the consumer, correctly checksummed,
+          #    and not what this tree should be carrying. That is the shape of a
+          #    region installed by an older baseline, and the direction matters:
+          #    this tree has no manifests, so it must come back to the two-rule
+          #    text rather than keep the three-rule one.
+          python3 scripts/agent-region.py apply \
+            --fragment configs/agent/CLAUDE.fragment.md \
+            --target $d/CLAUDE.md --samples yes >/dev/null
+          grep -qF 'three hooks and two deny rules' $d/CLAUDE.md \
+            || { echo '::error::the fixture did not plant a stale region'; exit 1; }
+          ./scripts/adopt.sh $d --agent >/dev/null
+          grep -qF 'two hooks and one deny rule' $d/CLAUDE.md \
+            || { echo '::error::--agent did not refresh a stale region'; exit 1; }
+          grep -qF 'Our own rules.' $d/CLAUDE.md \
+            || { echo "::error::the refresh disturbed prose outside the markers"; exit 1; }
+
+          # 3. A region the consumer EDITED is refused, and nothing is written.
+          python3 - "$d/CLAUDE.md" <<'PY'
+          import pathlib, sys
+          p = pathlib.Path(sys.argv[1]); t = p.read_text(encoding="utf-8")
+          p.write_text(t.replace("They are not advice", "MY EDIT. They are not advice", 1),
+                       encoding="utf-8")
+          PY
+          before=$(sha256sum $d/CLAUDE.md | cut -d' ' -f1)
+          out=$(./scripts/adopt.sh $d --agent 2>&1) || true
+          after=$(sha256sum $d/CLAUDE.md | cut -d' ' -f1)
+          [[ "$before" == "$after" ]] \
+            || { echo '::error::an edited region was overwritten'; exit 1; }
+          grep -qF 'MY EDIT' $d/CLAUDE.md \
+            || { echo "::error::the consumer's edit was lost"; exit 1; }
+          grep -q 'edited since it was installed' <<<"$out" \
+            || { echo '::error::the refusal did not say why'; echo "$out"; exit 1; }
+
+          # 4. --force is the documented way through, and only that.
+          ./scripts/adopt.sh $d --agent --force >/dev/null
+          grep -qF 'MY EDIT' $d/CLAUDE.md \
+            && { echo '::error::--force did not refresh the region'; exit 1; }
+
+          # 5. Half a region is refused rather than half-replaced.
+          printf '# x\n<!-- BEGIN maxi-quality agent-guard sha256:dead -->\nbody\n' > $d/half.md
+          rc=0
+          python3 scripts/agent-region.py apply \
+            --fragment configs/agent/CLAUDE.fragment.md \
+            --target $d/half.md --samples yes >/dev/null 2>&1 || rc=$?
+          [[ $rc -eq 4 ]] \
+            || { echo "::error::a BEGIN with no END exited $rc, expected 4"; exit 1; }
+          # 6. ISSUE #198 — a CLAUDE.md that is a SYMLINK.
+          #
+          # A repo that wants one instruction file under two names symlinks one
+          # to the other, and the direction is a free choice. os.replace
+          # replaces the LINK: the arrangement died, the two files became
+          # divergent copies, the region landed in the file the repo does not
+          # treat as canonical, and the run exited 0 saying ADOPTED. It survived
+          # four real adoptions because the OTHER direction — AGENTS.md as the
+          # link — is correct by accident.
+          #
+          # This fixture is the direction that broke. It asserts the mode is
+          # still a symlink, the region is in the TARGET, and the success line
+          # names where the bytes actually went.
+          s=$(mktemp -d)/repo; mkdir -p "$s"; git -C "$s" init -q .
+          printf '# Real\n\nProse.\n' > "$s/AGENTS.md"
+          ln -s AGENTS.md "$s/CLAUDE.md"
+          git -C "$s" add -A
+          git -C "$s" -c user.email=t@t -c user.name=t commit -qm init
+          out=$(./scripts/adopt.sh "$s" --agent)
+          [[ -L "$s/CLAUDE.md" ]] \
+            || { echo '::error::--agent replaced a symlinked CLAUDE.md with a regular file (#198)'; exit 1; }
+          grep -qF 'BEGIN maxi-quality agent-guard' "$s/AGENTS.md" \
+            || { echo '::error::the region did not reach the symlink target'; exit 1; }
+          grep -qF "$s/AGENTS.md" <<<"$out" \
+            || { echo '::error::the success line named the link, not the file written'; echo "$out"; exit 1; }
+
+          # 7. A region that cannot be written is no longer reported as ADOPTED.
+          #
+          # Every refusal above left the hooks installed, printed its reason,
+          # exited 0 and said ADOPTED — a tree enforcing rules no text mentions,
+          # reported as a clean run. Exit 7 is --editor's exit 5 for the other
+          # half. Asserted on BOTH reachable causes, because the edited-region
+          # path predates #198 and the dangling-symlink path is new.
+          # Case 4's --force repaired $d's region, so plant the edit again —
+          # asserting an exit code against a tree that is already current would
+          # pass for the wrong reason and never fail.
+          python3 - "$d/CLAUDE.md" <<'PY'
+          import pathlib, sys
+          p = pathlib.Path(sys.argv[1]); t = p.read_text(encoding="utf-8")
+          p.write_text(t.replace("They are not advice", "EDIT AGAIN. They are not advice", 1),
+                       encoding="utf-8")
+          PY
+          rc=0; ./scripts/adopt.sh $d --agent >/dev/null 2>&1 || rc=$?
+          [[ $rc -eq 7 ]] \
+            || { echo "::error::an edited region exited $rc, expected 7"; exit 1; }
+          grep -qF 'EDIT AGAIN' $d/CLAUDE.md \
+            || { echo '::error::the exit-7 run overwrote the edit it refused'; exit 1; }
+          l=$(mktemp -d)/repo; mkdir -p "$l"; git -C "$l" init -q .
+          ln -s NOPE.md "$l/CLAUDE.md"; printf 'x\n' > "$l/f.txt"
+          git -C "$l" add -A
+          git -C "$l" -c user.email=t@t -c user.name=t commit -qm init
+          rc=0; ./scripts/adopt.sh "$l" --agent >/dev/null 2>&1 || rc=$?
+          [[ $rc -eq 7 ]] \
+            || { echo "::error::a dangling symlinked CLAUDE.md exited $rc, expected 7"; exit 1; }
+
+          echo 'OK: refreshed when stale, silent when current, refused when edited,'
+          echo '    a symlink followed not replaced, and a held-back region exits 7'
+
+      # ISSUE #192 — which repo is the recorder recording FOR?
+      #
+      # It had no answer but the process cwd, so running one adopted repo's
+      # recorder from inside another wrote a PASSING receipt into the
+      # bystander and left the intended repo ungated. Two real adopted trees,
+      # because that is the only way to express it — the fixture corpus builds
+      # one repo per case, and this defect needs the script to live in a
+      # different tree from the one the shell is standing in.
+      - name: a recorder run from the wrong repo writes nothing
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          two_repos() {
+            for n in A B; do
+              d=/tmp/ag-$1$n
+              rm -rf "$d"; mkdir -p "$d"; printf 'x\n' > "$d/f.txt"
+              git -C "$d" init -q
+              git -C "$d" config user.email ci@example.invalid
+              git -C "$d" config user.name ci
+              git -C "$d" add -A && git -C "$d" commit -qm init
+              ./scripts/adopt.sh "$d" --agent >/dev/null
+              printf '{"gate_command": "true"}\n' > "$d/.claude/agent-guard.json"
+            done
+          }
+          two_repos w
+          # B is dirty and has never run its gate. A is clean.
+          printf 'ungated\n' >> /tmp/ag-wB/f.txt
+
+          rc=0
+          (cd /tmp/ag-wA && python3 /tmp/ag-wB/.claude/agent-guard/record-gate.py --gate) \
+            > /tmp/ag-cross.log 2>&1 || rc=$?
+          cat /tmp/ag-cross.log
+          [[ $rc -eq 3 ]] \
+            || { echo "::error::a cross-repo record exited $rc, expected 3"; exit 1; }
+          [[ -e /tmp/ag-wA/.claude/agent-guard-receipt.json ]] \
+            && { echo '::error::it wrote a receipt into the repo it was run FROM'; exit 1; }
+          [[ -e /tmp/ag-wB/.claude/agent-guard-receipt.json ]] \
+            && { echo '::error::it wrote a receipt into the repo it belongs to, from the wrong cwd'; exit 1; }
+          grep -q 'belongs to' /tmp/ag-cross.log \
+            || { echo '::error::the refusal did not name both repos'; exit 1; }
+
+          # The ordinary invocation is untouched — this is the half a
+          # too-broad rule would break.
+          (cd /tmp/ag-wB && python3 .claude/agent-guard/record-gate.py --gate) >/dev/null
+          [[ -e /tmp/ag-wB/.claude/agent-guard-receipt.json ]] \
+            || { echo '::error::a correct in-repo record wrote no receipt'; exit 1; }
+
+          # And the baseline's own layout still resolves from cwd: these
+          # scripts live in scripts/agent-guard/, not .claude/agent-guard/, so
+          # the rule must not fire for them. Every `record` fixture depends on
+          # this, and so does any future shared install (#193).
+          rc2=0
+          base=$PWD
+          (cd /tmp/ag-wA && python3 "$base/scripts/agent-guard/record-gate.py" --gate) \
+            >/dev/null 2>&1 || rc2=$?
+          [[ $rc2 -eq 0 ]] \
+            || { echo "::error::the baseline's own recorder refused a legitimate run (exit $rc2)"; exit 1; }
+          echo 'OK: it records for the repo it belongs to, or for nobody'
+
+      # ISSUE #193 — --shared installs 101 lines instead of 984, and the
+      # scripts live once at ~/.claude/agent-guard/. HOME is redirected so the
+      # absent-body path is reachable: that path is the entire reason this
+      # design was chosen over a plugin, which cannot be absent LOUDLY.
+      - name: --shared installs a shim, and a missing body refuses loudly
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export HOME=/tmp/ag-home
+          rm -rf /tmp/ag-home /tmp/ag-shared
+          mkdir -p /tmp/ag-home /tmp/ag-shared
+          printf '{"name":"demo"}\n' > /tmp/ag-shared/package.json
+          printf 'hi\n' > /tmp/ag-shared/f.txt
+          git -C /tmp/ag-shared init -q
+          git -C /tmp/ag-shared config user.email ci@example.invalid
+          git -C /tmp/ag-shared config user.name ci
+          git -C /tmp/ag-shared add -A && git -C /tmp/ag-shared commit -qm init
+          ./scripts/adopt.sh /tmp/ag-shared --agent --shared >/dev/null
+          printf '{"gate_command": "true"}\n' > /tmp/ag-shared/.claude/agent-guard.json
+
+          # 1. One file, and it is the shim.
+          got=$(cd /tmp/ag-shared/.claude/agent-guard && ls)
+          [[ "$got" == "shim.py" ]] \
+            || { echo "::error::--shared installed [$got], expected shim.py alone"; exit 1; }
+          n=$(wc -l < /tmp/ag-shared/.claude/agent-guard/shim.py)
+          [[ $n -lt 150 ]] \
+            || { echo "::error::the shim is $n lines; it is meant to be small"; exit 1; }
+          grep -q 'shim[.]py.*stop-gate' /tmp/ag-shared/.claude/settings.json \
+            || { echo '::error::the wiring does not route through the shim'; exit 1; }
+
+          # 2. THE BODY IS ABSENT. The Stop hook must BLOCK and name the fix.
+          printf 'ungated\n' >> /tmp/ag-shared/f.txt
+          out=$(cd /tmp/ag-shared && printf '{"cwd":"/tmp/ag-shared","hook_event_name":"Stop"}' \
+                | python3 .claude/agent-guard/shim.py stop-gate)
+          grep -q '"decision": *"block"' <<<"$out" \
+            || { echo '::error::a missing shared body allowed the stop — the exact silent absence this design exists to prevent'; exit 1; }
+          grep -q 'install-shared' <<<"$out" \
+            || { echo '::error::the refusal does not say how to fix it'; exit 1; }
+
+          # 3. A commit is denied; an ordinary command is not.
+          deny=$(cd /tmp/ag-shared && printf '{"tool_input":{"command":"git commit -m x"}}' \
+                 | python3 .claude/agent-guard/shim.py no-verify-guard)
+          grep -q '"permissionDecision": *"deny"' <<<"$deny" \
+            || { echo '::error::a commit was allowed with no guard present'; exit 1; }
+          ok=$(cd /tmp/ag-shared && printf '{"tool_input":{"command":"ls -la"}}' \
+               | python3 .claude/agent-guard/shim.py no-verify-guard)
+          [[ -z "${ok//[[:space:]]/}" ]] \
+            || { echo "::error::an ordinary Bash command was refused: $ok"; exit 1; }
+
+          # 4. Install the body; the whole loop works, and the printed remedy runs.
+          ./scripts/adopt.sh --install-shared >/dev/null
+          [[ -e /tmp/ag-home/.claude/agent-guard/stop-gate.py ]] \
+            || { echo '::error::--install-shared wrote no body'; exit 1; }
+          [[ -e /tmp/ag-home/.claude/agent-guard/selftest.py ]] \
+            && { echo '::error::the shared body carries selftest.py, which runs nowhere'; exit 1; }
+          out=$(cd /tmp/ag-shared && printf '{"cwd":"/tmp/ag-shared","hook_event_name":"Stop"}' \
+                | python3 .claude/agent-guard/shim.py stop-gate)
+          line=$(python3 - "$out" <<'PY'
+          import json, sys
+          print([l.strip() for l in json.loads(sys.argv[1])["reason"].splitlines()
+                 if "record-gate" in l][0])
+          PY
+          )
+          echo "pasting: $line"
+          (cd /tmp/ag-shared && eval "$line") >/dev/null
+          [[ -e /tmp/ag-shared/.claude/agent-guard-receipt.json ]] \
+            || { echo '::error::the printed remedy wrote no receipt into the repo it was run in'; exit 1; }
+          out=$(cd /tmp/ag-shared && printf '{"cwd":"/tmp/ag-shared","hook_event_name":"Stop"}' \
+                | python3 .claude/agent-guard/shim.py stop-gate)
+          [[ -z "${out//[[:space:]]/}" ]] \
+            || { echo "::error::the stop was still refused after a passing gate: $out"; exit 1; }
+          echo 'OK: 101 lines, refuses when absent, and the whole loop runs when present'
+
+      # ISSUE #196 — a re-adoption that installs FEWER rules than the last one
+      # left the old commands wired and deleted the scripts they named. A hook
+      # whose script is missing fails at exec, before guard.py's fail-open can
+      # run, and Claude Code treats a PreToolUse hook error as blocking: every
+      # Bash, Write and Edit call in the repo fails, and a session inside it
+      # cannot repair itself. That state reached a consumer's default branch.
+      #
+      # Two ordinary paths reach it — a profile that narrows and a mode change
+      # — so what is asserted is the POST-CONDITION, not the two paths.
+      - name: every transition leaves wiring that resolves
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export HOME=/tmp/ag-t-home
+          rm -rf /tmp/ag-t-home; mkdir -p /tmp/ag-t-home
+          ./scripts/adopt.sh --install-shared >/dev/null
+
+          fresh() {
+            rm -rf "$1"; mkdir -p "$1"
+            printf '{"name":"demo"}\n' > "$1/package.json"
+            git -C "$1" init -q
+            git -C "$1" config user.email ci@example.invalid
+            git -C "$1" config user.name ci
+            git -C "$1" add -A && git -C "$1" commit -qm init
+          }
+          resolves() { # every OUR command in $1 names a file that exists
+            python3 - "$1" <<'INNER'
+          import json, os, sys
+          root = sys.argv[1]
+          with open(os.path.join(root, ".claude/settings.json"), encoding="utf-8") as fh:
+              doc = json.load(fh)
+          bad = []
+          for groups in (doc.get("hooks") or {}).values():
+              for g in groups:
+                  for e in g.get("hooks", []):
+                      c = e.get("command", "")
+                      if "/.claude/agent-guard/" not in c or '"' not in c:
+                          continue
+                      p = c.split('"')[1].replace("${CLAUDE_PROJECT_DIR}", root)
+                      if not os.path.isfile(p):
+                          bad.append(p)
+          for b in bad:
+              print(f"::error::{root} wires a missing file: {b}")
+          sys.exit(1 if bad else 0)
+          INNER
+          }
+
+          # 1. copied -> shared -> copied
+          fresh /tmp/ag-t1
+          ./scripts/adopt.sh /tmp/ag-t1 --agent >/dev/null;          resolves /tmp/ag-t1
+          ./scripts/adopt.sh /tmp/ag-t1 --agent --shared >/dev/null; resolves /tmp/ag-t1
+          ./scripts/adopt.sh /tmp/ag-t1 --agent >/dev/null;          resolves /tmp/ag-t1
+
+          # 2. THE SHAPE THAT SHIPPED: manifests, then none. The samples rules
+          #    stop being wired, and the file stops being copied.
+          fresh /tmp/ag-t2
+          mkdir -p /tmp/ag-t2/samples/expected
+          printf '{}\n' > /tmp/ag-t2/samples/expected/demo.json
+          ./scripts/adopt.sh /tmp/ag-t2 --agent >/dev/null; resolves /tmp/ag-t2
+          grep -q 'sample-guard' /tmp/ag-t2/.claude/settings.json \
+            || { echo '::error::the fixture never wired the rule it is about to lose'; exit 1; }
+          rm -rf /tmp/ag-t2/samples
+          ./scripts/adopt.sh /tmp/ag-t2 --agent >/dev/null; resolves /tmp/ag-t2
+          grep -q 'sample-guard' /tmp/ag-t2/.claude/settings.json \
+            && { echo '::error::the narrowed profile left the old rule wired'; exit 1; }
+
+          # 3. The post-condition itself fires. A wired-but-absent script that
+          #    the reclaim step cannot see, because it IS in the wanted set.
+          rm -f /tmp/ag-t2/.claude/agent-guard/stop-gate.py
+          rc=0
+          python3 scripts/agent-settings.py verify \
+            --target /tmp/ag-t2/.claude/settings.json --root /tmp/ag-t2 >/dev/null 2>&1 || rc=$?
+          [[ $rc -eq 1 ]] \
+            || { echo "::error::verify exited $rc on a wired-but-missing script, expected 1"; exit 1; }
+
+          # 4. A consumer's OWN broken hook is not ours to refuse over.
+          fresh /tmp/ag-t3
+          ./scripts/adopt.sh /tmp/ag-t3 --agent >/dev/null
+          python3 - <<'INNER'
+          import json, pathlib
+          p = pathlib.Path("/tmp/ag-t3/.claude/settings.json")
+          d = json.loads(p.read_text())
+          d["hooks"].setdefault("Stop", [])[0]["hooks"].append(
+              {"type": "command", "command": 'python3 "${CLAUDE_PROJECT_DIR}/theirs.py"'})
+          p.write_text(json.dumps(d, indent=2) + "\n")
+          INNER
+          ./scripts/adopt.sh /tmp/ag-t3 --agent >/dev/null \
+            || { echo "::error::we refused an adoption over a consumer's own broken hook"; exit 1; }
+          grep -q 'theirs.py' /tmp/ag-t3/.claude/settings.json \
+            || { echo "::error::we deleted a consumer's own hook entry"; exit 1; }
+          echo 'OK: every transition resolves, and only our own wiring is ours to reclaim'
+
+      - name: --agent merges, and a consumer keeps everything they had
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm -rf /tmp/ag-own && mkdir -p /tmp/ag-own/.claude
+          printf '{"name":"demo"}\n' > /tmp/ag-own/package.json
+          git -C /tmp/ag-own init -q
+          git -C /tmp/ag-own config user.email ci@example.invalid
+          git -C /tmp/ag-own config user.name ci
+          # A settings.json shaped like a real one: their own PreToolUse hook
+          # under a matcher the baseline ALSO uses, their own deny rule, and two
+          # keys this merge has no business touching at all.
+          cat > /tmp/ag-own/.claude/settings.json <<'JSON'
+          {
+            "model": "opus",
+            "permissions": {
+              "deny": ["Read(/.env)"],
+              "allow": ["Bash(ls:*)"]
+            },
+            "hooks": {
+              "PreToolUse": [
+                {
+                  "matcher": "Bash",
+                  "hooks": [
+                    { "type": "command", "command": "python3 tools/mine.py", "timeout": 9 }
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          # Deliberately unterminated: appending the fragment straight onto
+          # someone's last line puts an HTML comment inside their final
+          # paragraph, and a heading that continues a line is not a heading.
+          printf '# Their CLAUDE.md\n\ntheir last line, no newline' > /tmp/ag-own/CLAUDE.md
+          printf 'node_modules/\n' > /tmp/ag-own/.gitignore
+          git -C /tmp/ag-own add -A && git -C /tmp/ag-own commit -qm own
+          # Manifests, so the comparison below is against the WHOLE baseline.
+          # This step is about a consumer keeping what they had, not about
+          # which profile they get (#182) — that has its own step.
+          mkdir -p /tmp/ag-own/samples/expected
+          printf '{}\n' > /tmp/ag-own/samples/expected/demo.json
+          ./scripts/adopt.sh /tmp/ag-own --agent
+          python3 - <<'PY'
+          import json, sys
+          s = json.load(open("/tmp/ag-own/.claude/settings.json"))
+          base = json.load(open("configs/agent/settings.json"))
+          bad = []
+          # Their own entries, byte-for-byte. This is the criterion the whole
+          # flag lives or dies on: the failure it catches is --editor's
+          # refuse-if-exists copied here (useless), or a replace that silently
+          # deletes the consumer's own rules.
+          if s.get("model") != "opus":
+              bad.append("an unrelated top-level key was lost")
+          if s["permissions"].get("allow") != ["Bash(ls:*)"]:
+              bad.append("permissions.allow was lost — this merge only writes deny")
+          if s["permissions"]["deny"][0] != "Read(/.env)":
+              bad.append(f"the consumer's deny rule moved: {s['permissions']['deny']}")
+          mine = [e for g in s["hooks"]["PreToolUse"] for e in g["hooks"]
+                  if e["command"] == "python3 tools/mine.py"]
+          if mine != [{"type": "command", "command": "python3 tools/mine.py", "timeout": 9}]:
+              bad.append(f"the consumer's own hook entry did not survive intact: {mine}")
+          # And the baseline's arrived — under the SAME Bash group, not a
+          # duplicate one, because a second group with an identical matcher runs
+          # fine and reads as a mistake forever after.
+          groups = [g for g in s["hooks"]["PreToolUse"] if g.get("matcher") == "Bash"]
+          if len(groups) != 1:
+              bad.append(f"{len(groups)} groups now match Bash; the merge should extend the one that exists")
+          elif [e["command"] for e in groups[0]["hooks"]][0] != "python3 tools/mine.py":
+              bad.append("the baseline entry was prepended — the merge reordered a consumer's hooks")
+          want = {e["command"] for gs in base["hooks"].values() for g in gs for e in g["hooks"]}
+          have = {e["command"] for gs in s["hooks"].values() for g in gs for e in g["hooks"]}
+          for c in sorted(want - have):
+              bad.append(f"the baseline hook {c} was not merged in")
+          for r in base["permissions"]["deny"]:
+              if r not in s["permissions"]["deny"]:
+                  bad.append(f"the baseline deny rule {r} was not merged in")
+          for b in bad:
+              print(f"::error::{b}")
+          sys.exit(1 if bad else 0)
+          PY
+          grep -qxF 'node_modules/' /tmp/ag-own/.gitignore \
+            || { echo '::error::the consumer .gitignore was clobbered'; exit 1; }
+          grep -qxF 'their last line, no newline' /tmp/ag-own/CLAUDE.md \
+            || { echo '::error::the fragment was glued onto the consumer last line'; exit 1; }
+          head -1 /tmp/ag-own/CLAUDE.md | grep -qF '# Their CLAUDE.md' \
+            || { echo '::error::the consumer CLAUDE.md was overwritten'; exit 1; }
+          echo 'OK: merged in, nothing of theirs replaced, reordered or lost'
+
+      - name: --agent twice is --agent once
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # Re-adoption is how this contract is UPGRADED — the scripts are a
+          # path on disk and there is no remote consumption for a hook command
+          # — so it happens on every baseline bump, not once. Hooks that double
+          # on every re-run would turn the upgrade path into the bug.
+          git -C /tmp/ag-own add -A && git -C /tmp/ag-own commit -qm adopted
+          ./scripts/adopt.sh /tmp/ag-own --agent
+          if ! git -C /tmp/ag-own diff --exit-code; then
+            echo '::error::a second --agent changed the tree'
+            exit 1
+          fi
+          untracked=$(git -C /tmp/ag-own ls-files --others --exclude-standard)
+          [[ -z "$untracked" ]] || { echo "::error::a second --agent left $untracked"; exit 1; }
+          echo 'OK: idempotent, by git rather than by inspection'
+
+      - name: --agent refuses a settings.json it cannot read, and writes NOTHING
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # Two shapes, one rule. A file that does not parse is a file whose
+          # contents we would be guessing at; a `hooks` key of the wrong shape
+          # is a file where "append to the array" has no meaning. Writing a
+          # plausible guess into either produces a settings.json Claude Code
+          # reports once at startup and thereafter treats as saying nothing —
+          # the contract adopted invisibly, enforcing nothing, in the report
+          # panel nobody has open.
+          # An EXPLICIT NULL is not an absent key, and the two are one typo
+          # apart. `{"permissions": {"deny": null}}` reached the merge as a real
+          # value, and the "is it missing?" check waved it through — so the
+          # refusal arrived as a Python traceback rather than a sentence. A
+          # traceback tells a consumer nothing except that this is our bug.
+          for spec in 'oops:{"hooks": "oops"}' \
+                      'comma:{"hooks": {},}' \
+                      'hooksnull:{"hooks": null}' \
+                      'eventnull:{"hooks": {"Stop": null}}' \
+                      'permnull:{"permissions": null}' \
+                      'denynull:{"permissions": {"deny": null}}' \
+                      'toplevel:null' \
+                      'denyobj:{"permissions": {"deny": [{"tool": "Edit"}]}}'; do
+            name="${spec%%:*}"; body="${spec#*:}"
+            rm -rf "/tmp/ag-$name" && mkdir -p "/tmp/ag-$name/.claude"
+            printf '{"name":"demo"}\n' > "/tmp/ag-$name/package.json"
+            printf '%s' "$body" > "/tmp/ag-$name/.claude/settings.json"
+            before=$(sha256sum "/tmp/ag-$name/.claude/settings.json" | cut -d' ' -f1)
+            rc=0
+            ./scripts/adopt.sh "/tmp/ag-$name" --agent > "/tmp/ag-$name.log" 2>&1 || rc=$?
+            cat "/tmp/ag-$name.log"
+            [[ $rc -eq 6 ]] || { echo "::error::[$name] a refused merge must exit 6, got $rc"; exit 1; }
+            after=$(sha256sum "/tmp/ag-$name/.claude/settings.json" | cut -d' ' -f1)
+            [[ "$before" == "$after" ]] \
+              || { echo "::error::[$name] the settings.json it refused to read was rewritten anyway"; exit 1; }
+            # EVERYTHING or nothing. Scripts plus fragment without the hooks is
+            # a CLAUDE.md promising refusals that nothing performs, which the
+            # next session reads and believes.
+            [[ -e "/tmp/ag-$name/.claude/agent-guard" ]] \
+              && { echo "::error::[$name] the guard scripts were copied despite the refusal"; exit 1; }
+            [[ -e "/tmp/ag-$name/CLAUDE.md" ]] \
+              && { echo "::error::[$name] the CLAUDE.md region was written despite the refusal"; exit 1; }
+            grep -qs 'agent-guard-receipt' "/tmp/ag-$name/.gitignore" \
+              && { echo "::error::[$name] .gitignore was appended to despite the refusal"; exit 1; }
+            # There is no "rest of the run" to fall back on since #183: an
+            # --agent run is the contract and nothing else, so a refusal leaves
+            # the tree exactly as it found it. The language layer arriving as a
+            # consolation prize for a failed merge would be the coupling this
+            # flag just stopped doing.
+            [[ -e "/tmp/ag-$name/.editorconfig" ]] \
+              && { echo "::error::[$name] a refused --agent run adopted the language layer anyway"; exit 1; }
+            grep -q 'Traceback (most recent call last)' "/tmp/ag-$name.log" \
+              && { echo "::error::[$name] refused with a traceback instead of a sentence"; exit 1; }
+            echo "  OK  [$name] refused, exit 6, nothing agent-shaped written"
+          done
+
+      - name: An EMPTY settings.json is merged into, not refused
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # The one unparseable case that involves no guessing: a file with no
+          # content says nothing, so merging into it can lose nothing. `touch
+          # .claude/settings.json` is common enough that refusing it would be a
+          # refusal with no useful remedy — "fix your JSON" about a file that
+          # has none.
+          rm -rf /tmp/ag-empty && mkdir -p /tmp/ag-empty/.claude
+          printf '{"name":"demo"}\n' > /tmp/ag-empty/package.json
+          : > /tmp/ag-empty/.claude/settings.json
+          # Manifests: this step is about an EMPTY settings.json being merged
+          # into rather than refused, so it compares against the whole baseline.
+          mkdir -p /tmp/ag-empty/samples/expected
+          printf '{}\n' > /tmp/ag-empty/samples/expected/demo.json
+          ./scripts/adopt.sh /tmp/ag-empty --agent
+          python3 - <<'PY'
+          import json, sys
+          got = json.load(open("/tmp/ag-empty/.claude/settings.json"))
+          want = json.load(open("configs/agent/settings.json"))
+          if got != want:
+              print("::error::an empty settings.json did not merge to the baseline")
+              sys.exit(1)
+          PY
+          echo 'OK: an empty settings.json takes the baseline whole'
+
+      - name: Only --agent writes the agent contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # Executable policy arriving unasked is the one thing this flag exists
+          # to prevent, so opt-in is asserted under every OTHER flag too —
+          # --force most of all, because it is the one reached for blindly.
+          for variant in "" "--hooks" "--force" "--dry-run" "--editor"; do
+            rm -rf /tmp/ag-optin && mkdir -p /tmp/ag-optin
+            printf '{"name":"demo"}\n' > /tmp/ag-optin/package.json
+            git -C /tmp/ag-optin init -q
+            # Unquoted on purpose — the empty first iteration must expand to no
+            # argument at all, or adopt.sh reads "" as a second target.
+            ./scripts/adopt.sh /tmp/ag-optin --no-workflow ${variant} >/dev/null 2>&1
+            [[ -e /tmp/ag-optin/.claude ]] && {
+              echo "::error::.claude was created without --agent (with '${variant:-no flags}')"; exit 1; }
+            grep -qs 'maxi-quality agent-guard' /tmp/ag-optin/CLAUDE.md && {
+              echo "::error::the CLAUDE.md region was appended without --agent (with '${variant:-no flags}')"; exit 1; }
+            echo "  OK  no agent contract with '${variant:-no flags}'"
+          done
+
+      - name: --agent --dry-run writes nothing and still says what it would do
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm -rf /tmp/ag-dry && mkdir -p /tmp/ag-dry
+          printf '{"name":"demo"}\n' > /tmp/ag-dry/package.json
+          ./scripts/adopt.sh /tmp/ag-dry --agent --dry-run > /tmp/ag-dry.log 2>&1
+          cat /tmp/ag-dry.log
+          [[ -e /tmp/ag-dry/.claude ]] && { echo '::error::--dry-run created .claude'; exit 1; }
+          [[ -e /tmp/ag-dry/CLAUDE.md ]] && { echo '::error::--dry-run created CLAUDE.md'; exit 1; }
+          # A dry run that reports nothing is indistinguishable from a dry run
+          # that would have done nothing, which is the question it is asked.
+          for want in 'stop-gate.py' 'CLAUDE.md' 'settings.json'; do
+            grep -qF "$want" /tmp/ag-dry.log \
+              || { echo "::error::--dry-run never mentioned $want"; exit 1; }
+          done
+          echo 'OK: nothing written, everything named'
+
   # #13 — Semgrep is pinned in two places: the layer2 action's input default and
   # the layer2-counts job below. If they drift, CI asserts 100 findings against a
   # Semgrep that consumers never run, and the samples quietly stop meaning what
@@ -2494,8 +4809,11 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+          # examples/ is in the roots because examples/README.md calls that
+          # directory "the correct thing to copy" — an unpinned action there is
+          # this guard teaching the opposite of what it enforces.
           bad=$(grep -rhoE 'uses: [A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[A-Za-z0-9._-]+' \
-                  .github/workflows/ actions/ \
+                  .github/workflows/ actions/ examples/ \
                 | grep -vE '@[0-9a-f]{40}' \
                 | grep -vE '^uses: maximalcode/' \
                 | sort -u || true)
@@ -2823,6 +5141,71 @@ jobs:
             echo '::error::found no scripts/*.sh — this guard stopped guarding'; exit 1; }
           shellcheck -s bash "${files[@]}"
           echo "OK: ${#files[@]} shipped scripts are shellcheck-clean"
+
+      # CLAUDE.md: "a job that runs but is not on the required list reports and
+      # blocks nothing, which is indistinguishable from a passing gate in the PR
+      # UI." That has now drifted twice — four jobs the first time, this
+      # milestone's own two the second — and both times the tell was a written
+      # count nobody recomputed.
+      #
+      # The required list itself cannot be read from here: the branch-protection
+      # API needs admin rights, and this job's token is read-only by design. So
+      # what is asserted is the half that IS reachable — the number written in
+      # the docs must equal the number of contexts ci.yml produces. It does not
+      # prove the contexts are set; it makes adding a job collide with the
+      # sentence that says to set them.
+      #
+      # Contexts, not jobs: `layer2` is a two-leg matrix, so the two counts
+      # differ by one, and "one per job" was the wording that hid that.
+      - name: The documented required-check count must match ci.yml
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import re, sys, pathlib, yaml
+
+          jobs = yaml.safe_load(pathlib.Path(".github/workflows/ci.yml")
+                                .read_text())["jobs"]
+          contexts = 0
+          for name, job in jobs.items():
+              matrix = (job.get("strategy") or {}).get("matrix") or {}
+              # include/exclude change the leg count in ways a product of list
+              # lengths cannot express — include adds legs, exclude removes
+              # them, and an include-only matrix would count as 1. Nothing here
+              # uses either, so this refuses rather than guessing: a silent
+              # miscount is the exact drift this guard exists to catch.
+              if "include" in matrix or "exclude" in matrix:
+                  sys.exit(f"::error::job '{name}' uses a matrix include/exclude, "
+                           "which this counter cannot expand — teach it how "
+                           "before adding one")
+              legs = 1
+              for values in matrix.values():
+                  if isinstance(values, list):
+                      legs *= len(values)
+              contexts += legs
+
+          # Two documents state the number, for two audiences. Both are checked,
+          # because a contributor reading only CONTRIBUTING.md and an agent
+          # reading only CLAUDE.md must not be told different things.
+          bad = 0
+          for doc in ("CLAUDE.md", "CONTRIBUTING.md"):
+              found = re.findall(r"(\d+) required checks",
+                                 pathlib.Path(doc).read_text())
+              if not found:
+                  print(f"::error::{doc} no longer states a required-check "
+                        "count — this guard stopped guarding")
+                  bad = 1
+              elif any(int(n) != contexts for n in found):
+                  print(f"::error::{doc} says {', '.join(found)} required "
+                        f"checks; ci.yml produces {contexts} contexts from "
+                        f"{len(jobs)} jobs. Update the docs AND add the missing "
+                        "context to branch protection on develop AND main.")
+                  bad = 1
+          if not bad:
+              print(f"OK: {contexts} contexts from {len(jobs)} jobs, "
+                    "and both documents agree")
+          sys.exit(bad)
+          PY
 
   # Runs on BOTH platforms the action claims to support, because "supported"
   # is a claim about installed tools and shell builtins, and those are exactly
@@ -3967,3 +6350,126 @@ jobs:
           need examples/python-uv/pyproject.toml 'deptry'
           need examples/python-uv/.github/workflows/quality.yml 'dead-code: require'
           echo 'OK: both adopted examples declare the tool and require the gate'
+
+      # #75's last acceptance box: "an example under examples/ that CI asserts."
+      # The gate itself is tested to death in coverage-ratchet, coverage-action,
+      # patch-coverage and coverage-input — what none of those can test is the
+      # thing a consumer actually gets wrong, because it lives in THEIR file:
+      # the artifact hand-off, which is two names that have to match and one
+      # `needs:` edge with no other reason to exist.
+      #
+      # Structural, not executed. This repo cannot run a green `quality.yml`
+      # against its own tree — `samples/` is deliberately broken, so Layer 2
+      # fails by design, and `continue-on-error` is not accepted on a
+      # reusable-workflow call. So the example is asserted the way a reviewer
+      # would read it, which is also how a reader copies it.
+      - name: The coverage example wires the artifact hand-off end to end
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import pathlib, sys, yaml
+
+          BASE = yaml.safe_load(
+              pathlib.Path(".github/workflows/quality.yml").read_text())
+          KNOWN = set(BASE[True]["workflow_call"]["inputs"])
+
+          bad = []
+          wired = []
+          for path in sorted(pathlib.Path("examples").glob(
+                  "*/.github/workflows/quality.yml")):
+              doc = yaml.safe_load(path.read_text())
+              jobs = doc["jobs"]
+
+              # Every input an example sets must still EXIST. An example is
+              # documentation people copy, so a renamed input here is a
+              # consumer's first run exiting on an unknown key.
+              for job in jobs.values():
+                  for key in (job.get("with") or {}):
+                      if key not in KNOWN:
+                          bad.append(f"{path}: sets '{key}', which quality.yml "
+                                     "has no input for")
+
+              for name, job in jobs.items():
+                  artifact = (job.get("with") or {}).get("coverage-report")
+                  if not artifact:
+                      continue
+                  wired.append(path)
+
+                  # The `needs:` edge. Without it the gate can start before the
+                  # upload finishes and fails on a missing artifact — the wrong
+                  # error, for the right reason, and the reader blames coverage.
+                  needs = job.get("needs") or []
+                  needs = [needs] if isinstance(needs, str) else needs
+                  if not needs:
+                      bad.append(f"{path}: job '{name}' sets coverage-report "
+                                 "with no `needs:` — the artifact may not exist "
+                                 "yet when it runs")
+
+                  # ...and the edge has to point at the job that actually
+                  # uploads THAT artifact name. Two names matching by luck is
+                  # the failure this catches.
+                  uploaders = {
+                      dep for dep in needs
+                      for step in (jobs.get(dep) or {}).get("steps", [])
+                      if str(step.get("uses", "")).startswith(
+                          "actions/upload-artifact@")
+                      and (step.get("with") or {}).get("name") == artifact
+                  }
+                  if not uploaders:
+                      bad.append(
+                          f"{path}: job '{name}' waits on {needs or 'nothing'}, "
+                          f"none of which uploads an artifact named "
+                          f"'{artifact}'")
+
+                  # The bootstrap. A copied example whose first run fails on a
+                  # missing floor, with nothing in the file saying that is
+                  # expected, reads as a broken baseline.
+                  if "coverage-raise" not in path.read_text():
+                      bad.append(f"{path}: wires coverage but never mentions "
+                                 "coverage-raise — a reader's first run fails "
+                                 "on the missing floor with no way out")
+
+          if not wired:
+              bad.append("no example wires coverage-report — this guard "
+                         "stopped guarding (#75)")
+
+          for line in bad:
+              print(f"::error::{line}")
+          if not bad:
+              print(f"OK: {len(wired)} coverage example(s), artifact hand-off "
+                    "and bootstrap intact; every example input still exists")
+          sys.exit(1 if bad else 0)
+          PY
+
+      # examples/README.md is the index a reader lands on, and it drifted:
+      # java-maven shipped, CI asserted it, and the table never gained a row —
+      # so the one example for the newest language was invisible to anyone not
+      # running `ls`.
+      - name: Every example appears in the examples index
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          index=$(cat examples/README.md)
+          n=0
+          for d in examples/*/; do
+            [[ -f "$d/README.md" ]] || continue
+            name=$(basename "$d")
+            grep -qF "\`$name/\`" <<<"$index" || {
+              echo "::error::examples/$name is asserted by CI and has no row in examples/README.md"
+              exit 1; }
+            n=$((n + 1))
+          done
+          # ...and the prose count has to be right too, in both places that
+          # state one. "Seven complete consumer repos" above a table of six is
+          # how the java-maven row went missing without anything going red.
+          words=(zero one two three four five six seven eight nine ten)
+          word="${words[$n]:-$n}"
+          for f in README.md examples/README.md; do
+            grep -qiF "$word complete consumer repos" "$f" || {
+              echo "::error::$f does not say '$word complete consumer repos', and there are $n"
+              exit 1; }
+          done
+          [[ "$n" -ge 5 ]] || {
+            echo "::error::found only $n examples — this guard stopped guarding"; exit 1; }
+          echo "OK: all $n examples appear in examples/README.md, and both indexes say $word"

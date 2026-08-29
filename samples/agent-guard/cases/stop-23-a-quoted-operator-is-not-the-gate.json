@@ -1,0 +1,29 @@
+{
+  "why": "`a '&&' b` as an argv is three words handed to a program named `a`, not a gate. It splits to the same words as the declared string, so an argv comparison alone would accept it — which would readmit the exact shape #178 is about through the door opened to normalise quoting.",
+  "hook": "stop",
+  "setup": {
+    "committed": {
+      "a.txt": "one\n"
+    },
+    "worktree": {
+      "a.txt": "one\ntwo\n"
+    },
+    "config": {
+      "gate_command": "true && true"
+    },
+    "receipt": {
+      "fingerprint": "current",
+      "verdict": "pass",
+      "command": "true '&&' true"
+    }
+  },
+  "event": {
+    "hook_event_name": "Stop"
+  },
+  "expect": {
+    "decision": "block",
+    "reason_contains": [
+      "declared gate"
+    ]
+  }
+}

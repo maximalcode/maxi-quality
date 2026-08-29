@@ -1,0 +1,47 @@
+{
+  // maxi-quality — Rust editor parity, against layer1-rust.
+  //
+  // Merge into .vscode/settings.json. See ./README.md.
+
+  // DIVERGENCE (verified, #120). rust-analyzer defaults `check.command` to
+  // "check", so the editor runs `cargo check` — which reports compiler
+  // diagnostics and NOT ONE clippy lint. configs/rust/lints.toml turns on
+  // clippy::all, pedantic, a curated nursery pick and a curated cargo pick,
+  // and layer1-rust asserts every one of those tiers is represented in
+  // samples/expected/clippy.json. At the default, the entire Rust ruleset this
+  // baseline ships is invisible while typing.
+  "rust-analyzer.check.command": "clippy",
+
+  // layer1-rust runs `cargo clippy --all-targets`. The extension's default for
+  // this key is null — "let the command decide" — which is a different thing
+  // from the flag being passed, and it decides whether tests, benches and
+  // examples are linted at all.
+  //
+  // HONEST LABEL: pinned to match the gate's argv, NOT proven by a fixture.
+  // All 8 findings in samples/expected/clippy.json are in src/main.rs, so
+  // samples/rust would produce the same set with or without this key. See
+  // README §7, category (c).
+  "rust-analyzer.check.allTargets": true,
+
+  // ...and `--locked`, the other flag in the gate's invocation. It makes a
+  // stale Cargo.lock an error rather than something cargo silently rewrites,
+  // which is the same reason CI passes it: an editor that quietly updates the
+  // lock file produces a diff the gate then rejects.
+  "rust-analyzer.check.extraArgs": ["--locked"],
+
+  // DELIBERATELY ABSENT: RUSTFLAGS=-Dwarnings, which layer1-rust does set.
+  // That flag decides whether the BUILD FAILS, not which lints fire — the
+  // finding set in samples/expected/clippy.json is identical without it. In
+  // the editor it would only repaint every warning as an error, and
+  // rust-analyzer already surfaces warnings in the Problems panel. Adding it
+  // would make the editor stricter-looking than the gate while being no more
+  // accurate, which is its own kind of parity failure.
+
+  // configs/rust/rustfmt.toml is read by rustfmt automatically; this only
+  // routes saves through rust-analyzer's rustfmt rather than a generic
+  // formatter. layer1-rust gates `cargo fmt --check`.
+  "[rust]": {
+    "editor.defaultFormatter": "rust-lang.rust-analyzer",
+    "editor.formatOnSave": true
+  }
+}

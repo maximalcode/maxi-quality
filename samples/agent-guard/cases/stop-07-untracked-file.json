@@ -1,0 +1,21 @@
+{
+  "why": "THE BACKSTOP CASE. A file written by a Bash heredoc is invisible to the PreToolUse matcher \u2014 the docs say so \u2014 but it is untracked in git status, so the Stop gate sees it.",
+  "hook": "stop",
+  "setup": {
+    "committed": {
+      "a.txt": "one\n"
+    },
+    "worktree": {
+      "samples/typescript/src/sneaky.ts": "export const x = 1;\n"
+    }
+  },
+  "event": {
+    "hook_event_name": "Stop"
+  },
+  "expect": {
+    "decision": "block",
+    "reason_contains": [
+      "has not run"
+    ]
+  }
+}

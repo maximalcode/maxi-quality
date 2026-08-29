@@ -1,0 +1,11 @@
+{
+  "why": "NEGATIVE CONTROL for git's own asymmetry: `-n` is `--no-verify` for commit and `--dry-run` for push. Denying `git push -n` blocks the safest command in git, which is exactly how a guard earns a reputation for being wrong.",
+  "hook": "noverify",
+  "setup": { "git": false },
+  "event": {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": { "command": "git push -n origin HEAD" }
+  },
+  "expect": { "decision": "allow" }
+}

@@ -1,0 +1,25 @@
+{
+  "why": "The manifests are the assertion `sample-guard.py` compares against, so the file tools may not rewrite one at all. `**` has to cross directories — a pattern written `/samples/expected/*` would cover today's flat directory and silently stop covering the first manifest anyone nests. The tree plants both, plus the sibling directories the rule must keep its hands off.",
+  "hook": "permissions",
+  "rule": "Edit(/samples/expected/**)",
+  "tree": [
+    "samples/expected/eslint.json",
+    "samples/expected/nested/ruff.json",
+    "samples/typescript/src/bad.ts",
+    "samples/expected.json",
+    "sub/samples/expected/eslint.json",
+    "src/app.ts"
+  ],
+  "expect": {
+    "denied": [
+      "samples/expected/eslint.json",
+      "samples/expected/nested/ruff.json"
+    ],
+    "allowed": [
+      "samples/typescript/src/bad.ts",
+      "samples/expected.json",
+      "sub/samples/expected/eslint.json",
+      "src/app.ts"
+    ]
+  }
+}

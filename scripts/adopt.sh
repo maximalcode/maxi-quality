@@ -12,7 +12,10 @@
 #   TARGET_REPO       Repo to adopt into. Default: current directory.
 #
 #   --dry-run         Print every action, write nothing. Do this first.
-#   --force           Overwrite files that already exist. Off by default —
+#   --force           Overwrite files that already exist, and — on an --agent
+#                     run — refresh a CLAUDE.md agent-guard region you have
+#                     edited yourself, which is otherwise refused. Off by
+#                     default —
 #                     a repo with its own Directory.Build.props must be merged
 #                     by hand, not clobbered (docs/ADOPTION.md §3).
 #   --ref REF         Tag/branch consumers pin in the workflow. Default: v1.
@@ -22,6 +25,46 @@
 #                     installed without this flag: a hook that appears in
 #                     someone's repo unasked gets ripped out along with
 #                     everything near it. Bypass with `git commit --no-verify`.
+#   --editor          ALSO write .vscode/settings.json and .vscode/extensions.json
+#                     from configs/editor/, for the DETECTED languages only.
+#                     Opt-in for the same reason --hooks is, and one more: this
+#                     is the first thing the baseline writes that gates nothing.
+#                     It NEVER merges — if either file exists it writes nothing
+#                     to it, prints the delta it would have applied, and exits 5.
+#   --agent           ONLY install the agent contract from configs/agent/: the
+#                     hooks and deny rules that constrain a Claude Code session
+#                     writing in your repo.
+#                     NOT an "also" flag, unlike the two above. This run
+#                     installs the contract and writes NOTHING ELSE — no
+#                     language config, no .editorconfig, no workflow — in any
+#                     repo including this one. Adopt the language layer with a
+#                     SECOND run, without --agent (#183). The contract has no
+#                     language in it, so coupling the two made the result
+#                     unattributable: after adopting both at once nobody can say
+#                     whether a session found the guard annoying or the two
+#                     hundred new lints. Passing --editor or --hooks alongside
+#                     it is a usage error rather than a silent choice between
+#                     them; --ref and --no-workflow belong to the
+#                     language layer and are reported as doing nothing here.
+#                     Opt-in like the two above, and for the strongest reason of
+#                     the three — this is executable policy arriving in
+#                     someone's tree.
+#                     Unlike --editor it DOES merge, because unlike .vscode/ a
+#                     .claude/settings.json usually already exists. Your hook
+#                     entries and deny rules are appended to, never replaced,
+#                     never reordered, and re-running adds nothing twice. A
+#                     settings.json that does not parse, or whose `hooks` key is
+#                     not the documented shape, is REFUSED — nothing --agent
+#                     would have written gets written at all, and the run exits 6.
+#   --shared          With --agent: install a 101-line shim instead of the four
+#                     scripts (984 lines), and run the real ones from
+#                     ~/.claude/agent-guard/. One fix updates every --shared
+#                     repo. Copying is still the default so an outside adopter
+#                     gets a working tree from one command (#193).
+#   --install-shared  Populate ~/.claude/agent-guard/ and exit. Takes no target;
+#                     re-run it after a git pull to update every --shared repo
+#                     at once. A --shared repo whose body is missing REFUSES —
+#                     it does not fail open.
 #   -h, --help        This text.
 #
 # What gets written, per detected language:
@@ -51,6 +94,23 @@
 #                                           lines for every language, Rust
 #                                           included since #70)
 #   --hooks  .git/hooks/pre-commit         <- hooks/pre-commit (only with --hooks)
+#   --editor .vscode/settings.json         <- configs/editor/<lang>.settings.json
+#                                             for the detected languages, composed
+#                                             by scripts/editor-settings.py
+#   --editor .vscode/extensions.json       <- configs/editor/extensions.json, the
+#                                             same rows and nothing else
+#
+# What --agent writes — and it is the WHOLE of what an --agent run does, in
+# every repo. Nothing above this list is written on that run:
+#
+#   .claude/agent-guard/*.py         <- scripts/agent-guard/ (baseline code,
+#                                       REFRESHED on every --agent run)
+#   .claude/settings.json            += configs/agent/settings.json, merged
+#                                       by scripts/agent-settings.py
+#   CLAUDE.md                        += configs/agent/CLAUDE.fragment.md,
+#                                       marker-guarded and REFRESHED
+#   .gitignore                       += .claude/agent-guard-receipt.json
+#                                       and .claude/agent-guard/__pycache__/
 #
 # The TS pair is a copy for the same reason Directory.Build.props is: a private
 # git devDep cannot npm-install in a consumer's CI. The Rust trio is a copy for
@@ -60,10 +120,42 @@
 # and a free <parent> slot to consume, and a Spring Boot project has neither.
 #
 # Exit codes: 0 adopted (or dry-run) · 1 nothing detected · 3 usage error
+#               (--agent together with --editor or --hooks is one of these)
+#             5 --editor refused: a .vscode file already existed and was left
+#               alone. Everything else still adopted; only the editor files
+#               were held back, and the delta was printed.
+#             7 --agent adopted, but the CLAUDE.md region was NOT written: the
+#               region was edited since install (use --force), predates
+#               checksums, is half a region, or CLAUDE.md is a symlink that
+#               dangles or leaves the repo (#198). The hooks and deny rules ARE
+#               installed and enforcing — what is missing is the text saying so,
+#               which is the half a reader sees. Mirrors 5: everything else
+#               adopted, one part held back, the reason printed. Before #198
+#               this returned 0 under the word ADOPTED.
+#             6 --agent refused: .claude/settings.json could not be merged into.
+#               Nothing was written — not the scripts, not the fragment —
+#               because half an agent contract is a CLAUDE.md that promises
+#               refusals nothing performs. Since #183 an --agent run does
+#               nothing else either, so 5 and 6 can no longer both happen:
+#               the flags that would produce them cannot share a run.
 
 set -Eeuo pipefail
 
 BASELINE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# How to name THIS script inside a message someone is meant to paste. A message
+# that prints the literal `scripts/adopt.sh` is right for a reader standing in
+# the baseline and `command not found` for everyone else — and every doc here
+# invokes it from the consumer's own repo, as `"$BASELINE"/scripts/adopt.sh`.
+# So it is DERIVED from the invocation rather than assumed, which is the same
+# fix recorder() in scripts/agent-guard/stop-gate.py carries for the same
+# reason: a remedy that does not run is a refusal that gets worked around.
+#
+# The invocation string is kept whenever it still resolves from the caller's
+# cwd — it is what they typed, so it reads back to them — and replaced by an
+# absolute path when it does not, which is the PATH-lookup case.
+SELF_CMD="${BASH_SOURCE[0]}"
+if [ ! -x "$SELF_CMD" ]; then SELF_CMD="$BASELINE/scripts/adopt.sh"; fi
 
 # The cargo-deny version, for the "install it locally to match CI" line in the
 # summary only — this script no longer stamps a Rust job into anyone's workflow
@@ -78,8 +170,34 @@ TARGET=""
 DRY_RUN=0
 FORCE=0
 REF="v1"
+# Tracked separately from REF's value: an --agent run has to say that --ref did
+# nothing, and "does it differ from the default" would stay silent for someone
+# who typed `--ref v1` — the one reader most likely to believe it took effect.
+REF_SET=0
 NO_WORKFLOW=0
 HOOKS=0
+# Not named EDITOR: that is a standard environment variable, and a script that
+# shadows someone's $EDITOR is a script that surprises them elsewhere.
+WANT_EDITOR=0
+EDITOR_CONFLICT=0
+# Beside EDITOR_CONFLICT and not beside NEEDS_MERGE, which is declared far
+# below: the --agent branch READS this one and exits before that point, so
+# initialising it there is an unbound variable under `set -u` on the success
+# path — a refusal flag that fails the runs it was supposed to leave alone.
+REGION_REFUSED=0
+# Not named AGENT either: --hooks already taught this script that a short,
+# obvious name can mean two unrelated things (configs/agent/README.md §8).
+WANT_AGENT=0
+WANT_SHARED=0
+INSTALL_SHARED=0
+SHARED_DIR="$HOME/.claude/agent-guard"
+AGENT_CONFLICT=0
+
+# Escapes a path for a command line a human will paste. A checkout under
+# "My Documents" is not exotic, and an unquoted path there runs a different
+# command or none at all. printf %q is bash 3.2 and leaves an ordinary path
+# exactly as it was, so the common case reads unchanged.
+shq() { printf '%q' "$1"; }
 
 die() { printf '\033[31merror:\033[0m %s\n' "$1" >&2; exit 3; }
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }
@@ -88,7 +206,262 @@ info() { printf '\033[36m›\033[0m %s\n' "$1"; }
 skip() { printf '\033[33mskip\033[0m %s\n' "$1"; }
 wrote() { printf '\033[32mwrite\033[0m %s\n' "$1"; }
 
-usage() { sed -n '3,51p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
+# The range is LINE NUMBERS, so it moves when the header does: it ends on the
+# last row of the --agent list, which is the last line of the header that is
+# help text rather than rationale. Verify with `scripts/adopt.sh --help | tail`
+# after editing anything above.
+usage() { sed -n '3,113p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
+
+# --- the agent contract, only on --agent -------------------------------------
+#
+# ONLY on --agent, and for the strongest reason any of the three opt-ins has.
+# --hooks installs something a developer can bypass; --editor writes something
+# that gates nothing. This writes EXECUTABLE POLICY into someone's repository:
+# hooks Claude Code runs on every tool call and every stop, and deny rules it
+# enforces before any of them. Nothing about that should arrive by default.
+#
+# It is also the one thing here that MERGES rather than refusing, which is the
+# opposite of --editor two blocks up. The reason is the file, not a change of
+# heart: .vscode/settings.json is a file a consumer may not have, and
+# .claude/settings.json is a file a consumer who runs Claude Code almost
+# certainly does. Refuse-if-exists there would mean this never adopts anywhere
+# it matters. scripts/agent-settings.py holds the merge and its ownership rule.
+#
+# EVERYTHING OR NOTHING. The merge is dry-run first, and a refusal skips the
+# whole block — not just the settings file. Copying the scripts and appending
+# the fragment without the hooks would leave a CLAUDE.md that says "they are
+# not advice — they refuse" in a repo where nothing refuses. A contract that
+# describes enforcement it does not have is worse than no contract, because
+# the next session reads it and believes it.
+install_agent_contract() {
+  AGENT_SETTINGS="$TARGET/.claude/settings.json"
+  AGENT_DIR="$TARGET/.claude/agent-guard"
+
+  # #182 — install only what can fire. Two of the five rules, sample-guard.py
+  # and Edit(/samples/expected/**), are hardcoded to this repo's fixture layout;
+  # in a tree without expectation manifests the hook allows everything and the
+  # deny rule matches no file that exists. Shipped anyway, they produced a
+  # consumer whose CLAUDE.md said it was protected by three hooks and two deny
+  # rules, a third of which could never fire.
+  #
+  # Re-running after a samples/expected/ appears installs both, so this is a
+  # decision about THIS tree today and not a permanent verdict on it.
+  AGENT_SHARED=()
+  [ "$WANT_SHARED" -eq 1 ] && AGENT_SHARED=(--shared)
+  AGENT_SAMPLES=no
+  AGENT_WITHOUT=(--without-samples)
+  if [ -d "$TARGET/samples/expected" ]; then
+    AGENT_SAMPLES=yes
+    AGENT_WITHOUT=()
+  fi
+
+  # Preflight. Runs before the first byte is written, so a refusal costs the
+  # consumer a message and not a half-adopted tree.
+  if ! python3 "$BASELINE/scripts/agent-settings.py" merge \
+         --baseline "$BASELINE/configs/agent/settings.json" \
+         --target "$AGENT_SETTINGS" "${AGENT_WITHOUT[@]+"${AGENT_WITHOUT[@]}"}" \
+         "${AGENT_SHARED[@]+"${AGENT_SHARED[@]}"}" --dry-run >/dev/null; then
+    AGENT_CONFLICT=1
+    NEEDS_MERGE=1
+  else
+    # A guard that is not in a git working tree allows every stop and reports
+    # nothing — stop-gate.py fails open on plumbing, by design. Installing it
+    # there anyway produces the one outcome this script cares most about
+    # avoiding: a tree that looks adopted and enforces nothing.
+    if ! git -C "$TARGET" rev-parse --show-toplevel >/dev/null 2>&1; then
+      warn "--agent: $TARGET is not a git working tree. The Stop gate"
+      warn "fingerprints \`git status\`, so outside one it allows every stop and"
+      warn "says nothing. Installing anyway; run \`git init\` before you rely on it."
+      NEEDS_MERGE=1
+    fi
+
+    # The scripts are BASELINE CODE, not your configuration, so unlike every
+    # other copy in this script they are refreshed rather than skipped. A hook
+    # `command` is a path on disk, so re-running this script IS the upgrade
+    # path, the same trade the C# and Rust configs already make.
+    #
+    # This used to say Claude Code has "no remote consumption". That is FALSE:
+    # a plugin can ship hooks from a git source, pinned by SHA. The decision to
+    # copy is unchanged — a plugin cannot carry `permissions.deny` at all, so
+    # two of the contract's rules could not travel in one — but the reason had
+    # to be corrected, because a wrong reason for a right decision is how the
+    # decision gets overturned later (CLAUDE.md §2). --force does not apply to the scripts and would
+    # not mean
+    # anything here.
+    # WHAT gets copied is derived from the wiring, not from a glob (#191). A
+    # `*.py` loop shipped selftest.py — the baseline's own corpus runner, which
+    # needs samples/agent-guard/ and so can never run in a consumer — into
+    # every tree, 508 lines of it; and it kept shipping sample-guard.py after
+    # #182 stopped wiring it in a tree with no manifests. 43% of the install
+    # could not run. agent-settings.py holds the one definition of the set.
+    AGENT_WANT=()
+    if [ "$WANT_SHARED" -eq 1 ]; then
+      # --shared: one file, and the scripts live once at ~/.claude/agent-guard.
+      # 101 lines instead of 984, and a guard fix is one `--install-shared`
+      # rather than one commit per repo (#193).
+      AGENT_WANT=(shim.py)
+      if [ ! -d "$SHARED_DIR" ] && [ "$DRY_RUN" -eq 0 ]; then
+        warn "--shared: $SHARED_DIR does not exist yet. The wiring will be"
+        warn "installed and will REFUSE until you run:"
+        warn "  $SELF_CMD --install-shared"
+        NEEDS_MERGE=1
+      fi
+    else
+      while IFS= read -r n; do AGENT_WANT+=("$n"); done < <(
+        python3 "$BASELINE/scripts/agent-settings.py" scripts \
+          --baseline "$BASELINE/configs/agent/settings.json" \
+          "${AGENT_WITHOUT[@]+"${AGENT_WITHOUT[@]}"}")
+    fi
+    for n in "${AGENT_WANT[@]}"; do
+      wrote "$AGENT_DIR/$n (refreshed)"
+      [ "$DRY_RUN" -eq 1 ] && continue
+      mkdir -p "$AGENT_DIR"
+      if [ "$n" = "shim.py" ]; then
+        cp "$BASELINE/configs/agent/shim.py" "$AGENT_DIR/$n"
+      else
+        cp "$BASELINE/scripts/agent-guard/$n" "$AGENT_DIR/$n"
+      fi
+    done
+
+    # An orphan from an earlier adoption — a script this profile no longer
+    # wires — is REMOVED, and only if the baseline is the thing that put it
+    # there. Leaving it is the condition G1 fails the baseline for: a hook
+    # script no command names. Deleting a file from someone's tree is a bigger
+    # act than adding one, so the blast radius is fixed: only names that exist
+    # under scripts/agent-guard/, never anything else in that directory.
+    for src in "$BASELINE"/scripts/agent-guard/*.py "$BASELINE"/configs/agent/shim.py; do
+      n="$(basename "$src")"
+      case " ${AGENT_WANT[*]} " in *" $n "*) continue ;; esac
+      [ -e "$AGENT_DIR/$n" ] || continue
+      wrote "$AGENT_DIR/$n (removed — this tree does not wire it)"
+      [ "$DRY_RUN" -eq 1 ] || rm -f "$AGENT_DIR/$n"
+    done
+
+    # The fragment, marker-guarded, and REFRESHED rather than skipped (#177).
+    # scripts/agent-region.py owns it: it replaces what is between the markers
+    # and nothing outside them, tells an older baseline's text apart from an
+    # edit of your own by the checksum in the BEGIN marker, and refuses the
+    # second rather than overwriting it. --force overrides that refusal, which
+    # is the only thing --force means here.
+    AGENT_REGION_ARGS=(apply
+      --fragment "$BASELINE/configs/agent/CLAUDE.fragment.md"
+      --target "$TARGET/CLAUDE.md" --samples "$AGENT_SAMPLES")
+    if [ "$FORCE" -eq 1 ]; then AGENT_REGION_ARGS+=(--force); fi
+    if [ "$DRY_RUN" -eq 1 ]; then
+      info "$TARGET/CLAUDE.md (dry run) — the region would be checked and refreshed"
+    else
+      AGENT_REGION_RC=0
+      python3 "$BASELINE/scripts/agent-region.py" "${AGENT_REGION_ARGS[@]}" \
+        | sed 's/^/    /' || AGENT_REGION_RC=${PIPESTATUS[0]}
+      if [ "$AGENT_REGION_RC" -ne 0 ]; then
+        # Not fatal, and deliberately so: the hooks and the deny rules are
+        # installed and enforcing by this point. What is stale is the PROSE
+        # describing them, and stopping the run here would leave a tree with
+        # neither. Say it loudly and let the summary carry it.
+        warn "--agent: $TARGET/CLAUDE.md was left alone (see above). The rules"
+        warn "are installed; the text describing them is not current."
+        # NOT NEEDS_MERGE: that says "a file already existed and was left
+        # untouched", which is a different thing and reads as routine. This is a
+        # refusal, and until #198 it ended the run at exit 0 under the word
+        # ADOPTED — a tree with enforcing hooks and no text telling any session
+        # they exist, reported as success. --editor's exit 5 is the precedent
+        # and the shape is identical: everything else adopted, one part held
+        # back, the reason printed, and a code a caller can branch on.
+        REGION_REFUSED=1
+      fi
+    fi
+
+    # Per-checkout state: a receipt describes THIS working tree's diff, so a
+    # committed one is a claim about somebody else's. Nothing breaks if this
+    # line is missing — the receipt is excluded from the fingerprint either
+    # way — which is exactly why it is worth writing for people rather than
+    # leaving as a step nobody notices they skipped.
+    # Two lines, not one. The receipt is per-checkout state; __pycache__ is
+    # written by Python beside the scripts the moment a hook imports one, so a
+    # consumer with no Python section in their .gitignore — a Rust, C# or
+    # TypeScript repo, which is most of them — gets untracked noise the guard
+    # itself created, and `git add -A` commits .pyc files. guard.py also
+    # excludes it from the fingerprint; this is the tidier half of that pair,
+    # and neither is sufficient alone.
+    AGENT_IGNORE='.claude/agent-guard-receipt.json'
+    AGENT_IGNORE2='.claude/agent-guard/__pycache__/'
+    if [ -e "$TARGET/.gitignore" ] && grep -qxF "$AGENT_IGNORE" "$TARGET/.gitignore" 2>/dev/null \
+       && grep -qxF "$AGENT_IGNORE2" "$TARGET/.gitignore" 2>/dev/null; then
+      skip "$TARGET/.gitignore — already ignores the guard's own state"
+    else
+      wrote "$TARGET/.gitignore (append)"
+      if [ "$DRY_RUN" -eq 0 ]; then
+        if [ -s "$TARGET/.gitignore" ]; then
+          [ -z "$(tail -c 1 "$TARGET/.gitignore")" ] || printf '\n' >> "$TARGET/.gitignore"
+          printf '\n' >> "$TARGET/.gitignore"
+        fi
+        printf '# maxi-quality agent guard — per-checkout state, never committed\n%s\n%s\n' \
+          "$AGENT_IGNORE" "$AGENT_IGNORE2" >> "$TARGET/.gitignore"
+      fi
+    fi
+
+    # And the merge for real. The preflight above already proved it parses, so
+    # a failure HERE is ours: report it as such rather than as a conflict.
+    if [ "$DRY_RUN" -eq 1 ]; then
+      info "$AGENT_SETTINGS (dry run) — the merge would apply:"
+      python3 "$BASELINE/scripts/agent-settings.py" merge \
+        --baseline "$BASELINE/configs/agent/settings.json" \
+        --target "$AGENT_SETTINGS" "${AGENT_WITHOUT[@]+"${AGENT_WITHOUT[@]}"}" \
+        "${AGENT_SHARED[@]+"${AGENT_SHARED[@]}"}" --dry-run | sed 's/^/    /'
+    else
+      wrote "$AGENT_SETTINGS (merge)"
+      python3 "$BASELINE/scripts/agent-settings.py" merge \
+        --baseline "$BASELINE/configs/agent/settings.json" \
+        --target "$AGENT_SETTINGS" "${AGENT_WITHOUT[@]+"${AGENT_WITHOUT[@]}"}" \
+        "${AGENT_SHARED[@]+"${AGENT_SHARED[@]}"}" | sed 's/^/    /' \
+        || die "the merge failed after its own dry run passed — this is a bug in maxi-quality, not in your repo"
+
+      # POST-CONDITION, not a step (#196). Every hook command in the file we
+      # just wrote must name a file that exists.
+      #
+      # A hook whose script is missing fails at exec, BEFORE any of guard.py's
+      # fail-open handling can run, and Claude Code treats a PreToolUse hook
+      # error as blocking. The result is a repo where every Bash, Write and
+      # Edit call fails, and a session inside it cannot repair itself. That
+      # state reached a consumer's default branch before this check existed.
+      #
+      # Asserted as a property of the RESULT rather than by fixing the two
+      # paths that produced it — a profile that narrows, and a mode change —
+      # because the next one will not be either of those.
+      if ! python3 "$BASELINE/scripts/agent-settings.py" verify \
+             --target "$AGENT_SETTINGS" --root "$TARGET"; then
+        die "the wiring names a file that does not exist. Nothing further was written; this is a bug in maxi-quality, not in your repo"
+      fi
+    fi
+  fi
+}
+
+# The two things an installed contract still needs from a human, and the three
+# it is worth knowing it will not do. Printed by the --agent run only; there is
+# no other run that installs this.
+agent_next_steps() {
+  printf '  Agent contract (Claude Code)\n'
+  printf '    1. Claude Code will ask you ONCE to trust the hooks in this repo,\n'
+  printf '       the next time it starts here. That prompt is the point:\n'
+  printf '       executable policy arriving in your tree should be something you\n'
+  printf '       see. Until you accept it, none of this runs.\n'
+  printf '    2. Declare your gate command, so a refusal can name it:\n'
+  printf '         .claude/agent-guard.json  ->  { "gate_command": "<your gate>" }\n'
+  printf '       Without it the Stop hook still blocks, it just cannot tell the\n'
+  printf '       session WHAT to run — and a refusal with no remedy attached is a\n'
+  printf '       refusal that gets worked around.\n'
+  printf '    3. Run your gate through the recorder from now on:\n'
+  printf '         python3 .claude/agent-guard/record-gate.py --gate\n'
+  printf '       Same command, same exit code, plus a receipt of what it saw.\n'
+  printf '       --gate runs the line from step 2 whole, through one shell, so\n'
+  printf '       a gate written as two checks joined by && is recorded as a\n'
+  printf '       gate and not as its first half.\n'
+  printf '    4. Read the startup output once. A deny rule Claude Code will not\n'
+  printf '       consult warns there and then never mentions itself again.\n'
+  printf '    5. selftest.py came along with the rest of scripts/agent-guard/ and\n'
+  printf '       is the BASELINE\047s own corpus runner — it needs fixtures that do\n'
+  printf '       not exist in your repo. Nothing in your tree invokes it.\n'
+}
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -96,9 +469,13 @@ while [ $# -gt 0 ]; do
     --force) FORCE=1; shift ;;
     --no-workflow) NO_WORKFLOW=1; shift ;;
     --hooks) HOOKS=1; shift ;;
+    --editor) WANT_EDITOR=1; shift ;;
+    --agent) WANT_AGENT=1; shift ;;
+    --shared) WANT_SHARED=1; shift ;;
+    --install-shared) INSTALL_SHARED=1; shift ;;
     --ref)
       [ $# -ge 2 ] || die "--ref needs a value"
-      REF="$2"; shift 2 ;;
+      REF="$2"; REF_SET=1; shift 2 ;;
     -h|--help) usage ;;
     -*) die "unknown option: $1" ;;
     *)
@@ -107,10 +484,235 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# --install-shared takes no target: it populates the ONE directory every
+# --shared repo executes from. Handled before target resolution because it is
+# not an adoption at all — nothing is written into a consuming repo.
+if [ "$INSTALL_SHARED" -eq 1 ]; then
+  info "shared agent guard -> $SHARED_DIR"
+  if [ "$DRY_RUN" -eq 0 ]; then
+    mkdir -p "$SHARED_DIR"
+    # EVERY script, not the per-repo profile: one directory serves repos with
+    # and without expectation manifests, and the shim picks by name. selftest.py
+    # is still excluded — it needs samples/agent-guard/, which no consumer has.
+    for src in "$BASELINE"/scripts/agent-guard/*.py; do
+      [ "$(basename "$src")" = "selftest.py" ] && continue
+      cp "$src" "$SHARED_DIR/$(basename "$src")"
+      wrote "$SHARED_DIR/$(basename "$src")"
+    done
+  fi
+  printf '\n'
+  info "every repo adopted with --agent --shared now runs this copy."
+  info "re-run this after pulling maxi-quality to update all of them at once."
+  exit 0
+fi
+
 [ -n "$TARGET" ] || TARGET="$(pwd)"
 [ -d "$TARGET" ] || die "not a directory: $TARGET"
 TARGET="$(cd "$TARGET" && pwd)"
 
+# --- may a language-layer run be OFFERED here? --------------------------------
+#
+# ONE predicate, asked by every message that names the second run, because
+# printing a command is a claim that the command runs and this script has now
+# been wrong about that claim three times. Neither call site decides for
+# itself; both ask here. That is the point of the function existing at all —
+# two string edits would have fixed the two messages that are wrong today and
+# left the next message free to be wrong again.
+#
+# `adopt.sh TARGET` without --agent does nothing and exits 1 in exactly two
+# trees, and both of them read these messages:
+#
+#   - THIS one. Adopting maxi-quality into itself is refused for every flag but
+#     --agent, so "adopt them one at a time" names a run that cannot happen.
+#   - A tree with no language marker in it. That is the population --agent
+#     newly admits: detection no longer runs on an --agent run, so a repo in a
+#     language the baseline has never heard of can adopt the contract, and
+#     docs/ADOPTION.md §5c and configs/agent/README.md §7 both sell exactly
+#     that. It is therefore the likeliest reader of the footer, not an edge
+#     case — the footer's advice is wrong in the one tree the feature is for.
+#
+# THE EARLY RETURN IS INTACT. This answers only "may that line be printed". It
+# never decides what gets installed, never sets a HAS_* flag, and --agent still
+# writes the contract and nothing else in a tree with five languages and in a
+# tree with none — which is why the probe lives here and detection still does
+# not run on an --agent run. It is also cheaper than the detection it stands in
+# for: ONE find over every marker in a single -o chain, `-print -quit`, so it
+# stops at the first hit rather than walking the tree once per marker.
+#
+# Gradle markers are deliberately absent. A Gradle-only repo gets the
+# Maven-only refusal and exits 1 too, so it is a tree with no runnable language
+# layer and must not be offered one.
+lang_layer_runs() {
+  if [ "$TARGET" = "$BASELINE" ]; then return 1; fi
+  [ -n "$(find "$TARGET" \
+    \( -name node_modules -o -name obj -o -name bin -o -name dist -o -name .git \) -prune -o \
+    \( -name '*.csproj' -o -name '*.sln' -o -name '*.slnx' \
+       -o -name 'tsconfig.json' -o -name 'package.json' \
+       -o -name 'pyproject.toml' -o -name 'requirements.txt' -o -name 'uv.lock' \
+       -o -name 'Cargo.toml' -o -name 'pom.xml' \) -print -quit 2>/dev/null | head -1)" ]
+}
+
+# The languages the layer covers, named the same way in every message that has
+# to explain why it is not offering a run.
+LANG_LAYER_SCOPE='TypeScript, C#, Python, Rust and Java/Maven'
+
+# --- --agent: the contract, and NOTHING else (#183) ---------------------------
+#
+# EXCLUSIVE, in every tree. This branch used to exist only for `TARGET =
+# BASELINE`, where it was forced: adopting the language configs into their own
+# source directory would copy files onto the originals. Everywhere else --agent
+# was an "also" flag, so the one invocation that installed the contract alone
+# was the one reserved for this repo, and a consumer who wanted the guard got
+# two hundred lints with it.
+#
+# Coupling them is not a preference, it is a measurement problem. The contract
+# has no language in it — five rules about sessions, a receipt and a git diff,
+# working in languages this baseline does not even ship — so adopting both at
+# once makes the result unattributable: when a session or a contributor finds
+# the tree annoying, nobody can say which half did it. And it reverses the
+# opt-in argument the flag is built on, coupling the surface that most deserves
+# a deliberate yes to the largest change this script can make.
+#
+# So --agent means ONLY the agent contract, the language layer is a second run,
+# and the two surfaces that could have been folded in are refused rather than
+# resolved silently. Detection does not run here either, which is the fix for
+# the other half of #183: a repo in a language this baseline has never heard of
+# can still adopt the contract.
+if [ "$WANT_AGENT" -eq 1 ]; then
+  # Refused, not resolved. Both resolutions lie: honouring everything makes
+  # --agent an "also" flag again, and honouring only --agent silently drops a
+  # flag the consumer typed. A usage error costs them one re-run and cannot be
+  # misread — and it names both runs, because a refusal with no remedy attached
+  # is a refusal that gets worked around.
+  COMBINED=""
+  if [ "$WANT_EDITOR" -eq 1 ]; then COMBINED="$COMBINED --editor"; fi
+  if [ "$HOOKS" -eq 1 ]; then COMBINED="$COMBINED --hooks"; fi
+  if [ -n "$COMBINED" ]; then
+    # Three messages, because "one at a time" is only true where the other run
+    # exists. It does in a consumer's repo, and the order is theirs to pick.
+    # It does not in the two trees lang_layer_runs() names — this one, where
+    # --editor and --hooks meet the self-adopt refusal a few lines below, and a
+    # tree with no language in it, where they warn "Nothing to do" and exit 1.
+    # In both, naming the second run walks the reader straight into a second
+    # error, so only the run that works is offered.
+    if lang_layer_runs; then
+      die "--agent installs the agent contract and NOTHING ELSE, so it cannot share a
+       run with$COMBINED. Adopt them one at a time, in either order:
+
+         $(shq "$SELF_CMD") $(shq "$TARGET")$COMBINED
+         $(shq "$SELF_CMD") $(shq "$TARGET") --agent"
+    elif [ "$TARGET" = "$BASELINE" ]; then
+      die "--agent installs the agent contract and NOTHING ELSE, so it cannot share a
+       run with$COMBINED. And$COMBINED cannot run against this tree at all:
+       adopting maxi-quality into itself is refused for every flag but --agent.
+       So there is one run here rather than two:
+
+         $(shq "$SELF_CMD") $(shq "$TARGET") --agent"
+    else
+      die "--agent installs the agent contract and NOTHING ELSE, so it cannot share a
+       run with$COMBINED. And$COMBINED has nothing to write here: the
+       language layer covers $LANG_LAYER_SCOPE, and none
+       of them was found under $TARGET — that run warns
+       \"Nothing to do\" and exits 1. The contract has no language in it, so
+       this run works anyway, and it is the only one:
+
+         $(shq "$SELF_CMD") $(shq "$TARGET") --agent"
+    fi
+  fi
+
+  SELF=0
+  if [ "$TARGET" = "$BASELINE" ]; then SELF=1; fi
+  if [ "$SELF" -eq 1 ]; then
+    # Adopting the baseline into itself is refused for the language configs and
+    # allowed for this one, because the source is configs/agent/ and the
+    # destination is .claude/ — two different paths in this tree, no collision,
+    # and the result is a repo that runs the contract it ships instead of one
+    # that only describes it. That is the in-house-demand test the whole
+    # baseline is governed by (CLAUDE.md §4), applied to the one thing here
+    # that can meet it before a consumer does (#166).
+    bold "── maxi-quality adopt: the agent contract, into the baseline itself ──"
+    info "baseline: $BASELINE"
+    info "target:   the same tree"
+  else
+    bold "── maxi-quality adopt: the agent contract ──"
+    info "baseline: $BASELINE"
+    info "target:   $TARGET"
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then warn "dry run — nothing will be written"; fi
+  printf '\n'
+
+  # The remaining flags all belong to the language layer, so on this run they
+  # do nothing. Said out loud rather than ignored: someone who typed --ref here
+  # believes they pinned something, and a flag that is quietly dropped is
+  # indistinguishable from one that worked.
+  # --force is NOT in this list. It was, until the region became refreshable
+  # (#177): on an --agent run it is now the one way past the refusal on a
+  # CLAUDE.md region you edited yourself, and reporting a flag as doing nothing
+  # while it decides whether your edit survives is the worst of both.
+  INERT=""
+  if [ "$NO_WORKFLOW" -eq 1 ]; then INERT="$INERT --no-workflow"; fi
+  if [ "$REF_SET" -eq 1 ]; then INERT="$INERT --ref"; fi
+  if [ -n "$INERT" ]; then
+    warn "--agent writes only the agent contract, so$INERT does nothing on this"
+    warn "run — those belong to the language layer, which is a separate one."
+    printf '\n'
+  fi
+
+  install_agent_contract
+  if [ "$AGENT_CONFLICT" -eq 1 ]; then
+    printf '\n'
+    printf '\033[31mAGENT CONTRACT NOT INSTALLED\033[0m — .claude/settings.json could not\n'
+    printf 'be merged into, and the reason is above. NOTHING was written: not the\n'
+    printf 'scripts, not the CLAUDE.md region, not the .gitignore line. Half a\n'
+    printf 'contract is a CLAUDE.md promising refusals that nothing performs,\n'
+    printf 'which is worse than none. Fix the file and re-run, or adopt it by\n'
+    printf 'hand — configs/agent/README.md section 7.\n'
+    exit 6
+  fi
+  if [ "$SELF" -eq 0 ]; then
+    printf '\n'
+    bold "── next steps ──"
+    agent_next_steps
+  fi
+  printf '\n'
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '\033[33mDRY RUN\033[0m — nothing written. Re-run without --dry-run to apply.\n'
+  elif [ "$SELF" -eq 1 ]; then
+    printf '\033[32mADOPTED\033[0m — this repo now runs the contract it ships.\n'
+  elif lang_layer_runs; then
+    # On its own line, and with the same derived path the refusals use: this
+    # is printed to be pasted, and a command sharing a line with prose is one
+    # a reader has to reassemble before it runs.
+    printf '\033[32mADOPTED\033[0m — the agent contract, and nothing else. The language\n'
+    printf 'layer is a separate run:\n\n'
+    printf '  %s %s\n' "$(shq "$SELF_CMD")" "$(shq "$TARGET")"
+  else
+    # No command, because there is no command that works. Offering one here
+    # would be the same defect the predicate exists to prevent, printed by the
+    # message a consumer is most likely to read to the end.
+    printf '\033[32mADOPTED\033[0m — the agent contract, and nothing else. There is no\n'
+    printf 'language layer to add: it covers %s,\n' "$LANG_LAYER_SCOPE"
+    printf 'and none of them was found here. The contract has no language in it,\n'
+    printf 'which is why this run worked anyway. If this repo grows one of those,\n'
+    printf 'adopt the language layer then — see docs/ADOPTION.md.\n'
+  fi
+  # #198. The --agent branch exits here rather than falling through to the
+  # tail, so this is the ONLY place the verdict can be corrected — putting it
+  # beside --editor's exit 5 looks right and never runs.
+  if [ "$REGION_REFUSED" -eq 1 ]; then
+    printf '\n\033[31mEXCEPT the CLAUDE.md region, which was NOT written\033[0m — the reason\n'
+    printf 'is above. The hooks and deny rules ARE installed and enforcing. What is\n'
+    printf 'missing is the text that tells a session they exist, which is the half a\n'
+    printf 'reader sees. Fix the reason and re-run; the rest is idempotent.\n'
+    exit 7
+  fi
+  exit 0
+fi
+
+# Adopting the baseline into itself is refused: configs/typescript/ is the
+# source and the consumer's tree is the destination, so pointing them at each
+# other means copying files onto the originals and calling the result an
+# adoption. --agent is the one exception and it has already returned above.
 if [ "$TARGET" = "$BASELINE" ]; then
   die "refusing to adopt maxi-quality into itself"
 fi
@@ -172,6 +774,16 @@ if [ "$HAS_DOTNET" -eq 0 ] && [ "$HAS_TS" -eq 0 ] && [ "$HAS_PYTHON" -eq 0 ] \
    && [ "$HAS_RUST" -eq 0 ] && [ "$HAS_JAVA" -eq 0 ]; then
   warn "no TypeScript, C#, Python, Rust or Java project found under $TARGET"
   warn "scope is TypeScript, C#, Python, Rust and Java/Maven (CLAUDE.md §4)."
+  # Said separately, because "nothing to do" does not answer "so where are my
+  # .vscode files". The editor settings are per-language all the way down —
+  # there is no language-independent half — so a tree with no detected language
+  # gets an EMPTY settings file or none, and an empty .vscode/settings.json is
+  # worse than none: it shadows nothing, explains nothing, and looks configured.
+  [ "$WANT_EDITOR" -eq 1 ] && warn "--editor wrote no .vscode/settings.json or .vscode/extensions.json: every key in configs/editor/ belongs to a language, and none was found."
+  # Nothing is said about --agent here any more, and its absence is the fix for
+  # the second half of #183: the contract has no language in it, so an --agent
+  # run never reaches detection at all. A repo in a language this baseline has
+  # never heard of adopts the contract on its own.
   warn "Nothing to do."
   exit 1
 fi
@@ -579,6 +1191,92 @@ if [ "$HOOKS" -eq 1 ]; then
   fi
 fi
 
+# --- the editor, only on --editor --------------------------------------------
+#
+# ONLY on --editor, and for one reason more than --hooks has: this is the first
+# thing the baseline writes that GATES NOTHING. Everything else here fails a
+# build when it is wrong; a settings file only changes what someone sees while
+# typing, and .vscode/settings.json is a file developers have opinions about.
+#
+# So it never merges. If either target exists, nothing is written to it, the
+# delta is printed, and the run exits 5 — the consumer applies it by hand or
+# deletes the file and re-runs. Silently clobbering someone's editor config is
+# the one unrecoverable thing this feature could do, and "helpfully merged your
+# settings" is not a sentence this script gets to say.
+if [ "$WANT_EDITOR" -eq 1 ]; then
+  # Language tokens are the configs/ directory names, which is what
+  # scripts/editor-settings.py keys its fragment map on.
+  EDITOR_LANGS=""
+  [ "$HAS_TS" -eq 1 ] && EDITOR_LANGS="$EDITOR_LANGS,typescript"
+  [ "$HAS_DOTNET" -eq 1 ] && EDITOR_LANGS="$EDITOR_LANGS,dotnet"
+  [ "$HAS_PYTHON" -eq 1 ] && EDITOR_LANGS="$EDITOR_LANGS,python"
+  [ "$HAS_RUST" -eq 1 ] && EDITOR_LANGS="$EDITOR_LANGS,rust"
+  [ "$HAS_JAVA" -eq 1 ] && EDITOR_LANGS="$EDITOR_LANGS,java"
+  EDITOR_LANGS="${EDITOR_LANGS#,}"
+
+  # The prettier rows — the extension recommendation and the [typescript] /
+  # [typescriptreact] formatter blocks — are gated on the repo ACTUALLY having
+  # taken adopt.sh's OPTIONAL prettier step. With the extension installed and
+  # no config present, VS Code formats at Prettier's default width and every
+  # save fights `prettier --check` at the width configs/typescript pins. That
+  # is strictly worse than no formatter routing at all, so it is conditional
+  # rather than recommended-and-caveated.
+  #
+  # Declared empty, and every expansion below uses the ${arr[@]+"${arr[@]}"}
+  # form: under `set -u`, bash 3.2 treats an EMPTY array as an unbound variable,
+  # so plain "${PRETTIER_ARGS[@]}" aborts on every repo that has no prettier
+  # config — which is most of them. CI runs this on ubuntu and would never see
+  # it; this script is run by a person on their own machine, and /bin/bash on
+  # macOS is still 3.2. Same reason hooks/pre-commit is written for 3.2.
+  # Found by running it there, not by reading the manual.
+  PRETTIER_ARGS=()
+  if [ "$HAS_TS" -eq 1 ]; then
+    for f in prettier.config.mjs prettier.config.js prettier.config.cjs \
+             .prettierrc .prettierrc.json .prettierrc.json5 .prettierrc.yaml \
+             .prettierrc.yml .prettierrc.mjs .prettierrc.js .prettierrc.cjs \
+             .prettierrc.toml; do
+      if [ -e "$TARGET/$f" ]; then PRETTIER_ARGS=(--prettier); break; fi
+    done
+    # package.json's own "prettier" key is a config too — parsed rather than
+    # grepped, because `"prettier"` also appears in devDependencies and a
+    # dependency is not a configuration.
+    if [ ${#PRETTIER_ARGS[@]} -eq 0 ] && [ -f "$TARGET/package.json" ]; then
+      python3 -c 'import json,sys; sys.exit(0 if "prettier" in json.load(open(sys.argv[1])) else 1)' \
+        "$TARGET/package.json" 2>/dev/null && PRETTIER_ARGS=(--prettier)
+    fi
+  fi
+
+  for spec in "settings:.vscode/settings.json" "extensions:.vscode/extensions.json"; do
+    kind="${spec%%:*}"; dst="$TARGET/${spec#*:}"
+    if [ -e "$dst" ] && [ "$FORCE" -eq 0 ]; then
+      skip "$dst — already exists; --editor never merges"
+      printf '\n'
+      python3 "$BASELINE/scripts/editor-settings.py" delta --kind "$kind" \
+        --existing "$dst" --languages "$EDITOR_LANGS" \
+        ${PRETTIER_ARGS[@]+"${PRETTIER_ARGS[@]}"} >&2
+      printf '\n'
+      EDITOR_CONFLICT=1
+      NEEDS_MERGE=1
+      continue
+    fi
+    wrote "$dst"
+    [ "$DRY_RUN" -eq 1 ] && continue
+    mkdir -p "$(dirname "$dst")"
+    # Composed to a temp file first: a python failure mid-write against "$dst"
+    # would leave a truncated settings.json, which VS Code reports as a parse
+    # error in a panel nobody has open and otherwise treats as no settings.
+    tmp="$dst.maxi-quality.$$"
+    if python3 "$BASELINE/scripts/editor-settings.py" "$kind" \
+         --languages "$EDITOR_LANGS" \
+         ${PRETTIER_ARGS[@]+"${PRETTIER_ARGS[@]}"} > "$tmp"; then
+      mv "$tmp" "$dst"
+    else
+      rm -f "$tmp"
+      die "could not compose $dst from configs/editor/ — this is a bug in the baseline, not in your repo"
+    fi
+  done
+fi
+
 # --- what the human still has to do ------------------------------------------
 printf '\n'
 bold "── next steps ──"
@@ -776,6 +1474,26 @@ if [ "$HAS_JAVA" -eq 1 ]; then
   printf '       is what the .editorconfig copied above already declares.\n'
 fi
 
+if [ "$WANT_EDITOR" -eq 1 ]; then
+  printf '  Editor (VS Code)\n'
+  printf '    1. Open the folder and take the extension recommendations. The\n'
+  printf '       settings only matter with the extensions they configure.\n'
+  printf '    2. TypeScript needs one HUMAN action no settings file can perform:\n'
+  printf '       run "TypeScript: Select TypeScript Version" and pick the\n'
+  printf '       WORKSPACE version. Until then the editor type-checks with the\n'
+  printf "       one VS Code ships and CI uses yours — two compilers, two answers.\n"
+  printf '    3. Every key carries the CI behaviour it pins in a comment above\n'
+  printf '       it. Delete what you disagree with; the comment is there so that\n'
+  printf '       is a decision rather than a guess.\n'
+  printf '    4. Semgrep is NOT configured here, deliberately: its rules live in\n'
+  printf '       the baseline, not in your tree, so the extension would scan with\n'
+  printf '       rules this repo does not have. Semgrep still runs in CI.\n'
+  printf '    5. Java gets build wiring only. Error Prone and NullAway are javac\n'
+  printf '       plugins and the extension compiles with ECJ, so the Java gate\n'
+  printf "       findings cannot reach the Problems panel — that is architecture,\n"
+  printf '       not a missing setting.\n'
+fi
+
 if [ "$NEEDS_MERGE" -eq 1 ]; then
   printf '\n'
   warn "some files already existed and were left untouched."
@@ -789,3 +1507,23 @@ if [ "$DRY_RUN" -eq 1 ]; then
 else
   printf '\033[32mADOPTED\033[0m — commit these files, push, and CI gates the next PR.\n'
 fi
+
+# LAST, so a refused editor file does not cost the run everything else it did.
+# The rest of adoption has already happened and been reported; these exit codes
+# say one specific thing each, and a caller that scripts adopt.sh can tell them
+# apart from "nothing detected" (1) and "you typed it wrong" (3).
+#
+# Only 5 can be reached from here. Since #183 the agent contract is a run of
+# its own, so a refused merge (6) returns from that branch and can no longer
+# collide with a refused editor file.
+if [ "$EDITOR_CONFLICT" -eq 1 ]; then
+  printf '\n'
+  printf '\033[31mEDITOR FILES NOT WRITTEN\033[0m — a .vscode file already existed.\n'
+  printf 'The delta above is what --editor would have applied. Merge it by hand,\n'
+  printf 'or delete the file and re-run. --force overwrites, if that is what you want.\n'
+fi
+
+if [ "$EDITOR_CONFLICT" -eq 1 ]; then
+  exit 5
+fi
+

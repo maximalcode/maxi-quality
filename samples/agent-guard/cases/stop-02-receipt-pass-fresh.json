@@ -1,0 +1,22 @@
+{
+  "why": "The only shape that lets a session end with uncommitted work: a passing verdict whose fingerprint still describes the tree.",
+  "hook": "stop",
+  "setup": {
+    "committed": {
+      "a.txt": "one\n"
+    },
+    "worktree": {
+      "a.txt": "one\ntwo\n"
+    },
+    "receipt": {
+      "verdict": "pass",
+      "fingerprint": "current"
+    }
+  },
+  "event": {
+    "hook_event_name": "Stop"
+  },
+  "expect": {
+    "decision": "allow"
+  }
+}

@@ -1,0 +1,1 @@
+--sample samples/python --tool mypy --manifest samples/editor-parity/cases/repo-relative/expected.json --condition with

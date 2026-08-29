@@ -17,8 +17,20 @@
 # which stayed private. They record why something was decided. They are NOT
 # this repo's issue numbers, which start fresh at #1.
 #
-# Version coupling: this file references actions/layer2@v1. The v1 tag pins
-# BOTH the workflow and the action — they move together, never independently.
+# Version coupling, settled in #81:
+#
+# - `actions/layer2` is pinned by commit-SHA below (line ~1032), with a `# v1`
+#   comment. The version tag still travels because a consumer needs to know
+#   which release lineage they are on, but SHA-pinning means a moved tag cannot
+#   silently change what runs inside an already-pinned consumer workflow.
+# - This file is itself consumed BY COMMIT-SHA, not by tag, when a consumer
+#   wants the Scorecard pinning check to pass. The documented adoption snippet
+#   offers both: `@v1` for the easy path, and a SHA with `# v1` for the pinned
+#   one. The pinned SHA is published alongside each release; see README.md.
+#
+# The v1 tag still exists and still moves — it is the "latest v1.x" pointer. A
+# consumer on `@v1` accepts the Scorecard finding and the supply-chain trade-off
+# it describes. A consumer on a SHA gets end-to-end immutability.
 #
 # v1 scope (deliberate): TypeScript (npm, or pnpm with a packageManager field),
 # C#, Python (uv or pip), Rust (a committed Cargo.lock) and Java (MAVEN, with
@@ -151,6 +163,49 @@ on:
           reported — a silent truncation reads as "that was all of them".
         type: string
         default: '50'
+      coverage-report:
+        description: >-
+          Name of an artifact, uploaded earlier in the SAME run, holding this
+          repo's coverage report. Set it and the coverage gate runs: the
+          aggregate ratchet, plus the patch gate over the lines the change
+          added. Leave it empty and nothing coverage-related runs at all —
+          there is no coverage job in the graph, which is what every existing
+          consumer must keep seeing when v1 next moves.
+
+          The baseline still never runs your tests (CONCEPT §12). Your own job
+          produces the report and uploads it; this downloads that artifact.
+          The caller therefore needs `needs:` from the test job to the
+          quality.yml call, which the ADOPTION snippet shows.
+
+          Report files are found inside the artifact BY CONTENT, not by name —
+          lcov and Cobertura are both detected, wherever they sit in it.
+        type: string
+        default: ''
+      coverage-floor-file:
+        description: >-
+          The committed floor the ratchet compares against. Lives in YOUR repo.
+        type: string
+        default: '.maxi-quality/coverage.json'
+      coverage-patch-threshold:
+        description: >-
+          Minimum coverage, in percent, of the lines this change ADDS. The
+          aggregate ratchet cannot see one new untested function inside a large
+          well-covered repo; this is the number that can. '0' keeps the
+          measurement and drops the gate.
+        type: string
+        default: '50'
+      coverage-raise:
+        description: >-
+          One-time bootstrap. 'true' records the floor instead of demanding one,
+          and prints the file to commit. It does NOT commit to your branch —
+          that is a write to your default branch and this baseline does not take
+          that permission on your behalf.
+
+          Set it once, commit what the log prints, then remove it. A run left on
+          'true' forever cannot fail on a drop, because it rewrites the floor it
+          was about to be measured against.
+        type: string
+        default: 'false'
     outputs:
       # Exposed so a caller can assert that detection actually FIRED (#38).
       # Without this a consumer's run is green in two very different cases: the
@@ -969,12 +1024,151 @@ jobs:
         with:
           # Gitleaks scans commit history, not just the tree.
           fetch-depth: 0
-      # Pinned to the same tag that pins this workflow — v1 moves both
-      # together, never independently. (Acceptance ran against @main first;
-      # this line flipped in the commit that got tagged v1.)
-      - uses: maximalcode/maxi-quality/actions/layer2@v1
+      # Pinned by commit-SHA: the v1 tag still names which release lineage this is,
+      # but a SHA means a moved tag cannot change which action revision runs
+      # inside a consumer workflow that is itself SHA-pinned to this file.
+      # Bump the two together: the SHA is the v1 tag's commit, and the comment
+      # records the lineage the SHA was taken from.
+      - uses: maximalcode/maxi-quality/actions/layer2@27d3c69c4f9b9319e2974871f8c46605b4930a44 # v1
         with:
           changed-only: ${{ inputs.changed-only }}
           licenses: ${{ inputs.licenses }}
           annotate: ${{ inputs.annotate }}
           max-annotations: ${{ inputs.max-annotations }}
+
+  # Coverage — off unless `coverage-report:` names an artifact (#75, #124).
+  #
+  # WHY AN ARTIFACT AND NOT A PATH. Coverage needs the consumer's TESTS to have
+  # run, and this workflow is a separate job graph from the caller's — it does
+  # not share a filesystem with it. An artifact is the one hand-off GitHub
+  # gives two jobs in the same run that never share a runner. So the consumer's
+  # own test job uploads, and this downloads.
+  #
+  # WHY `if:` AND NOT A SKIPPED STEP. With the input unset there is no coverage
+  # job in the graph at all. v1 is a MOVING TAG: a job that merely skipped would
+  # still appear, and every already-adopted consumer would grow a new box in
+  # their PR checks the morning this ships.
+  coverage:
+    if: inputs.coverage-report != ''
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The patch gate diffs against the merge base, which a shallow clone
+          # does not contain. The action can deepen one itself, but doing it
+          # here is one fetch instead of three.
+          fetch-depth: 0
+
+      - name: Download the coverage report
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ${{ inputs.coverage-report }}
+          path: ${{ runner.temp }}/coverage-report
+
+      # download-artifact's own failure says "unable to find any artifacts" and
+      # never prints the name it looked for, so a typo reads like "coverage is
+      # not configured here". It has to name what it wanted.
+      - name: A named artifact that is not there is an error
+        if: steps.download.outcome != 'success'
+        shell: bash
+        env:
+          ARTIFACT: ${{ inputs.coverage-report }}
+        run: |
+          echo "::error::coverage-report: no artifact named '${ARTIFACT}' in this run. Nothing was gated. Check the name matches the one your test job uploads, that the upload step ran, and that the quality.yml call has a needs: edge from it — a job that starts before the upload finishes finds nothing."
+          exit 1
+
+      # Found by CONTENT, not by filename: coverage.xml, cobertura.xml,
+      # lcov.info and coverage.info are all in circulation and CI configs rename
+      # them freely. The action already detects format this way; this is the
+      # same rule applied one level up, to which files in the artifact are
+      # reports at all.
+      - name: Find the reports inside the artifact
+        id: find
+        shell: bash
+        env:
+          DIR: ${{ runner.temp }}/coverage-report
+          ARTIFACT: ${{ inputs.coverage-report }}
+        run: |
+          set -Eeuo pipefail
+          found=()
+          while IFS= read -r -d '' f; do
+            if head -c 4096 "$f" | grep -qE '^(SF:|DA:|LF:|LH:)'; then
+              found+=("$f")
+            elif head -c 4096 "$f" | grep -q '<coverage'; then
+              found+=("$f")
+            fi
+          done < <(find "$DIR" -type f -size -64M -print0 2>/dev/null)
+
+          if [[ ${#found[@]} -eq 0 ]]; then
+            echo "::error::coverage-report: artifact '${ARTIFACT}' downloaded, but none of its files is an lcov or Cobertura report. An artifact that exists and holds no report must not read as a passing gate. Files found: $(find "$DIR" -type f | head -20 | tr '\n' ' ')"
+            exit 1
+          fi
+
+          printf 'found %s report(s) in %s:\n' "${#found[@]}" "$ARTIFACT"
+          printf '  %s\n' "${found[@]}"
+          {
+            echo 'reports<<EOF'
+            printf '%s\n' "${found[@]}"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      # #75's third question: a first run must not look like a broken gate. The
+      # action refuses to compare against nothing, which is right and reads as
+      # an unexplained failure unless the way out is written here, in terms of
+      # the input the consumer actually set.
+      - name: A missing floor must say exactly how to record one
+        if: inputs.coverage-raise != 'true'
+        shell: bash
+        env:
+          FLOOR_FILE: ${{ inputs.coverage-floor-file }}
+        run: |
+          set -Eeuo pipefail
+          if [[ -f "$FLOOR_FILE" ]]; then
+            echo "floor: $FLOOR_FILE"
+            exit 0
+          fi
+          cat <<MSG
+          ::error::coverage-report is set but ${FLOOR_FILE} does not exist. A ratchet with nothing to compare against reports ok at any coverage, so this fails instead of passing. Record the floor once:
+          ::error::  1. add   coverage-raise: 'true'   to the quality.yml call, and push.
+          ::error::  2. that run prints the floor file's contents under "RECORDED FLOOR".
+          ::error::  3. save it as ${FLOOR_FILE} in this repo, commit it, and remove coverage-raise.
+          MSG
+          exit 1
+
+      - name: Coverage gate
+        id: cov
+        uses: maximalcode/maxi-quality/actions/coverage@v1
+        with:
+          report: ${{ steps.find.outputs.reports }}
+          floor-file: ${{ inputs.coverage-floor-file }}
+          patch-threshold: ${{ inputs.coverage-patch-threshold }}
+          raise: ${{ inputs.coverage-raise }}
+
+      # Step 2 of the bootstrap. The action writes the floor and deliberately
+      # does not commit it, so the only way the consumer gets the file is if the
+      # log hands it to them.
+      - name: Print the floor to commit
+        if: inputs.coverage-raise == 'true' && steps.cov.outputs.raised == 'true'
+        shell: bash
+        env:
+          FLOOR_FILE: ${{ inputs.coverage-floor-file }}
+        run: |
+          set -Eeuo pipefail
+          echo '--- RECORDED FLOOR ---'
+          echo "Save the block below as ${FLOOR_FILE}, commit it, then remove"
+          echo "coverage-raise from the quality.yml call."
+          echo
+          cat "$FLOOR_FILE"
+          echo
+          echo '--- end ---'
+          {
+            echo '### Coverage floor recorded'
+            echo
+            echo "Commit this as \`${FLOOR_FILE}\`, then remove \`coverage-raise\`."
+            echo
+            echo '```json'
+            cat "$FLOOR_FILE"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

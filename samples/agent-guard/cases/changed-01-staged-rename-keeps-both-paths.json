@@ -1,0 +1,20 @@
+{
+  "why": "A staged rename is ONE porcelain entry carrying TWO paths. Drop the old one and moving a fixture out of the way stops moving the fingerprint \u2014 which is exactly how a sample gets disabled without the gate noticing.",
+  "hook": "changed",
+  "setup": {
+    "committed": {
+      "old.txt": "x\n"
+    },
+    "worktree": {
+      "old.txt": null,
+      "new.txt": "x\n"
+    },
+    "stage": true
+  },
+  "expect": {
+    "files": [
+      "new.txt",
+      "old.txt"
+    ]
+  }
+}

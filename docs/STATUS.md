@@ -83,13 +83,23 @@ configs/python/settings.snapshot.json   what ruff and mypy RESOLVE to — 344 ru
 configs/java/pom-lints.xml              Error Prone + NullAway(ERROR) + Spotless(palantir AOSP), all pinned;
                                         a MANAGED REGION merged into the consumer's own pom.xml
 configs/java/settings.snapshot.json      what Maven RESOLVES the two plugins to, after Spring Boot's parent
+configs/editor/         the editor contract (#120): one .vscode settings fragment per
+                        language + the shared extensions list, every key annotated with
+                        the CI behaviour it pins. `adopt.sh --editor` composes them into
+                        a consumer's tree since #126 — opt-in, detected languages only,
+                        and it refuses rather than merging. The Semgrep fragment is the
+                        one it never composes — declined for good in ADR 0002, #153.
+                        README.md there carries the six VERIFIED extension-default
+                        divergences and the per-language authoritative expectation
+                        source step 3 measures parity against
 
 semgrep/general/       todo-without-issue, catch-and-swallow, debug-print, sync-over-async
 semgrep/security/      sql-string-concat, command-injection, weak-crypto, hardcoded-secret
 semgrep/conventions/   no-ambient-clock, mutation-requires-authz,
                        no-permission-denied-for-invisible-resource, no-float-for-money
 
-scripts/adopt.sh          adopt into a consumer: detect languages, drop the copies
+scripts/adopt.sh          adopt into a consumer: detect languages, drop the copies.
+                          --hooks and --editor are the two opt-in extras
 scripts/scan.sh           Layer 2 runner: semgrep + gitleaks + osv (+ SBOM, licences)
 scripts/policy.py         resolves a consumer's .maxi-quality.yml, emits semgrep
                           args, classifies findings into gating vs warn-only, and
@@ -102,8 +112,93 @@ hooks/pre-commit          OPT-IN hook (#40): gitleaks on the staged diff, semgre
                           `adopt.sh --hooks`; bash 3.2, because macOS
 scripts/check-pins.sh     bump policy (#13): pin consistency + upstream drift
 scripts/quality-report.py renders the standing-report issue body (no network)
-scripts/coverage.py       coverage ratchet: lcov + Cobertura vs a committed floor
+scripts/coverage.py       coverage ratchet: lcov + Cobertura vs a committed floor,
+                          and --diff-file: coverage of the lines a diff ADDED,
+                          which the aggregate cannot see (#112). Both GATE —
+                          --patch-threshold defaults to 50, and 0 keeps the
+                          measurement without the gate
 scripts/check-expected.py diffs a tool's JSON output against a committed manifest
+scripts/check-editor-contract.py  configs/editor/ is the only config here that nothing
+                          RUNS — no headless VS Code — so this asserts its internal
+                          consistency instead: every key justified, every verified
+                          divergence still pinned at the documented value, C# Dev Kit
+                          still excluded, every expectation manifest still in the table,
+                          and (since #126) the composer's rules and the templates agree
+                          in both directions. G8 (#153) is the tripwire on ADR 0002:
+                          every ADR citation in the tree must resolve — repo-wide,
+                          because the citations are — editor-settings.py must still
+                          name the decision, and Semgrep.semgrep must still be
+                          NOT_PORTABLE, since a one-word edit to a language token
+                          would ship the extension with no rules and the table
+                          check would pass
+scripts/check-agent-contract.py  the agent contract is four files that a single
+                          edit puts out of step with nothing red in between, and
+                          samples/agent-guard/ cannot see it: the corpus runs each
+                          hook as a subprocess, so no case routes through a
+                          `matcher` or reads a `command`. This checks the SEAMS —
+                          commands against the scripts they name and scripts
+                          against some command, matchers against the prose both
+                          ways, both READMEs' case counts against cases/, every
+                          mutation row and cited case and section and link against
+                          what exists, the deny array against the block the README
+                          quotes and the table it observed, every reference
+                          against its own `as of <date>`, and (#166) the adopted
+                          copy under .claude/agent-guard/ against the source it
+                          was copied from — this repo runs its own contract from
+                          a COPY, because a consumer gets a copy, so it can drift
+                          here exactly the way it will drift there and no fixture
+                          would notice: samples/agent-guard/ runs the source.
+                          G10 (#178) is the same drift one file over: this repo's
+                          own CLAUDE.md region against the fragment it was pasted
+                          from, which nothing refreshes while #177 is open.
+                          It READS those numbers
+                          and refuses to write them. `selftest` mutates a staged
+                          copy 25 ways and asserts each run names what moved
+scripts/editor-parity.py  the differ for the #121 parity run: a VS Code Problems
+                          panel dumped as JSON ("Copy All"), diffed against the
+                          manifest README §3 names for that sample. The observing
+                          needs a person at a window; the arithmetic does not, and
+                          the arithmetic is what invents cells — §3's twenty
+                          manifests do not all share a path base, and a rule id
+                          compared by eye is how a cell comes to read "assumed".
+                          Distinguishes missing from extra from DEMOTED (present,
+                          but at warning severity), excludes JDT null analysis by
+                          name per §3, and names un-run cells rather than omitting
+                          them. Divergence is exit 0 on purpose — the ablation is
+                          SUPPOSED to diverge
+scripts/editor-settings.py  composes .vscode/settings.json and .vscode/extensions.json
+                          from configs/editor/ for the detected languages (#126). Works
+                          on the JSONC TEXT rather than parsing and re-dumping, so every
+                          justification comment survives into the consumer's file — a
+                          json.dump would ship the plausible-and-pins-nothing file the
+                          guard above exists to prevent. Also prints the key-by-key
+                          delta adopt.sh shows instead of merging
+scripts/agent-region.py   owns the agent-guard region in a consumer's CLAUDE.md
+                          (#177): renders configs/agent/CLAUDE.fragment.md for
+                          the tree's profile, replaces what is between the
+                          markers and nothing outside them, and is the reason
+                          re-adoption upgrades the PROSE as well as the scripts.
+                          The BEGIN marker carries a checksum of the text as
+                          installed, which is the only way to tell an older
+                          baseline's fragment (refresh it) from an edit of the
+                          consumer's own (refuse, print the diff, exit 4).
+                          A current region with no checksum is stamped rather
+                          than left permanently unverifiable — without that
+                          branch it is stuck, never refreshed because it is
+                          current and never stamped because it is never
+                          refreshed
+scripts/agent-settings.py merges configs/agent/settings.json into a consumer's own
+                          .claude/settings.json (#165). The one adopt.sh path that
+                          MERGES rather than refusing, because unlike .vscode/ this
+                          file usually already exists. Ownership is by `command`
+                          string and by rule string — the consumer's entries are
+                          appended to, never replaced or reordered, and matching on
+                          the command rather than the matcher group is what keeps a
+                          relocated entry from being re-added on the next run. A
+                          settings.json it cannot fully read is REFUSED before the
+                          first byte is written, and the refusal skips the whole
+                          flag: half a contract is a CLAUDE.md promising refusals
+                          nothing performs
 scripts/deadcode-gate.py  turns knip/deptry output into a VERDICT: which issue types
                           may fail a build, and the changed-only ratchet applied to
                           the results (neither tool takes a file list)
@@ -123,11 +218,24 @@ scripts/pom-region.py     inserts/refreshes/verifies the Java managed region in 
 
 docs/ADOPTION.md       how a project takes this on, per language
 docs/REFERENCE.md      every input, flag, exit code and rule id
+docs/EVAL-editor-parity.md  the editor parity run (#121), PRE-REGISTERED: protocol,
+                       exclusions, verdict definitions and the bar that arms or
+                       disarms the custom-extension eval (#122), all written
+                       before a window was opened. Holds no matrix yet and says
+                       so — the run needs a person at a VS Code
+docs/EVAL-vs-code-guardian.md  the agent-surface eval (#160), PRE-REGISTERED:
+                       the claims a commercial guard layer publishes, quoted
+                       verbatim and dated, the three verdicts, the fixture each
+                       measurable claim gets, and the bar. Holds no verdict and
+                       no count and says so — #162 is the run
 CONTEXT.md             the GLOSSARY, and nothing else — Consumer vs Adopter, the
                        three tests that admit a language, Mechanism vs Finding
                        change. Terms only; CONCEPT.md still holds the design
 docs/adr/              decisions that are hard to reverse, with the alternatives
-                       that lost. 0001 is the audience position (§1a)
+                       that lost. 0001 is the audience position (§1a); 0002
+                       declines in-editor Semgrep parity — not over the rule
+                       paths, but because the extension has no rule-level filter,
+                       so every fix for the paths still ignores .maxi-quality.yml
 examples/              five copyable consumer repos — ts-npm, dotnet, python-uv,
                        mixed-monorepo, legacy-ratchet. NOT fixtures: CI asserts
                        each scans clean, is detected as the language it claims,
@@ -138,7 +246,8 @@ actions/deadcode/      knip and deptry inside the Layer 1 jobs (#97) — the sam
                        delivery vehicle, carrying scripts/ to a runner that only
                        checked out the consumer
 actions/report-issue/  upserts the standing report issue; outputs its number
-actions/coverage/      the coverage ratchet
+actions/coverage/      the coverage gate: the aggregate ratchet, and a fixed
+                       threshold on the lines a change ADDS
 
 samples/typescript/       Layer 1 TS sample — `npm run lint` must fail (14 findings)
 samples/typescript-clean/ negative control — must PASS with zero findings
@@ -188,6 +297,19 @@ samples/policy/           the policy file's own suite: one fixture per knob
 samples/policy/expected/  the resolved-policy snapshot — what a policy RESOLVES
                           to, with a placeholder baseline path so it encodes
                           nobody's home directory
+samples/editor-parity/    the differ's own corpus (#121): 14 cases, one per way a
+                          cell goes wrong — demoted severity, the same rule id
+                          published twice at two severities, an extra the gate
+                          never produces, a marker with no rule id, a marker from
+                          the wrong folder, JDT noise that must not become an
+                          extra, both path bases, the Semgrep row that names no
+                          sample folder at all, a §3 row nothing can anchor, and a
+                          dump that is not JSON. Plus one over the RENDERER,
+                          because a matrix printing PARITY on every row — or
+                          quietly omitting the rows nobody ran — would read as a
+                          finished, successful run. Hermetic manifests, except
+                          table-resolution, which reads the real one to prove §3
+                          is parsed live
 samples/expected/         the manifests: rule id + file + line per tool, so a
                           regression names the rule that stopped firing
 ```
@@ -251,6 +373,10 @@ python3 scripts/coverage.py --report samples/coverage/lcov.info \
         --floor-file /tmp/f.json         # expect coverage=65.00
 python3 scripts/coverage.py --report samples/coverage/cobertura.xml \
         --floor-file /tmp/f.json         # expect coverage=75.00
+./scripts/patch-coverage-demo.sh         # expect exit 0: the aggregate ratchet
+                                         # green on samples/coverage/patch while
+                                         # its four added lines measure 0.00%,
+                                         # from two implementations (needs pip)
 python3 scripts/quality-report.py --json /tmp/semgrep.json --date 2026-01-01 \
         --sbom samples/sbom/cyclonedx.json   # expect MIT 2 / Apache-2.0 1 /
                                              # "MIT OR Apache-2.0" 1 / UNKNOWN 2
@@ -320,7 +446,7 @@ Gitleaks v8.30.1 and OSV-Scanner v2 via Docker — nothing was installed globall
 | **A compiler-flag fixture can fail on the wrong flag** | Found 2026-08-03 building `samples/typescript-strict` for #7. `function classify(n: number): string { if (n > 0) return 'positive'; }` looks like the obvious bait for `noImplicitReturns`, and it does fail — with TS2366 from `strictNullChecks`. Delete `noImplicitReturns` and CI stays red, so the flag reads as covered and is not. Widening the return type to `string \| undefined` satisfies `strictNullChecks` and leaves TS7030 holding the error alone. **The general shape: a fixture proves *an* error, never *which setting caused it*.** Every flag→error mapping in that directory is now verified by ablation — switch the one flag off, confirm that specific error is the one that disappears — and the manifest pins the TS code rather than just the count. |
 | **`--isolatedModules false` changes nothing** | Measured on tsc 6.0.3 in `samples/typescript-strict`: `verbatimModuleSyntax` subsumes it, and TS1205's own message names `verbatimModuleSyntax`. Three more flags are unbaitable for their own measured reasons — `esModuleInterop: false` is refused outright (TS5107, deprecated ahead of TS 7), `forceConsistentCasingInFileNames` needs a case-insensitive filesystem, and the emit trio is invisible under `--noEmit`. Hence `configs/typescript/tsconfig.snapshot.json`: what `tsc --showConfig` **resolves**, not what the JSON file says, so it also pins the options tsc implies (`moduleDetection: force`, `preserveConstEnums`). |
 | **`pattern-not-regex` must be nested under `patterns:`** | Placed at rule level next to a top-level `pattern-either`, Semgrep **silently ignores it** — no error, no warning, the rule just behaves as if it were absent. Verified the hard way: identical output before and after adding it. It only takes effect inside a `patterns:` block alongside the `pattern-either`. |
-| **Analyzer versions pinned, not floating** | With `TreatWarningsAsErrors`, an analyzer upgrade that adds rules is a breaking change. Bump deliberately — the policy and its mechanism are §6 (#13). |
+| **Analyzer versions pinned, not floating** | With `TreatWarningsAsErrors`, an analyzer upgrade that adds rules can turn a green build red. Under the version contract that is a **Finding change** — explicitly not breaking, and announced in `CHANGELOG.md` rather than held back. Bump deliberately — the policy and its mechanism are §6 (#13). |
 | **Semgrep is pinned three times, and the third was not pinned at all** | `actions/layer2/action.yml` (what consumers get) and `ci.yml`'s `layer2-counts` (what validates the manifest) were guarded by `check-pins.sh` from the start. `scripts/scan.sh` — the one a human runs locally — was not: a bare `uvx semgrep` and `returntocorp/semgrep:latest`. That is why a C# parse failure was irreproducible between two runs minutes apart; they were not the same tool. A local scan that disagrees with the gate is worse than no local scan, because people trust it. All three are now asserted, and `check-pins.sh` also asserts the literal is USED rather than merely assigned — a pin nothing reads is a comment. |
 | **`mapfile` is bash 4, and macOS is not** | `hooks/pre-commit` shipped with `mapfile -t` and aborted **every commit** on macOS with `command not found`, then `STAGED: unbound variable` under `set -u`. `scan.sh` had targeted bash 3.2 since the start; the hook — the one script most likely to run on a developer's laptop rather than a runner — did not. Caught by running it, not by reading it. CI now greps the hook for bash 4 constructs, **with comments stripped**, because the file documents the bug by name and the guard failed on its own explanation. |
 | **A hook that scans the working tree is quietly wrong** | `git commit` commits the INDEX. A file with staged changes and further unstaged ones is not what is being committed, so a working-tree scan both misses findings you are committing and reports ones you are not. The hook materialises staged blobs first, and CI asserts both directions: a staged secret blocks with the file on disk clean, and an unstaged secret does not block. |
@@ -331,6 +457,7 @@ Gitleaks v8.30.1 and OSV-Scanner v2 via Docker — nothing was installed globall
 | **osv-scanner will not create its output directory** | It exits **127** with `failed to create output file`, which reads as "the tool is broken" rather than "make the folder". `scan.sh` `mkdir -p`s the parent. |
 | **The licence gate has no default allowlist** | Measured on this repo's own tree, a plausible one flags `SonarAnalyzer.CSharp` and `typing-extensions` as *non-standard* and `pathspec` as MPL-2.0. First-party workspace packages resolve to `UNKNOWN` and trip any allowlist too. A default would be wrong for someone on day one; the inventory is on by default instead. |
 | **Coverage: root attributes beat counting `<line>`** | coverlet emits one `<class>` per **type**, so a file holding two types lists its lines twice and an element count inflates. `samples/coverage/cobertura.xml` encodes exactly that shape — if it ever reports 66.67 instead of 75.00, the parser started counting elements. |
+| **A CI job that is not a required context is indistinguishable from a passing one** | It runs, it reports, and the PR merges anyway. This drifted **twice**: first `layer1-rust`, `layer1-java`, `policy` and `examples`, so the two newest languages could not fail a merge; then `patch-coverage` and `coverage-input`, so the coverage gate could not fail one either — both times within days of the jobs shipping. The protection API needs admin rights CI does not have, so it cannot self-check; what CI *can* assert is the written count, and `workflow-lint` now fails when the number in `CLAUDE.md`/`CONTRIBUTING.md` stops matching `ci.yml`. Count **contexts, not jobs** — `layer2` is a two-leg matrix, so 25 jobs make 26 contexts, and "one per job" was already off by one before anything drifted. |
 | **A zero-line coverage report is not 100%** | It is a broken test run. Recording it as a floor would raise the floor to 100 and brick the consumer's gate permanently. Same class: an unparseable floor file must never be read as "no floor yet", which silently restarts the ratchet at whatever today happens to be. |
 | **actionlint does not read `actions/*/action.yml`** | It lints workflows only — so the composite actions, the part every consumer actually executes, had **no** shell linting at all. That is the same gap the report action shipped broken through. `ci.yml` now extracts each bash `run:` body and shellchecks it. |
 | **`${{ }}` inside a `run:` body is textual substitution** | It happens before bash parses the script, so an input carrying a quote stops being a value and becomes code. Every composite action now passes inputs via `env:`, and CI fails if a new one does not. |
@@ -361,6 +488,7 @@ Gitleaks v8.30.1 and OSV-Scanner v2 via Docker — nothing was installed globall
 | **An XML config cannot be appended, so the delivery mechanism is part of the design** | Rust's `[lints]` block is `cat >> Cargo.toml`. Maven's has to land inside `<build><plugins>`, so adoption is an EDIT — and an edit a human redoes on every baseline bump is copy-paste-drift with a changelog. Hence `scripts/pom-region.py` and the `maxi-quality:begin`/`:end` markers: re-running rewrites the region and nothing else. It also has to REFUSE a pom that already declares `maven-compiler-plugin`, because two declarations of one plugin in one POM is not a merge — it is last-one-wins, so writing the baseline's would **silently delete a `-Werror` the consumer already had**, i.e. adoption would leave them weaker than before. |
 | **The insert path and the refresh path of the same generator must produce the same bytes** | Found by adopting a fresh repo twice, not by reading the code. `pom-region.py`'s insert cut the file at the `</plugins>` TAG rather than at the start of its line, so that line's indentation stayed in the prefix and the fragment's first line came out indented twice. The file looked fine — one comment a few columns too far right — and then the refresh path read that first line's whitespace as the region's indent and re-indented the whole block by it. Every run. `apply` immediately followed by `check` is now a CI assertion for exactly this. |
 | **A mature, universally-deployed analyzer can score zero** | SpotBugs at `effort=Max, threshold=Low` caught 4 of 8 planted Java findings and **0 that Error Prone did not already catch**, plus one false positive — `EI_EXPOSE_REP2` on **constructor injection**, the most universal pattern in the framework the consumer is built on. PMD at its default ruleset caught **0 of 8**, and its only finding was on the CLEAN fixture: `UnusedFormalParameter` for a `RowMapper`'s `rowNum`, a parameter Spring's own interface requires. Same shape as `p/security-audit` scoring 0 of 28 and then 0 of 103. Numbers in `EVAL-vs-oss-tools.md` §2p. |
+| **A module-graph scan that prunes `node_modules` reports a zero it never looked for** | Measured 2026-08-18 (issue #109), dependency-cruiser 18.2.0 on a pnpm workspace. Every import of a workspace-internal package resolves *through* `node_modules`, so the conventional `doNotFollow: node_modules` prunes exactly the first-party edges the scan exists to check: **85 dependency edges across 84 modules silently came back `couldNotResolve` and 66 cross-package edges were never looked at**, and the run reported a clean 0 over 465 dependencies. Configured to follow workspace links into their real sources and nothing else, the same tree resolves 0 unresolved and those 66 cross-package edges — still 0 findings, but now a zero that means something. Same class as the duplication scope artifact and the deptry granularity row: **a zero needs its scan scope stated before it is evidence of anything**, and `couldNotResolve` is the one counter that distinguishes a clean codebase from a scan that never ran. |
 | **A dependency scanner that resolves manifests over the network is a gate with a third-party rate limit in it** | Measured 2026-08-09, osv-scanner v2.4.0, adding the Java layer. A `pom.xml` does not contain its dependency graph, so osv-scanner walks it by fetching every POM and BOM from Maven Central at scan time — over a hundred requests for one Spring Boot project. This repo's own scan died with **9 × HTTP 429 and exit 127**. `--no-resolve` turned it into exit 0 with **identical per-file package counts**, because resolution never completed before being throttled. Lockfiles are untouched by the flag; it only affects manifests, which here means Maven. **The cost is stated rather than buried:** a Maven project is scanned for its DIRECT dependencies only, and in the JVM ecosystem most vulnerabilities are transitive. Same trade-off as .NET without a `packages.lock.json` (4 findings vs 7 on the same project), and the same answer — the consumer's call, not something the scanner decides by being slow and flaky. A gate that goes red when a registry is busy is one people re-run until it passes, and then ignore. |
 
 ### 4a. What "dead code" actually covers, and where it does not
@@ -466,9 +594,11 @@ repository.
 **Dependabot opens it, CI judges it, a human resolves it.**
 
 The usual argument against automating bumps is that with
-`TreatWarningsAsErrors` an analyzer upgrade adding one rule is a breaking
-change. That argument does not hold here, because `samples/` asserts an **exact
-set of findings**. A bump that changes what fires cannot merge quietly — it
+`TreatWarningsAsErrors` an analyzer upgrade adding one rule breaks the build. It
+can — but under the version contract that is a **Finding change**, which is
+permitted precisely because `CHANGELOG.md` announces it. And the argument does
+not hold here for a second reason: `samples/` asserts an **exact set of
+findings**. A bump that changes what fires cannot merge quietly — it
 turns CI red naming the rule that moved, and the bump PR becomes the place
 someone reads the new rule and decides.
 
@@ -545,7 +675,7 @@ What shipped instead, all at zero cost:
 |---|---|
 | **SHA-pinned third-party actions** (#47) | Every action was on a mutable tag. Whoever controls `actions/checkout@v7` can repoint it, and that code runs in every consumer's CI with their token. CI guard added, since reviewers do not reliably notice `@v7`. Annotated tags dereference to a tag object, not a commit — resolve `.object.sha` and then dereference. |
 | **SBOM + licence gate** | Both from osv-scanner, already installed and pinned. See §4 for the three ways this silently produces a useless artifact. |
-| **Coverage ratchet** | The gate had no notion of tests at all. Ratchet not threshold; CONCEPT §12 for why the floor is a committed file and not a cache. |
+| **Coverage ratchet** | The gate had no notion of tests at all. Ratchet not threshold on the aggregate; CONCEPT §12 for why the floor is a committed file and not a cache. The added lines are the exception and take a fixed bar (#112) — they are new, so "you are already below it" cannot be true of them. |
 | **Composite actions are now linted** | actionlint reads workflows only. The composite actions — the part consumers execute — had no shell linting, which is the same gap `actions/report-issue` shipped broken through. |
 | **Inputs pass through `env:`, not `${{ }}`** | `${{ }}` is substituted into the script text before bash parses it. Low exposure here (inputs come from a caller's workflow, not a PR title), but a baseline that gates other repos' supply chains should not model the pattern it exists to catch. |
 | **`GITHUB_ACTION_PATH` references are checked** | Moving a script breaks every consumer at runtime, in a workflow nothing here executes, with a "no such file" pointing at a path on someone else's runner. |

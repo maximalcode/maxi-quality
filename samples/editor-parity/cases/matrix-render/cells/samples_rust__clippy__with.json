@@ -1,0 +1,8 @@
+{
+  "sample": "samples/rust", "tool": "clippy", "condition": "with",
+  "manifest": "samples/expected/clippy.json",
+  "expected": 8, "shown": 8, "missing": 0, "extra": 0,
+  "demoted": 0, "unidentified": 0, "outside": 0, "excluded": 0,
+  "missing_rows": [], "extra_rows": [], "demoted_rows": [],
+  "verdict": "PARITY"
+}

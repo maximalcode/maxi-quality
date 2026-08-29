@@ -1,0 +1,20 @@
+{
+  "why": "Python writes __pycache__ beside a script the first time it imports one, so the guard's own directory grows files the guard itself created. changed_files() counts anything git does not ignore, so in a consumer whose .gitignore has no Python section — a Rust, C# or TypeScript repo, which is most of them — the first stop after adoption was a refusal over a file no human touched. This is the receipt's self-reference bug in a second costume.",
+  "hook": "changed",
+  "setup": {
+    "committed": {
+      "a.txt": "one\n"
+    },
+    "worktree": {
+      "a.txt": "one\ntwo\n",
+      ".claude/agent-guard/__pycache__/guard.cpython-314.pyc": "compiled\n",
+      ".claude/agent-guard/stop-gate.py": "# the adopted copy\n"
+    }
+  },
+  "expect": {
+    "files": [
+      ".claude/agent-guard/stop-gate.py",
+      "a.txt"
+    ]
+  }
+}

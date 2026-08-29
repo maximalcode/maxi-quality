@@ -1,0 +1,12 @@
+diff --git a/samples/coverage/patch/README.md b/samples/coverage/patch/README.md
+index 3333333..4444444 100644
+--- a/samples/coverage/patch/README.md
++++ b/samples/coverage/patch/README.md
+@@ -1,5 +1,7 @@
+ # samples/coverage/patch — the change the aggregate ratchet cannot see
+ 
++One commit's worth of a well-covered module, its coverage reports, and the
++floor the ratchet compares them against. The change adds a function no test
+ calls. **The ratchet passes.** That is not a bug in the ratchet — it answers
+ "did the aggregate get worse?", and the honest answer here is "not measurably".
+ It is the reason a second number is needed, and it is issue #112 made

@@ -12,3 +12,14 @@ target/
 # OS / editor
 .DS_Store
 *.swp
+
+# Python bytecode — scripts/ is a package tree only by accident of imports
+__pycache__/
+*.pyc
+
+# maxi-quality agent guard — per-checkout state, never committed
+.claude/agent-guard-receipt.json
+
+# maxi-quality agent guard — per-checkout state, never committed
+.claude/agent-guard-receipt.json
+.claude/agent-guard/__pycache__/

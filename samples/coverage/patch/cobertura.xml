@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The same measurement as lcov.info, in the format the other half of the
+  supported stack emits. scripts/coverage.py parses both, so the fixture has to
+  exist in both or the cross-check only proves one parse path.
+
+  As in samples/coverage/cobertura.xml, the root lines-valid/lines-covered pair
+  is the producer's own total for the WHOLE run and is deliberately larger than
+  the <line> elements listed below. Those 8,004 lines are the aggregate the
+  ratchet reads; the 31 elements are the one file this change touches, which is
+  the only file patch coverage needs per-line data for. Writing out the other
+  7,973 lines would add nothing a reader could check by hand.
+
+  8,000 measured lines before the change, 7,600 hit = 95.00% — the floor in
+  floor.json. Four uncovered lines later: 7,600 / 8,004 = 94.95%.
+-->
+<coverage line-rate="0.9495" branch-rate="0" version="1.9" timestamp="0"
+          lines-covered="7600" lines-valid="8004" branches-covered="0" branches-valid="0">
+  <sources>
+    <source>.</source>
+  </sources>
+  <packages>
+    <package name="patch" line-rate="0.8065" branch-rate="0" complexity="1">
+      <classes>
+        <class name="rollup" filename="samples/coverage/patch/src/rollup.ts" line-rate="0.8065" branch-rate="0" complexity="1">
+          <lines>
+            <line number="21" hits="14" branch="false" />
+            <line number="22" hits="14" branch="false" />
+            <line number="23" hits="14" branch="false" />
+            <line number="24" hits="38" branch="false" />
+            <line number="26" hits="14" branch="false" />
+            <line number="29" hits="9" branch="false" />
+            <line number="30" hits="9" branch="false" />
+            <line number="31" hits="0" branch="false" />
+            <line number="33" hits="9" branch="false" />
+            <line number="36" hits="11" branch="false" />
+            <line number="37" hits="11" branch="false" />
+            <line number="38" hits="0" branch="false" />
+            <line number="40" hits="11" branch="false" />
+            <line number="41" hits="11" branch="false" />
+            <line number="42" hits="11" branch="false" />
+            <line number="43" hits="11" branch="false" />
+            <line number="46" hits="7" branch="false" />
+            <line number="47" hits="7" branch="false" />
+            <line number="48" hits="1" branch="false" />
+            <line number="50" hits="6" branch="false" />
+            <line number="51" hits="6" branch="false" />
+            <line number="54" hits="4" branch="false" />
+            <line number="55" hits="4" branch="false" />
+            <line number="56" hits="4" branch="false" />
+            <line number="62" hits="0" branch="false" />
+            <line number="63" hits="0" branch="false" />
+            <line number="64" hits="0" branch="false" />
+            <line number="65" hits="0" branch="false" />
+            <line number="68" hits="5" branch="false" />
+            <line number="69" hits="5" branch="false" />
+            <line number="70" hits="5" branch="false" />
+          </lines>
+        </class>
+      </classes>
+    </package>
+  </packages>
+</coverage>

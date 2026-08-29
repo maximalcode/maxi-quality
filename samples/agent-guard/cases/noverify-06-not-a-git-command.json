@@ -1,0 +1,11 @@
+{
+  "why": "NEGATIVE CONTROL. `-n` is an ordinary flag in most of the world. A guard that objects to `npm test -- -n` is a guard someone switches off, and then the real one is not running either.",
+  "hook": "noverify",
+  "setup": { "git": false },
+  "event": {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": { "command": "npm test -- -n" }
+  },
+  "expect": { "decision": "allow" }
+}
