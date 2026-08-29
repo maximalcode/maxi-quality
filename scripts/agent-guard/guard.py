@@ -74,7 +74,8 @@ import sys
 RECEIPT = ".claude/agent-guard-receipt.json"
 
 # Never part of a fingerprint — see changed_files().
-EXCLUDED = frozenset({RECEIPT, RECEIPT + ".tmp"})
+LEDGER = ".claude/agent-guard-ledger.jsonl"
+EXCLUDED = frozenset({RECEIPT, RECEIPT + ".tmp", LEDGER})
 
 # Nor is anything under here. Python writes `__pycache__` beside a script the
 # first time it imports one, so the guard's own directory grows files THE GUARD
@@ -105,6 +106,45 @@ def excluded(path: str) -> bool:
 # feeds stderr back to the model. Any other non-zero is a non-blocking error.
 ALLOW = 0
 BLOCK = 2
+
+
+def ledger_append(root: str, record: dict) -> None:
+    """Append one line to the per-checkout ledger. Never changes a decision.
+
+    WHY THIS EXISTS (#167)
+
+    The milestone wants four integers from LIVING with the contract: sessions
+    run, stops blocked, blocks that were correct, blocks that were wrong. Until
+    this, the guard blocked and forgot, so those numbers could only ever come
+    from someone remembering them — which is the discipline-instead-of-mechanism
+    failure this whole contract exists to replace. A measurement you have to
+    remember is a measurement that does not happen.
+
+    WHAT IT MAY CONTAIN, WHICH IS THE LOAD-BEARING PART
+
+    A reason CODE and counts. Never a path, a command, a branch, a filename or
+    any text from the tree. The consuming repos are private and nothing from
+    them reaches the baseline (CLAUDE.md §2), so the summary of this file has to
+    be safe to paste into a public issue by construction rather than by someone
+    reading it carefully first. `selftest.py` asserts the key set for that
+    reason: a field added later that carries content would be a leak nobody
+    would notice at the moment it was written.
+
+    FAIL OPEN, HARDER THAN ANYTHING ELSE HERE
+
+    Every exception is swallowed. A guard that refused a stop because it could
+    not write its own bookkeeping would be a measurement instrument that changes
+    what it measures, and the thing being measured is how often this gets in the
+    way. The ledger is worth having and it is worth nothing next to the
+    decision.
+    """
+    try:
+        path = os.path.join(root, LEDGER)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, sort_keys=True) + "\n")
+    except Exception:  # noqa: BLE001 - see the docstring; nothing may escape
+        pass
 
 
 def warn(msg: str) -> None:

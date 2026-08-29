@@ -1,0 +1,19 @@
+{
+ "why": "Only logging refusals would make 'stops blocked' countable and 'sessions run' guesswork, and a block rate with no denominator is the number most likely to be quoted wrongly. A clean stop is a data point.",
+ "hook": "stop",
+ "setup": {
+  "committed": {
+   "a.txt": "one\n"
+  }
+ },
+ "event": {
+  "hook_event_name": "Stop",
+  "session_id": "S1"
+ },
+ "expect": {
+  "decision": "allow",
+  "ledger": [
+   "clean"
+  ]
+ }
+}

@@ -1,0 +1,28 @@
+{
+ "why": "The end-to-end row: record-gate runs, the hook allows, and the ledger says 'pass' rather than 'clean'. The two are different questions — nothing to check versus checked and fine — and collapsing them makes the denominator meaningless.",
+ "hook": "stop",
+ "setup": {
+  "committed": {
+   "a.txt": "one\n"
+  },
+  "worktree": {
+   "a.txt": "one\ntwo\n"
+  },
+  "record": {
+   "command": [
+    "true"
+   ]
+  }
+ },
+ "event": {
+  "hook_event_name": "Stop",
+  "session_id": "S1"
+ },
+ "expect": {
+  "decision": "allow",
+  "record_exit": 0,
+  "ledger": [
+   "pass"
+  ]
+ }
+}

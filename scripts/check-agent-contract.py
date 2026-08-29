@@ -114,6 +114,18 @@ TENS = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60,
         "seventy": 70, "eighty": 80, "ninety": 90}
 
 
+def _spelled(root: pathlib.Path) -> str:
+    """The count word `samples/agent-guard/README.md` currently uses.
+
+    Read rather than hardcoded so the mutation harness does not break the day
+    a fixture is added — which is exactly what it did, turning a passing
+    selftest into exit 3 with a message about a missing string.
+    """
+    m = re.search(r"^([A-Z][a-z]+(?:-[a-z]+)?) cases\b",
+                  read(root / "samples" / "agent-guard" / "README.md"), re.M)
+    return m.group(1) if m else "Sixty-four"
+
+
 def word_to_int(word: str) -> int | None:
     """`Fifty-two` -> 52, `one` -> 1, anything else -> None.
 
@@ -903,10 +915,16 @@ def mutations(cases: int, today: datetime.date) -> list[tuple]:
         ("a cited section does not exist",
          lambda r: _edit(r, "samples/agent-guard/README.md", "§5.", "§9."),
          ("§9",)),
+        # DERIVED, not spelled here. This row hardcoded "Sixty-four cases",
+        # so adding four fixtures broke the mutation harness itself: the string
+        # it edits stopped existing and the whole selftest exited 3. A check
+        # whose fixture rots every time the thing it guards changes is a check
+        # that gets deleted. `_spelled` reads the current word out of the file
+        # and mutates it to one that is certainly wrong.
         ("the samples README's spelled-out count drifts",
          lambda r: _edit(r, "samples/agent-guard/README.md",
-                         "Sixty-four cases", "Sixty-three cases"),
-         (str(cases), str(cases - 1))),
+                         f"{_spelled(r)} cases", "Ninety-nine cases"),
+         ("99", str(cases))),
         ("a link in the contract points at nothing",
          lambda r: _edit(r, "configs/agent/README.md",
                          "(../../scripts/agent-guard/record-gate.py)",

@@ -368,7 +368,7 @@ which is the entire argument for §5's structural checker.
 
 ## 5. Evidence
 
-`samples/agent-guard/` is 64 cases. Every hook case runs the real hook as a
+`samples/agent-guard/` is 68 cases. Every hook case runs the real hook as a
 subprocess with a real payload on stdin and parses stdout the way Claude Code
 does; the `stop-` and `edit-` cases build a real git repository first, and the
 `noverify-` cases do not, because a command guard reads a string and has no
@@ -571,6 +571,45 @@ puts minimum versions on the file-permission checks (2.1.208 for edits, 2.1.228
 for writes, 2.1.210 for the unconsulted-rule warning), so a consumer on an older
 build has the rules and not the enforcement.
 
+### 6a1. The ledger, so the four numbers are counted rather than recalled
+
+Until 2026-08-29 the guard blocked and **forgot**. Nothing recorded a refusal,
+so the four integers #167 asks for — sessions run, stops blocked, blocks
+correct, blocks wrong — could only ever have come from someone remembering
+them. That is the discipline-instead-of-mechanism failure this whole contract
+exists to replace, sitting inside the contract's own measurement.
+
+Every exit from the Stop hook now appends one line to
+`.claude/agent-guard-ledger.jsonl` (per-checkout, gitignored beside the
+receipt), and `stop-gate.py --summary` reads it back.
+
+**What it may contain is the load-bearing part.** A reason code, a count, a UTC
+timestamp, and the session id Claude Code supplies. Never a path, a command, a
+branch or any text from the tree — so the summary is safe to paste into a public
+issue **by construction** rather than because someone read it carefully first.
+CLAUDE.md §2 has no cleanup pass, and a field added later that quietly carried
+content is exactly the leak nobody notices at the moment it is written; the
+corpus therefore asserts the **key set**, not only the values, and a mutation
+adding `cwd` fails all four ledger cases.
+
+**It refuses to guess the split.** `--summary` prints sessions run, stops seen,
+stops blocked, and the blocked count broken down by reason. It prints `?` for
+*blocks correct* and *blocks wrong*, because that is a judgement — did the gate
+genuinely not run, or did the guard misfire on its own plumbing, a gate that
+rewrites files, or a Claude Code change? A number invented there would be
+indistinguishable from a measured one the moment it reached `docs/STATUS.md`
+§5, which is the precise failure #167's acceptance criteria name.
+
+Two design notes worth keeping. The write is fail-open harder than anything
+else here — every exception swallowed — because a guard that refused a stop over
+its own bookkeeping would be an instrument that changes what it measures, and
+what is being measured is how often this gets in the way. And the ledger is
+excluded from the fingerprint, so appending to it cannot make the next stop
+report the tree as changed; that is asserted, not assumed.
+
+This does **not** close #167. It makes the measurement possible; the period of
+real use is still the part no agent can do.
+
 ### 6a. The baseline runs its own contract, as of 2026-08-25
 
 `scripts/adopt.sh . --agent`, committed (#166). Not the adoption-cost
@@ -600,7 +639,7 @@ tidied, because a record that gets edited to match the current code is no longer
 a record of anything.
 
 **A live session was blocked on 2026-08-25.** This is the observation the
-milestone actually needed, and it is separate from the fixtures: all 64 cases in
+milestone actually needed, and it is separate from the fixtures: all 68 cases in
 `samples/agent-guard/` invoke the hooks as subprocesses on synthetic payloads,
 so none of them can tell you whether Claude Code *wires* them. It was reached
 deliberately — one real uncommitted edit to this file, the gate not run — and
