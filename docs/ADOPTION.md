@@ -850,6 +850,12 @@ exit code, plus a receipt of what it saw:
 python3 .claude/agent-guard/record-gate.py --gate
 ```
 
+If you adopted with `--shared`, the recorder lives at `~/.claude/agent-guard/`
+and the repo holds only the shim, so the line is
+`python3 .claude/agent-guard/shim.py record-gate --gate`. The `CLAUDE.md`
+region written by your own `--agent` run always carries the correct one — read
+it there rather than from here.
+
 `--gate` reads the line you just declared and runs the whole of it through one
 shell, which is why the declaration is not optional: a gate written the natural
 way for two checks, `a && b`, cannot be interpolated into an argv without the

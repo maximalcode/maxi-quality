@@ -530,7 +530,11 @@ def check(root: pathlib.Path, today: datetime.date) -> list[str]:
     proc = subprocess.run(
         (sys.executable, str(root / "scripts" / "agent-region.py"), "check",
          "--fragment", str(root / "configs" / "agent" / "CLAUDE.fragment.md"),
-         "--target", str(root / "CLAUDE.md"), "--samples", "yes"),
+         "--target", str(root / "CLAUDE.md"), "--samples", "yes",
+         # This repo runs the COPIED install, not --shared: .claude/agent-guard/
+         # holds the four scripts. The region must therefore carry the
+         # record-gate.py line, and G13 below runs it to prove it.
+         "--shared", "no"),
         capture_output=True, text=True,
     )
     if proc.returncode != 0:
@@ -547,20 +551,39 @@ def check(root: pathlib.Path, today: datetime.date) -> list[str]:
     # a paragraph from the contract text rather than substituting the other
     # one. That is invisible in this tree, where only the `if` side is ever
     # produced.
-    opened = re.findall(r"<!-- maxi-quality:(if|unless)-samples -->", fragment)
-    closed = re.findall(r"<!-- /maxi-quality:(if|unless)-samples -->", fragment)
+    # Counted PER AXIS since #184's fifth site added `shared`. The old form
+    # hardcoded `-samples`, so a `shared` block could have been added with no
+    # partner and this guard would have reported nothing — a check that cannot
+    # see the newest thing is the shape of the defect it is guarding.
+    #
+    # How many lone `if`s each axis may have, and why:
+    #   samples  ONE — the samples/ rule paragraph, which has no counterpart in
+    #            a tree that cannot run it. Saying nothing is correct there.
+    #   shared   NONE — every shared block names a COMMAND, and a profile with
+    #            no command line is a region that tells a session nothing about
+    #            how to run its gate. That is worse than either spelling.
+    LONE_IF = {"samples": 1, "shared": 0}
+    opened = re.findall(r"<!-- maxi-quality:(if|unless)-([a-z][a-z-]*) -->", fragment)
+    closed = re.findall(r"<!-- /maxi-quality:(if|unless)-([a-z][a-z-]*) -->", fragment)
     if opened != closed:
         bad(f"configs/agent/CLAUDE.fragment.md's conditional blocks do not "
             f"nest: opened {opened}, closed {closed}")
-    elif opened.count("if") != opened.count("unless") + 1:
-        # One `if` legitimately has no partner: the samples/ rule paragraph,
-        # which has no counterpart in a tree that cannot run it. Every other
-        # `if` states a rule count or a rule list and MUST have the other
-        # spelling, or one profile loses the sentence entirely.
-        bad(f"configs/agent/CLAUDE.fragment.md has {opened.count('if')} "
-            f"`if-samples` blocks and {opened.count('unless')} `unless-samples` "
-            "— exactly one `if` may stand alone (the samples/ rule itself); "
-            "every other one needs the sentence a consumer sees instead")
+    else:
+        for axis in sorted({a for _k, a in opened}):
+            if axis not in LONE_IF:
+                bad(f"configs/agent/CLAUDE.fragment.md branches on `{axis}`, "
+                    "which agent-region.py does not render. Add it to AXES "
+                    "there and to LONE_IF here, or the block is dropped "
+                    "silently in every profile")
+                continue
+            ifs = sum(1 for k, a in opened if a == axis and k == "if")
+            unl = sum(1 for k, a in opened if a == axis and k == "unless")
+            if ifs != unl + LONE_IF[axis]:
+                bad(f"configs/agent/CLAUDE.fragment.md has {ifs} `if-{axis}` "
+                    f"blocks and {unl} `unless-{axis}` — {LONE_IF[axis]} `if` "
+                    "may stand alone on this axis; every other one needs the "
+                    "text the OTHER profile sees instead, or that profile "
+                    "loses the passage entirely")
 
     # --- G12: the two copies of resolve_write_target still agree -------------
     #

@@ -34,7 +34,7 @@ overwrite, and this file is more personal than a .vscode/ one.
 A region with no checksum at all predates this and cannot be told apart from an
 edit either. It is refused the same way, once, with a message that says so.
 
-WHY THE FRAGMENT IS A TEMPLATE (#182)
+WHY THE FRAGMENT IS A TEMPLATE (#182, and then #184's fifth site)
 
 Two of the five rules — `sample-guard.py` and `Edit(/samples/expected/**)` —
 only fire in a tree that HAS expectation manifests, which is this repo and
@@ -43,6 +43,23 @@ produced a consumer whose CLAUDE.md confidently stated it was protected by
 three hooks and two deny rules, a third of which could never fire. The fragment
 therefore carries `if-samples` / `unless-samples` blocks, and what lands
 describes what was actually installed.
+
+A SECOND AXIS, AND WHY IT IS DIFFERENT IN KIND
+
+`--shared` (#193) puts one `shim.py` in the repo and the scripts themselves at
+`~/.claude/agent-guard/`. The region went on saying
+
+    python3 .claude/agent-guard/record-gate.py --gate
+
+which in a shared tree is a file that does not exist. The rules were right, the
+hooks resolved, the Stop hook even named the correct recorder at runtime —
+because it DERIVES the path from `__file__` — and the one fixed string in the
+one file whose job is telling a session what to run was wrong.
+
+That is the difference worth keeping. `samples` changes which RULES are true.
+`shared` changes which COMMANDS are true, and a command is checkable: the
+`adopt` job now runs the recorder line out of the region it just wrote, in both
+profiles, so this class cannot come back silently at this site.
 
 Exit codes:
   0  applied / already current / check passed
@@ -65,18 +82,35 @@ END = "<!-- END maxi-quality agent-guard -->"
 
 # The conditional blocks inside the fragment. Spelled as HTML comments so the
 # fragment stays readable as Markdown on GitHub when nobody has rendered it.
+#
+# The axis name is captured rather than hardcoded, because there are now two
+# and the second one arrived as a defect: with `--shared` the region told a
+# session to run `.claude/agent-guard/record-gate.py`, which does not exist in
+# a shared tree — only shim.py does. One axis was enough until an install shape
+# changed which COMMANDS are true, not just which RULES are.
 COND = re.compile(
-    r"[ \t]*<!-- maxi-quality:(if|unless)-samples -->\n(.*?)"
-    r"[ \t]*<!-- /maxi-quality:\1-samples -->\n",
+    r"[ \t]*<!-- maxi-quality:(if|unless)-([a-z][a-z-]*) -->\n(.*?)"
+    r"[ \t]*<!-- /maxi-quality:\1-\2 -->\n",
     re.S,
 )
+
+# Every axis the fragment may branch on, and what each one asks.
+#
+#   samples  does this tree have expectation manifests to guard? (#182)
+#   shared   is this a `--agent --shared` install, where the scripts live at
+#            ~/.claude/agent-guard/ and the repo holds only shim.py? (#193)
+#
+# An axis the renderer does not know is a REFUSAL rather than a silent drop:
+# a typo'd block name would otherwise delete its own paragraph, and the whole
+# failure this file guards is text quietly disagreeing with the install.
+AXES = ("samples", "shared")
 
 
 class Refused(Exception):
     """The target cannot be written. Nothing has been changed."""
 
 
-def render(fragment: str, samples: bool) -> str:
+def render(fragment: str, flags: dict[str, bool]) -> str:
     """The fragment with the conditional blocks resolved for one profile.
 
     Keeping BOTH spellings in one file rather than shipping two fragments is
@@ -85,8 +119,14 @@ def render(fragment: str, samples: bool) -> str:
     that both renderings still parse.
     """
     def pick(m: re.Match) -> str:
-        keep = (m.group(1) == "if") == samples
-        return m.group(2) if keep else ""
+        kind, axis, body = m.group(1), m.group(2), m.group(3)
+        if axis not in flags:
+            raise Refused(
+                f"the fragment branches on `{axis}`, which is not an axis this "
+                f"renderer knows ({', '.join(sorted(flags))}). Refusing rather "
+                "than dropping the block: a typo would otherwise delete its own "
+                "paragraph and leave text that disagrees with the install.")
+        return body if (kind == "if") == flags[axis] else ""
 
     return COND.sub(pick, fragment)
 
@@ -175,13 +215,13 @@ def find_region(text: str) -> tuple[int, int, str, str | None]:
     return (i, j + len(END) + 1, text[close + len("-->"):j], m.group(1) if m else None)
 
 
-def apply(path: str, fragment: str, samples: bool, force: bool) -> tuple[str, str, str]:
+def apply(path: str, fragment: str, flags: dict[str, bool], force: bool) -> tuple[str, str, str]:
     """(verdict, detail, written-path). Verdicts: created, refreshed, current, stamped.
 
     The third element is where the bytes went, which is not always `path` — see
     resolve_write_target.
     """
-    wanted = body_of(render(fragment, samples))
+    wanted = body_of(render(fragment, flags))
     # Before the read, not just before the write: a resolved path that differs
     # from the argument is the file this run is actually about, and every later
     # message naming `path` would otherwise name the link instead of it.
@@ -260,6 +300,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--target", help="the consumer's CLAUDE.md (apply/check)")
     p.add_argument("--samples", choices=("yes", "no"), required=True,
                    help="does the target have expectation manifests to guard?")
+    # Required, not defaulted. A caller that forgets which install shape it is
+    # writing for is the whole of this bug: the default would have been `no`,
+    # which is right for eight callers out of nine and silently wrong for the
+    # ninth. A loud missing-argument beats a quiet wrong rendering.
+    p.add_argument("--shared", choices=("yes", "no"), required=True,
+                   help="is this a --shared install, where the scripts live at "
+                        "~/.claude/agent-guard/ and the repo holds only shim.py?")
     p.add_argument("--force", action="store_true",
                    help="overwrite a region that was edited since install")
     a = p.parse_args(argv)
@@ -271,9 +318,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"agent-region: cannot read {a.fragment}: {exc}", file=sys.stderr)
         return 3
 
-    samples = a.samples == "yes"
+    # Built FROM AXES, so adding an axis means adding one argument and one
+    # tuple entry rather than an argument and a dict literal that can
+    # disagree with it.
+    flags = {axis: getattr(a, axis.replace("-", "_")) == "yes" for axis in AXES}
     if a.mode == "render":
-        sys.stdout.write(render(fragment, samples))
+        # Inside its own try: this mode returns before the block below, so an
+        # unknown-axis Refused escaped as a traceback — a refusal that reads as
+        # a crash gets treated as one, and the exit code was 0 besides.
+        try:
+            sys.stdout.write(render(fragment, flags))
+        except Refused as exc:
+            print(f"agent-region: {exc}", file=sys.stderr)
+            return 4
         return 0
 
     if not a.target:
@@ -283,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if a.mode == "check":
-            wanted = body_of(render(fragment, samples))
+            wanted = body_of(render(fragment, flags))
             # check follows the link for the same reason apply does: a repo
             # whose CLAUDE.md is a link is correctly adopted, and a check that
             # cannot see that would fail a tree that is right.
@@ -303,7 +360,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             return 0
 
-        verdict, detail, written = apply(a.target, fragment, samples, a.force)
+        verdict, detail, written = apply(a.target, fragment, flags, a.force)
     except Refused as exc:
         print(f"agent-region: {exc}", file=sys.stderr)
         return 4

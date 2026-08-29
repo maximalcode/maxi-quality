@@ -77,6 +77,19 @@ and run it through the wrapper:
 python3 .claude/agent-guard/record-gate.py --gate
 ```
 
+**In a `--shared` tree that path does not exist** — the scripts live at
+`~/.claude/agent-guard/` and the repo holds only `shim.py`, so the line is:
+
+```bash
+python3 .claude/agent-guard/shim.py record-gate --gate
+```
+
+You do not have to remember which: the `CLAUDE.md` region `--agent` writes
+carries the one that is true for the install it just performed, and the `adopt`
+job runs that line out of the region in both shapes rather than trusting it.
+Until that check existed the region said `record-gate.py` in every tree,
+including the ones without it.
+
 It passes the command's exit code straight through, so putting it in front of a
 gate changes nothing a human or CI sees. The `-- <command>` form is still there
 for an ad-hoc run:
