@@ -126,7 +126,8 @@ OUTCOMES = {
 }
 
 
-def record(event: dict, root: str | None, outcome: str, changed: int = 0) -> int:
+def record(event: dict, root: str | None, outcome: str, changed: int = 0,
+           *, now: str) -> int:
     """Log this decision and return it. Called at EVERY exit from main().
 
     Returning ALLOW from here rather than beside each call is the point: an
@@ -143,8 +144,12 @@ def record(event: dict, root: str | None, outcome: str, changed: int = 0) -> int
     if root is not None:
         # A UTC timestamp is not tree content and #167 asks for a period, so
         # it is the one field beyond codes and counts that is allowed here.
-        entry = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                 "outcome": outcome, "blocked": OUTCOMES[outcome],
+        # PASSED IN, not read here: `no-ambient-clock-python` is one of this
+        # repo's own twelve conventions and it caught this function on the
+        # first CI run. The convention is right — the instant is data, and data
+        # a function reaches out and grabs cannot be supplied by a test — so
+        # main() reads the clock once at the edge and hands it down.
+        entry = {"ts": now, "outcome": outcome, "blocked": OUTCOMES[outcome],
                  "changed": changed}
         sid = event.get("session_id")
         if isinstance(sid, str) and sid:
@@ -208,6 +213,10 @@ def summarise(root: str) -> int:
 
 
 def main() -> int:
+    # The one clock read, at the edge, injected downward from here — the shape
+    # `no-ambient-clock-python` asks for, and the same one
+    # scripts/check-agent-contract.py uses for its single read.
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")  # nosemgrep: no-ambient-clock-python — the one read, at the edge
     event = read_event()
     if event is None:
         warn("stop: unreadable hook payload; allowing the stop")
@@ -219,7 +228,7 @@ def main() -> int:
     # Documented loop guard. Checked before anything else, so a repo that
     # cannot pass its own gate costs one blocked turn rather than eight.
     if event.get("stop_hook_active") is True:
-        return record(event, repo_root(event.get("cwd")), "loop-guard")
+        return record(event, repo_root(event.get("cwd")), "loop-guard", now=now)
 
     root = repo_root(event.get("cwd"))
     if root is None:
@@ -230,7 +239,7 @@ def main() -> int:
     if not changed:
         # Nothing differs from HEAD. There is no such thing as an ungated
         # change here, and a read-only session must not be made to run a gate.
-        return record(event, root, "clean")
+        return record(event, root, "clean", now=now)
 
     receipt = read_receipt(root)
     current = fingerprint(root)
@@ -242,7 +251,7 @@ def main() -> int:
             f"{instruction(root)}\n\nIf it fails, fix what it reports — do not "
             "record a receipt by hand."
         )
-        return record(event, root, "no-receipt", len(changed))
+        return record(event, root, "no-receipt", len(changed), now=now)
 
     if receipt.get("verdict") != "pass":
         block_stop(
@@ -251,7 +260,7 @@ def main() -> int:
             + ".\n\nFix what it reported and run it again:\n\n  "
             f"{instruction(root)}"
         )
-        return record(event, root, "gate-failed", len(changed))
+        return record(event, root, "gate-failed", len(changed), now=now)
 
     declared = gate_command(root)
     if declared is not None and not is_declared_gate(receipt, declared):
@@ -267,7 +276,7 @@ def main() -> int:
             "of it cannot stand in for the whole, and a superset is a different "
             f"claim. Run it, then stop:\n\n  {instruction(root)}"
         )
-        return record(event, root, "not-the-gate", len(changed))
+        return record(event, root, "not-the-gate", len(changed), now=now)
 
     if receipt.get("fingerprint") != current:
         block_stop(
@@ -275,9 +284,9 @@ def main() -> int:
             "recorded verdict describes code that no longer exists.\n\nRun it "
             f"again, then stop:\n\n  {instruction(root)}"
         )
-        return record(event, root, "content-changed", len(changed))
+        return record(event, root, "content-changed", len(changed), now=now)
 
-    return record(event, root, "pass", len(changed))
+    return record(event, root, "pass", len(changed), now=now)
 
 
 if __name__ == "__main__":
