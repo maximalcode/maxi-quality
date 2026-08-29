@@ -1,0 +1,22 @@
+{
+ "why": "#167 wants four integers from LIVING with the contract, and until the ledger the guard blocked and FORGOT — so those numbers could only come from someone remembering them, which is the discipline-instead-of-mechanism failure this contract exists to replace. This pins that a refusal is written down, under the code a summary counts.",
+ "hook": "stop",
+ "setup": {
+  "committed": {
+   "a.txt": "one\n"
+  },
+  "worktree": {
+   "a.txt": "one\ntwo\n"
+  }
+ },
+ "event": {
+  "hook_event_name": "Stop",
+  "session_id": "S1"
+ },
+ "expect": {
+  "decision": "block",
+  "ledger": [
+   "no-receipt"
+  ]
+ }
+}

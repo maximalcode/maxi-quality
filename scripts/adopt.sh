@@ -109,8 +109,9 @@
 #                                       by scripts/agent-settings.py
 #   CLAUDE.md                        += configs/agent/CLAUDE.fragment.md,
 #                                       marker-guarded and REFRESHED
-#   .gitignore                       += .claude/agent-guard-receipt.json
-#                                       and .claude/agent-guard/__pycache__/
+#   .gitignore                       += .claude/agent-guard-receipt.json,
+#                                       .claude/agent-guard/__pycache__/ and
+#                                       .claude/agent-guard-ledger.jsonl
 #
 # The TS pair is a copy for the same reason Directory.Build.props is: a private
 # git devDep cannot npm-install in a consumer's CI. The Rust trio is a copy for
@@ -388,20 +389,47 @@ install_agent_contract() {
     # itself created, and `git add -A` commits .pyc files. guard.py also
     # excludes it from the fingerprint; this is the tidier half of that pair,
     # and neither is sufficient alone.
-    AGENT_IGNORE='.claude/agent-guard-receipt.json'
-    AGENT_IGNORE2='.claude/agent-guard/__pycache__/'
-    if [ -e "$TARGET/.gitignore" ] && grep -qxF "$AGENT_IGNORE" "$TARGET/.gitignore" 2>/dev/null \
-       && grep -qxF "$AGENT_IGNORE2" "$TARGET/.gitignore" 2>/dev/null; then
+    # A LIST, not three named variables. The pair was already a `&&` of two
+    # greps and a printf with two %s, so a third entry meant editing three
+    # places that could disagree — and the one that silently does nothing is
+    # the grep, which would re-append forever.
+    AGENT_IGNORES=(
+      '.claude/agent-guard-receipt.json'
+      '.claude/agent-guard/__pycache__/'
+      # The ledger (#167): per-checkout, like the receipt. Committing it would
+      # publish one machine's block counts as everyone's, and in a private
+      # consumer it is the file most worth keeping out of a public diff.
+      '.claude/agent-guard-ledger.jsonl'
+    )
+    AGENT_IGNORE_MISSING=0
+    for ig in "${AGENT_IGNORES[@]}"; do
+      [ -e "$TARGET/.gitignore" ] \
+        && grep -qxF "$ig" "$TARGET/.gitignore" 2>/dev/null \
+        || AGENT_IGNORE_MISSING=1
+    done
+    if [ "$AGENT_IGNORE_MISSING" -eq 0 ]; then
       skip "$TARGET/.gitignore — already ignores the guard's own state"
     else
       wrote "$TARGET/.gitignore (append)"
       if [ "$DRY_RUN" -eq 0 ]; then
         if [ -s "$TARGET/.gitignore" ]; then
           [ -z "$(tail -c 1 "$TARGET/.gitignore")" ] || printf '\n' >> "$TARGET/.gitignore"
-          printf '\n' >> "$TARGET/.gitignore"
+          # The blank separator belongs to a NEW block. Appending one missing
+          # entry to a block that already exists must not push it away from the
+          # heading that explains it.
+          grep -qF 'maxi-quality agent guard' "$TARGET/.gitignore" 2>/dev/null \
+            || printf '\n' >> "$TARGET/.gitignore"
         fi
-        printf '# maxi-quality agent guard — per-checkout state, never committed\n%s\n%s\n' \
-          "$AGENT_IGNORE" "$AGENT_IGNORE2" >> "$TARGET/.gitignore"
+        # Only when it is not already there. An upgrade — a tree adopted
+        # before the ledger existed — needs the one missing entry, not a second
+        # copy of the heading above the entries it already has.
+        grep -qF 'maxi-quality agent guard' "$TARGET/.gitignore" 2>/dev/null \
+          || printf '# maxi-quality agent guard — per-checkout state, never committed\n' \
+               >> "$TARGET/.gitignore"
+        for ig in "${AGENT_IGNORES[@]}"; do
+          grep -qxF "$ig" "$TARGET/.gitignore" 2>/dev/null \
+            || printf '%s\n' "$ig" >> "$TARGET/.gitignore"
+        done
       fi
     fi
 
