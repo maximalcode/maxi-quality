@@ -4199,7 +4199,7 @@ jobs:
           #    text rather than keep the three-rule one.
           python3 scripts/agent-region.py apply \
             --fragment configs/agent/CLAUDE.fragment.md \
-            --target $d/CLAUDE.md --samples yes >/dev/null
+            --target $d/CLAUDE.md --samples yes --shared no >/dev/null
           grep -qF 'three hooks and two deny rules' $d/CLAUDE.md \
             || { echo '::error::the fixture did not plant a stale region'; exit 1; }
           ./scripts/adopt.sh $d --agent >/dev/null
@@ -4235,7 +4235,7 @@ jobs:
           rc=0
           python3 scripts/agent-region.py apply \
             --fragment configs/agent/CLAUDE.fragment.md \
-            --target $d/half.md --samples yes >/dev/null 2>&1 || rc=$?
+            --target $d/half.md --samples yes --shared no >/dev/null 2>&1 || rc=$?
           [[ $rc -eq 4 ]] \
             || { echo "::error::a BEGIN with no END exited $rc, expected 4"; exit 1; }
           # 6. ISSUE #198 — a CLAUDE.md that is a SYMLINK.
@@ -4293,8 +4293,56 @@ jobs:
           [[ $rc -eq 7 ]] \
             || { echo "::error::a dangling symlinked CLAUDE.md exited $rc, expected 7"; exit 1; }
 
+          # 8. #184's FIFTH SITE — the region's recorder line must RUN.
+          #
+          # With --shared the region said `.claude/agent-guard/record-gate.py`,
+          # which does not exist in a shared tree: only shim.py does. Nothing
+          # noticed, because the rules were right, the hooks resolved, and the
+          # Stop hook even named the correct recorder at runtime — it DERIVES
+          # that from __file__. The one fixed string, in the one file whose job
+          # is telling a session what to run, was wrong.
+          #
+          # So this does not check that a path exists. It extracts the fenced
+          # command out of the CLAUDE.md that was just written and EXECUTES it,
+          # in both install shapes, against a declared gate of `true`. A
+          # command that runs is the only evidence that the text is true.
+          ./scripts/adopt.sh --install-shared >/dev/null
+          for shape in copied shared; do
+            c=$(mktemp -d)/repo; mkdir -p "$c"; git -C "$c" init -q .
+            printf '# C\n' > "$c/CLAUDE.md"; printf 'x\n' > "$c/f.txt"
+            git -C "$c" add -A
+            git -C "$c" -c user.email=t@t -c user.name=t commit -qm init
+            mkdir -p "$c/.claude"
+            printf '{ "gate_command": "true" }\n' > "$c/.claude/agent-guard.json"
+            if [[ $shape == shared ]]; then
+              ./scripts/adopt.sh "$c" --agent --shared >/dev/null
+            else
+              ./scripts/adopt.sh "$c" --agent >/dev/null
+            fi
+            # The first fenced bash command inside the region — the recorder
+            # line the fragment tells a session to run.
+            cmd=$(python3 - "$c/CLAUDE.md" <<'PY'
+          import pathlib, re, sys
+          t = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+          i = t.index("<!-- BEGIN maxi-quality agent-guard")
+          j = t.index("<!-- END maxi-quality agent-guard -->")
+          m = re.search(r"```bash\n(.+?)\n```", t[i:j], re.S)
+          print(m.group(1).strip() if m else "")
+          PY
+          )
+            [[ -n "$cmd" ]] \
+              || { echo "::error::$shape: the region carries no runnable command"; exit 1; }
+            ( cd "$c" && eval "$cmd" ) >/dev/null 2>&1 \
+              || { echo "::error::$shape: the region tells a session to run"; \
+                   echo "::error::  $cmd"; \
+                   echo "::error::and it does not run in the tree --agent just wrote"; exit 1; }
+            [[ -f "$c/.claude/agent-guard-receipt.json" ]] \
+              || { echo "::error::$shape: the printed command ran but wrote no receipt"; exit 1; }
+          done
+
           echo 'OK: refreshed when stale, silent when current, refused when edited,'
-          echo '    a symlink followed not replaced, and a held-back region exits 7'
+          echo '    a symlink followed not replaced, a held-back region exits 7,'
+          echo '    and the recorder line the region prints RUNS in both shapes'
 
       # ISSUE #192 — which repo is the recorder recording FOR?
       #
