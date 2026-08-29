@@ -113,6 +113,12 @@ Two things in this window look like Finding changes and are not:
 
 - `release-tag.yml` no longer checks out the untrusted commit it never read,
   and its write credential is scoped to the one job that pushes the tag.
+- The rust job now puts `~/.cargo/bin` on `GITHUB_PATH` before touching
+  rustup (#209). On a self-hosted runner — the very case the `runner` input
+  exists for — rustup installs per-user and the non-login service shell does
+  not have it on PATH, so the toolchain step failed with exit 127 on a
+  correctly provisioned box. No-op on hosted images, which carry rustup
+  system-wide and had masked the gap.
 
 ---
 

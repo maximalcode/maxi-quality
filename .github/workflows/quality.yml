@@ -890,6 +890,17 @@ jobs:
         dir: ${{ fromJSON(needs.detect.outputs.rust_dirs) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Self-hosted runners install rustup per-user into ~/.cargo/bin, and the
+      # runner's non-login service shell does not have that on PATH — so the
+      # toolchain step below dies with `rustup: command not found` even on a
+      # correctly provisioned box (#209). Hosted images carry rustup
+      # system-wide, which is what masked this. Prepending unconditionally is
+      # a no-op wherever rustup is already reachable, and GITHUB_PATH carries
+      # it to every later step of the job.
+      - name: Put cargo's user bin dir on PATH (self-hosted runners)
+        shell: bash
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
       # env:, not a splice into the script — the dotnet job below spells out
       # why at length. This value is an input rather than a globbed filename,
       # so the exposure is smaller, but the habit is the mitigation.
