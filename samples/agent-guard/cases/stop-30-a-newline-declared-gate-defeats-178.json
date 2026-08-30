@@ -1,0 +1,16 @@
+{
+  "why": "#178 through a separator SHELL_OPERATORS does not carry. A newline separates two commands exactly as `&&` does, but shlex.split erases it — so `\"true\\nfalse\"` and the argv [\"true\",\"false\"] split to the same words, and a receipt for a run that executed only `true` (with `false` swallowed as its argument) passed as the whole gate. The paired case is stop-17, which pins the `&&` spelling that was already guarded; this is the spelling a consumer writing a two-step gate is most likely to reach for.",
+  "hook": "stop",
+  "setup": {
+    "committed": { "a.txt": "one\n" },
+    "worktree": { "a.txt": "one\ntwo\n" },
+    "config": { "gate_command": "true\nfalse" },
+    "record": { "command": ["true", "false"] }
+  },
+  "event": { "hook_event_name": "Stop" },
+  "expect": {
+    "decision": "block",
+    "record_exit": 0,
+    "reason_contains": ["declared gate"]
+  }
+}

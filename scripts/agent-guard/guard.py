@@ -371,6 +371,15 @@ def is_declared_gate(receipt: dict, declared: str) -> bool:
         return False
     if any(word in SHELL_OPERATORS for word in words):
         return False
+    # A NEWLINE SEPARATES TWO COMMANDS EXACTLY AS `&&` DOES, and `shlex.split`
+    # erases it — `"a\nb"` and the argv `["a", "b"]` split to the same words.
+    # So the #178 guarantee above held for the operator spelling of a two-part
+    # gate and not for the one a consumer is most likely to write, where the
+    # second line simply never ran and the receipt said pass. It is checked on
+    # the RAW declaration rather than on `words` for that reason: by the time
+    # the string is split, the evidence is gone.
+    if "\n" in declared.strip():
+        return False
     return ran == words
 
 
