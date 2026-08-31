@@ -111,6 +111,33 @@ SUBCOMMANDS = {
 
 SKIP_FLAG = "--no-verify"
 
+# The shortest prefix git resolves to `--no-verify` without ambiguity. `--no-ver`
+# is NOT it: `--no-verbose` shares that prefix and git rejects the spelling
+# outright, so refusing it would deny a command git itself will not run.
+#
+# Matching the prefix rather than the exact string is the whole point — git
+# accepts any unambiguous abbreviation of a long option, so `--no-veri` skips
+# `hooks/pre-commit` just as completely as the full spelling, and an equality
+# test sees neither.
+SKIP_FLAG_SHORTEST = "--no-veri"
+
+# A git config assignment that relocates the hook directory. `-c core.hooksPath=`
+# skips every hook with no flag anywhere in the command, which makes it the one
+# channel that defeats a guard looking only for `--no-verify`. Compared
+# case-insensitively because git config section and key names are.
+HOOKS_PATH_KEY = "core.hookspath"
+
+
+def is_skip_flag(name: str) -> bool:
+    """Is this long-option token `--no-verify`, or an abbreviation git accepts?"""
+    return (name.startswith(SKIP_FLAG_SHORTEST)
+            and SKIP_FLAG.startswith(name))
+
+
+def assigns_hooks_path(token: str) -> bool:
+    """Does this global-option token or value set `core.hooksPath`?"""
+    return HOOKS_PATH_KEY in token.lower()
+
 # Anything made only of these is a shell operator, not a word. `shlex` in
 # `punctuation_chars` mode emits them as their own tokens, which is the whole
 # reason for using it over `shlex.split`: `a&&b` is two commands, and to
@@ -130,7 +157,16 @@ def simple_commands(command: str) -> list[list[str]] | None:
     Lines are split BEFORE lexing. `shlex` treats a newline as ordinary
     whitespace, so a two-line script lexes into one argv and the second
     command's own name is read as an argument to the first.
+
+    A BACKSLASH-NEWLINE IS JOINED FIRST, and that is not tidiness. Splitting on
+    lines leaves the continuation's trailing backslash dangling at end-of-line,
+    `shlex` raises on the unterminated escape, and this function returns None —
+    which `main()` treats as plumbing and ALLOWS. So the guard failed open on
+    the exact flag it exists to refuse, for a command bash joins and runs as one
+    hook-skipping commit. Ordinary multi-line shell formatting, not an evasion,
+    which is why it was the sharpest of the lot.
     """
+    command = command.replace("\\\n", "")
     out: list[list[str]] = []
     for line in command.splitlines():
         lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
@@ -152,12 +188,19 @@ def simple_commands(command: str) -> list[list[str]] | None:
     return out
 
 
-def git_invocation(argv: list[str]) -> tuple[str, list[str]] | None:
-    """(subcommand, its arguments) if this simple command is `git <sub>`.
+def git_invocation(argv: list[str]) -> tuple[str, list[str], bool] | None:
+    """(subcommand, its arguments, whether it relocates core.hooksPath).
 
     Leading `VAR=value` assignments are stepped over because a shell allows
     them in front of any command, and the basename is compared because
     `/usr/bin/git` is the same program as `git`.
+
+    THE THIRD ELEMENT IS NOT AN AFTERTHOUGHT. The loop below already had to
+    step over `-c` to find the subcommand at all, and the comment there named
+    `git -c core.hooksPath=/dev/null commit` as the reason. It stepped over the
+    value and threw it away — so the one channel that skips every hook without
+    the flag anywhere in the command was read, understood and discarded, three
+    lines from the check that would have caught it.
     """
     i = 0
     while i < len(argv) and "=" in argv[i] and not argv[i].startswith("-"):
@@ -174,14 +217,22 @@ def git_invocation(argv: list[str]) -> tuple[str, list[str]] | None:
     # Global options sit BETWEEN `git` and the subcommand, and one of them
     # takes a value: `git -c core.hooksPath=/dev/null commit --no-verify`.
     # Read argv[1] as the subcommand and this bypass is free.
+    hooks_path = False
     while i < len(argv) and argv[i].startswith("-"):
         token = argv[i]
         i += 1
+        # Both spellings reach the same setting: `-c core.hooksPath=x` puts it
+        # in the NEXT word, `--config-env=core.hooksPath=VAR` and `-c` with an
+        # attached value put it in this one.
+        if assigns_hooks_path(token):
+            hooks_path = True
         if token in GLOBAL_VALUE_OPTS:
+            if i < len(argv) and assigns_hooks_path(argv[i]):
+                hooks_path = True
             i += 1
     if i >= len(argv):
         return None
-    return argv[i], argv[i + 1:]
+    return argv[i], argv[i + 1:], hooks_path
 
 
 def offending_flag(sub: str, args: list[str]) -> str | None:
@@ -203,8 +254,8 @@ def offending_flag(sub: str, args: list[str]) -> str | None:
             # fixture can tell the two spellings apart. Said here rather than
             # left looking covered.
             name, attached, _value = token.partition("=")
-            if name == SKIP_FLAG:
-                return SKIP_FLAG
+            if is_skip_flag(name):
+                return name
             if not attached and name in spec["value_long"]:
                 i += 1
             continue
@@ -248,9 +299,19 @@ def main() -> int:
         found = git_invocation(argv)
         if found is None:
             continue
-        sub, args = found
+        sub, args, hooks_path = found
         if sub not in SUBCOMMANDS:
             continue
+        if hooks_path:
+            deny_tool(
+                f"This `git {sub}` sets `core.hooksPath`, which switches off "
+                f"{SUBCOMMANDS[sub]['skips']}\n\nIt skips the hooks as "
+                "completely as `--no-verify` does, without naming the flag. "
+                "Run it without the override. If the hook is failing for a "
+                "reason that is not your change, say so and a human will "
+                "decide."
+            )
+            return ALLOW
         flag = offending_flag(sub, args)
         if flag is None:
             continue

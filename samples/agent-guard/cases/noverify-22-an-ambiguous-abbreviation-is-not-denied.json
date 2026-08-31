@@ -1,0 +1,11 @@
+{
+  "why": "The paired case for noverify-20, and the one that stops the prefix match from growing into a substring match. `--no-ver` is ambiguous between `--no-verify` and `--no-verbose`; git refuses to run it, so it skips nothing and denying it would be the guard refusing a command that cannot do the thing it is guarding against. The over-strict direction is not free here — it is how a guard earns the reputation that gets it switched off.",
+  "hook": "noverify",
+  "setup": { "git": false },
+  "event": {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": { "command": "git commit -m wip --no-ver" }
+  },
+  "expect": { "decision": "allow" }
+}
