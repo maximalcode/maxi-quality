@@ -235,6 +235,15 @@ patterns are language-specific, so one convention needs a separate id per
 language when the syntax differs. Splitting an existing convention into a
 per-language id is not new scope; inventing a new convention is.
 
+**The third scope trap is the mirror of the second: proposing what the repo
+already has.** Layer 2 is **three tools, not one** — Semgrep, gitleaks and
+osv-scanner, all in `scripts/scan.sh` and all pinned in `actions/layer2`. Before
+comparing this baseline to anything external — a survey, an eval, a "we don't
+have X" claim — read that file. A research pass briefed with a *description* of
+this repo instead of the repo concluded that dependency and secrets scanning
+were uncovered gaps and proposed adopting both. Read the config, not a summary
+of it, and that includes summaries written earlier in your own session.
+
 ---
 
 ## 5. Conventions
