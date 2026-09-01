@@ -5318,6 +5318,10 @@ jobs:
           esac
           echo "OK: Layer 2 rejected the samples through the composite action, semgrep=$SEMGREP"
 
+      - name: changed-only preserves history and filters PR merge baselines
+        shell: bash
+        run: bash samples/layer2-changed-only/run.sh
+
   # A consumer's FILENAMES reach quality.yml's matrix, and a matrix value that
   # is interpolated into a run body is code. This job proves the safe form is
   # actually safe, and — the half that matters — that the hostile fixture is

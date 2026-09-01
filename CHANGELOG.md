@@ -111,6 +111,10 @@ Two things in this window look like Finding changes and are not:
 
 ### Fixed
 
+- Layer 2 `changed-only` preserves complete checkout history and fetches the
+  ancestry of a shallow PR merge alongside its base (#240). Previously the
+  base fetch truncated full checkouts to 200 commits, and a depth-one PR merge
+  made Semgrep fail before it could filter existing findings.
 - `release-tag.yml` no longer checks out the untrusted commit it never read,
   and its write credential is scoped to the one job that pushes the tag.
 - The rust job now puts `~/.cargo/bin` on `GITHUB_PATH` before touching
