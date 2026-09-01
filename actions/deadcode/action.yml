@@ -124,16 +124,35 @@ runs:
 
         # --- the ratchet ------------------------------------------------------
         if [[ -n "$CHANGED_ONLY" ]]; then
-          # A shallow checkout has no base ref to diff against. Same fetch the
-          # layer2 action does, and the same `|| true`: a base that cannot be
-          # fetched is handled below, where it can be reported properly.
-          git fetch --no-tags --depth=200 origin "${CHANGED_ONLY#origin/}" 2>/dev/null || true
+          # Fetch the base without imposing a new shallow boundary on a full
+          # checkout. Fetch failures are diagnosed by the checks below.
+          git fetch --no-tags origin "${CHANGED_ONLY#origin/}" 2>/dev/null || true
           if ! git rev-parse --verify --quiet "$CHANGED_ONLY" >/dev/null; then
             # NOT a silent full-gate fallback. Gating everything would fail a
             # legacy repo's build on its whole backlog, and gating nothing would
             # be a switched-off check — both are wrong answers to "the ratchet
             # is broken", so this stops instead.
             echo "::error::changed-only base ref '$CHANGED_ONLY' cannot be resolved after fetching it. Refusing to guess: gating everything would fail the build on the backlog this ratchet exists to grandfather, and gating nothing would be a switched-off gate."
+            exit 1
+          fi
+          # Fetching the base alone leaves a depth-one PR merge disconnected:
+          # Git will not traverse HEAD's parents across its shallow boundary,
+          # even when the base commit is present. Deepen BOTH sides, including
+          # the exact detached HEAD rather than the remote's default branch.
+          # Fall back to full history for branches older than the first batch.
+          if ! git merge-base "$CHANGED_ONLY" HEAD >/dev/null 2>&1 &&
+             [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
+            head_commit=$(git rev-parse HEAD)
+            git fetch --no-tags --deepen=200 origin "$head_commit" \
+              "${CHANGED_ONLY#origin/}" 2>/dev/null || true
+            if ! git merge-base "$CHANGED_ONLY" HEAD >/dev/null 2>&1 &&
+               [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
+              git fetch --no-tags --unshallow origin "$head_commit" \
+                "${CHANGED_ONLY#origin/}" 2>/dev/null || true
+            fi
+          fi
+          if ! git merge-base "$CHANGED_ONLY" HEAD >/dev/null 2>&1; then
+            echo "::error::changed-only base ref '$CHANGED_ONLY' resolves but has no merge base with HEAD after fetching history. Check the base ref and checkout history; refusing to guess the changed files."
             exit 1
           fi
           # Three dots: since the MERGE BASE, so the diff is what the pull

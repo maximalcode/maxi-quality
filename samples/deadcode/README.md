@@ -1,0 +1,20 @@
+# Dead-code action history regression
+
+Run `python3 samples/deadcode/selftest.py` from the repository root. It needs
+Git, Bash, Python and PyYAML (CI installs 6.0.3 if absent). All repositories
+are disposable local fixtures; no network or account is needed.
+
+The tests execute the shell body from `actions/deadcode/action.yml`, using
+real depth-one Git fetches. Before the history fix, the PR merge case fails
+with `fatal: origin/main...HEAD: no merge base` even though the base ref
+resolves. Fetching only more base history does not repair the shallow HEAD.
+
+The seven cases cover a PR merge, a diverged feature branch, a branch older
+than the 200-commit deepening batch, a full checkout, an absent base, an
+unrelated base, and a full scan with no base. Changed-file assertions name
+the feature file exactly and exclude the file added only on the base branch.
+
+The fixture deliberately has no knip installation: the action must finish
+its history work and reach the existing auto-mode warning. This suite proves
+changed-file selection and failure handling, not analyzer detection. The
+existing knip and deptry samples prove detection and gating separately.
