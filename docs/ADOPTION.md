@@ -7,8 +7,10 @@ for you. Everything else is the by-hand version and the reasoning behind it.
 Where to start:
 
 - **New repo** → §5, then §§1–4b when you want the deep per-language checks.
-- **Existing repo** → §5 with `changed-only`, which grandfathers your backlog.
-  Come back to §§1–4b when you have the time budgeted.
+- **Existing repo** → [Layer 1 preflight](PREFLIGHT.md) first: get the bug-class
+  and stylistic counts in a disposable copy, with no failing check. Then §5
+  with `changed-only`, which grandfathers the Layer 2 backlog. Come back to
+  §§1–4c when you have the Layer 1 work budgeted.
 - **Layer 1 by hand** → §§1–4b, one section per language.
 - **The same findings while typing** → §5b, once CI is green.
 
@@ -19,6 +21,18 @@ line that depends on where you put it:
 git clone https://github.com/maximalcode/maxi-quality.git
 BASELINE="$PWD/maxi-quality"
 ```
+
+Before adopting an existing repo, preview it with your toolchain and dependencies
+installed (the [preflight guide](PREFLIGHT.md) lists the prerequisites):
+
+```bash
+python3 "$BASELINE/scripts/preflight.py" <repo>
+```
+
+This always returns success; read the report's **complete / incomplete** status.
+Missing tools and compiler failures are reported separately from findings, and
+an incomplete run's counts are lower bounds. Nothing is adopted into the original
+checkout. `--format json` supplies the same report for a shell step or artifact.
 
 > **Sections 2–4b are Layer 1**, one per language, and each is the expensive
 > half that cannot be grandfathered. (Rust is 4b rather than 5 so the section

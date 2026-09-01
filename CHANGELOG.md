@@ -65,6 +65,10 @@ Two things in this window look like Finding changes and are not:
 
 ### Added
 
+- **Layer 1 preflight** (`scripts/preflight.py`, #76): a local, report-only
+  preview in a disposable copy, with per-language/per-rule bug-class,
+  stylistic and unclassified counts. Toolchain and compilation failures are
+  explicit incomplete reports; the command always exits zero.
 - **Coverage gate**, wired by one input: aggregate ratchet over lcov and
   Cobertura, plus a patch gate over the lines a change adds — which the
   aggregate cannot see, because one new untested function inside a large

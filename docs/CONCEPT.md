@@ -361,6 +361,14 @@ projects silently — projects upgrade by bumping the tag.
 stub workflow plus the 1–3 consume-files, prints what it did.
 
 **Existing project (e.g. Consumer A):**
+First run `python3 "$BASELINE/scripts/preflight.py" <repo-path>` with the
+project's toolchain installed. It previews Layer 1 in a temporary copy, applies
+the baseline there, and reports per-language/per-rule counts split into
+bug-class, stylistic and unclassified. It is a local, always-zero command, not
+a workflow gate. Incomplete analysis is a separate report state; missing tools,
+configuration conflicts and stopped compilers cannot become a clean result.
+See [PREFLIGHT.md](PREFLIGHT.md) for classification and scope.
+
 Adopt in *new-code-only* mode first — Semgrep on changed files, warnings-not-errors
 for one week, then flip to error. Never big-bang-fix 500 legacy warnings; use
 per-file suppressions with a linked issue.
