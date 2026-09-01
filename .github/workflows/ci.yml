@@ -439,6 +439,12 @@ jobs:
         if: always()
         shell: bash
         run: rm -f samples/knip-clean/node_modules
+      - name: Layer 1 preflight must report without adopting
+        run: |
+          python3 samples/preflight/test_preflight.py typescript
+          ./node_modules/.bin/tsc --allowJs --checkJs --noEmit --skipLibCheck \
+            --module nodenext --target es2022 --types node scripts/preflight-typescript.mjs
+
 
   layer1-dotnet:
     runs-on: ubuntu-latest
@@ -556,6 +562,9 @@ jobs:
             echo '::error::the fixture PASSED with configs/editorconfig staged beside it — insert_final_newline is no longer being enforced, so the C# format gate is running on tool defaults and configs/editorconfig gates nothing'
             exit 1; }
           echo 'OK: configs/editorconfig changes the verdict — the C# format gate is driven by the shipped config'
+      - name: C# preflight must preserve the sample findings through SARIF
+        run: python3 samples/preflight/test_preflight.py dotnet
+
 
   # #25 — the test-project relaxation, asserted from BOTH sides. A one-sided
   # check would pass just as happily if the waiver swallowed everything.
@@ -929,6 +938,12 @@ jobs:
           [[ "$NOMANIFEST" == 'success' ]] || {
             echo "::error::auto mode failed on a directory with no manifest (outcome=$NOMANIFEST)"; exit 1; }
           echo 'OK: the workspace passes, the bait fails, and an unexaminable directory warns rather than lying'
+      - name: Python preflight must report the baseline and leave its input alone
+        run: |
+          python3 samples/preflight/test_preflight.py python
+          ruff check --config configs/python/ruff.toml scripts/preflight.py samples/preflight/test_preflight.py
+          mypy --config-file configs/python/mypy.ini scripts/preflight.py samples/preflight/test_preflight.py
+
 
   # #58 — Rust Layer 1. clippy is the conventions layer (Semgrep's Rust support
   # is experimental and stays out), cargo-deny is the supply chain. The
@@ -1184,6 +1199,9 @@ jobs:
             exit 1
           fi
           echo 'OK: re-run is idempotent and an existing [lints] is left alone'
+      - name: Rust preflight must report every workspace finding
+        run: python3 samples/preflight/test_preflight.py rust
+
 
   # #10 — Java Layer 1. Error Prone is the bug finder, NullAway the null-safety
   # layer, spotless+palantir the formatter. Semgrep's Java support is good (the
@@ -1465,6 +1483,9 @@ jobs:
           grep -q '\-Werror' /tmp/consumer-java-own/pom.xml || {
             echo '::error::the consumer -Werror floor is gone from the pom'; exit 1; }
           echo 'OK: re-run is idempotent, and an existing compiler-plugin declaration is refused intact'
+      - name: Java preflight must retain findings from stopped compiles
+        run: python3 samples/preflight/test_preflight.py java
+
 
   # The ratchet (`--changed-only`) had NO test, and shipped broken: semgrep's
   # --baseline-commit resolves the ref against the git repo of its WORKING
@@ -4797,6 +4818,9 @@ jobs:
               || { echo "::error::--dry-run never mentioned $want"; exit 1; }
           done
           echo 'OK: nothing written, everything named'
+      - name: Preflight never gates on bad input or unavailable tools
+        run: python3 samples/preflight/test_preflight.py contract
+
 
   # #13 — Semgrep is pinned in two places: the layer2 action's input default and
   # the layer2-counts job below. If they drift, CI asserts 100 findings against a
