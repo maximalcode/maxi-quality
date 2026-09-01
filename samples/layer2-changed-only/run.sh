@@ -119,6 +119,26 @@ SANITY_RC=0
 echo "full-scan: scan.sh exit $SANITY_RC"
 check_findings full-scan old.ts
 
+# A workflow can create a local commit after checking out a shallow feature
+# branch. Its absent remote HEAD must not prevent fetching the valid baseline.
+git init -q "$WORK/local-commit"
+git -C "$WORK/local-commit" remote add origin "file://$SOURCE"
+git -C "$WORK/local-commit" fetch -q --depth=2 origin feature
+git -C "$WORK/local-commit" checkout -q --detach FETCH_HEAD
+git -C "$WORK/local-commit" config user.name fixture
+git -C "$WORK/local-commit" config user.email fixture@example.invalid
+git -C "$WORK/local-commit" commit -qm 'local workflow commit' --allow-empty
+[[ "$(git -C "$WORK/local-commit" rev-parse --is-shallow-repository)" == true ]]
+if git -C "$WORK/local-commit" show-ref --verify --quiet refs/remotes/origin/main; then
+  echo 'FAIL: local-commit checkout already has its baseline ref' >&2
+  exit 1
+fi
+run_action "$WORK/local-commit" local-commit-result
+[[ "$ACTION_RC" == 0 ]] || { cat "$WORK/local-commit-result/action.log"; exit 1; }
+grep -qx 'semgrep=clean' "$WORK/local-commit-result/outputs"
+check_findings local-commit-result none
+echo 'OK: shallow checkout with a local commit still excludes the existing finding'
+
 git clone -q --branch pr-clean "file://$SOURCE" "$WORK/full-clean"
 run_action "$WORK/full-clean" full-clean-result
 [[ "$ACTION_RC" == 0 ]] || { cat "$WORK/full-clean-result/action.log"; exit 1; }

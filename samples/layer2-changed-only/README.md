@@ -30,6 +30,10 @@ runs this fixture after installing the pinned tools on Linux and macOS.
 - A full `scan.sh` control detects exactly `old.ts:1`, proving the existing
   violation is active. Each depth-one checkout starts with one reachable commit;
   its merge parents and base branch are absent until the action fetches them.
+- A depth-two feature checkout followed by a local empty commit still fetches
+  its baseline and excludes `old.ts:1`, with action exit 0 and no scanner errors.
+  The local HEAD is unavailable at the remote; fetching it must not prevent
+  the valid baseline fetch from succeeding.
 
 Finding identities are `(rule id, path, start line)`, with Semgrep's config-path
 prefix removed from the rule id, as in the repository's other finding assertions.
@@ -52,6 +56,8 @@ one assertion and its fix at a time.
 | Before shallow fix, depth-one PR checkout | `semgrep=ERROR (semgrep exit 2)`; no exported JSON | Semgrep 2; `scan.sh` / action 1; fixture 1 |
 | Both fixes, existing violation only | Complete and shallow: empty `results` and `errors`; `semgrep=clean` | action 0 for each |
 | Both fixes, one new violation | Complete and shallow: exactly `no-ambient-clock`, `new.ts`, line 1; empty `errors`; `semgrep=FINDINGS` | action 1 for each; fixture 0 |
+| Combined base/HEAD fetch, shallow feature checkout with a local commit | `origin/main` absent; `semgrep=ERROR (semgrep exit 2)`; no exported JSON | Semgrep 2; action 1; fixture 1 |
+| Separate base/HEAD fetches, same local-commit fixture | Empty `results` and `errors`; `semgrep=clean` | action 0; complete fixture 0 |
 
 The shallow measurement was taken after the complete-checkout guard went green
 and before changing shallow preparation. That guard leaves the shallow fetch
@@ -70,8 +76,17 @@ git diff --cached --name-status --no-ext-diff -z --diff-filter=ACDMRTUXB \
 
 Git exited **128**, with `fatal: no merge base found`. This is a scanner error,
 not backlog reclassification or a successful scan with no findings. Fetching the
-current merge HEAD's ancestry alongside the base, with the same shallow-only
+current merge HEAD's ancestry as well as the base, with the same shallow-only
 depth of 200, makes the same fixture pass. Complete checkouts use no depth limit.
+
+The local-commit regression was observed failing at the production action seam
+before splitting those fetches. A direct replay of the combined fetch exited
+128 (`not our ref` for the local HEAD), leaving `origin/main` absent; fetching
+the base alone exited 0 and created it. The action now fetches the base first
+and the shallow HEAD ancestry in a separate request, so an unavailable local
+HEAD cannot cancel a valid baseline fetch. The full fixture still preserves
+205 complete-history commits and reports identical PR finding sets for complete
+and shallow checkouts.
 
 This change adds no fallback policy: a history deeper than that shallow fetch
 can reach, an unavailable ref, or an unavailable remote can still make Semgrep

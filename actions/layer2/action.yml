@@ -339,16 +339,20 @@ runs:
           # branch updates its remote-tracking ref (origin/<branch>). --depth
           # would truncate a complete checkout, so limit only shallow ones.
           FETCH_DEPTH=()
-          FETCH_REFS=("${CHANGED_ONLY#origin/}")
-          if [[ "$(git -C "$TARGET" rev-parse --is-shallow-repository)" == true ]]; then
+          SHALLOW=$(git -C "$TARGET" rev-parse --is-shallow-repository)
+          if [[ "$SHALLOW" == true ]]; then
             FETCH_DEPTH=(--depth=200)
-            # A depth-one PR checkout contains only the synthesized merge.
-            # Fetch its ancestry too: fetching the base alone leaves HEAD
-            # parentless, and Semgrep fails with "no merge base found".
-            FETCH_REFS+=("$(git -C "$TARGET" rev-parse HEAD)")
           fi
           git -C "$TARGET" fetch --no-tags ${FETCH_DEPTH[@]+"${FETCH_DEPTH[@]}"} \
-            origin "${FETCH_REFS[@]}" 2>/dev/null || true
+            origin "${CHANGED_ONLY#origin/}" 2>/dev/null || true
+          if [[ "$SHALLOW" == true ]]; then
+            # A depth-one PR checkout contains only the synthesized merge.
+            # Fetch its ancestry too: fetching the base alone leaves HEAD
+            # parentless. Keep this separate: a local HEAD absent from origin
+            # must not prevent the valid baseline fetch from succeeding.
+            git -C "$TARGET" fetch --no-tags "${FETCH_DEPTH[@]}" \
+              origin "$(git -C "$TARGET" rev-parse HEAD)" 2>/dev/null || true
+          fi
           ARGS+=(--changed-only "$CHANGED_ONLY")
         fi
         # tee so the log still streams to the runner while the summary lines
