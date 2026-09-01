@@ -43,7 +43,7 @@ is no public v1.0.0 through v1.0.3 to backfill. `CLAUDE.md` §2 has the reason.
 
 ---
 
-## [Unreleased] — v1.2.0
+## [v1.2.0] — 2026-09-01
 
 Everything on `develop` since v1.1.0.
 
@@ -65,6 +65,19 @@ Two things in this window look like Finding changes and are not:
 
 ### Added
 
+- **Versioned external agent runtime**: a per-repository release lock selects
+  an explicitly prepared cache by immutable commit. Migration removes copied
+  guard files, preserves the declared gate and unrelated settings, and updates
+  the managed agent instructions. Hook calls work offline and refuse missing
+  or damaged runtime state with a repair instruction.
+- **Closed release references**: both reusable workflows pin their actions to
+  a recorded immutable payload; publication checks the actual referenced Git
+  objects before advancing `v1`. Layer 2 also checks that a consumer's optional
+  guard lock and workflow SHA/version pins agree.
+- **Layer 1 preflight** (`scripts/preflight.py`, #76): a local, report-only
+  preview in a disposable copy, with per-language/per-rule bug-class,
+  stylistic and unclassified counts. Toolchain and compilation failures are
+  explicit incomplete reports; the command always exits zero.
 - **Coverage gate**, wired by one input: aggregate ratchet over lcov and
   Cobertura, plus a patch gate over the lines a change adds — which the
   aggregate cannot see, because one new untested function inside a large
@@ -111,6 +124,14 @@ Two things in this window look like Finding changes and are not:
 
 ### Fixed
 
+- Dead-code `changed-only` fetches the ancestry of a shallow PR merge or
+  branch before selecting changed files. It completes both HEAD and the base
+  so a shallow boundary cannot hide the true merge base, and reports missing,
+  unrelated or incomplete history explicitly. Full checkouts remain complete.
+- Layer 2 `changed-only` preserves complete checkout history and fetches the
+  ancestry of a shallow PR merge alongside its base (#240). Previously the
+  base fetch truncated full checkouts to 200 commits, and a depth-one PR merge
+  made Semgrep fail before it could filter existing findings.
 - `release-tag.yml` no longer checks out the untrusted commit it never read,
   and its write credential is scoped to the one job that pushes the tag.
 - The rust job now puts `~/.cargo/bin` on `GITHUB_PATH` before touching

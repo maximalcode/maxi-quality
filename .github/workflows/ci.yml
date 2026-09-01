@@ -413,6 +413,12 @@ jobs:
           dir: samples/knip-clean
           mode: require
 
+      - name: Dead-code ratchet must work in shallow PR checkouts
+        run: |
+          python3 -c 'import yaml' 2>/dev/null \
+            || python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
+          python3 samples/deadcode/selftest.py
+
       - name: Every dead-code action outcome must be the expected one
         shell: bash
         env:
@@ -439,6 +445,12 @@ jobs:
         if: always()
         shell: bash
         run: rm -f samples/knip-clean/node_modules
+      - name: Layer 1 preflight must report without adopting
+        run: |
+          python3 samples/preflight/test_preflight.py typescript
+          ./node_modules/.bin/tsc --allowJs --checkJs --noEmit --skipLibCheck \
+            --module nodenext --target es2022 --types node scripts/preflight-typescript.mjs
+
 
   layer1-dotnet:
     runs-on: ubuntu-latest
@@ -556,6 +568,9 @@ jobs:
             echo '::error::the fixture PASSED with configs/editorconfig staged beside it — insert_final_newline is no longer being enforced, so the C# format gate is running on tool defaults and configs/editorconfig gates nothing'
             exit 1; }
           echo 'OK: configs/editorconfig changes the verdict — the C# format gate is driven by the shipped config'
+      - name: C# preflight must preserve the sample findings through SARIF
+        run: python3 samples/preflight/test_preflight.py dotnet
+
 
   # #25 — the test-project relaxation, asserted from BOTH sides. A one-sided
   # check would pass just as happily if the waiver swallowed everything.
@@ -929,6 +944,12 @@ jobs:
           [[ "$NOMANIFEST" == 'success' ]] || {
             echo "::error::auto mode failed on a directory with no manifest (outcome=$NOMANIFEST)"; exit 1; }
           echo 'OK: the workspace passes, the bait fails, and an unexaminable directory warns rather than lying'
+      - name: Python preflight must report the baseline and leave its input alone
+        run: |
+          python3 samples/preflight/test_preflight.py python
+          ruff check --config configs/python/ruff.toml scripts/preflight.py samples/preflight/test_preflight.py
+          mypy --config-file configs/python/mypy.ini scripts/preflight.py samples/preflight/test_preflight.py
+
 
   # #58 — Rust Layer 1. clippy is the conventions layer (Semgrep's Rust support
   # is experimental and stays out), cargo-deny is the supply chain. The
@@ -1184,6 +1205,9 @@ jobs:
             exit 1
           fi
           echo 'OK: re-run is idempotent and an existing [lints] is left alone'
+      - name: Rust preflight must report every workspace finding
+        run: python3 samples/preflight/test_preflight.py rust
+
 
   # #10 — Java Layer 1. Error Prone is the bug finder, NullAway the null-safety
   # layer, spotless+palantir the formatter. Semgrep's Java support is good (the
@@ -1465,6 +1489,9 @@ jobs:
           grep -q '\-Werror' /tmp/consumer-java-own/pom.xml || {
             echo '::error::the consumer -Werror floor is gone from the pom'; exit 1; }
           echo 'OK: re-run is idempotent, and an existing compiler-plugin declaration is refused intact'
+      - name: Java preflight must retain findings from stopped compiles
+        run: python3 samples/preflight/test_preflight.py java
+
 
   # The ratchet (`--changed-only`) had NO test, and shipped broken: semgrep's
   # --baseline-commit resolves the ref against the git repo of its WORKING
@@ -2904,6 +2931,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install PyYAML for release-lock fixtures
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -c 'import yaml' 2>/dev/null \
+            || python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
+          python3 -c 'import yaml'
       # The fixtures build real git repositories and commit to them. A runner
       # has no user.email, and without an identity the failure reads as a broken
       # fixture rather than as missing config — so selftest.py sets one per
@@ -2927,6 +2961,19 @@ jobs:
       - name: The contract checker must still catch the drift it claims
         shell: bash
         run: python3 scripts/check-agent-contract.py selftest
+      # Release-reference validation has the same shape: a small, local Python
+      # fixture that needs git but no new runner or toolchain. Keep it in this
+      # existing context so adding a release guard does not create a required-
+      # check gap on either protected branch.
+      - name: Release references must close over one immutable payload
+        shell: bash
+        run: python3 samples/release-refs/test_release_refs.py
+      - name: The consumer release lock must reject mismatched runtime refs
+        shell: bash
+        run: python3 samples/release-lock/test_release_lock.py
+      - name: Versioned runtime fixtures must preserve the recorded release
+        shell: bash
+        run: python3 samples/runtime-release/test_runtime.py
 
   # #11 — adopt.sh, proven end-to-end rather than by reading it. The assertion
   # that matters is not "it copied some files", it is "a repo adopted by the
@@ -4797,6 +4844,9 @@ jobs:
               || { echo "::error::--dry-run never mentioned $want"; exit 1; }
           done
           echo 'OK: nothing written, everything named'
+      - name: Preflight never gates on bad input or unavailable tools
+        run: python3 samples/preflight/test_preflight.py contract
+
 
   # #13 — Semgrep is pinned in two places: the layer2 action's input default and
   # the layer2-counts job below. If they drift, CI asserts 100 findings against a
@@ -4806,9 +4856,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # A publishable wrapper must compare itself with its recorded payload
+          # ancestor. Payload-development commits deliberately have no
+          # release-payload.sha and remain ordinary, independently testable CI.
+          fetch-depth: 0
       - name: Pinned tool versions must be internally consistent
         shell: bash
         run: ./scripts/check-pins.sh --offline
+      - name: A release wrapper must close over its immutable payload
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ -f release-payload.sha ]]; then
+            python3 scripts/release-refs.py verify-wrapper
+          else
+            echo 'payload development commit: no release wrapper recorded'
+          fi
 
   # quality.yml is CONSUMER-FACING and nothing else here executes it — ci.yml is
   # the self-test, quality.yml is what other repos call. So a change to it (an
@@ -5317,6 +5381,10 @@ jobs:
             *) echo "::error::layer2 reported semgrep as '$SEMGREP'; the bait samples must produce FINDINGS"; exit 1 ;;
           esac
           echo "OK: Layer 2 rejected the samples through the composite action, semgrep=$SEMGREP"
+
+      - name: changed-only preserves history and filters PR merge baselines
+        shell: bash
+        run: bash samples/layer2-changed-only/run.sh
 
   # A consumer's FILENAMES reach quality.yml's matrix, and a matrix value that
   # is interpolated into a run body is code. This job proves the safe form is

@@ -85,7 +85,7 @@ jobs:
       # who forks this baseline and keeps their copy private.
       - name: Full scan
         id: scan
-        uses: maximalcode/maxi-quality/actions/layer2@v1
+        uses: maximalcode/maxi-quality/actions/layer2@86dc90d9799a378a7f0c51310e2ec2f1204ad470
         with:
           # A FULL scan, never changed-only: the backlog IS the point here.
           # no-fail because a report must not fail merely because findings
@@ -107,7 +107,7 @@ jobs:
 
       - name: Write the standing issue
         id: write
-        uses: maximalcode/maxi-quality/actions/report-issue@v1
+        uses: maximalcode/maxi-quality/actions/report-issue@86dc90d9799a378a7f0c51310e2ec2f1204ad470
         with:
           json: ${{ runner.temp }}/semgrep.json
           sbom: ${{ runner.temp }}/sbom.cdx.json

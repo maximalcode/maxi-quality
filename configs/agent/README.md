@@ -368,7 +368,7 @@ which is the entire argument for §5's structural checker.
 
 ## 5. Evidence
 
-`samples/agent-guard/` is 68 cases. Every hook case runs the real hook as a
+`samples/agent-guard/` is 73 cases. Every hook case runs the real hook as a
 subprocess with a real payload on stdin and parses stdout the way Claude Code
 does; the `stop-` and `edit-` cases build a real git repository first, and the
 `noverify-` cases do not, because a command guard reads a string and has no
@@ -639,7 +639,7 @@ tidied, because a record that gets edited to match the current code is no longer
 a record of anything.
 
 **A live session was blocked on 2026-08-25.** This is the observation the
-milestone actually needed, and it is separate from the fixtures: all 68 cases in
+milestone actually needed, and it is separate from the fixtures: all 73 cases in
 `samples/agent-guard/` invoke the hooks as subprocesses on synthetic payloads,
 so none of them can tell you whether Claude Code *wires* them. It was reached
 deliberately — one real uncommitted edit to this file, the gate not run — and

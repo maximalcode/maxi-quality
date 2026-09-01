@@ -52,18 +52,18 @@ because someone outside asks for it. What the tag promises:
   is fixes and Finding changes that add no new capability. Neither is breaking,
   and both can turn a build red, so read **Rule changes** rather than the
   number.
-- **Do not SHA-pin `quality.yml`.** Your Scorecard will ask you to. The pinned
-  workflow text still resolves `actions/layer2@v1` one level down, so the pin
-  would look real and protect nothing. Pin a **`v1.0.x`** tag instead if you
-  need a ref that never moves.
+- **A SHA pin is closed over one payload.** Each new closed release wrapper
+  points every first-party action reference at its recorded payload commit, so
+  a pinned `quality.yml` cannot silently resolve a later `@v1` action. Use a
+  **`v1.x.y`** tag when you want a named immutable release, or the published
+  wrapper SHA for a Scorecard-clean pin. `@v1` remains the moving latest-v1
+  choice.
 
 **What this does not do.** Stated because a gate that stays quiet about its
 edges gets trusted past them:
 
 - **No SARIF upload, no code-scanning integration.** Findings land in the job
   log and on the PR diff.
-- **No preflight.** You cannot find out what Layer 1 will cost your repo without
-  running it — start with `--changed-only`.
 - **No `.pre-commit-hooks.yaml`.** The hook is installed by `adopt.sh --hooks`,
   not consumed by the pre-commit framework.
 - **No judgement about whether code should exist.** See Limits.
@@ -89,6 +89,11 @@ No token, no secrets, no checkout of this repo. Every push and pull request now
 runs Semgrep, Gitleaks and OSV-Scanner.
 
 ### A repo that already exists
+
+Start with the [Layer 1 preflight](docs/PREFLIGHT.md):
+`python3 maxi-quality/scripts/preflight.py <your-repo>` reports bug-class,
+stylistic and unclassified findings in a disposable copy. It always exits zero;
+an incomplete analysis says so instead of reporting a misleading clean bill.
 
 Same file, two more lines. Your whole existing backlog is grandfathered on day
 one, and the gate still fails on anything new:

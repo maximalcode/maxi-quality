@@ -1,0 +1,14 @@
+{
+  "why": "git accepts any UNAMBIGUOUS abbreviation of a long option, so `--no-veri` skips hooks/pre-commit exactly as completely as the full spelling — verified against git 2.50.1 with a pre-commit hook that exits 1: the commit lands. An equality test against the full string sees neither this nor `--no-verif`. `--no-ver` is deliberately NOT covered: it is ambiguous with `--no-verbose` and git refuses to run it, so denying it would refuse a command that cannot skip anything.",
+  "hook": "noverify",
+  "setup": { "git": false },
+  "event": {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": { "command": "git commit -m wip --no-veri" }
+  },
+  "expect": {
+    "decision": "deny",
+    "reason_contains": ["--no-veri"]
+  }
+}
