@@ -413,6 +413,12 @@ jobs:
           dir: samples/knip-clean
           mode: require
 
+      - name: Dead-code ratchet must work in shallow PR checkouts
+        run: |
+          python3 -c 'import yaml' 2>/dev/null \
+            || python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
+          python3 samples/deadcode/selftest.py
+
       - name: Every dead-code action outcome must be the expected one
         shell: bash
         env:

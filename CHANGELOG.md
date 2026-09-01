@@ -115,6 +115,10 @@ Two things in this window look like Finding changes and are not:
 
 ### Fixed
 
+- Dead-code `changed-only` fetches the ancestry of a shallow PR merge or
+  branch before selecting changed files. It completes both HEAD and the base
+  so a shallow boundary cannot hide the true merge base, and reports missing,
+  unrelated or incomplete history explicitly. Full checkouts remain complete.
 - Layer 2 `changed-only` preserves complete checkout history and fetches the
   ancestry of a shallow PR merge alongside its base (#240). Previously the
   base fetch truncated full checkouts to 200 commits, and a depth-one PR merge
