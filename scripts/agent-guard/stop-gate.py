@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -66,6 +67,16 @@ def recorder(root: str) -> str:
     which is a refusal whose remedy does not run, in the tree where this
     contract is doing the work it was written for.
     """
+    # A versioned runtime keeps the implementation outside the consumer. In
+    # that mode the cache path is an implementation detail and running its
+    # recorder directly would skip lock and cache validation on the next run.
+    # The launcher injects this command for the child; legacy copied/shared
+    # installs continue through the location based path below.
+    runtime = os.environ.get("MAXI_QUALITY_RUNTIME_COMMAND")
+    if runtime:
+        cache_arg = os.environ.get("MAXI_QUALITY_RUNTIME_CACHE_ARG", "")
+        return (runtime + " record-gate --root " + shlex.quote(root) + cache_arg)
+
     here = os.path.dirname(os.path.abspath(__file__))
     rel = os.path.relpath(os.path.join(here, "record-gate.py"), root)
     # Outside the repo (a shared checkout, a symlinked install) `relpath` walks
@@ -98,12 +109,20 @@ def instruction(root: str) -> str:
     `--gate` with nothing declared exits 3 and says what to write, which is a
     loud wrong answer instead of a quiet one.
     """
+    recorder_cmd = recorder(root)
+    # recorder() returns a path for copied/shared legacy installs and a full
+    # launcher command for the versioned runtime. Do not prepend `python3` to
+    # the latter or the remediation becomes `python3 /path/python3 /path/...`.
+    if os.environ.get("MAXI_QUALITY_RUNTIME_COMMAND"):
+        run_recorder = recorder_cmd
+    else:
+        run_recorder = "python3 " + recorder_cmd
     cmd = gate_command(root)
     if cmd:
-        return (f"python3 {recorder(root)} --gate\n\n"
+        return (f"{run_recorder} --gate\n\n"
                 f"  (--gate runs the gate {CONFIG} declares: {cmd})")
     return (
-        f"python3 {recorder(root)} --gate\n\n  (declare it first — this repo "
+        f"{run_recorder} --gate\n\n  (declare it first — this repo "
         f"has no {CONFIG}:\n   echo '{{ \"gate_command\": \"<your gate>\" }}' "
         f"> {CONFIG}\n   A gate that is two checks belongs in that string, not "
         "pasted onto this line.)"

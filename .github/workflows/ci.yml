@@ -2931,6 +2931,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install PyYAML for release-lock fixtures
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -c 'import yaml' 2>/dev/null \
+            || python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
+          python3 -c 'import yaml'
       # The fixtures build real git repositories and commit to them. A runner
       # has no user.email, and without an identity the failure reads as a broken
       # fixture rather than as missing config — so selftest.py sets one per
@@ -2954,6 +2961,19 @@ jobs:
       - name: The contract checker must still catch the drift it claims
         shell: bash
         run: python3 scripts/check-agent-contract.py selftest
+      # Release-reference validation has the same shape: a small, local Python
+      # fixture that needs git but no new runner or toolchain. Keep it in this
+      # existing context so adding a release guard does not create a required-
+      # check gap on either protected branch.
+      - name: Release references must close over one immutable payload
+        shell: bash
+        run: python3 samples/release-refs/test_release_refs.py
+      - name: The consumer release lock must reject mismatched runtime refs
+        shell: bash
+        run: python3 samples/release-lock/test_release_lock.py
+      - name: Versioned runtime fixtures must preserve the recorded release
+        shell: bash
+        run: python3 samples/runtime-release/test_runtime.py
 
   # #11 — adopt.sh, proven end-to-end rather than by reading it. The assertion
   # that matters is not "it copied some files", it is "a repo adopted by the
@@ -4836,9 +4856,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # A publishable wrapper must compare itself with its recorded payload
+          # ancestor. Payload-development commits deliberately have no
+          # release-payload.sha and remain ordinary, independently testable CI.
+          fetch-depth: 0
       - name: Pinned tool versions must be internally consistent
         shell: bash
         run: ./scripts/check-pins.sh --offline
+      - name: A release wrapper must close over its immutable payload
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ -f release-payload.sha ]]; then
+            python3 scripts/release-refs.py verify-wrapper
+          else
+            echo 'payload development commit: no release wrapper recorded'
+          fi
 
   # quality.yml is CONSUMER-FACING and nothing else here executes it — ci.yml is
   # the self-test, quality.yml is what other repos call. So a change to it (an

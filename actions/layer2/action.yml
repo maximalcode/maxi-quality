@@ -12,8 +12,8 @@
 # `#NN` below refers to this project's pre-publication tracker, which stayed
 # private. Not this repo's issue numbers, which start fresh at #1.
 #
-# Version pinning: quality.yml@v1 references this action @v1 — the tag moves
-# both together. Tool versions below are pinned deliberately (STATUS §4:
+# Version pinning: release wrappers reference this action by immutable payload
+# SHA. Tool versions below are pinned deliberately (STATUS §4:
 # "an analyzer upgrade that adds rules is a breaking change").
 
 name: 'maxi-quality Layer 2 scan'
@@ -309,6 +309,7 @@ runs:
         WORKSPACE: ${{ github.workspace }}
       run: |
         set -Eeuo pipefail
+        python3 "${GITHUB_ACTION_PATH}/../../scripts/check-quality-lock.py" "$TARGET"
         ARGS=(--require-tools)
         if [[ -n "$JSON_OUT" ]]; then
           ARGS+=(--json-out "$JSON_OUT")
