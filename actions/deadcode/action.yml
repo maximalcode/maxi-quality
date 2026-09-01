@@ -137,18 +137,17 @@ runs:
           fi
           # Fetching the base alone leaves a depth-one PR merge disconnected:
           # Git will not traverse HEAD's parents across its shallow boundary,
-          # even when the base commit is present. Deepen BOTH sides, including
+          # even when the base commit is present. Complete BOTH sides, including
           # the exact detached HEAD rather than the remote's default branch.
-          # Fall back to full history for branches older than the first batch.
-          if ! git merge-base "$CHANGED_ONLY" HEAD >/dev/null 2>&1 &&
-             [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
+          # An available merge base is not enough: a shallow merge can expose
+          # an older ancestor while hiding the true, newer common ancestor.
+          if [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
             head_commit=$(git rev-parse HEAD)
-            git fetch --no-tags --deepen=200 origin "$head_commit" \
+            git fetch --no-tags --unshallow origin "$head_commit" \
               "${CHANGED_ONLY#origin/}" 2>/dev/null || true
-            if ! git merge-base "$CHANGED_ONLY" HEAD >/dev/null 2>&1 &&
-               [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
-              git fetch --no-tags --unshallow origin "$head_commit" \
-                "${CHANGED_ONLY#origin/}" 2>/dev/null || true
+            if [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
+              echo "::error::changed-only history remains shallow after fetching HEAD and '$CHANGED_ONLY'. Complete the checkout history before retrying; refusing to guess the changed files."
+              exit 1
             fi
           fi
           if ! git merge-base "$CHANGED_ONLY" HEAD >/dev/null 2>&1; then

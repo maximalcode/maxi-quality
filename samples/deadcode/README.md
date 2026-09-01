@@ -9,10 +9,12 @@ real depth-one Git fetches. Before the history fix, the PR merge case fails
 with `fatal: origin/main...HEAD: no merge base` even though the base ref
 resolves. Fetching only more base history does not repair the shallow HEAD.
 
-The seven cases cover a PR merge, a diverged feature branch, a branch older
-than the 200-commit deepening batch, a full checkout, an absent base, an
-unrelated base, and a full scan with no base. Changed-file assertions name
-the feature file exactly and exclude the file added only on the base branch.
+The nine cases cover a PR merge, a diverged feature branch, a branch with more
+than 200 commits, a full checkout, an absent base, an unrelated base, a remote
+with incomplete history, a full scan with no base, and a merge where shallow
+history exposes an older common ancestor while hiding the true merge base.
+Changed-file assertions name the feature file exactly and exclude the file
+added only on the base branch.
 
 The fixture deliberately has no knip installation: the action must finish
 its history work and reach the existing auto-mode warning. This suite proves
