@@ -196,6 +196,7 @@ maxi-quality/
     │                             #   plus --diff-file patch coverage
     ├── policy.py                 # resolve a consumer's .maxi-quality.yml (§13)
     ├── quality-report.py         # renders the standing report body (§11)
+    ├── coverage-manifest.py      # records what each quality run actually saw
     └── scan.sh                   # run full Layer 2 locally (semgrep+gitleaks+osv)
 ```
 
@@ -428,6 +429,14 @@ holding the current Semgrep breakdown, the dependency/licence inventory from the
 SBOM, and a history table that grows a row per run. No server, no cloud — code
 scanning would be the better store but needs Advanced Security on a private
 personal-account repo, which is the paid path.
+
+Finding counts alone reward shrinking the scan. Every `quality.yml` run therefore
+also uploads an analysis-coverage manifest and adds its summary to the job: the
+three language states (ran, skipped, not applicable), Semgrep's examined,
+unparsed and policy-excluded files, raw scanner errors, and Rust's actual Clippy
+target/feature scope. The standing issue carries the Semgrep coverage columns in
+its current and history tables, so a coverage drop is visible beside the finding
+trend rather than hidden inside an artifact.
 
 Constraints that are not negotiable here:
 

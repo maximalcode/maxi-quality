@@ -884,6 +884,8 @@ jobs:
     needs: detect
     if: needs.detect.outputs.has_rust == 'true'
     runs-on: ${{ inputs.runner }}
+    outputs:
+      clippy_scope: ${{ steps.clippy.outputs.scope }}
     strategy:
       fail-fast: false
       matrix:
@@ -933,6 +935,7 @@ jobs:
             cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny
 
       - name: Format, lint and audit
+        id: clippy
         shell: bash
         working-directory: ${{ matrix.dir }}
         run: |
@@ -953,6 +956,9 @@ jobs:
           # the gate. --locked is why detection refuses a crate with no
           # lockfile: without one this line cannot run at all.
           RUSTFLAGS=-Dwarnings cargo clippy --workspace --all-targets --locked
+          # Written only after Clippy returns. A failed setup or compilation
+          # must not be recorded as a target combination it never reached.
+          echo 'scope={"targets":["workspace","all-targets"],"features":["default"]}' >> "$GITHUB_OUTPUT"
           # advisories covers what cargo-audit would (the same RustSec feed);
           # add 'licenses' once deny.toml's allowlist holds your policy.
           # cargo-deny reads the whole workspace graph already.
@@ -1029,6 +1035,8 @@ jobs:
         run: mvn -B --no-transfer-progress spotless:check
 
   layer2:
+    needs: [detect, typescript, dotnet, python, rust, java]
+    if: always()
     runs-on: ${{ inputs.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1040,12 +1048,60 @@ jobs:
       # inside a consumer workflow that is itself SHA-pinned to this file.
       # Bump the two together: the SHA is the v1 tag's commit, and the comment
       # records the lineage the SHA was taken from.
-      - uses: maximalcode/maxi-quality/actions/layer2@27d3c69c4f9b9319e2974871f8c46605b4930a44 # v1
+      - id: scan
+        continue-on-error: true
+        uses: maximalcode/maxi-quality/actions/layer2@27d3c69c4f9b9319e2974871f8c46605b4930a44 # v1
         with:
           changed-only: ${{ inputs.changed-only }}
           licenses: ${{ inputs.licenses }}
           annotate: ${{ inputs.annotate }}
           max-annotations: ${{ inputs.max-annotations }}
+          json-out: ${{ runner.temp }}/maxi-quality-coverage/semgrep.json
+
+      - name: Render and upload analysis coverage manifest
+        if: always()
+        shell: bash
+        env:
+          LANGUAGES: ${{ inputs.languages }}
+          DETECTED: ${{ toJSON(needs.detect.outputs) }}
+          JOBS: ${{ toJSON(needs) }}
+          RUST_SCOPE: ${{ needs.rust.outputs.clippy_scope }}
+          EVIDENCE: ${{ runner.temp }}/maxi-quality-coverage
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$EVIDENCE"
+          printf '%s' "$DETECTED" > "$EVIDENCE/detected.json"
+          python3 - "$JOBS" > "$EVIDENCE/jobs.json" <<'PY'
+          import json, sys
+          needs = json.loads(sys.argv[1])
+          print(json.dumps({name: item.get("result", "skipped") for name, item in needs.items()}))
+          PY
+          printf '%s' "$RUST_SCOPE" > "$EVIDENCE/rust-scope.json"
+          python3 scripts/coverage-manifest.py \
+            --languages "$LANGUAGES" \
+            --detected "$EVIDENCE/detected.json" \
+            --job-results "$EVIDENCE/jobs.json" \
+            --semgrep-json "$EVIDENCE/semgrep.json" \
+            --scan-log "$RUNNER_TEMP/scan.log" \
+            --rust-scope "$EVIDENCE/rust-scope.json" \
+            --out "$EVIDENCE/analysis-coverage.json" \
+            --summary "$EVIDENCE/analysis-coverage.md"
+          cat "$EVIDENCE/analysis-coverage.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload analysis coverage manifest
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: maxi-quality-analysis-coverage
+          path: ${{ runner.temp }}/maxi-quality-coverage
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Preserve the Layer 2 verdict
+        if: always()
+        env:
+          OUTCOME: ${{ steps.scan.outcome }}
+        run: |
+          if [[ "$OUTCOME" != 'success' ]]; then exit 1; fi
 
   # Coverage — off unless `coverage-report:` names an artifact (#75, #124).
   #

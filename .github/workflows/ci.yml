@@ -1556,6 +1556,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Analysis coverage names a detected language whose job was skipped
+        run: python3 samples/coverage-manifest/test_manifest.py
       - name: Report must accumulate history, not reset it
         shell: bash
         run: |

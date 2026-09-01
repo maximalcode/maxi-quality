@@ -460,6 +460,17 @@ def path_is_excluded(path: str, patterns: list) -> bool:
     return False
 
 
+def policy_skip_count(value) -> int:
+    """Count Semgrep JSON skips caused by a CLI ``--exclude`` policy."""
+    if isinstance(value, dict):
+        return sum(policy_skip_count(item) for item in value.values())
+    if isinstance(value, list):
+        if len(value) >= 2 and isinstance(value[1], str):
+            return int("cli_include_excludes" in value[1] or "--exclude" in value[1])
+        return sum(policy_skip_count(item) for item in value)
+    return 0
+
+
 # --- GitHub PR-diff annotations (#40) -----------------------------------------
 #
 # Every finding lives in job log output today. A reviewer sees a red check,

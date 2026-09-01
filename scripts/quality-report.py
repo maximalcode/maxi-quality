@@ -112,8 +112,8 @@ def _first_error(errors: list) -> str:
     return text[:197] + "..." if len(text) > 200 else text
 
 
-def load_findings(path: str) -> tuple[collections.Counter[str], str | None, list[str]]:
-    """Return (counts, reason-this-is-not-a-finding-set, unparsed-files).
+def load_findings(path: str) -> tuple[collections.Counter[str], str | None, list[str], dict[str, int]]:
+    """Return (counts, reason-this-is-not-a-finding-set, unparsed-files, coverage).
 
     The second element is what stops a broken run from rendering as a clean one.
     Two shapes reach here as `results: []`:
@@ -139,7 +139,7 @@ def load_findings(path: str) -> tuple[collections.Counter[str], str | None, list
     copies of this rule is exactly how the docker and native semgrep paths came
     to disagree about --changed-only.
     """
-    from policy import PER_FILE_ERROR_TYPES, error_type  # noqa: PLC0415 — sibling script
+    from policy import PER_FILE_ERROR_TYPES, error_type, policy_skip_count  # noqa: PLC0415 — sibling script
 
     with open(path) as fh:
         data = json.load(fh)
@@ -150,32 +150,30 @@ def load_findings(path: str) -> tuple[collections.Counter[str], str | None, list
         (unparsed_errs if tag in PER_FILE_ERROR_TYPES else fatal).append(err)
 
     if fatal:
-        return (
-            collections.Counter(),
-            f"semgrep reported {len(fatal)} error(s): {_first_error(fatal)}",
-            [],
-        )
+        return (collections.Counter(), f"semgrep reported {len(fatal)} error(s): {_first_error(fatal)}", [], {})
 
     # Deduplicated: one file with three unparseable constructs is three errors
     # and still one hole.
     unparsed = sorted({e.get("path", "?") for e in unparsed_errs if isinstance(e, dict)})
 
     scanned = (data.get("paths") or {}).get("scanned")
+    skipped = (data.get("paths") or {}).get("skipped")
+    coverage = {
+        "examined": len(scanned) if isinstance(scanned, list) else 0,
+        "unparsed": len(unparsed),
+        "excluded": policy_skip_count(skipped),
+    }
     if scanned is not None and len(scanned) == 0:
-        return collections.Counter(), "semgrep scanned 0 files", unparsed
+        return collections.Counter(), "semgrep scanned 0 files", unparsed, coverage
     # Same guard the gate applies: if nothing semgrep looked at could be parsed,
     # `results: []` means "nobody looked", and that must not render as clean.
     if scanned and unparsed and len(unparsed) >= len(scanned):
-        return (
-            collections.Counter(),
-            f"all {len(scanned)} file(s) semgrep looked at failed to parse",
-            unparsed,
-        )
+        return (collections.Counter(), f"all {len(scanned)} file(s) semgrep looked at failed to parse", unparsed, coverage)
 
     counts = collections.Counter(
         r["check_id"].split(".")[-1] for r in data.get("results", [])
     )
-    return counts, None, unparsed
+    return counts, None, unparsed, coverage
 
 
 def previous_history(body: str | None) -> dict[str, str]:
@@ -203,7 +201,7 @@ def previous_history(body: str | None) -> dict[str, str]:
 
 
 def build(counts, date, gitleaks, osv, previous, target, licenses="not run",
-          sbom=None, scan_error=None, unparsed=None) -> str:
+          sbom=None, scan_error=None, unparsed=None, coverage=None) -> str:
     total = sum(counts.values())
     top = counts.most_common(1)[0] if counts else None
     top_txt = f"{top[0]} ({top[1]})" if top else "—"
@@ -234,15 +232,19 @@ def build(counts, date, gitleaks, osv, previous, target, licenses="not run",
         ]
 
     semgrep_cell = f"**ERRORED** — {scan_error}" if scan_error else f"**{total}** findings"
+    coverage = coverage or {}
+    examined = coverage.get("examined", "not reported")
+    unparsed_count = coverage.get("unparsed", "not reported")
+    excluded = coverage.get("excluded", "not reported")
     lines += [
         f"## Current — {date}",
         "",
-        "| Tool | Result |",
-        "|---|---|",
-        f"| Semgrep | {semgrep_cell} |",
-        f"| Gitleaks | {gitleaks} |",
-        f"| OSV-Scanner | {osv} |",
-        f"| Licenses | {licenses} |",
+        "| Tool | Result | Examined | Unparsed | Excluded by policy |",
+        "|---|---|---:|---:|---:|",
+        f"| Semgrep | {semgrep_cell} | {examined} | {unparsed_count} | {excluded} |",
+        f"| Gitleaks | {gitleaks} | not reported | not reported | not reported |",
+        f"| OSV-Scanner | {osv} | not reported | not reported | not reported |",
+        f"| Licenses | {licenses} | — | — | — |",
         "",
     ]
 
@@ -308,8 +310,8 @@ def build(counts, date, gitleaks, osv, previous, target, licenses="not run",
     # outage; writing `0` would record it as the best week the repo ever had and
     # then preserve that forever, since this table is the only store there is.
     history[date] = (
-        f"| {date} | ERRORED | — |" if scan_error
-        else f"| {date} | {total} | {top_txt} |"
+        f"| {date} | ERRORED | {examined} | {unparsed_count} | {excluded} | — |" if scan_error
+        else f"| {date} | {total} | {examined} | {unparsed_count} | {excluded} | {top_txt} |"
     )
     rows = [history[d] for d in sorted(history)][-MAX_HISTORY:]
     rows.reverse()  # newest first, which is what a reader wants on top
@@ -317,8 +319,8 @@ def build(counts, date, gitleaks, osv, previous, target, licenses="not run",
     lines += [
         HISTORY_HEADING,
         "",
-        "| Date | Semgrep total | Largest rule |",
-        "|---|---:|---|",
+        "| Date | Semgrep total | Examined | Unparsed | Excluded by policy | Largest rule |",
+        "|---|---:|---:|---:|---:|---|",
         *rows,
         "",
     ]
@@ -348,7 +350,7 @@ def main() -> int:
             body = None
 
     try:
-        counts, scan_error, unparsed = load_findings(args.json)
+        counts, scan_error, unparsed, coverage = load_findings(args.json)
     except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
         # Nothing is printed on this path, deliberately: the caller writes
         # stdout over the standing issue, and an empty body would erase the
@@ -368,6 +370,7 @@ def main() -> int:
             load_sbom(args.sbom),
             scan_error,
             unparsed,
+            coverage,
         )
     )
     if scan_error:

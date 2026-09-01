@@ -112,6 +112,8 @@ hooks/pre-commit          OPT-IN hook (#40): gitleaks on the staged diff, semgre
                           `adopt.sh --hooks`; bash 3.2, because macOS
 scripts/check-pins.sh     bump policy (#13): pin consistency + upstream drift
 scripts/quality-report.py renders the standing-report issue body (no network)
+scripts/coverage-manifest.py records the language/job states and Layer 2 coverage
+                          evidence uploaded by every quality.yml run
 scripts/coverage.py       coverage ratchet: lcov + Cobertura vs a committed floor,
                           and --diff-file: coverage of the lines a diff ADDED,
                           which the aggregate cannot see (#112). Both GATE —
@@ -289,6 +291,8 @@ samples/guards/           the fetch-and-execute shapes ci.yml's supply-chain gua
                           must catch, and the verified downloads it must not (#3)
 samples/coverage/         coverage fixtures, hand-checked: 65.00 / 75.00 / 40.00 /
                           66.67 %, and 71.67 % when the first two are summed
+samples/coverage-manifest/ fixture for the three distinct Layer 1 states: a
+                          detected TypeScript project whose job is skipped
 samples/sbom/             CycloneDX fixture — all three licence spellings
 samples/policy/           the policy file's own suite: one fixture per knob
                           (disable, warn, exclude, extends, groups), each
@@ -377,6 +381,9 @@ python3 scripts/coverage.py --report samples/coverage/cobertura.xml \
                                          # green on samples/coverage/patch while
                                          # its four added lines measure 0.00%,
                                          # from two implementations (needs pip)
+python3 samples/coverage-manifest/test_manifest.py
+                                         # expect detected/running, skipped, and
+                                         # not-applicable Layer 1 states
 python3 scripts/quality-report.py --json /tmp/semgrep.json --date 2026-01-01 \
         --sbom samples/sbom/cyclonedx.json   # expect MIT 2 / Apache-2.0 1 /
                                              # "MIT OR Apache-2.0" 1 / UNKNOWN 2

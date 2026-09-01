@@ -1,0 +1,14 @@
+{
+  "results": [],
+  "errors": [
+    {
+      "type": "PartialParsing",
+      "path": "src/Unsupported.cs",
+      "message": "Syntax error"
+    }
+  ],
+  "paths": {
+    "scanned": ["src/app.ts", "src/Unsupported.cs"],
+    "skipped": [["legacy/old.ts", "cli_include_excludes"]]
+  }
+}
