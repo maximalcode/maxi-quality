@@ -43,7 +43,7 @@ is no public v1.0.0 through v1.0.3 to backfill. `CLAUDE.md` §2 has the reason.
 
 ---
 
-## [Unreleased] — v1.2.0
+## [v1.2.0] — 2026-09-01
 
 Everything on `develop` since v1.1.0.
 
@@ -65,6 +65,15 @@ Two things in this window look like Finding changes and are not:
 
 ### Added
 
+- **Versioned external agent runtime**: a per-repository release lock selects
+  an explicitly prepared cache by immutable commit. Migration removes copied
+  guard files, preserves the declared gate and unrelated settings, and updates
+  the managed agent instructions. Hook calls work offline and refuse missing
+  or damaged runtime state with a repair instruction.
+- **Closed release references**: both reusable workflows pin their actions to
+  a recorded immutable payload; publication checks the actual referenced Git
+  objects before advancing `v1`. Layer 2 also checks that a consumer's optional
+  guard lock and workflow SHA/version pins agree.
 - **Layer 1 preflight** (`scripts/preflight.py`, #76): a local, report-only
   preview in a disposable copy, with per-language/per-rule bug-class,
   stylistic and unclassified counts. Toolchain and compilation failures are

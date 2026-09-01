@@ -19,10 +19,10 @@
 #
 # Version coupling, settled in #81:
 #
-# - `actions/layer2` is pinned by commit-SHA below (line ~1032), with a `# v1`
-#   comment. The version tag still travels because a consumer needs to know
-#   which release lineage they are on, but SHA-pinning means a moved tag cannot
-#   silently change what runs inside an already-pinned consumer workflow.
+# - Every first-party action is pinned by commit-SHA, with a `# v1` comment.
+#   The release wrapper records that payload in release-payload.sha and CI
+#   verifies the wrapper changed no executable delivery files. A moved tag
+#   therefore cannot change what runs inside an already-pinned workflow.
 # - This file is itself consumed BY COMMIT-SHA, not by tag, when a consumer
 #   wants the Scorecard pinning check to pass. The documented adoption snippet
 #   offers both: `@v1` for the easy path, and a SHA with `# v1` for the pinned

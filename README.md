@@ -52,10 +52,12 @@ because someone outside asks for it. What the tag promises:
   is fixes and Finding changes that add no new capability. Neither is breaking,
   and both can turn a build red, so read **Rule changes** rather than the
   number.
-- **Do not SHA-pin `quality.yml`.** Your Scorecard will ask you to. The pinned
-  workflow text still resolves `actions/layer2@v1` one level down, so the pin
-  would look real and protect nothing. Pin a **`v1.0.x`** tag instead if you
-  need a ref that never moves.
+- **A SHA pin is closed over one payload.** Each new closed release wrapper
+  points every first-party action reference at its recorded payload commit, so
+  a pinned `quality.yml` cannot silently resolve a later `@v1` action. Use a
+  **`v1.x.y`** tag when you want a named immutable release, or the published
+  wrapper SHA for a Scorecard-clean pin. `@v1` remains the moving latest-v1
+  choice.
 
 **What this does not do.** Stated because a gate that stays quiet about its
 edges gets trusted past them:

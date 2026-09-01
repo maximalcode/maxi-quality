@@ -10,7 +10,7 @@
 # Contributions land on `develop`, which runs the same suite and releases
 # nothing. Promoting develop to main IS the release decision, and this workflow
 # is what makes it take effect — so a merge to main is never a checkpoint.
-# The immutable `v1.0.x` tags stay manual (see the bottom of this comment).
+# New immutable `v1.x.y` tags stay manual (see the bottom of this comment).
 #
 # WHY IT IS SAFE TO AUTOMATE: it triggers on `workflow_run` from `ci`, and only
 # when that run CONCLUDED SUCCESSFULLY on main. ci asserts exact sample counts
@@ -18,7 +18,7 @@
 # rule ids), so a ruleset that changed behaviour cannot reach a green main in
 # the first place. The tag inherits that gate rather than adding a new one.
 #
-# It does NOT touch the immutable v1.0.x tags. Those stay manual, because a
+# It does NOT touch new immutable v1.x.y tags. Those stay manual, because a
 # point release is a deliberate act with a written changelog.
 
 name: release-tag
@@ -56,6 +56,7 @@ jobs:
     # the v1 tag, in the step below.
     permissions:
       contents: write
+      actions: read
     # THE TAG-HIJACK GATE. Read this before touching the condition.
     #
     # `workflow_run` runs in the context of the BASE repo with the permissions
@@ -133,6 +134,8 @@ jobs:
           # is kept absolute so the guard in ci.yml needs no allowlist — an
           # exception list is where the next real one hides.
           SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          REF_CHECKER: ${{ runner.temp }}/release-refs.py
         run: |
           set -Eeuo pipefail
 
@@ -174,6 +177,32 @@ jobs:
             exit 1
           fi
 
+          # workflow_run arrives only after a successful push CI run. Manual
+          # dispatch has no such event payload, so query the same fact instead
+          # of turning the manual escape hatch into a way around the release
+          # gate. A successful PR run is deliberately insufficient: it tested
+          # a synthetic merge, while v1 must name a commit actually pushed on
+          # main.
+          successful=$(gh run list --repo "$GITHUB_REPOSITORY" \
+            --workflow ci.yml --commit "$SHA" --branch main --event push --status completed \
+            --json conclusion --jq '[.[] | select(.conclusion == "success")] | length')
+          if [[ "$successful" -eq 0 ]]; then
+            echo "::error::${SHA} has no successful push CI run — refusing to move v1"
+            exit 1
+          fi
+
+          # A green CI run proves the candidate's ordinary behaviour. It does
+          # not prove its public reusable workflows resolve one reviewed
+          # payload: that relationship lives in git objects and is checked
+          # through --revision, without checking out $SHA on this credentialed
+          # runner. Read the checker from THAT verified commit too: the normal
+          # checkout is the default branch, which may be develop and must not
+          # decide what a main release means. There is deliberately no "no
+          # record means development" path here. A manual dispatch is a
+          # release attempt too.
+          git show "$SHA:scripts/release-refs.py" > "$REF_CHECKER"
+          python3 "$REF_CHECKER" --root . verify-wrapper --revision "$SHA"
+
           CURRENT="$(git rev-parse -q --verify 'refs/tags/v1^{commit}' 2>/dev/null || echo none)"
           if [[ "$CURRENT" == "$SHA" ]]; then
             echo "v1 already points at $SHA — nothing to do"
@@ -184,7 +213,7 @@ jobs:
           git tag -f -a v1 -m "v1 — TS + C# baseline: moving pointer to the newest verified main.
 
           Moved automatically after a green ci run on $SHA.
-          Pin a v1.0.x tag instead if you need a ref that never moves." "$SHA"
+          Pin a v1.x.y tag instead if you need a ref that never moves." "$SHA"
           git push --force origin v1
 
       - name: Summary
