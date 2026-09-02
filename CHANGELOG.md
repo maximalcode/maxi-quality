@@ -43,6 +43,14 @@ is no public v1.0.0 through v1.0.3 to backfill. `CLAUDE.md` §2 has the reason.
 
 ---
 
+## Unreleased
+
+### Rule changes
+
+- **Knip 6.31.0 → 6.33.0.** The dead-code action floor, test dependency and
+  TypeScript example move together. The exact fixture expectations remain the
+  review gate for any detection change.
+
 ## [v1.2.0] — 2026-09-01
 
 Everything on `develop` since v1.1.0.
