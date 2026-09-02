@@ -86,6 +86,21 @@ repo — **is** breaking, and gets a new major tag rather than riding the moving
 No `v2` machinery exists and none is built until a breaking change needs one.
 That is the same rule as §9's: nothing speculative gets maintained.
 
+From v1.2.0, a named release closes both reusable workflows over an immutable
+action payload. `release-payload.sha` identifies that payload; the release
+checker verifies the referenced code and the release workflow refuses to move
+`v1` without it. Older tags retain their original references.
+
+The agent guard also has an optional versioned delivery path. A consumer keeps
+its gate declaration, hook settings and `.claude/quality-runtime.json` release
+lock, while an externally installed launcher selects guard code from a cache
+keyed by the pinned commit. Preparing that cache is explicit; hooks operate
+offline. No shared `latest` pointer selects the code. Consumers with a lock
+must pin all their maxi-quality workflow calls to the same SHA and full version
+comment; Layer 2 checks that agreement. Existing copied adoption remains
+available. See `docs/QUALITY-RUNTIME.md` for the install and migration commands
+and `docs/RELEASE-REFERENCES.md` for release publication.
+
 ---
 
 ## 2. Identity rail (hard rule, same as Consumer A)
