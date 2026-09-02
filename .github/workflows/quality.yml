@@ -722,7 +722,7 @@ jobs:
       # the file does not compile.
       - name: Dead code and unused dependencies (knip)
         if: inputs.dead-code != 'off'
-        uses: maximalcode/maxi-quality/actions/deadcode@9bf7212476df61b7f511b98bb96610195100c9fb
+        uses: maximalcode/maxi-quality/actions/deadcode@86dc90d9799a378a7f0c51310e2ec2f1204ad470
         with:
           tool: knip
           dir: ${{ matrix.dir }}
@@ -861,7 +861,7 @@ jobs:
       # at the granularity deptry is designed for).
       - name: Unused and undeclared dependencies (deptry)
         if: inputs.dead-code != 'off'
-        uses: maximalcode/maxi-quality/actions/deadcode@9bf7212476df61b7f511b98bb96610195100c9fb
+        uses: maximalcode/maxi-quality/actions/deadcode@86dc90d9799a378a7f0c51310e2ec2f1204ad470
         with:
           tool: deptry
           dir: ${{ matrix.dir }}
@@ -1040,7 +1040,7 @@ jobs:
       # inside a consumer workflow that is itself SHA-pinned to this file.
       # Bump the two together: the SHA is the v1 tag's commit, and the comment
       # records the lineage the SHA was taken from.
-      - uses: maximalcode/maxi-quality/actions/layer2@9bf7212476df61b7f511b98bb96610195100c9fb # v1
+      - uses: maximalcode/maxi-quality/actions/layer2@86dc90d9799a378a7f0c51310e2ec2f1204ad470 # v1
         with:
           changed-only: ${{ inputs.changed-only }}
           licenses: ${{ inputs.licenses }}
@@ -1150,7 +1150,7 @@ jobs:
 
       - name: Coverage gate
         id: cov
-        uses: maximalcode/maxi-quality/actions/coverage@9bf7212476df61b7f511b98bb96610195100c9fb
+        uses: maximalcode/maxi-quality/actions/coverage@86dc90d9799a378a7f0c51310e2ec2f1204ad470
         with:
           report: ${{ steps.find.outputs.reports }}
           floor-file: ${{ inputs.coverage-floor-file }}
