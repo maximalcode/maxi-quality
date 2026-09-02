@@ -12,4 +12,4 @@
 # directory): the asserted finding set is only meaningful against a known
 # resolution behaviour.
 beautifulsoup4==4.15.0
-click==8.4.2
+click==8.5.0
