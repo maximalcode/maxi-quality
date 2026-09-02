@@ -82,10 +82,10 @@ inputs:
   knip-min-version:
     description: >-
       Refused below this. 5.64.3 shipped a false positive on signature-only
-      types that 6.31.0 fixed (#51), and a known-wrong analyzer is worse than a
-      missing one — so this is a hard error in every mode, unlike a tool that
-      is simply absent.
-    default: '6.31.0'
+      types that 6.31.0 fixed (#51). The floor follows the version used to
+      assert this repository's exact finding manifest, because a consumer
+      running an older analyzer would not be using the tested baseline.
+    default: '6.33.0'
 
 runs:
   using: composite
