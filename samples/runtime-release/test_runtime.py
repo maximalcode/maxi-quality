@@ -153,11 +153,171 @@ def main() -> int:
         rolled = call(str(MIGRATE), "--target", str(target_b), "--version", "v1.1.0",
                       "--commit", previous, "--launcher", str(RUNTIME))
         assert rolled.returncode == 0, rolled.stderr
+        (target_b / ".claude" / "agent-guard.json").write_text(
+            '{"gate_command":"true"}\n', encoding="utf-8")
         settings_b = json.loads((target_b / ".claude" / "settings.json").read_text())
         assert len(settings_b["hooks"]["PreToolUse"]) == 2
         assert json.loads((target_b / ".claude" / "quality-runtime.json").read_text())["commit"] == previous
         status = call(str(RUNTIME), "status", "--root", str(target_b), "--cache-root", str(cache))
         assert status.returncode == 0, status.stderr
+
+        # The installation doctor is read-only and observes the actual
+        # Adopter wiring.  Its JSON shape is stable and says that a static
+        # pass does not prove a live agent session executed anything.
+        diagnosis = call(str(RUNTIME), "diagnose", "--root", str(target_b),
+                         "--cache-root", str(cache), "--json")
+        assert diagnosis.returncode == 0, diagnosis.stderr + diagnosis.stdout
+        report = json.loads(diagnosis.stdout)
+        assert report["healthy"] is True
+        assert report["status"] == "ok"
+        assert report["installation_profile"] == "versioned-with-samples"
+        assert report["release"]["version"] == "v1.1.0"
+        assert report["release"]["commit"] == previous
+        assert report["configured_gate"] == "true"
+        assert report["live_enforcement"] == "unverified"
+        assert report["host_settings"] == "unverified"
+        assert all(check["status"] == "pass" for check in report["checks"])
+
+        # Repeated diagnosis is observational: no lock, settings, or cache
+        # bytes change.
+        before_settings = (target_b / ".claude" / "settings.json").read_bytes()
+        before_lock = (target_b / ".claude" / "quality-runtime.json").read_bytes()
+        before_manifest = (cache / previous / "manifest.json").read_bytes()
+        again = call(str(RUNTIME), "diagnose", "--root", str(target_b),
+                     "--cache-root", str(cache), "--json")
+        assert again.returncode == 0
+        assert before_settings == (target_b / ".claude" / "settings.json").read_bytes()
+        assert before_lock == (target_b / ".claude" / "quality-runtime.json").read_bytes()
+        assert before_manifest == (cache / previous / "manifest.json").read_bytes()
+
+        unavailable_cache = call(str(RUNTIME), "diagnose", "--root", str(target_b),
+                                 "--cache-root", str(root / "missing-cache"), "--json")
+        assert unavailable_cache.returncode != 0
+        assert any(c["id"] == "runtime-cache" and c["status"] == "fail"
+                   for c in json.loads(unavailable_cache.stdout)["checks"])
+
+        readable = call(str(RUNTIME), "diagnose", "--root", str(target_b),
+                        "--cache-root", str(cache))
+        assert readable.returncode == 0
+        assert "versioned-with-samples" in readable.stdout
+        assert "live enforcement: unverified" in readable.stdout
+
+        # A profile without samples/expected is a supported workflow-only
+        # shape, so its intentionally absent sample protection is skipped.
+        no_samples = call(str(RUNTIME), "diagnose", "--root", str(target_a),
+                          "--cache-root", str(cache), "--json")
+        assert no_samples.returncode == 0, no_samples.stderr
+        no_samples_report = json.loads(no_samples.stdout)
+        assert no_samples_report["installation_profile"] == "versioned-without-samples"
+        assert no_samples_report["healthy"] is True
+        sample_check = next(c for c in no_samples_report["checks"] if c["id"] == "sample-protection")
+        assert sample_check["status"] == "skip"
+
+        # Narrowing the owned matcher is a wiring failure, even though the
+        # hook command and the cached runtime remain valid.
+        changed = json.loads((target_b / ".claude" / "settings.json").read_text())
+        for group in changed["hooks"]["PreToolUse"]:
+            if group.get("matcher") == "Edit|Write|MultiEdit":
+                group["matcher"] = "Edit|Write"
+        (target_b / ".claude" / "settings.json").write_text(
+            json.dumps(changed), encoding="utf-8")
+        broken = call(str(RUNTIME), "diagnose", "--root", str(target_b),
+                      "--cache-root", str(cache), "--json")
+        assert broken.returncode != 0
+        broken_report = json.loads(broken.stdout)
+        assert broken_report["healthy"] is False
+        assert any(c["id"] == "hook-sample-guard" and c["status"] == "fail"
+                   for c in broken_report["checks"])
+
+        # Each required seam fails by its own reason and the fixture can be
+        # restored without any diagnosis side effects.
+        # Re-migrate to restore the owned entries while retaining the target's
+        # gate and then exercise a missing deny rule and missing gate.
+        restored = call(str(MIGRATE), "--target", str(target_b), "--version", "v1.1.0",
+                        "--commit", previous, "--launcher", str(RUNTIME))
+        assert restored.returncode == 0, restored.stderr
+
+        malformed = json.loads((target_b / ".claude" / "settings.json").read_text())
+        for group in malformed["hooks"]["PreToolUse"]:
+            if group.get("matcher") == "Bash":
+                group["hooks"][0]["command"] = "echo replaced"
+        (target_b / ".claude" / "settings.json").write_text(json.dumps(malformed), encoding="utf-8")
+        replaced_hook = call(str(RUNTIME), "diagnose", "--root", str(target_b),
+                             "--cache-root", str(cache), "--json")
+        assert replaced_hook.returncode != 0
+        assert any(c["id"] == "hook-no-verify" and c["status"] == "fail"
+                   for c in json.loads(replaced_hook.stdout)["checks"])
+        restored = call(str(MIGRATE), "--target", str(target_b), "--version", "v1.1.0",
+                        "--commit", previous, "--launcher", str(RUNTIME))
+        assert restored.returncode == 0, restored.stderr
+
+        launcher_missing = json.loads((target_b / ".claude" / "settings.json").read_text())
+        for group in launcher_missing["hooks"]["Stop"]:
+            group["hooks"][0]["command"] = (
+                "if [ -f /missing/quality-runtime.py ]; then python3 "
+                "/missing/quality-runtime.py stop-gate --root \"${CLAUDE_PROJECT_DIR}\"; fi"
+            )
+        (target_b / ".claude" / "settings.json").write_text(json.dumps(launcher_missing), encoding="utf-8")
+        missing_launcher = call(str(RUNTIME), "diagnose", "--root", str(target_b),
+                                "--cache-root", str(cache), "--json")
+        assert missing_launcher.returncode != 0
+        assert any(c["id"] == "launcher" and c["status"] == "fail"
+                   for c in json.loads(missing_launcher.stdout)["checks"])
+        restored = call(str(MIGRATE), "--target", str(target_b), "--version", "v1.1.0",
+                        "--commit", previous, "--launcher", str(RUNTIME))
+        assert restored.returncode == 0, restored.stderr
+        current = json.loads((target_b / ".claude" / "settings.json").read_text())
+        current["permissions"]["deny"].remove("Edit(/samples/expected/**)")
+        (target_b / ".claude" / "settings.json").write_text(json.dumps(current), encoding="utf-8")
+        missing_deny = call(str(RUNTIME), "diagnose", "--root", str(target_b),
+                            "--cache-root", str(cache), "--json")
+        assert missing_deny.returncode != 0
+        assert any(c["status"] == "fail" and "samples/expected" in c["detail"]
+                   for c in json.loads(missing_deny.stdout)["checks"])
+        restored = call(str(MIGRATE), "--target", str(target_b), "--version", "v1.1.0",
+                        "--commit", previous, "--launcher", str(RUNTIME))
+        assert restored.returncode == 0, restored.stderr
+        (target_b / ".claude" / "agent-guard.json").unlink()
+        no_gate = call(str(RUNTIME), "diagnose", "--root", str(target_b),
+                       "--cache-root", str(cache), "--json")
+        assert no_gate.returncode != 0
+        assert any(c["id"] == "configured-gate" and c["status"] == "fail"
+                   for c in json.loads(no_gate.stdout)["checks"])
+        (target_b / ".claude" / "agent-guard.json").write_text(
+            '{"gate_command":"true"}\n', encoding="utf-8")
+
+        # An explicitly disabled profile is reported as not enabled, never as
+        # enforced.  Migration itself is the only writer in this fixture.
+        target_disabled = root / "project-disabled"
+        project(target_disabled)
+        disabled = call(str(MIGRATE), "--target", str(target_disabled),
+                        "--version", "v1.2.0", "--commit", head,
+                        "--launcher", str(RUNTIME), "--guard-disabled")
+        assert disabled.returncode == 0, disabled.stderr
+        disabled_report = call(str(RUNTIME), "diagnose", "--root", str(target_disabled),
+                               "--cache-root", str(cache), "--json")
+        assert disabled_report.returncode == 0
+        disabled_json = json.loads(disabled_report.stdout)
+        assert disabled_json["status"] == "not-enabled"
+        assert disabled_json["live_enforcement"] == "unverified"
+
+        # Legacy copied and shared installs are migration candidates, not
+        # versioned healthy installs.  The classification is based on the
+        # actual files and command wiring, and includes the supported seam.
+        legacy = root / "legacy"
+        project(legacy)
+        (legacy / ".claude").mkdir()
+        (legacy / ".claude" / "settings.json").write_text(json.dumps({
+            "hooks": {"Stop": [{"hooks": [{"type": "command",
+                "command": 'python3 "${CLAUDE_PROJECT_DIR}/.claude/agent-guard/stop-gate.py"'}]}]}
+        }), encoding="utf-8")
+        (legacy / ".claude" / "agent-guard").mkdir()
+        (legacy / ".claude" / "agent-guard" / "stop-gate.py").write_text("copied", encoding="utf-8")
+        legacy_report = call(str(RUNTIME), "diagnose", "--root", str(legacy), "--json")
+        assert legacy_report.returncode == 0
+        legacy_json = json.loads(legacy_report.stdout)
+        assert legacy_json["status"] == "legacy-copied"
+        assert "quality-runtime-migrate.py" in legacy_json["migration"]
     print("runtime-release: all checks passed")
     return 0
 

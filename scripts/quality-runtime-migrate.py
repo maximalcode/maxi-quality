@@ -133,6 +133,22 @@ def append_runtime(settings: dict, commands: dict[str, str]) -> None:
             entries.append(hook_entry(command, timeout))
 
 
+def append_runtime_permissions(settings: dict, samples: bool) -> None:
+    """Install the two owned deny rules while retaining consumer policy."""
+    permissions = settings.setdefault("permissions", {})
+    if not isinstance(permissions, dict):
+        raise Refused(".claude/settings.json has a non-object permissions key")
+    deny = permissions.setdefault("deny", [])
+    if not isinstance(deny, list) or any(not isinstance(rule, str) for rule in deny):
+        raise Refused(".claude/settings.json permissions.deny must be an array of strings")
+    wanted = ["Edit(/.claude/agent-guard-receipt.json)"]
+    if samples:
+        wanted.append("Edit(/samples/expected/**)")
+    for rule in wanted:
+        if rule not in deny:
+            deny.append(rule)
+
+
 def remove_legacy_files(target: Path) -> None:
     directory = target / ".claude" / "agent-guard"
     if directory.is_symlink():
@@ -314,12 +330,14 @@ def migrate(target: Path, version: str, commit: str, launcher: str, dry_run: boo
         for name in GUARDS
         if name != "sample-guard" or (target / "samples" / "expected").is_dir()
     }
+    expected_samples = (target / "samples" / "expected").is_dir()
     if guard_enabled:
         validate_instruction(target)
         if (target / ".claude" / "agent-guard").is_symlink():
             raise Refused(f"{target / '.claude' / 'agent-guard'} is a symlink; refusing to remove files outside the target")
         remove_owned(settings)
         append_runtime(settings, commands)
+        append_runtime_permissions(settings, expected_samples)
     if dry_run:
         print(json.dumps({"lock": lock, "settings": settings}, indent=2, sort_keys=False))
         return

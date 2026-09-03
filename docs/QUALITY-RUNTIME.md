@@ -65,3 +65,49 @@ Migration also preserves unrelated `.gitignore` entries and adds the recorder's
 receipt, temporary receipt and local event ledger. These records stay local to
 the checkout; only the release lock is committed. Workflow-only consumers can
 use `--guard-disabled` to create a lock without installing agent hooks.
+
+## Diagnose an installation
+
+After migration, inspect one checkout through the same launcher used by its
+hooks:
+
+```bash
+quality-runtime diagnose --root /path/to/project
+quality-runtime diagnose --root /path/to/project --json
+```
+
+`diagnose` is read-only. It validates the release lock and immutable cache,
+checks the configured `gate_command`, and compares the owned hook matchers,
+launcher command and `permissions.deny` entries with the selected installation
+profile. Unrelated hooks and permission entries are ignored. The JSON result
+has stable keys (`schema`, `status`, `healthy`, `installation_profile`,
+`release`, `configured_gate`, `checks`, `live_enforcement`, `host_settings`,
+and `migration`) and each check names its own pass, skip, or failure.
+`live_enforcement` and `host_settings` are `unverified`: a static diagnosis
+cannot prove that an agent host loaded or executed a hook during a real
+session, or infer host overrides from the project files.
+
+The supported profiles are `versioned-with-samples`,
+`versioned-without-samples`, and `disabled`. The latter is a deliberate
+workflow-only profile and reports `not-enabled`; it never reports enforcement.
+The presence of `samples/expected/` selects the first profile, so a missing
+sample hook is a failure in that profile rather than a way to opt out. A
+checkout with the old copied or shared guard is classified as `legacy-copied`
+or `legacy-shared` and reports the migration command.
+
+An unavailable launcher, missing or corrupt cache, release-lock mismatch,
+missing gate, or changed owned wiring is never healthy. A caller that cannot
+start the launcher must treat that as unavailable, for example:
+
+```bash
+if command -v quality-runtime >/dev/null 2>&1; then
+  quality-runtime diagnose --root "$PWD" --json
+else
+  echo 'quality-runtime is unavailable; diagnosis was not performed' >&2
+  exit 2
+fi
+```
+
+The diagnosis does not run the declared gate, write settings, receipts,
+ledgers, locks or caches, and does not fetch dependencies. The existing
+`prepare` operation remains the explicit cache writer.

@@ -43,6 +43,232 @@ class RuntimeError_(Exception):
     """A user-fixable lock or cache problem."""
 
 
+def _check(checks: list[dict[str, str]], ident: str, status: str, detail: str) -> None:
+    """Append one stable, human-readable diagnosis result."""
+    checks.append({"id": ident, "status": status, "detail": detail})
+
+
+def _settings(path: Path) -> dict[str, object]:
+    value = _json(path)
+    if not isinstance(value, dict):
+        raise RuntimeError_(f"{path} must contain a JSON object")
+    return value
+
+
+def _hook_commands(settings: dict[str, object], event: str) -> list[tuple[str | None, str]]:
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict):
+        return []
+    groups = hooks.get(event)
+    if not isinstance(groups, list):
+        return []
+    found: list[tuple[str | None, str]] = []
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        matcher = group.get("matcher")
+        matcher = matcher if isinstance(matcher, str) else None
+        entries = group.get("hooks")
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if isinstance(entry, dict) and isinstance(entry.get("command"), str):
+                found.append((matcher, entry["command"]))
+    return found
+
+
+def _owned_command(settings: dict[str, object], event: str, name: str,
+                   matcher: str | None) -> str | None:
+    """Find a runtime command only when its matcher and root contract agree."""
+    for actual_matcher, command in _hook_commands(settings, event):
+        if actual_matcher != matcher or not re.search(rf"(?<![A-Za-z0-9_-]){re.escape(name)}(?![A-Za-z0-9_-])", command):
+            continue
+        # A consumer may have an unrelated hook in the same matcher group.
+        # Ownership is the versioned launcher's name plus the project-root
+        # argument, rather than a matcher or a guard word alone.
+        if "quality-runtime" not in command or '--root "${CLAUDE_PROJECT_DIR}"' not in command:
+            continue
+        return command
+    return None
+
+
+def _launcher_ok(command: str) -> tuple[bool, str]:
+    """Check a command's external launcher without running it."""
+    if '"$HOME/.local/bin/quality-runtime"' in command:
+        path = Path.home() / ".local" / "bin" / "quality-runtime"
+        return path.is_file() and os.access(path, os.X_OK), str(path)
+    # Migration fixtures and explicit installs use `python3 /path/...py`.
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False, "the hook command is not valid shell syntax"
+    candidates = [Path(token).expanduser() for token in tokens
+                  if token.endswith("quality-runtime.py")]
+    if candidates:
+        path = candidates[0]
+        return path.is_file(), str(path)
+    return False, "the hook does not name a supported quality-runtime launcher"
+
+
+def _legacy_profile(root: Path, settings: dict[str, object] | None) -> str | None:
+    directory = root / ".claude" / "agent-guard"
+    if not directory.is_dir() or directory.is_symlink():
+        return None
+    if (directory / "shim.py").is_file():
+        return "legacy-shared"
+    if any((directory / name).is_file() for name in SCRIPTS):
+        return "legacy-copied"
+    return None
+
+
+def diagnose(root: Path, explicit_cache: str | None = None) -> dict[str, object]:
+    """Read-only diagnosis of one Adopter checkout's guard installation.
+
+    This deliberately compares only entries owned by the baseline.  Other
+    hooks and permission rules are a consumer's policy and remain untouched.
+    No gate, hook, cache writer, network operation, or subprocess is called.
+    """
+    root = root.resolve()
+    checks: list[dict[str, str]] = []
+    lock_path = root / LOCK_NAME
+    settings_path = root / ".claude" / "settings.json"
+    lock_exists = lock_path.is_file()
+    settings: dict[str, object] | None = None
+    try:
+        settings = _settings(settings_path)
+    except RuntimeError_ as exc:
+        _check(checks, "settings-json", "fail", str(exc))
+
+    if not lock_exists:
+        profile = _legacy_profile(root, settings)
+        if profile:
+            return {
+                "schema": 1, "status": profile, "healthy": False,
+                "installation_profile": profile, "release": None,
+                "configured_gate": None, "checks": checks,
+                "live_enforcement": "unverified", "host_settings": "unverified",
+                "migration": "python3 scripts/quality-runtime-migrate.py --target <checkout> --version V --commit SHA",
+            }
+        _check(checks, "release-lock", "fail",
+               f"{lock_path} is missing; this checkout has no versioned runtime lock")
+        report = {
+            "schema": 1, "status": "unavailable", "healthy": False,
+            "installation_profile": "unconfigured", "release": None,
+            "configured_gate": None, "checks": checks,
+            "live_enforcement": "unverified", "host_settings": "unverified",
+            "migration": "install and prepare the versioned runtime, then run diagnose again",
+        }
+        return report
+
+    try:
+        lock = read_lock(root, require_guard=False)
+    except RuntimeError_ as exc:
+        _check(checks, "release-lock", "fail", str(exc))
+        return {
+            "schema": 1, "status": "broken", "healthy": False,
+            "installation_profile": "invalid-lock", "release": None,
+            "configured_gate": None, "checks": checks,
+            "live_enforcement": "unverified", "host_settings": "unverified",
+            "migration": "repair .claude/quality-runtime.json with a pinned release",
+        }
+
+    release = {"source": lock["source"], "version": lock["version"], "commit": lock["commit"]}
+    if lock["guard_enabled"] is not True:
+        _check(checks, "guard-enabled", "skip", "agent guard is explicitly disabled for this profile")
+        _check(checks, "release-lock", "pass", f"pinned {lock['version']} ({lock['commit']})")
+        return {
+            "schema": 1, "status": "not-enabled", "healthy": True,
+            "installation_profile": "disabled", "release": release,
+            "configured_gate": None, "checks": checks,
+            "live_enforcement": "unverified", "host_settings": "unverified",
+            "migration": "enable the guard by migrating without --guard-disabled",
+        }
+
+    _check(checks, "release-lock", "pass", f"pinned {lock['version']} ({lock['commit']})")
+    try:
+        location = validate_cache(root, lock, explicit_cache)
+    except RuntimeError_ as exc:
+        _check(checks, "runtime-cache", "fail", str(exc))
+        location = None
+    else:
+        _check(checks, "runtime-cache", "pass", f"validated immutable cache at {location}")
+
+    expected_samples = (root / "samples" / "expected").is_dir()
+    profile = "versioned-with-samples" if expected_samples else "versioned-without-samples"
+    gate_value: str | None = None
+    gate_path = root / ".claude" / "agent-guard.json"
+    try:
+        gate_data = _json(gate_path)
+        if isinstance(gate_data, dict) and isinstance(gate_data.get("gate_command"), str) and gate_data["gate_command"].strip():
+            gate_value = gate_data["gate_command"]
+            _check(checks, "configured-gate", "pass", f"declared gate: {gate_value}")
+        else:
+            _check(checks, "configured-gate", "fail", f"{gate_path} has no non-empty gate_command")
+    except RuntimeError_ as exc:
+        _check(checks, "configured-gate", "fail", str(exc))
+
+    required = [("hook-no-verify", "PreToolUse", "Bash", "no-verify-guard"),
+                ("hook-stop-gate", "Stop", None, "stop-gate")]
+    if expected_samples:
+        required.insert(0, ("hook-sample-guard", "PreToolUse", "Edit|Write|MultiEdit", "sample-guard"))
+    for ident, event, matcher, name in required:
+        command = _owned_command(settings or {}, event, name, matcher)
+        if command is None:
+            _check(checks, ident, "fail",
+                   f"required {event} hook for {name} with matcher {matcher or '<none>'} is missing or changed")
+            continue
+        _check(checks, ident, "pass", f"{event} {matcher or '<none>'} runs {name}")
+        launcher_good, launcher_detail = _launcher_ok(command)
+        launcher_id = "launcher" if ident == "hook-stop-gate" else None
+        if launcher_id and not launcher_good:
+            _check(checks, launcher_id, "fail", f"launcher is unavailable: {launcher_detail}")
+
+    # A samples profile is the only one that owns this rule.  Absence is an
+    # intentional profile choice, not a wiring failure.
+    if expected_samples:
+        _check(checks, "sample-protection", "pass", "samples/expected is protected by the owned sample hook and deny rule")
+    else:
+        _check(checks, "sample-protection", "skip", "profile has no samples/expected; sample protection is not applicable")
+
+    deny = ((settings or {}).get("permissions") or {}) if isinstance((settings or {}).get("permissions"), dict) else {}
+    deny_rules = deny.get("deny", []) if isinstance(deny, dict) else []
+    baseline_deny = ["Edit(/.claude/agent-guard-receipt.json)"]
+    if expected_samples:
+        baseline_deny.append("Edit(/samples/expected/**)")
+    for rule in baseline_deny:
+        if isinstance(deny_rules, list) and rule in deny_rules:
+            _check(checks, "deny-" + re.sub(r"[^a-z]+", "-", rule.lower()).strip("-"), "pass", f"owned deny rule present: {rule}")
+        else:
+            _check(checks, "deny-rules", "fail", f"required deny rule is missing: {rule}")
+
+    failed = [c for c in checks if c["status"] == "fail"]
+    return {
+        "schema": 1, "status": "broken" if failed else "ok", "healthy": not failed,
+        "installation_profile": profile, "release": release,
+        "configured_gate": gate_value, "checks": checks,
+        "live_enforcement": "unverified", "host_settings": "unverified",
+        "migration": "python3 scripts/quality-runtime-migrate.py --target <checkout> --version V --commit SHA",
+    }
+
+
+def print_diagnosis(report: dict[str, object], as_json: bool) -> int:
+    if as_json:
+        print(json.dumps(report, indent=2, sort_keys=True) + "\n", end="")
+    else:
+        print(f"quality-runtime: {report['status']} ({report['installation_profile']})")
+        release = report.get("release")
+        if isinstance(release, dict):
+            print(f"release: {release['version']} @ {release['commit']}")
+        print(f"configured gate: {report.get('configured_gate') or 'not declared'}")
+        print(f"live enforcement: {report['live_enforcement']}")
+        print(f"host settings: {report['host_settings']}")
+        for check in report["checks"]:
+            print(f"{check['status']}: {check['id']}: {check['detail']}")
+        if report.get("migration"):
+            print(f"migration: {report['migration']}")
+    return 0 if report["healthy"] or str(report["status"]).startswith("legacy-") else 1
+
+
 def cache_root(explicit: str | None = None) -> Path:
     if explicit:
         return Path(explicit).expanduser().resolve()
@@ -375,6 +601,27 @@ def main(argv: list[str]) -> int:
         location = validate_cache(Path(root).resolve(), lock, cache)
         print(f"ok {lock['version']} {lock['commit']} {location}")
         return 0
+
+    if command == "diagnose":
+        root: str | None = None
+        cache: str | None = None
+        as_json = False
+        i = 0
+        while i < len(args):
+            if args[i] in ("--root", "--cache-root") and i + 1 < len(args):
+                if args[i] == "--root":
+                    root = args[i + 1]
+                else:
+                    cache = args[i + 1]
+                i += 2
+            elif args[i] in ("--json", "--format=json"):
+                as_json = True
+                i += 1
+            else:
+                raise RuntimeError_(f"unknown diagnose argument {args[i]!r}")
+        root_path = Path(root or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
+        report = diagnose(root_path, cache)
+        return print_diagnosis(report, as_json)
 
     root: str | None = None; cache: str | None = None; remaining: list[str] = []
     i = 0
