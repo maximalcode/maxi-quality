@@ -286,6 +286,121 @@ def main() -> int:
         (target_b / ".claude" / "agent-guard.json").write_text(
             '{"gate_command":"true"}\n', encoding="utf-8")
 
+        # Project-level hook disabling invalidates an otherwise complete
+        # installation.  The host setting is part of the owned wiring
+        # contract, so a static pass must not claim this guard is healthy.
+        disabled_hooks = json.loads((target_b / ".claude" / "settings.json").read_text())
+        disabled_hooks["disableAllHooks"] = True
+        (target_b / ".claude" / "settings.json").write_text(
+            json.dumps(disabled_hooks), encoding="utf-8")
+        hooks_disabled = call(str(RUNTIME), "diagnose", "--root", str(target_b),
+                              "--cache-root", str(cache), "--json")
+        assert hooks_disabled.returncode != 0
+        assert any(c["id"] == "hooks-enabled" and c["status"] == "fail"
+                   for c in json.loads(hooks_disabled.stdout)["checks"])
+        disabled_hooks["disableAllHooks"] = False
+        (target_b / ".claude" / "settings.json").write_text(
+            json.dumps(disabled_hooks), encoding="utf-8")
+        restored = call(str(MIGRATE), "--target", str(target_b), "--version", "v1.1.0",
+                        "--commit", previous, "--launcher", str(RUNTIME))
+        assert restored.returncode == 0, restored.stderr
+
+        # Hook execution metadata is part of the contract.  Stop decisions
+        # cannot be enforced by an asynchronous hook.
+        async_stop = json.loads((target_b / ".claude" / "settings.json").read_text())
+        for group in async_stop["hooks"]["Stop"]:
+            for entry in group["hooks"]:
+                if entry.get("command"):
+                    entry["async"] = True
+        (target_b / ".claude" / "settings.json").write_text(
+            json.dumps(async_stop), encoding="utf-8")
+        async_report = call(str(RUNTIME), "diagnose", "--root", str(target_b),
+                            "--cache-root", str(cache), "--json")
+        assert async_report.returncode != 0
+        assert any(c["id"] == "hook-execution-mode" and c["status"] == "fail"
+                   for c in json.loads(async_report.stdout)["checks"])
+        restored = call(str(MIGRATE), "--target", str(target_b), "--version", "v1.1.0",
+                        "--commit", previous, "--launcher", str(RUNTIME))
+        assert restored.returncode == 0, restored.stderr
+
+        # A comment can hide every required invocation while leaving all of
+        # the expected words in the JSON.  Diagnosis must parse the executable
+        # branch rather than search for launcher and guard substrings.
+        commented = json.loads((target_b / ".claude" / "settings.json").read_text())
+        for groups in commented["hooks"].values():
+            for group in groups:
+                for entry in group.get("hooks", []):
+                    if isinstance(entry, dict) and "quality-runtime" in entry.get("command", ""):
+                        entry["command"] = "true # " + entry["command"]
+        (target_b / ".claude" / "settings.json").write_text(
+            json.dumps(commented), encoding="utf-8")
+        commented_report = call(str(RUNTIME), "diagnose", "--root", str(target_b),
+                                "--cache-root", str(cache), "--json")
+        assert commented_report.returncode != 0
+        commented_checks = json.loads(commented_report.stdout)["checks"]
+        assert any(check["status"] == "fail" and check["id"].startswith("hook-")
+                   for check in commented_checks)
+        restored = call(str(MIGRATE), "--target", str(target_b), "--version", "v1.1.0",
+                        "--commit", previous, "--launcher", str(RUNTIME))
+        assert restored.returncode == 0, restored.stderr
+
+        # An echo wrapper only prints the required command and never invokes
+        # it.  This is a changed owned hook even when its text is otherwise
+        # plausible.
+        echoed = json.loads((target_b / ".claude" / "settings.json").read_text())
+        echoed["hooks"]["Stop"][0]["hooks"][0]["command"] = (
+            "echo python3 " + str(RUNTIME) +
+            ' stop-gate --root "${CLAUDE_PROJECT_DIR}"'
+        )
+        (target_b / ".claude" / "settings.json").write_text(
+            json.dumps(echoed), encoding="utf-8")
+        echoed_report = call(str(RUNTIME), "diagnose", "--root", str(target_b),
+                             "--cache-root", str(cache), "--json")
+        assert echoed_report.returncode != 0
+        assert any(c["id"] == "hook-stop-gate" and c["status"] == "fail"
+                   for c in json.loads(echoed_report.stdout)["checks"])
+        restored = call(str(MIGRATE), "--target", str(target_b), "--version", "v1.1.0",
+                        "--commit", previous, "--launcher", str(RUNTIME))
+        assert restored.returncode == 0, restored.stderr
+
+        # Every owned hook needs a usable launcher.  A missing Bash launcher
+        # must fail even when the Stop launcher is still present.
+        missing_bash = json.loads((target_b / ".claude" / "settings.json").read_text())
+        for group in missing_bash["hooks"]["PreToolUse"]:
+            if group.get("matcher") == "Bash":
+                group["hooks"][0]["command"] = (
+                    "if [ -f /definitely-missing/quality-runtime.py ]; then python3 "
+                    "/definitely-missing/quality-runtime.py no-verify-guard --root "
+                    '"${CLAUDE_PROJECT_DIR}"; fi'
+                )
+        (target_b / ".claude" / "settings.json").write_text(
+            json.dumps(missing_bash), encoding="utf-8")
+        missing_bash_report = call(str(RUNTIME), "diagnose", "--root", str(target_b),
+                                   "--cache-root", str(cache), "--json")
+        assert missing_bash_report.returncode != 0
+        assert any(c["id"] == "launcher" and c["status"] == "fail"
+                   and "definitely-missing" in c["detail"]
+                   for c in json.loads(missing_bash_report.stdout)["checks"])
+        restored = call(str(MIGRATE), "--target", str(target_b), "--version", "v1.1.0",
+                        "--commit", previous, "--launcher", str(RUNTIME))
+        assert restored.returncode == 0, restored.stderr
+
+        # A custom executable installed into an explicit bin directory is a
+        # supported launcher spelling and must diagnose through that entrypoint.
+        custom_bin = root / "custom-bin"
+        installed = call(str(RUNTIME), "install", "--source", str(source),
+                         "--commit", previous, "--install-root", str(custom_bin))
+        assert installed.returncode == 0, installed.stderr
+        custom_launcher = custom_bin / "quality-runtime"
+        migrated_custom = call(str(MIGRATE), "--target", str(target_b),
+                               "--version", "v1.1.0", "--commit", previous,
+                               "--launcher", str(custom_launcher))
+        assert migrated_custom.returncode == 0, migrated_custom.stderr
+        custom_report = call(str(custom_launcher), "diagnose", "--root", str(target_b),
+                             "--cache-root", str(cache), "--json")
+        assert custom_report.returncode == 0, custom_report.stderr + custom_report.stdout
+        assert json.loads(custom_report.stdout)["healthy"] is True
+
         # An explicitly disabled profile is reported as not enabled, never as
         # enforced.  Migration itself is the only writer in this fixture.
         target_disabled = root / "project-disabled"

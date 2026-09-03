@@ -55,14 +55,14 @@ def _settings(path: Path) -> dict[str, object]:
     return value
 
 
-def _hook_commands(settings: dict[str, object], event: str) -> list[tuple[str | None, str]]:
+def _hook_entries(settings: dict[str, object], event: str) -> list[tuple[str | None, dict[str, object]]]:
     hooks = settings.get("hooks")
     if not isinstance(hooks, dict):
         return []
     groups = hooks.get(event)
     if not isinstance(groups, list):
         return []
-    found: list[tuple[str | None, str]] = []
+    found: list[tuple[str | None, dict[str, object]]] = []
     for group in groups:
         if not isinstance(group, dict):
             continue
@@ -72,42 +72,86 @@ def _hook_commands(settings: dict[str, object], event: str) -> list[tuple[str | 
         if not isinstance(entries, list):
             continue
         for entry in entries:
-            if isinstance(entry, dict) and isinstance(entry.get("command"), str):
-                found.append((matcher, entry["command"]))
+            if isinstance(entry, dict):
+                found.append((matcher, entry))
     return found
 
 
+def _runtime_invocation(command: str, name: str) -> tuple[str, bool] | None:
+    """Extract the executable branch of a generated runtime hook command.
+
+    ``shlex`` with comments enabled makes a commented-out command disappear
+    from the token stream.  Looking only at the branch after ``then`` also
+    prevents the fallback diagnostic or an ``echo`` wrapper from being
+    mistaken for the invocation that the host will execute.
+    """
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        lexer.commenters = "#"
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    try:
+        then = tokens.index("then")
+    except ValueError:
+        return None
+    branch = tokens[then + 1:]
+    for marker in (";", "else", "fi"):
+        try:
+            branch = branch[:branch.index(marker)]
+        except ValueError:
+            continue
+    if not branch:
+        return None
+
+    via_python = branch[0] == "python3"
+    launcher_index = 1 if via_python else 0
+    if len(branch) <= launcher_index:
+        return None
+    launcher = branch[launcher_index]
+    action_index = launcher_index + 1
+    if len(branch) != action_index + 3 or branch[action_index] != name:
+        return None
+    if branch[action_index + 1:action_index + 3] != ["--root", "${CLAUDE_PROJECT_DIR}"]:
+        return None
+    if via_python and not launcher.endswith("quality-runtime.py"):
+        return None
+    return launcher, via_python
+
+
 def _owned_command(settings: dict[str, object], event: str, name: str,
-                   matcher: str | None) -> str | None:
-    """Find a runtime command only when its matcher and root contract agree."""
-    for actual_matcher, command in _hook_commands(settings, event):
-        if actual_matcher != matcher or not re.search(rf"(?<![A-Za-z0-9_-]){re.escape(name)}(?![A-Za-z0-9_-])", command):
+                   matcher: str | None) -> tuple[dict[str, object], str, bool] | None:
+    """Find a runtime entry only when its matcher and invocation agree."""
+    for actual_matcher, entry in _hook_entries(settings, event):
+        command = entry.get("command")
+        if (actual_matcher != matcher or entry.get("type") != "command"
+                or not isinstance(command, str)):
             continue
-        # A consumer may have an unrelated hook in the same matcher group.
-        # Ownership is the versioned launcher's name plus the project-root
-        # argument, rather than a matcher or a guard word alone.
-        if "quality-runtime" not in command or '--root "${CLAUDE_PROJECT_DIR}"' not in command:
+        invocation = _runtime_invocation(command, name)
+        if invocation is None:
             continue
-        return command
+        launcher, via_python = invocation
+        return entry, launcher, via_python
     return None
 
 
-def _launcher_ok(command: str) -> tuple[bool, str]:
-    """Check a command's external launcher without running it."""
-    if '"$HOME/.local/bin/quality-runtime"' in command:
+def _launcher_ok(launcher: str, via_python: bool, root: Path) -> tuple[bool, str]:
+    """Check an extracted external launcher without running it."""
+    if launcher == "$HOME/.local/bin/quality-runtime":
         path = Path.home() / ".local" / "bin" / "quality-runtime"
         return path.is_file() and os.access(path, os.X_OK), str(path)
-    # Migration fixtures and explicit installs use `python3 /path/...py`.
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        return False, "the hook command is not valid shell syntax"
-    candidates = [Path(token).expanduser() for token in tokens
-                  if token.endswith("quality-runtime.py")]
-    if candidates:
-        path = candidates[0]
+    path = Path(launcher).expanduser()
+    if not path.is_absolute():
+        path = root / path
+    if via_python:
         return path.is_file(), str(path)
-    return False, "the hook does not name a supported quality-runtime launcher"
+    if "/" in launcher or launcher.startswith("."):
+        return path.is_file() and os.access(path, os.X_OK), str(path)
+    resolved = shutil.which(launcher)
+    if resolved:
+        return True, resolved
+    return False, f"the hook launcher is not available: {launcher}"
 
 
 def _legacy_profile(root: Path, settings: dict[str, object] | None) -> str | None:
@@ -193,6 +237,12 @@ def diagnose(root: Path, explicit_cache: str | None = None) -> dict[str, object]
     else:
         _check(checks, "runtime-cache", "pass", f"validated immutable cache at {location}")
 
+    if settings is not None and settings.get("disableAllHooks") is True:
+        _check(checks, "hooks-enabled", "fail",
+               "project settings disable all hooks; the agent guard cannot enforce its decisions")
+    else:
+        _check(checks, "hooks-enabled", "pass", "project settings leave hooks enabled")
+
     expected_samples = (root / "samples" / "expected").is_dir()
     profile = "versioned-with-samples" if expected_samples else "versioned-without-samples"
     gate_value: str | None = None
@@ -212,16 +262,19 @@ def diagnose(root: Path, explicit_cache: str | None = None) -> dict[str, object]
     if expected_samples:
         required.insert(0, ("hook-sample-guard", "PreToolUse", "Edit|Write|MultiEdit", "sample-guard"))
     for ident, event, matcher, name in required:
-        command = _owned_command(settings or {}, event, name, matcher)
-        if command is None:
+        owned = _owned_command(settings or {}, event, name, matcher)
+        if owned is None:
             _check(checks, ident, "fail",
                    f"required {event} hook for {name} with matcher {matcher or '<none>'} is missing or changed")
             continue
+        entry, launcher, via_python = owned
         _check(checks, ident, "pass", f"{event} {matcher or '<none>'} runs {name}")
-        launcher_good, launcher_detail = _launcher_ok(command)
-        launcher_id = "launcher" if ident == "hook-stop-gate" else None
-        if launcher_id and not launcher_good:
-            _check(checks, launcher_id, "fail", f"launcher is unavailable: {launcher_detail}")
+        if entry.get("async") is True:
+            _check(checks, "hook-execution-mode", "fail",
+                   f"{event} {matcher or '<none>'} hook is asynchronous and cannot enforce guard decisions")
+        launcher_good, launcher_detail = _launcher_ok(launcher, via_python, root)
+        if not launcher_good:
+            _check(checks, "launcher", "fail", f"launcher is unavailable: {launcher_detail}")
 
     # A samples profile is the only one that owns this rule.  Absence is an
     # intentional profile choice, not a wiring failure.

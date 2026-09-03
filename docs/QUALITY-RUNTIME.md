@@ -77,12 +77,17 @@ quality-runtime diagnose --root /path/to/project --json
 ```
 
 `diagnose` is read-only. It validates the release lock and immutable cache,
-checks the configured `gate_command`, and compares the owned hook matchers,
-launcher command and `permissions.deny` entries with the selected installation
-profile. Unrelated hooks and permission entries are ignored. The JSON result
-has stable keys (`schema`, `status`, `healthy`, `installation_profile`,
-`release`, `configured_gate`, `checks`, `live_enforcement`, `host_settings`,
-and `migration`) and each check names its own pass, skip, or failure.
+checks the configured `gate_command` and that project settings have not
+disabled hooks, and compares the owned hook matchers, executable branch,
+execution mode, launcher availability and `permissions.deny` entries with the
+selected installation profile. Unrelated hooks and permission entries are
+ignored. The JSON result has stable keys (`schema`, `status`, `healthy`,
+`installation_profile`, `release`, `configured_gate`, `checks`,
+`live_enforcement`, `host_settings`, and `migration`) and each check names its
+own pass, skip, or failure. Commands are checked as shell invocations, so a
+comment or an `echo` containing the expected launcher text is reported as
+changed wiring. An asynchronous owned hook is also reported as broken because
+it cannot enforce a guard decision.
 `live_enforcement` and `host_settings` are `unverified`: a static diagnosis
 cannot prove that an agent host loaded or executed a hook during a real
 session, or infer host overrides from the project files.
