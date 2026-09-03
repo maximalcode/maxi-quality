@@ -55,11 +55,11 @@ the pre-tool guards remain scoped to their policy decisions so ordinary shell
 and edit actions remain repairable.
 
 The runtime validates the lock, fixed source, release version, full commit
-shape, fixed script allowlist, and every cached file hash before execution. It
-does not authenticate a Git repository or protect against a user who can
-modify both the lock and cache. The cache is a distribution convenience, not a
-security boundary; the repository's CI and release process remain the source
-of release authenticity.
+shape, fixed script allowlist, every cached file hash, and the pinned launcher
+source digest before execution. It does not authenticate a Git repository or
+protect against a user who can modify both the lock and cache. The cache is a
+distribution convenience, not a security boundary; the repository's CI and
+release process remain the source of release authenticity.
 
 Migration also preserves unrelated `.gitignore` entries and adds the recorder's
 receipt, temporary receipt and local event ledger. These records stay local to
@@ -86,8 +86,10 @@ ignored. The JSON result has stable keys (`schema`, `status`, `healthy`,
 `live_enforcement`, `host_settings`, and `migration`) and each check names its
 own pass, skip, or failure. Commands are checked as shell invocations, so a
 comment or an `echo` containing the expected launcher text is reported as
-changed wiring. An asynchronous owned hook is also reported as broken because
-it cannot enforce a guard decision.
+changed wiring. Shell separators and alternate quoting of the project root are
+also rejected because they change what the host executes. An asynchronous
+owned hook is also reported as broken because it cannot enforce a guard
+decision.
 `live_enforcement` and `host_settings` are `unverified`: a static diagnosis
 cannot prove that an agent host loaded or executed a hook during a real
 session, or infer host overrides from the project files.

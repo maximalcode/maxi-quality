@@ -27,7 +27,7 @@ from pathlib import Path
 SOURCE = "maximalcode/maxi-quality"
 SCHEMA = 1
 LOCK_NAME = ".claude/quality-runtime.json"
-FORMAT = 1
+FORMAT = 2
 SCRIPTS = (
     "guard.py",
     "stop-gate.py",
@@ -133,6 +133,17 @@ def _runtime_invocation(command: str, name: str) -> tuple[str, bool] | None:
     prefix such as ``exit 0``, or a command merely mentioning ``then`` from
     being treated as a guard.
     """
+    # Newlines are shell command separators, not spaces.  The migration
+    # grammar never emits one, and accepting one here can turn a valid-looking
+    # argv sequence into two commands (the second of which is not guarded).
+    # Keep this check on the original source before shlex normalizes it.
+    if "\n" in command or "\r" in command:
+        return None
+    # The project root is deliberately a double-quoted shell expansion in the
+    # generated command.  shlex would make a single-quoted literal look like
+    # the same token even though the shell would pass the wrong root.
+    if '--root "${CLAUDE_PROJECT_DIR}"' not in command:
+        return None
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
         lexer.whitespace_split = True
@@ -194,48 +205,38 @@ def _owned_command(settings: dict[str, object], event: str, name: str,
     return None
 
 
-def _launcher_identity(path: Path) -> bool:
-    """Check the installed launcher identity from source, without executing it."""
+def _launcher_identity(path: Path, expected_digest: str) -> bool:
+    """Check the launcher against the pinned runtime source, without executing it."""
     try:
         content = path.read_bytes()
-        source = content.decode("utf-8")
-        tree = ast.parse(source, filename=str(path), mode="exec")
-    except (OSError, UnicodeDecodeError, SyntaxError):
+    except OSError:
         return False
-    source_value = None
-    definitions: set[str] = set()
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            definitions.add(node.name)
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id == "SOURCE":
-                    try:
-                        source_value = ast.literal_eval(node.value)
-                    except (ValueError, TypeError):
-                        source_value = None
-    return (source_value == SOURCE
-            and {"diagnose", "dispatch", "main", "validate_cache"} <= definitions)
+    return hashlib.sha256(content).hexdigest() == expected_digest
 
 
-def _launcher_ok(launcher: str, via_python: bool, root: Path) -> tuple[bool, str]:
+def _launcher_ok(launcher: str, via_python: bool, root: Path,
+                 expected_digest: str | None) -> tuple[bool, str]:
     """Check an extracted external launcher without running it."""
+    if expected_digest is None:
+        return False, "the pinned cache has no trusted launcher identity"
     if launcher == "$HOME/.local/bin/quality-runtime":
         path = Path.home() / ".local" / "bin" / "quality-runtime"
-        return ((path.is_file() and os.access(path, os.X_OK)
-                 and _launcher_identity(path)), str(path))
+        if not path.is_file() or not os.access(path, os.X_OK):
+            return False, str(path)
+        return _launcher_identity(path, expected_digest), str(path)
     path = Path(launcher).expanduser()
     if not path.is_absolute():
         path = root / path
     if via_python:
-        return (path.is_file() and _launcher_identity(path), str(path))
+        return (path.is_file() and _launcher_identity(path, expected_digest), str(path))
     if "/" in launcher or launcher.startswith("."):
-        return ((path.is_file() and os.access(path, os.X_OK)
-                 and _launcher_identity(path)), str(path))
+        if not path.is_file() or not os.access(path, os.X_OK):
+            return False, str(path)
+        return _launcher_identity(path, expected_digest), str(path)
     resolved = shutil.which(launcher)
     if resolved:
         resolved_path = Path(resolved)
-        return _launcher_identity(resolved_path), resolved
+        return _launcher_identity(resolved_path, expected_digest), resolved
     return False, f"the hook launcher is not available: {launcher}"
 
 
@@ -321,6 +322,12 @@ def diagnose(root: Path, explicit_cache: str | None = None) -> dict[str, object]
         location = None
     else:
         _check(checks, "runtime-cache", "pass", f"validated immutable cache at {location}")
+    launcher_digest: str | None = None
+    if location is not None:
+        manifest = _manifest(location / "manifest.json", lock)
+        candidate_digest = manifest.get("launcher_sha256")
+        if isinstance(candidate_digest, str):
+            launcher_digest = candidate_digest
 
     if settings is not None and settings.get("disableAllHooks") is True:
         _check(checks, "hooks-enabled", "fail",
@@ -357,7 +364,8 @@ def diagnose(root: Path, explicit_cache: str | None = None) -> dict[str, object]
         if entry.get("async") is True:
             _check(checks, "hook-execution-mode", "fail",
                    f"{event} {matcher or '<none>'} hook is asynchronous and cannot enforce guard decisions")
-        launcher_good, launcher_detail = _launcher_ok(launcher, via_python, root)
+        launcher_good, launcher_detail = _launcher_ok(
+            launcher, via_python, root, launcher_digest)
         if not launcher_good:
             _check(checks, "launcher", "fail", f"launcher is unavailable: {launcher_detail}")
 
@@ -454,7 +462,7 @@ def _manifest(path: Path, lock: dict[str, object]) -> dict[str, object]:
     value = _json(path)
     if not isinstance(value, dict):
         raise RuntimeError_(f"cache manifest {path} must be a JSON object")
-    if set(value) != {"schema", "format", "source", "version", "commit", "files"}:
+    if set(value) != {"schema", "format", "source", "version", "commit", "files", "launcher_sha256"}:
         raise RuntimeError_(f"cache manifest {path} has unexpected fields")
     if (type(value["schema"]) is not int or value["schema"] != SCHEMA
             or type(value["format"]) is not int or value["format"] != FORMAT
@@ -468,6 +476,9 @@ def _manifest(path: Path, lock: dict[str, object]) -> dict[str, object]:
     for name, digest in files.items():
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise RuntimeError_(f"cache manifest {path} has an invalid digest for {name}")
+    launcher_digest = value["launcher_sha256"]
+    if not isinstance(launcher_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", launcher_digest):
+        raise RuntimeError_(f"cache manifest {path} has an invalid launcher digest")
     return value
 
 
@@ -553,6 +564,8 @@ def prepare(source: Path, version: str, commit: str, explicit_cache: str | None,
         )
     for name in SCRIPTS:
         _git(source, "cat-file", "-e", f"{commit}:scripts/agent-guard/{name}")
+    launcher_source = _git(source, "show", f"{commit}:scripts/quality-runtime.py")
+    launcher_digest = hashlib.sha256(launcher_source).hexdigest()
 
     destination = cache_root(explicit_cache) / commit
     lock = {"schema": SCHEMA, "source": SOURCE, "version": version, "commit": commit, "guard_enabled": True}
@@ -564,6 +577,12 @@ def prepare(source: Path, version: str, commit: str, explicit_cache: str | None,
                 source_blob = _git(source, "show", f"{commit}:scripts/agent-guard/{name}")
                 if cached != source_blob:
                     raise RuntimeError_(f"cached {name} does not match the pinned Git object")
+            manifest = _json(destination / "manifest.json")
+            if (not isinstance(manifest, dict)
+                    or manifest.get("launcher_sha256") != hashlib.sha256(
+                        _git(source, "show", f"{commit}:scripts/quality-runtime.py")
+                    ).hexdigest()):
+                raise RuntimeError_("cached launcher identity does not match the pinned Git object")
             return destination
         except RuntimeError_:
             raise RuntimeError_(f"cache entry already exists but is invalid: {destination}")
@@ -582,7 +601,7 @@ def prepare(source: Path, version: str, commit: str, explicit_cache: str | None,
         (temp / "manifest.json").write_text(
             json.dumps(
                 {"schema": SCHEMA, "format": FORMAT, "source": SOURCE, "version": version,
-                 "commit": commit, "files": hashes},
+                 "commit": commit, "files": hashes, "launcher_sha256": launcher_digest},
                 indent=2, sort_keys=True,
             ) + "\n",
             encoding="utf-8",

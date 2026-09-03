@@ -446,6 +446,55 @@ def main() -> int:
         assert custom_report.returncode == 0, custom_report.stderr + custom_report.stdout
         assert json.loads(custom_report.stdout)["healthy"] is True
 
+        # Shell-significant newlines and single quotes must not be erased by
+        # diagnosis.  Both mutations leave plausible launcher words behind,
+        # but the shell either runs two commands or passes a literal root.
+        settings_path_b = target_b / ".claude" / "settings.json"
+        original_settings_b = settings_path_b.read_bytes()
+        for malformed_command in (
+            "python3 " + str(custom_launcher)
+            + '\nstop-gate --root "${CLAUDE_PROJECT_DIR}"',
+            "python3 " + str(custom_launcher)
+            + " stop-gate --root '${CLAUDE_PROJECT_DIR}'",
+        ):
+            malformed = json.loads(original_settings_b)
+            for group in malformed["hooks"]["Stop"]:
+                for entry in group.get("hooks", []):
+                    if isinstance(entry, dict) and entry.get("command"):
+                        entry["command"] = malformed_command
+            (target_b / ".claude" / "settings.json").write_text(
+                json.dumps(malformed), encoding="utf-8")
+            malformed_report = call(str(custom_launcher), "diagnose", "--root", str(target_b),
+                                    "--cache-root", str(cache), "--json")
+            assert malformed_report.returncode != 0
+            assert any(c["id"] == "hook-stop-gate" and c["status"] == "fail"
+                       for c in json.loads(malformed_report.stdout)["checks"])
+            settings_path_b.write_bytes(original_settings_b)
+
+        # A syntactically plausible copy that does not dispatch when invoked
+        # is not a trusted launcher.  Diagnosis must inspect identity without
+        # executing this candidate.
+        hollow_bin = root / "hollow-bin"
+        hollow_bin.mkdir()
+        hollow_launcher = hollow_bin / "quality-runtime"
+        hollow_source = custom_launcher.read_text(encoding="utf-8")
+        hollow_source = hollow_source.split("if __name__ == \"__main__\":", 1)[0]
+        hollow_launcher.write_text(hollow_source, encoding="utf-8")
+        hollow_launcher.chmod(0o755)
+        hollow_migrated = call(str(MIGRATE), "--target", str(target_b),
+                               "--version", "v1.1.0", "--commit", previous,
+                               "--launcher", str(hollow_launcher))
+        assert hollow_migrated.returncode == 0, hollow_migrated.stderr
+        hollow_report = call(str(custom_launcher), "diagnose", "--root", str(target_b),
+                             "--cache-root", str(cache), "--json")
+        assert hollow_report.returncode != 0
+        assert any(c["id"] == "launcher" and c["status"] == "fail"
+                   for c in json.loads(hollow_report.stdout)["checks"])
+        restored = call(str(MIGRATE), "--target", str(target_b),
+                        "--version", "v1.1.0", "--commit", previous,
+                        "--launcher", str(custom_launcher))
+        assert restored.returncode == 0, restored.stderr
+
         # An explicitly disabled profile is reported as not enabled, never as
         # enforced.  Migration itself is the only writer in this fixture.
         target_disabled = root / "project-disabled"
