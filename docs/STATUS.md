@@ -151,9 +151,15 @@ scripts/check-agent-contract.py  the agent contract is four files that a single
                           G10 (#178) is the same drift one file over: this repo's
                           own CLAUDE.md region against the fragment it was pasted
                           from, which nothing refreshes while #177 is open.
+                          G13 (#213) compares this repo's installed settings
+                          against the template: deny rules, hook events and
+                          enabled hooks. It does not inspect adopter installs
+                          or the host's effective settings.
                           It READS those numbers
                           and refuses to write them. `selftest` mutates a staged
-                          copy 25 ways and asserts each run names what moved
+                          copy 35 ways and asserts each run names what moved;
+                          two positive controls keep staging and harmless
+                          settings changes from becoming false failures
 scripts/editor-parity.py  the differ for the #121 parity run: a VS Code Problems
                           panel dumped as JSON ("Copy All"), diffed against the
                           manifest README §3 names for that sample. The observing

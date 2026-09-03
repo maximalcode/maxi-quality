@@ -393,8 +393,13 @@ script against some `command`; the matchers against the prose in both
 directions; the case counts in both READMEs against `cases/`; every mutation
 row, cited case, cited section and link against what exists; the deny array
 against the block quoted in §2 and the table in §5a; and every reference in §6
-against its own `as of <date>`. **It reads the numbers here and refuses to
-write them** — a checker that updates its own expectations agrees with itself
+against its own `as of <date>`. It also compares this repo's installed
+`.claude/settings.json` with the template: `permissions.deny` and each baseline
+hook event must agree as parsed JSON, and `disableAllHooks` must be absent or
+false (#213). Missing or invalid installed settings fail the check too. Object
+key order, whitespace and unrelated settings do not affect the result.
+**It reads the numbers here and refuses to write them** — a checker that
+updates its own expectations agrees with itself
 forever, which is the argument `check-expected.py` and `editor-parity.py
 --update` already make about their own corpora.
 
@@ -404,6 +409,11 @@ asserts the run names what moved. That runs in a second, so there is no reason
 to record it in prose the way the tables below have to be. What no mutation
 reaches is marked at the site, for the same reason the zero rows below are
 published rather than dropped.
+
+This installed-settings check covers this repository's committed project file.
+It does not inspect an Adopter's installation, user/local overrides, or the
+host's effective settings. The mutations prove detection of broken wiring on
+disk; they do not replace the live enforcement evidence in §5a.
 
 **The deny rules are the exception, and it is paid for rather than granted.** A
 `permissions.deny` rule cannot be exercised headlessly — there is no way to make
@@ -621,8 +631,9 @@ something the baseline itself did not.
 
 It runs from a **copy** under `.claude/agent-guard/`, not a symlink to
 `scripts/agent-guard/`, so this tree drifts exactly the way a consumer's will.
-`check-agent-contract.py` G9 is what notices; nothing else could, because all 64
-fixtures in `samples/agent-guard/` run the source.
+`check-agent-contract.py` G9 notices script drift, and G13 checks the installed
+settings against the template (#213). The fixtures in `samples/agent-guard/`
+run the source and cannot detect either kind of installed drift themselves.
 
 The gate is declared in `.claude/agent-guard.json` as `python3
 scripts/agent-guard/selftest.py && python3 scripts/check-agent-contract.py` —
