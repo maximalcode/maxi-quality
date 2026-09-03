@@ -363,6 +363,51 @@ def main() -> int:
                         "--commit", previous, "--launcher", str(RUNTIME))
         assert restored.returncode == 0, restored.stderr
 
+        # A complete-looking invocation is not owned when shell control flow
+        # makes its branch unreachable, or when the expected words only occur
+        # as an argument to another command.  Each mutation uses an existing
+        # launcher so this exercises parsing independently from availability.
+        control_flow_cases = (
+            "if false; then python3 " + str(RUNTIME)
+            + ' stop-gate --root "${CLAUDE_PROJECT_DIR}"; fi',
+            "exit 0; if [ -f /missing/path ]; then python3 " + str(RUNTIME)
+            + ' stop-gate --root "${CLAUDE_PROJECT_DIR}"; fi',
+            "echo then python3 " + str(RUNTIME)
+            + ' stop-gate --root "${CLAUDE_PROJECT_DIR}"',
+        )
+        for command in control_flow_cases:
+            control_flow = json.loads((target_b / ".claude" / "settings.json").read_text())
+            control_flow["hooks"]["Stop"][0]["hooks"][0]["command"] = command
+            (target_b / ".claude" / "settings.json").write_text(
+                json.dumps(control_flow), encoding="utf-8")
+            control_report = call(str(RUNTIME), "diagnose", "--root", str(target_b),
+                                  "--cache-root", str(cache), "--json")
+            assert control_report.returncode != 0
+            assert any(c["id"] == "hook-stop-gate" and c["status"] == "fail"
+                       for c in json.loads(control_report.stdout)["checks"])
+            restored = call(str(MIGRATE), "--target", str(target_b), "--version", "v1.1.0",
+                            "--commit", previous, "--launcher", str(RUNTIME))
+            assert restored.returncode == 0, restored.stderr
+
+        # An unrelated executable must not qualify as the runtime merely
+        # because the generated command shape points at it.  The check is
+        # static and therefore does not execute /usr/bin/true.
+        wrong_launcher = json.loads((target_b / ".claude" / "settings.json").read_text())
+        wrong_launcher["hooks"]["Stop"][0]["hooks"][0]["command"] = (
+            'if [ -f /usr/bin/true ]; then /usr/bin/true stop-gate --root '
+            '"${CLAUDE_PROJECT_DIR}"; fi'
+        )
+        (target_b / ".claude" / "settings.json").write_text(
+            json.dumps(wrong_launcher), encoding="utf-8")
+        wrong_launcher_report = call(str(RUNTIME), "diagnose", "--root", str(target_b),
+                                     "--cache-root", str(cache), "--json")
+        assert wrong_launcher_report.returncode != 0
+        assert any(c["id"] == "launcher" and c["status"] == "fail"
+                   for c in json.loads(wrong_launcher_report.stdout)["checks"])
+        restored = call(str(MIGRATE), "--target", str(target_b), "--version", "v1.1.0",
+                        "--commit", previous, "--launcher", str(RUNTIME))
+        assert restored.returncode == 0, restored.stderr
+
         # Every owned hook needs a usable launcher.  A missing Bash launcher
         # must fail even when the Stop launcher is still present.
         missing_bash = json.loads((target_b / ".claude" / "settings.json").read_text())

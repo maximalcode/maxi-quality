@@ -12,6 +12,7 @@ repositories may select different commits from the same cache.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -77,34 +78,37 @@ def _hook_entries(settings: dict[str, object], event: str) -> list[tuple[str | N
     return found
 
 
-def _runtime_invocation(command: str, name: str) -> tuple[str, bool] | None:
-    """Extract the executable branch of a generated runtime hook command.
+def _launcher_condition(launcher: str) -> list[str]:
+    """Return the condition emitted by ``quality-runtime-migrate.py``."""
+    if launcher == "$HOME/.local/bin/quality-runtime":
+        return ["[", "-x", launcher, "]"]
+    if "/" in launcher or launcher.startswith("."):
+        return ["[", "-f", launcher, "]"]
+    return ["command", "-v", launcher, ">", "/dev/null", "2", ">", "&", "1"]
 
-    ``shlex`` with comments enabled makes a commented-out command disappear
-    from the token stream.  Looking only at the branch after ``then`` also
-    prevents the fallback diagnostic or an ``echo`` wrapper from being
-    mistaken for the invocation that the host will execute.
-    """
+
+def _fallback_is_generated(branch: list[str], name: str) -> bool:
+    """Recognize the migration fallback without interpreting arbitrary shell."""
+    if len(branch) != 4 or branch[:2] != ["python3", "-c"] or branch[3] != name:
+        return False
+    code = branch[2]
     try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
-        lexer.whitespace_split = True
-        lexer.commenters = "#"
-        tokens = list(lexer)
-    except ValueError:
-        return None
-    try:
-        then = tokens.index("then")
-    except ValueError:
-        return None
-    branch = tokens[then + 1:]
-    for marker in (";", "else", "fi"):
-        try:
-            branch = branch[:branch.index(marker)]
-        except ValueError:
-            continue
+        ast.parse(code, mode="exec")
+    except SyntaxError:
+        return False
+    return all(marker in code for marker in (
+        "import json,re,sys",
+        "n=sys.argv[1]",
+        "quality-runtime launcher is unavailable; install it and prepare the pinned cache",
+        "json.loads(sys.stdin.read() or '{}')",
+        "json.dump(o,sys.stdout)",
+    ))
+
+
+def _invocation_branch(branch: list[str], name: str) -> tuple[str, bool] | None:
+    """Parse one exact runtime invocation from a shell command branch."""
     if not branch:
         return None
-
     via_python = branch[0] == "python3"
     launcher_index = 1 if via_python else 0
     if len(branch) <= launcher_index:
@@ -116,6 +120,60 @@ def _runtime_invocation(command: str, name: str) -> tuple[str, bool] | None:
     if branch[action_index + 1:action_index + 3] != ["--root", "${CLAUDE_PROJECT_DIR}"]:
         return None
     if via_python and not launcher.endswith("quality-runtime.py"):
+        return None
+    return launcher, via_python
+
+
+def _runtime_invocation(command: str, name: str) -> tuple[str, bool] | None:
+    """Extract a complete invocation emitted by ``quality-runtime-migrate.py``.
+
+    The hook is a small, fixed shell program.  Requiring either its complete
+    direct argv shape or its complete ``if/then/else/fi`` shape, and matching
+    the launcher check to its true branch, prevents an inert condition, a
+    prefix such as ``exit 0``, or a command merely mentioning ``then`` from
+    being treated as a guard.
+    """
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        lexer.commenters = "#"
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+    # A hand-written hook may use the direct form.  It is safe to recognize
+    # only the complete argv shape; wrappers and command substitutions remain
+    # outside the supported grammar.
+    if tokens[0] != "if":
+        return _invocation_branch(tokens, name)
+    try:
+        condition_end = tokens.index(";")
+        if tokens[condition_end + 1] != "then":
+            return None
+        then = condition_end + 1
+        true_end = tokens.index(";", then + 1)
+        tail = tokens[true_end + 1:]
+        if tail == ["fi"]:
+            else_start = false_end = None
+        else:
+            if not tail or tail[0] != "else":
+                return None
+            else_start = true_end + 1
+            false_end = tokens.index(";", else_start + 1)
+            if tokens[false_end + 1:] != ["fi"]:
+                return None
+    except (ValueError, IndexError):
+        return None
+
+    invocation = _invocation_branch(tokens[then + 1:true_end], name)
+    if invocation is None:
+        return None
+    launcher, via_python = invocation
+    if tokens[:condition_end] != ["if", *_launcher_condition(launcher)]:
+        return None
+    if (else_start is not None
+            and not _fallback_is_generated(tokens[else_start + 1:false_end], name)):
         return None
     return launcher, via_python
 
@@ -136,21 +194,48 @@ def _owned_command(settings: dict[str, object], event: str, name: str,
     return None
 
 
+def _launcher_identity(path: Path) -> bool:
+    """Check the installed launcher identity from source, without executing it."""
+    try:
+        content = path.read_bytes()
+        source = content.decode("utf-8")
+        tree = ast.parse(source, filename=str(path), mode="exec")
+    except (OSError, UnicodeDecodeError, SyntaxError):
+        return False
+    source_value = None
+    definitions: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            definitions.add(node.name)
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "SOURCE":
+                    try:
+                        source_value = ast.literal_eval(node.value)
+                    except (ValueError, TypeError):
+                        source_value = None
+    return (source_value == SOURCE
+            and {"diagnose", "dispatch", "main", "validate_cache"} <= definitions)
+
+
 def _launcher_ok(launcher: str, via_python: bool, root: Path) -> tuple[bool, str]:
     """Check an extracted external launcher without running it."""
     if launcher == "$HOME/.local/bin/quality-runtime":
         path = Path.home() / ".local" / "bin" / "quality-runtime"
-        return path.is_file() and os.access(path, os.X_OK), str(path)
+        return ((path.is_file() and os.access(path, os.X_OK)
+                 and _launcher_identity(path)), str(path))
     path = Path(launcher).expanduser()
     if not path.is_absolute():
         path = root / path
     if via_python:
-        return path.is_file(), str(path)
+        return (path.is_file() and _launcher_identity(path), str(path))
     if "/" in launcher or launcher.startswith("."):
-        return path.is_file() and os.access(path, os.X_OK), str(path)
+        return ((path.is_file() and os.access(path, os.X_OK)
+                 and _launcher_identity(path)), str(path))
     resolved = shutil.which(launcher)
     if resolved:
-        return True, resolved
+        resolved_path = Path(resolved)
+        return _launcher_identity(resolved_path), resolved
     return False, f"the hook launcher is not available: {launcher}"
 
 
