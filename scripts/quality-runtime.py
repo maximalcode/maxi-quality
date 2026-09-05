@@ -232,9 +232,19 @@ def _residual_guard_hooks(settings: dict[str, object]) -> bool:
             command = entry.get("command")
             if entry.get("type") != "command" or not isinstance(command, str):
                 continue
+            try:
+                tokens = shlex.split(command)
+            except ValueError:
+                tokens = []
             for name in ("stop-gate", "sample-guard", "no-verify-guard"):
                 if (_runtime_invocation(command, name) is not None
                         or f"/.claude/agent-guard/{name}.py" in command):
+                    return True
+                # The former shared profile routes all three hooks through
+                # one shim, with the guard name supplied as its first argument.
+                if any(action == name and (path == ".claude/agent-guard/shim.py"
+                                           or path.endswith("/.claude/agent-guard/shim.py"))
+                       for path, action in zip(tokens, tokens[1:])):
                     return True
     return False
 

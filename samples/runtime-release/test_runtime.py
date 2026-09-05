@@ -83,6 +83,55 @@ def launcher_roundtrips(root: Path, commit: str, cache: Path) -> None:
     assert not failures, "Generated launcher roundtrips failed: " + "\n".join(failures)
 
 
+def disabled_shared_shim(root: Path, commit: str) -> None:
+    """A disabled lock cannot hide retained shared guard hooks."""
+    target = root / "disabled-shared"
+    project(target)
+    directory = target / ".claude" / "agent-guard"
+    directory.mkdir(parents=True)
+    shutil.copyfile(REPO / "configs" / "agent" / "shim.py", directory / "shim.py")
+    settings_path = target / ".claude" / "settings.json"
+    home = root / "empty-shared-home"
+    home.mkdir()
+    env = {**os.environ, "HOME": str(home), "CLAUDE_PROJECT_DIR": str(target)}
+    unrelated = {"type": "command", "command": "python3 tools/shim.py stop-gate"}
+    for name in ("stop-gate", "no-verify-guard", "sample-guard"):
+        command = f'python3 "${{CLAUDE_PROJECT_DIR}}/.claude/agent-guard/shim.py" {name}'
+        event = "Stop" if name == "stop-gate" else "PreToolUse"
+        settings_path.write_text(json.dumps({"hooks": {event: [{"hooks": [
+            unrelated, {"type": "command", "command": command},
+        ]}]}}))
+        migrated = call(str(MIGRATE), "--target", str(target), "--version", "v1.2.0",
+                        "--commit", commit, "--guard-disabled")
+        assert migrated.returncode == 0, migrated.stderr
+        before = {p: p.read_bytes() for p in target.rglob("*") if p.is_file()}
+        if name == "stop-gate":
+            invoked = subprocess.run(command, shell=True, cwd=target, env=env, input="{}",
+                                     capture_output=True, text=True)
+            assert invoked.returncode == 0, invoked.stderr
+            assert json.loads(invoked.stdout)["decision"] == "block"
+        diagnosed = call(str(RUNTIME), "diagnose", "--root", str(target), "--json", env=env)
+        assert diagnosed.returncode != 0, diagnosed.stdout
+        report = json.loads(diagnosed.stdout)
+        assert report["healthy"] is False
+        assert report["installation_profile"] == "disabled"
+        assert report["live_enforcement"] == "unverified"
+        assert any(c["id"] == "disabled-hook-wiring" and c["status"] == "fail"
+                   for c in report["checks"])
+        assert before == {p: p.read_bytes() for p in target.rglob("*") if p.is_file()}
+
+    # Merely sharing a shim filename or an action word is unrelated policy.
+    settings_path.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [unrelated,
+        {"type": "command", "command":
+         'python3 "${CLAUDE_PROJECT_DIR}/.claude/agent-guard/shim.py" unrelated-action'},
+    ]}]}}))
+    before_settings = settings_path.read_bytes()
+    diagnosed = call(str(RUNTIME), "diagnose", "--root", str(target), "--json", env=env)
+    assert diagnosed.returncode == 0, diagnosed.stdout
+    assert json.loads(diagnosed.stdout)["healthy"] is True
+    assert settings_path.read_bytes() == before_settings
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="runtime-release-") as temp:
         root = Path(temp)
@@ -641,6 +690,8 @@ def main() -> int:
             assert any(c["id"] == "disabled-hook-wiring" and c["status"] == "fail"
                        for c in residual_json["checks"])
             assert before_disabled == {p: p.read_bytes() for p in (target_disabled / ".claude").rglob("*") if p.is_file()}
+
+        disabled_shared_shim(root, head)
 
         # Legacy copied and shared installs are migration candidates, not
         # versioned healthy installs.  The classification is based on the
