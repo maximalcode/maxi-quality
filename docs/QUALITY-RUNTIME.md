@@ -289,25 +289,36 @@ same disposable repository:
    successful turn. A `loop-guard` allowance cannot satisfy this assertion.
 3. Another edit must produce a host block plus `content-changed` decision.
 4. An exact ordinary Bash request must execute its harmless marker write.
-5. An exact Bash request to an executable named `git`, with `commit --no-verify`,
-   must receive the guard's host hook denial and a failed tool result before
-   its tripwire executes. That executable only writes a marker: even missing
-   enforcement cannot commit, push, or reach another repository.
+5. An exact shell request to an executable named `git`, with `commit --no-verify`,
+   must receive the guard's native hook denial before its tripwire executes.
+   That executable only writes a marker: even missing enforcement cannot commit,
+   push, or reach another repository.
 
 Shell phases require exactly one tool request. Neither host's hook summary has a
 tool-use identifier, so additional requests make attribution ambiguous and
 produce `ambiguous-tool-requests`, never a passing enforcement assertion.
 Codex also requires the event's project source and thread/turn identity. Its
-shell assertion requires an exact native `commandExecution` request and the
-same item's completed result (`declined` for denial), plus a blocked
-`preToolUse` hook summary with the guard's reason. **That denied-command event
-ordering is an unverified integration assumption.** The published App Server
-contract describes it for command approval, but does not establish that
-PreToolUse denial emits the same items. The offline simulator exercises this
-shape; it does not prove a real host emits it. If Codex omits those items, the
-smoke remains unverified (`tool-not-requested` or an incomplete/timeout outcome),
-even when hook feedback exists. This is an outstanding live observation for
-#256, not a claim of completed shell enforcement.
+ordinary-shell assertion requires the exact native `commandExecution` request
+and matching successful result. Codex CLI 0.153.3 does **not** emit those items
+when a `preToolUse` hook denies a tool request, as measured in the dated probe.
+
+For that denial, the diagnostic adapter opts into `experimentalApi` and
+`experimentalRawEvents`. It requires the native `rawResponseItem/completed`
+request: one `custom_tool_call` named `exec`, with nonempty item and call IDs,
+no namespace, and input equal to the prompted single-call shell program
+(optionally followed by one newline). This is literal comparison, not JavaScript
+evaluation or a substring search. Direct function calls and other program forms
+remain unsupported. A matching project `hook/started` and blocked
+`hook/completed` must follow in order with the same hook ID, source and scope,
+with the guard's skip-verification reason and an absent tripwire. Additional
+requests, execution items or mismatched output call IDs cannot pass. The adapter
+interrupts after this evidence exists, before model repair can confuse attribution.
+
+This depends on an **experimental protocol measured on Codex CLI 0.153.3**.
+A rejected experimental opt-in is `host-experimental-events-unavailable`; missing
+raw request provenance is `host-tool-request-provenance-unavailable`. Both are
+unavailable outcomes, never a fallback to hook feedback or model claims. The
+full committed harness still needs its successful live run to complete #256.
 
 The phases run at a repository root (`host-01`), a linked-worktree root
 (`host-02`), and a subdirectory (`host-03`). The subdirectory outcomes are
@@ -346,8 +357,11 @@ and the native [Codex App Server contract](https://learn.chatgpt.com/docs/app-se
 including its installed JSON schema for `hook/completed` and item/turn events.
 A lifecycle event alone is not a passing guard decision, and voluntary model
 compliance is never evidence of invocation. The first dated live attempt is
-[recorded separately](HOST-SMOKE-2026-09-05.md); it was unavailable, so successful
-live enforcement and the live negative control remain unobserved for #256.
+[recorded separately](HOST-SMOKE-2026-09-05.md). Later normally trusted Codex
+fixtures established the Stop, ordinary-shell and negative-control observations;
+exact denied-request provenance remains incomplete for #256. The owner's
+current scope requires Codex live proof. Claude live verification is skipped
+and nonblocking; its configuration and offline regressions remain required.
 
 
 ### Codex discovery observation — 2026-09-05
@@ -373,5 +387,7 @@ diagnosis was healthy independently. The result was exit 2 with
 observations. The removed-wiring control had zero discovered hooks but its
 live assertion was `not-run`. See the separate
 [Codex outcome record](../samples/agent-host-smoke/observation-codex-2026-09-05.json)
-and [dated account of both hosts](HOST-SMOKE-2026-09-05.md). #256 remains
-incomplete until both hosts' required live observations succeed.
+and [dated account of both hosts](HOST-SMOKE-2026-09-05.md), which also records
+the later normally trusted fixture run. #256 remains incomplete until Codex's
+required live observations succeed; Claude live verification is skipped and
+nonblocking by the owner's decision.

@@ -413,7 +413,7 @@ def main() -> int:
               "host_version": None, "baseline_revision": None,
               "runtime_version": VERSION, "installation_profile": "versioned-without-samples",
               "launch_mode": ("print-stream-json-default-settings" if args.host == "claude" else
-                              "native-app-server-stdio-default-settings"), "status": "unavailable",
+                              "native-app-server-stdio-experimental-raw-events"), "status": "unavailable",
               "live_enforcement": "unverified", "fixtures": [],
               "negative_control": {"status": "not-run"}}
     try:

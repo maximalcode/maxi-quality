@@ -72,6 +72,7 @@ class SmokeCommand(unittest.TestCase):
                            ("disabled", "host-hooks-disabled"),
                            ("absent", "host-project-hooks-not-discovered"),
                            ("no-auth", "host-authentication-unavailable"),
+                           ("no-experimental-api", "host-experimental-events-unavailable"),
                            ("missing-hash", "host-hook-discovery-unavailable")):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temp:
                 host = Path(temp) / "codex"
@@ -140,37 +141,18 @@ class SmokeCommand(unittest.TestCase):
                 self.assertEqual(observe("ordinary", events, [], "fixture-thread", "fixture-turn",
                                          source, command, True), "ordinary-shell-allowed")
 
-    def test_codex_shell_requires_exact_identified_request_native_denial_and_inert_tripwire(self):
-        from copy import deepcopy
+    def test_codex_denied_command_items_without_raw_provenance_stay_unavailable(self):
         observe = runpy.run_path(str(REPO / "scripts/agent_host_codex.py"))["observe"]
-        source = Path("/fixture/.codex/hooks.json")
-        command = "/fixture/git commit --no-verify -m smoke"
         scope = {"threadId": "fixture-thread", "turnId": "fixture-turn"}
+        command = "/fixture/git commit --no-verify -m smoke"
         item = {"type": "commandExecution", "id": "fixture-command", "command": command}
-        request = {"method": "item/started", "params": {**scope, "item": item}}
-        result = {"method": "item/completed", "params": {**scope, "item": {**item, "status": "declined"}}}
-        hook = {"method": "hook/completed", "params": {**scope, "run": {
-            "id": "fixture-hook", "eventName": "preToolUse", "source": "project", "sourcePath": str(source),
-            "handlerType": "command", "executionMode": "sync", "status": "blocked",
-            "entries": [{"kind": "feedback", "text": "This `git commit` passes --no-verify, which switches off the hook."}]}}}
-        def check(events, executed=False):
-            return observe("skip", events, [], "fixture-thread", "fixture-turn", source, command, executed)
-        events = [request, hook, result]
-        self.assertEqual(check(events), "skip-verification-denied")
-        self.assertEqual(check(events, True), "tripwire-executed")
-        self.assertEqual(check([request, result]), "hook-not-observed")
-        # PreToolUse may not emit command items on a native host. That shape
-        # must stay unverified; hook feedback alone cannot prove this request.
-        self.assertEqual(check([hook]), "tool-not-requested")
-        extra = deepcopy(request)
-        extra["params"]["item"] = {**item, "id": "other-command", "command": "echo other"}
-        self.assertEqual(check([extra, *events]), "ambiguous-tool-requests")
-        for field, value in (("id", ""), ("command", "echo other")):
-            with self.subTest(field=field):
-                malformed = deepcopy(events)
-                for event in (malformed[0], malformed[2]):
-                    event["params"]["item"][field] = value
-                self.assertNotEqual(check(malformed), "skip-verification-denied")
+        events = [{"method": "item/started", "params": {**scope, "item": item}},
+                  {"method": "item/completed", "params": {**scope, "item": {**item, "status": "declined"}}}]
+        # The old synthetic approval-denial shape is not the measured hook
+        # denial protocol. It cannot silently replace missing raw provenance.
+        self.assertEqual(observe("skip", events, [], "fixture-thread", "fixture-turn",
+                                 Path("/fixture/.codex/hooks.json"), command),
+                         "host-tool-request-provenance-unavailable")
 
     def test_codex_native_wrapper_rejects_misleading_commands_and_mismatched_results(self):
         from copy import deepcopy
@@ -211,6 +193,99 @@ class SmokeCommand(unittest.TestCase):
         extra = {"method": "item/started", "params": {**scope, "item": {
             "id": "other-tool", "type": "fileChange"}}}
         self.assertEqual(check([*events, extra]), "ambiguous-tool-requests")
+
+    def test_codex_denied_raw_request_needs_exact_provenance_without_command_items(self):
+        from copy import deepcopy
+        observe = runpy.run_path(str(REPO / "scripts/agent_host_codex.py"))["observe"]
+        source = Path("/fixture/.codex/hooks.json")
+        command = "/fixture/git commit --no-verify -m smoke"
+        scope = {"threadId": "fixture-thread", "turnId": "fixture-turn"}
+        request = {"method": "rawResponseItem/completed", "params": {**scope, "item": {
+            "type": "custom_tool_call", "name": "exec", "id": "fixture-item", "call_id": "fixture-call",
+            "input": "text(await tools.exec_command({cmd:" + json.dumps(command) + "}));\n"}}}
+        hook = {"method": "hook/completed", "params": {**scope, "run": {
+            "id": "fixture-hook", "eventName": "preToolUse", "source": "project", "sourcePath": str(source),
+            "handlerType": "command", "executionMode": "sync", "status": "blocked",
+            "entries": [{"kind": "feedback", "text": "This `git commit` passes --no-verify, which switches off the hook."}]}}}
+        start = {"method": "hook/started", "params": {**scope, "run": {**hook["params"]["run"], "status": "running"}}}
+        def check(rows, executed=False):
+            return observe("skip", rows, [], "fixture-thread", "fixture-turn", source, command, executed)
+        self.assertEqual(check([request, start, hook]), "skip-verification-denied")
+        self.assertEqual(check([request, start, hook], True), "tripwire-executed")
+        for field, value in (("call_id", ""), ("call_id", None), ("name", "other_tool"),
+                             ("type", "message"), ("id", ""), ("namespace", "other"),
+                             ("input", "text(await tools.exec_command({cmd:" + json.dumps(command + "; echo other") + "}));"),
+                             ("input", "// " + command)):
+            with self.subTest(field=field, value=value):
+                wrong = deepcopy(request)
+                wrong["params"]["item"][field] = value
+                self.assertNotEqual(check([wrong, start, hook]), "skip-verification-denied")
+        for event_index in (0, 1, 2):
+            for field in ("threadId", "turnId"):
+                with self.subTest(event=event_index, field=field):
+                    wrong = deepcopy([request, start, hook])
+                    wrong[event_index]["params"][field] = "other"
+                    self.assertNotEqual(check(wrong), "skip-verification-denied")
+        self.assertNotEqual(check([hook, start, request]), "skip-verification-denied")
+        self.assertNotEqual(check([request]), "skip-verification-denied")
+        self.assertNotEqual(check([hook]), "skip-verification-denied")
+        program = request["params"]["item"]["input"].rstrip("\n")
+        for misleading in (program + " // extra", "// " + program, program + program,
+                           "text(" + json.dumps(program) + ");", program.replace("tools.exec_command", "other.exec_command"),
+                           program.replace("}));", ',max_output_tokens:1}));'),
+                           program.replace("await ", "")):
+            wrong = deepcopy(request)
+            wrong["params"]["item"]["input"] = misleading
+            self.assertNotEqual(check([wrong, start, hook]), "skip-verification-denied")
+        for field, value in (("id", "other-hook"), ("source", "user"), ("sourcePath", "/other/hooks.json"),
+                             ("handlerType", "prompt"), ("executionMode", "async"), ("status", "completed")):
+            wrong = deepcopy(start)
+            wrong["params"]["run"][field] = value
+            self.assertNotEqual(check([request, wrong, hook]), "skip-verification-denied")
+        output = {"method": "rawResponseItem/completed", "params": {**scope, "item": {
+            "type": "custom_tool_call_output", "call_id": "other-call", "output": "denied"}}}
+        self.assertNotEqual(check([request, start, hook, output]), "skip-verification-denied")
+        other_request = deepcopy(request)
+        other_request["params"]["item"]["id"] = "other-item"
+        other_request["params"]["item"]["call_id"] = "other-call"
+        for extra in (request, {"method": "item/started", "params": {**scope, "item": {
+                "type": "fileChange", "id": "other-call"}}},
+                {"method": "rawResponseItem/completed", "params": {**scope, "item": {
+                    "type": "custom_tool_call", "name": "apply_patch", "call_id": "other-call", "input": "other"}}}):
+            with self.subTest(extra=extra):
+                self.assertNotEqual(check([request, extra, start, hook]), "skip-verification-denied")
+        self.assertNotEqual(check([request, other_request, start, hook]), "skip-verification-denied")
+
+    def test_codex_missing_experimental_raw_requests_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            host = Path(temp) / "codex"
+            host.write_text("#!" + sys.executable + "\n" +
+                            (REPO / "samples/agent-host-smoke/codex_protocol_fixture.py").read_text())
+            host.chmod(0o700)
+            result = subprocess.run(
+                [sys.executable, str(COMMAND), "--run-live", "--host", "codex",
+                 "--codex", str(host), "--timeout", "5"], capture_output=True, text=True,
+                env={**os.environ, "SMOKE_CODEX_PROTOCOL": "no-raw-events"})
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            report = json.loads(result.stdout)
+            self.assertEqual(report["reason"], "host-tool-request-provenance-unavailable")
+            self.assertEqual(report["live_enforcement"], "unverified")
+            self.assertEqual(report["negative_control"]["status"], "not-run")
+
+    def test_codex_tripwire_racing_interrupt_cannot_pass(self):
+        with tempfile.TemporaryDirectory() as temp:
+            host = Path(temp) / "codex"
+            host.write_text("#!" + sys.executable + "\n" +
+                            (REPO / "samples/agent-host-smoke/codex_protocol_fixture.py").read_text())
+            host.chmod(0o700)
+            result = subprocess.run(
+                [sys.executable, str(COMMAND), "--run-live", "--host", "codex",
+                 "--codex", str(host), "--timeout", "5"], capture_output=True, text=True,
+                env={**os.environ, "SMOKE_CODEX_PROTOCOL": "late-tripwire"})
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            report = json.loads(result.stdout)
+            for fixture in report["fixtures"]:
+                self.assertEqual(fixture["observations"][-1]["outcome"], "tripwire-executed")
 
     def test_private_scratch_cannot_be_created_inside_a_git_checkout(self):
         with tempfile.TemporaryDirectory() as temp:

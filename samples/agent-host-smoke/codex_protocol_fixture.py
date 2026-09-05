@@ -47,6 +47,9 @@ def hook(event, payload):
             continue
         if event == "preToolUse" and entry["matcher"] != payload.get("tool_name"):
             continue
+        notify("hook/started", run={"id": "offline-" + event, "eventName": event,
+            "source": "project", "sourcePath": str(source()), "handlerType": "command",
+            "executionMode": "sync", "status": "running"})
         result = subprocess.run(entry["command"], shell=True, input=json.dumps(payload),
                                 capture_output=True, text=True)
         output = json.loads(result.stdout) if result.stdout.strip() else {}
@@ -74,6 +77,10 @@ for line in sys.stdin:
         continue
     result = {}
     if method == "initialize":
+        assert params["capabilities"]["experimentalApi"] is True
+        if MODE == "no-experimental-api":
+            emit({"id": request["id"], "error": {"code": -32602, "message": "experimental API unavailable"}})
+            continue
         result = {"userAgent": "offline", "platformFamily": "unix", "platformOs": "offline"}
     elif method == "account/read":
         result = {"account": None if MODE == "no-auth" else {"type": "chatgpt"}, "requiresOpenaiAuth": True}
@@ -83,6 +90,7 @@ for line in sys.stdin:
     elif method == "thread/start":
         assert params["cwd"] == str(Path.cwd())
         assert params["ephemeral"] is True
+        assert params["experimentalRawEvents"] is True
         assert "model" not in params and "config" not in params
         assert params["sandbox"] == "workspace-write"
         result = {"thread": {"id": THREAD}, "modelProvider": "openai"}
@@ -94,15 +102,20 @@ for line in sys.stdin:
         payload = {"cwd": str(Path.cwd()), "session_id": THREAD}
         prompt = params["input"][0]["text"]
         if "exact harmless command" in prompt:
-            command = prompt.splitlines()[-1]
+            command = prompt.splitlines()[1]
+            if MODE != "no-raw-events":
+                notify("rawResponseItem/completed", item={"type": "custom_tool_call", "name": "exec",
+                    "id": "offline-raw", "call_id": "offline-call",
+                    "input": "text(await tools.exec_command({cmd:" + json.dumps(command) + "}));\n"})
             item = {"id": "offline-command", "type": "commandExecution",
                     "command": "/bin/zsh -lc " + shlex.quote(command),
                     "cwd": str(Path.cwd()), "commandActions": [], "status": "inProgress"}
             allowed = hook("preToolUse", {**payload, "tool_name": "Bash", "tool_input": {"command": command}})
-            notify("item/started", item=item, startedAtMs=1)
-            code = subprocess.run(command, shell=True).returncode if allowed else None
-            notify("item/completed", item={**item, "status": "completed" if allowed else "declined",
-                   "exitCode": code}, completedAtMs=2)
+            if allowed:
+                notify("item/started", item=item, startedAtMs=1)
+                code = subprocess.run(command, shell=True).returncode
+                notify("item/completed", item={**item, "status": "completed",
+                       "exitCode": code}, completedAtMs=2)
         allowed = hook("stop", payload)
         # A blocked native Stop CONTINUES; the client must interrupt when it has
         # adequate hook/ledger evidence, not wait for a successful turn.
@@ -110,6 +123,8 @@ for line in sys.stdin:
             notify("turn/completed", turn={"id": TURN, "status": "completed", "items": [], "error": None})
         continue
     elif method == "turn/interrupt":
+        if MODE == "late-tripwire" and "exact harmless command" in prompt and "--no-verify" in command:
+            subprocess.run(command, shell=True, check=True)
         emit({"id": request["id"], "result": {}})
         notify("turn/completed", turn={"id": TURN, "status": "interrupted", "items": [], "error": None})
         continue

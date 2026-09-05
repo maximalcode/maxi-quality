@@ -34,7 +34,10 @@ Blocked Stop probes do not complete a turn until interrupted; the adapter must
 first establish native hook and matching ledger evidence. Tests separate
 subdirectory discovery from supported roots, reject absent/disabled/untrusted
 hooks before model calls, and reject unrelated thread, turn, source or request
-identities. The denied-command item ordering is an **unverified native-host
-assumption**, not something the simulator can prove: if a real PreToolUse
-denial omits command items, the smoke cannot count it as a pass. The dated
-Codex outcome records only preflight discovery, with no live enforcement.
+identities. The measured Codex CLI 0.153.3 denial emits no command items. The
+simulator reproduces the separately observed experimental raw code-mode request
+and native hook sequence; tests require exact program input, matching IDs and
+event order, and reject missing raw provenance and a tripwire racing interruption.
+The [dated account](../../docs/HOST-SMOKE-2026-09-05.md) distinguishes early
+unavailable attempts, later partial live observations and the diagnostic probe
+from the full committed harness run still required to complete #256.

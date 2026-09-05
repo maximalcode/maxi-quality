@@ -1,6 +1,8 @@
 # Host smoke observation — 2026-09-05
 
-**Unavailable for both hosts. No live enforcement assertion passed.** The available Claude
+**Codex live verification is incomplete; Claude live verification is skipped and
+nonblocking by the owner's decision.** The initial attempts below were unavailable.
+The available Claude
 Code 2.1.236 reported a logged-in account through `auth status --json`, but the
 actual disposable repository-root launch failed with an expired OAuth session
 that could not be refreshed. No host hook lifecycle event was emitted.
@@ -30,8 +32,8 @@ direct fixture hook calls and invented host messages are not live evidence.
 For [#256](https://github.com/maximalcode/maxi-quality/issues/256), the real
 no-receipt refusal, fresh receipt allowance, stale receipt refusal, ordinary
 shell allowance, skip-verification denial, linked-worktree and subdirectory
-observations, and wiring-removed negative control remain **unobserved**. The
-issue is incomplete. No host switch, credential change, installation, or user
+observations, and wiring-removed negative control were **unobserved in that
+initial attempt**. No host switch, credential change, installation, or user
 settings override was used to obtain a different result. This synthetic
 attempt contributes nothing to natural-session measurements.
 
@@ -62,9 +64,32 @@ the original checkout, and disappeared when that source was removed. The
 candidate file was removed after inspection; none of those hooks was trusted
 or executed. The harness models that source location in its disposable layout.
 
-The Codex adapter's offline protocol test covers the full phase sequence and
-removed-wiring control, including Stop continuation and interruption. Its
-shell assertion deliberately requires native command request/result items;
-whether PreToolUse denial actually emits the assumed item sequence remains
-unverified. A host that omits it cannot pass from hook feedback alone. Both
-hosts' live observations are still required to complete #256.
+A later Codex CLI 0.153.3 run, after normal owner-authorized trust of only the
+disposable fixtures, used revision `fb9f0e760375608b65281eebfda03ea8b37d6947`.
+All three locations produced the no-receipt Stop refusal, fresh allowance after
+the actual recorder ran the declared gate, stale refusal after another edit,
+and ordinary shell allowance. The same no-receipt assertion detected removed
+wiring. These are synthetic fixture observations, separate from natural sessions.
+
+The skip-verification assertion still failed: the host emitted a project-scoped
+blocked `preToolUse` event with the guard's reason, but no `commandExecution`
+request or declined result for the denied tool. Hook feedback alone does not
+identify the requested command. The adapter therefore could not prove denial
+of the exact tripwire request. Model repair activity after the refusal cannot
+fill that gap.
+
+A separate native diagnostic probe then enabled the installed schema's
+`experimentalApi` and `experimentalRawEvents` flags. It observed one raw
+`custom_tool_call` named `exec`, whose input was exactly the requested
+single-call shell program, followed by matching project hook start and blocked
+completion events. The tripwire was absent. The observer now accepts that
+measured sequence and rejects mismatched requests, IDs and event order. Raw
+request input is retained only in private owner-only artifacts. This diagnostic
+probe proves the event shape; Codex remains incomplete until the full committed
+harness succeeds using it. The experimental protocol dependency and unavailable
+outcomes are documented in [QUALITY-RUNTIME.md](QUALITY-RUNTIME.md).
+
+Only Codex's required live observations gate completion of #256 in the current
+owner-approved scope. Claude's native configuration and offline integration
+regressions remain required; its live authentication failure is recorded above
+and its live run is skipped, nonblocking.
