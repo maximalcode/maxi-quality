@@ -9,7 +9,9 @@ python3 samples/agent-host-smoke/test_smoke.py
 These tests cover the public command result and the interpretation of host
 events. They reject model claims, a ledger without a hook event, a different
 session's ledger, a loop override instead of a fresh pass, and a shell refusal
-without a matching requested tool and hook decision. A non-invoking executable
+without a matching requested tool and hook decision, including a denial for
+another tool request in the same turn. Retained evidence is checked for
+owner-only permissions under a normal `022` creation mask. A non-invoking executable
 fails the same enforcement assertion that the live command uses, across
 repository, linked-worktree, and subdirectory launches. The command's temporary
 directories are gone when it returns. A simulated expired login proves that a

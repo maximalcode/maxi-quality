@@ -186,6 +186,10 @@ same disposable repository:
    its tripwire executes. That executable only writes a marker: even missing
    enforcement cannot commit, push, or reach another repository.
 
+Shell phases require exactly one tool request. The host's hook response has no
+tool-use identifier, so additional requests make attribution ambiguous and
+produce `ambiguous-tool-requests`, never a passing enforcement assertion.
+
 The phases run at a repository root (`host-01`), a linked-worktree root
 (`host-02`), and a subdirectory (`host-03`). The subdirectory outcomes are
 reported independently with the documented
@@ -208,7 +212,8 @@ never a pass. Other hosts and unobserved integrations remain unverified.
 Raw host streams, launch arguments, diagnosis details and per-phase ledger
 evidence are deleted by default. To retain them, pass `--private-output` naming
 a **new directory outside Git checkouts** under an existing private parent.
-The directory is created with owner-only access. Never publish those files.
+Evidence directories and files have owner-only access from creation through
+copying into the retained directory. Never publish those files.
 The `synthetic-host-smoke` measurement is separate from natural-session
 measurements and must not be added to an Adopter ledger or natural-session
 counts. The

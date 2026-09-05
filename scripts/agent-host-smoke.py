@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterator
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -66,6 +68,11 @@ def observe_shell(phase: str, events: list[dict], command: str, executed: bool) 
         return "tool-not-requested"
     if phase == "skip" and executed:
         return "tripwire-executed"
+    # Hook responses have no tool-use ID in the host message contract. Only a
+    # turn with exactly one tool request can attribute its hook to our command;
+    # another request's denial must never count as protection for the tripwire.
+    if sum(b.get("type") == "tool_use" for b in blocks) != 1:
+        return "ambiguous-tool-requests"
     hooks = [e for e in events if e.get("type") == "system"
              and e.get("subtype") == "hook_response" and e.get("hook_event") == "PreToolUse"
              and e.get("exit_code") == 0 and e.get("outcome") == "success"]
@@ -264,8 +271,20 @@ def observe_fixture(ident: str, shape: str, root: Path, cwd: Path, host: str,
     return report
 
 
+@contextmanager
+def owner_only_creation() -> Iterator[None]:
+    """Keep evidence private from creation through copy, including on failure."""
+    previous = os.umask(0o077)
+    try:
+        yield
+    finally:
+        os.umask(previous)
+
+
 def smoke(host: str, commit: str, timeout: float, private: Path | None, report: dict) -> None:
-    with tempfile.TemporaryDirectory(prefix="agent-host-smoke-") as temp:
+    # copytree also copies directory modes. Create its source with private
+    # modes so it cannot loosen the retained directory, even during the copy.
+    with owner_only_creation(), tempfile.TemporaryDirectory(prefix="agent-host-smoke-") as temp:
         scratch = Path(temp)
         artifacts = scratch / "artifacts"
         artifacts.mkdir()

@@ -25,9 +25,11 @@ class SmokeCommand(unittest.TestCase):
             host.write_text("#!" + sys.executable + "\n" +
                             (REPO / "samples/agent-host-smoke/protocol_fixture.py").read_text())
             host.chmod(0o755)
+            private = Path(temp) / "private-evidence"
             result = subprocess.run(
-                [sys.executable, str(COMMAND), "--run-live", "--claude", str(host)],
-                capture_output=True, text=True,
+                [sys.executable, str(COMMAND), "--run-live", "--claude", str(host),
+                 "--private-output", str(private)],
+                capture_output=True, text=True, umask=0o022,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             report = json.loads(result.stdout)
@@ -39,6 +41,11 @@ class SmokeCommand(unittest.TestCase):
                 {"phase": "skip", "outcome": "skip-verification-denied"},
             ])
             self.assertEqual(report["negative_control"]["status"], "detected")
+            self.assertTrue(list(private.rglob("stdout.jsonl")))
+            for artifact in (private, *private.rglob("*")):
+                with self.subTest(artifact=artifact.relative_to(private)):
+                    self.assertEqual(artifact.stat().st_mode & 0o077, 0,
+                                     "Private evidence must have no group or other access")
 
     def test_missing_host_is_unavailable_and_does_not_expose_its_path(self):
         result = subprocess.run(
@@ -135,6 +142,34 @@ else:
         self.assertEqual(observe_shell("skip", [hook], command, False), "tool-not-requested")
         self.assertEqual(observe_shell("skip", [requested, hook, result], command, True),
                          "tripwire-executed")
+
+    def test_shell_denial_for_another_request_cannot_prove_tripwire_protection(self):
+        observe_shell = runpy.run_path(str(COMMAND))["observe_shell"]
+        command = "/fixture/git commit --no-verify -m smoke"
+
+        def request(ident, text):
+            return {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Bash", "id": ident,
+                 "input": {"command": text}}]}}
+
+        def result(ident):
+            return {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": ident, "is_error": True,
+                 "content": "Permission denied"}]}}
+
+        hook = {"type": "system", "subtype": "hook_response", "hook_event": "PreToolUse",
+                "session_id": "fixture-session", "exit_code": 0, "outcome": "success",
+                "stdout": json.dumps({"hookSpecificOutput": {
+                    "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                    "permissionDecisionReason": "This `git commit` passes --no-verify, which switches off the hook."}})}
+        expected = [request("expected-tool", command), result("expected-tool")]
+        other = [request("other-tool", "git commit --no-verify -m other"), hook, result("other-tool")]
+        for events in (other + expected, expected + other):
+            with self.subTest(events=events):
+                self.assertEqual(observe_shell("skip", events, command, False),
+                                 "ambiguous-tool-requests")
+        self.assertEqual(observe_shell("skip", [expected[0], hook, expected[1]], command, False),
+                         "skip-verification-denied")
 
     def test_non_invoking_host_fails_and_cleans_every_disposable_launch_shape(self):
         with tempfile.TemporaryDirectory() as temp:
