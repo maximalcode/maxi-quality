@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -41,6 +42,32 @@ def project(path: Path) -> None:
     (path / "README.md").write_text("fixture\n", encoding="utf-8")
     git(path, "add", "-A")
     git(path, "commit", "--quiet", "-m", "base")
+
+
+def documented_example(root: Path) -> None:
+    """Run the copyable example's actual README commands, not a lookalike."""
+    example = REPO / "examples" / "runtime-release"
+    assert (example / ".claude" / "agent-guard.json").is_file(), "example has no gate declaration"
+    steps = re.findall(r"```bash\n(.*?)\n```", (example / "README.md").read_text(), re.DOTALL)
+    assert len(steps) == 1, "keep the runnable walkthrough in one shell block"
+    env = {**os.environ, "TMPDIR": str(root)}
+    result = subprocess.run(("bash", "-eu", "-c", steps[0]), cwd=REPO, env=env,
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    reports = list(root.glob("runtime-example.*/healthy.json"))
+    assert len(reports) == 1
+    directory = reports[0].parent
+    healthy = json.loads(reports[0].read_text())
+    assert healthy["healthy"] is True
+    assert healthy["installation_profile"] == "versioned-with-samples"
+    assert healthy["configured_gate"] == "python3 gate.py"
+    assert healthy["live_enforcement"] == "unverified"
+    broken = json.loads((directory / "broken.json").read_text())
+    assert broken["healthy"] is False
+    assert any(c["id"] == "hook-sample-guard" and c["status"] == "fail"
+               for c in broken["checks"])
+    restored = json.loads((directory / "restored.json").read_text())
+    assert restored["healthy"] is True
 
 
 def launcher_roundtrips(root: Path, commit: str, cache: Path) -> None:
@@ -135,6 +162,7 @@ def disabled_shared_shim(root: Path, commit: str) -> None:
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="runtime-release-") as temp:
         root = Path(temp)
+        documented_example(root)
         target_a = root / "project-a"
         target_b = root / "project-b"
         project(target_a)

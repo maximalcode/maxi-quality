@@ -1,0 +1,10 @@
+{
+  "tool": "python-json",
+  "findings": [
+    {
+      "rule": "invalid-json",
+      "file": "samples/invalid.txt",
+      "line": 2
+    }
+  ]
+}
