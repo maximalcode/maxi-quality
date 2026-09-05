@@ -1,5 +1,11 @@
 # The agent contract
 
+**Codex:** use the [native versioned installation](../../docs/QUALITY-RUNTIME.md#native-codex-installation).
+It writes `.codex/hooks.json` and shares this guard engine without requiring
+Claude Code. The sections below describe the original Claude Code profile;
+its `permissions.deny` rules are not Codex settings. Native patch fixtures live
+in [`samples/codex-agent-guard`](../../samples/codex-agent-guard/README.md).
+
 The baseline speaks on two surfaces. CI is the gate. `configs/editor/` is the
 frozen contract that makes the editor show what CI shows. Neither reaches the
 third one: **the agent session that writes the code in the first place.**

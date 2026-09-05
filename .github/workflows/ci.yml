@@ -2974,6 +2974,9 @@ jobs:
       - name: Versioned runtime fixtures must preserve the recorded release
         shell: bash
         run: python3 samples/runtime-release/test_runtime.py
+      - name: Codex native guard fixtures must preserve host wiring and policy
+        shell: bash
+        run: python3 samples/codex-agent-guard/test_codex.py
       - name: Host smoke assertions must reject non-invocation (offline protocol fixtures)
         shell: bash
         run: python3 samples/agent-host-smoke/test_smoke.py

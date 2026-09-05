@@ -51,13 +51,15 @@ The launcher defaults to `$MAXI_QUALITY_RUNTIME_CACHE`, then
 The default hook commands resolve `$HOME/.local/bin/quality-runtime` directly,
 including in GUI sessions with a restricted `PATH`. A missing launcher or cache is reported with
 a repair instruction; Stop blocks the turn, the recorder exits nonzero, and
-the pre-tool guards remain scoped to their policy decisions so ordinary shell
-and edit actions remain repairable.
+the Claude pre-tool guards remain scoped to their policy decisions so ordinary
+shell and edit actions remain repairable. The Codex patch adapter denies patches
+when unavailable; shell access remains available to repair the installation.
 
 The runtime validates the lock, fixed source, release version, full commit
 shape, fixed script allowlist and every cached file hash before execution.
-The cache format remains 1; existing cache entries continue to work with
-updated launchers. A single launcher can serve projects pinning different
+Format 1 retains the original five-script allowlist. Format 2 adds the Codex
+patch adapter. Preparation selects the format from the pinned Git tree; existing
+format-1 entries remain valid and unchanged under the updated launcher. A single launcher can serve projects pinning different
 guard releases, regardless of the launcher source in those releases. It does
 not authenticate a Git repository or protect against a user who can modify
 both the lock and cache. The cache is a
@@ -86,8 +88,8 @@ execution mode, launcher availability and `permissions.deny` entries with the
 selected installation profile. Unrelated hooks and permission entries are
 ignored. The JSON result has stable keys (`schema`, `status`, `healthy`,
 `installation_profile`, `release`, `configured_gate`, `checks`,
-`live_enforcement`, `host_settings`, and `migration`) and each check names its
-own pass, skip, or failure. Migration and diagnosis share a command builder
+`live_enforcement`, `host_settings`, `host`, and `migration`) and each check names its
+own pass, skip, unverified state, or failure. Migration and diagnosis share a command builder
 inside the single-file launcher. Diagnosis accepts exact generated commands,
 the earlier generated form without a missing-launcher fallback, and direct
 invocations with the generated quoting. It rejects other shell programs, even
@@ -138,6 +140,78 @@ fi
 The diagnosis does not run the declared gate, write settings, receipts,
 ledgers, locks or caches, and does not fetch dependencies. The existing
 `prepare` operation remains the explicit cache writer.
+
+## Native Codex installation
+
+The versioned migration accepts `--host codex`; its default remains `--host
+claude`. Codex uses `.codex/hooks.json`, while Claude Code uses
+`.claude/settings.json`. Both files may coexist: each host loads its own
+configuration. The host is selected explicitly, never inferred from a model or
+provider. Codex installation needs Python and Git, with no Claude CLI or login.
+The older `adopt.sh --agent` copied/shared profiles remain Claude profiles.
+
+Select a release containing `codex-patch-guard.py`, install the updated launcher
+and prepare that release as above. Then run:
+
+```bash
+python3 scripts/quality-runtime-migrate.py --target /path/to/project \
+  --host codex --version <release-version> --commit <lowercase-full-sha>
+quality-runtime diagnose --root /path/to/project --host codex --json
+```
+
+Use `--launcher /absolute/path/to/quality-runtime` for a staged installation.
+A Codex migration leaves Claude settings and copied guard files intact. It
+preserves unrelated Codex hooks and adds a checksum-owned region to `AGENTS.md`;
+an edited region or a symlink escaping the project is refused. Its recorder
+command resolves the Git root, so starting a session in a subdirectory still
+uses the right checkout.
+
+The release lock, gate declaration, receipt and ledger keep their historical
+`.claude/` paths as shared engine data. A project using both hosts has one gate
+and one release pin: changing that pin explicitly upgrades both. Old pins stay
+usable for Claude; diagnosis rejects a Codex installation pinned to a release
+without its adapter. A patch invocation against such a pin is denied rather
+than treated as inspected.
+
+The native configuration routes `Bash` to the existing Git-verification guard,
+`apply_patch` to the patch adapter, and `Stop` to the existing receipt gate.
+The adapter uses the shared cited-sample rule. It also protects the recorder's
+receipt and every path under `samples/expected/`, because Codex does not apply
+Claude's `permissions.deny` array. Adding or replacing expected findings requires
+the normal manifest generator, not a hand-written patch.
+
+Patch inspection handles additions, deletions, update hunks, moves and multiple
+files. It checks both ends of a move, including overwriting an existing cited
+sample. It uses line-count changes rather than duplicating Codex's fuzzy hunk
+matching. Unrecognized patch syntax and malformed patch events are denied with
+a repair message. Same-size changes that defuse a finding still need CI; shell
+writes remain outside the file-tool filter. The shared Stop loop guard can allow
+a continuation with a warning, as documented in the agent contract. These hooks
+guard accidental drift, not deliberate tampering.
+
+**Review before relying on enforcement.** Codex's project layer must be trusted,
+and `/hooks` must show the exact definitions reviewed and enabled; changing a
+hook requires another review. User, system, plugin and inline project hooks can
+also contribute behavior. Hosted and some specialized tools do not use the
+same hook path. These host boundaries follow the
+[official Codex hooks documentation](https://learn.chatgpt.com/docs/hooks).
+Use normal project and hook trust onboarding; migration never trusts hooks or
+changes user settings on your behalf.
+
+`diagnose --host codex` inspects the native JSON wiring and the project's TOML
+settings when Python 3.11+ can parse them. A local disabled hooks feature fails
+diagnosis. Other sources, session overrides and persisted trust remain
+`unverified`, as does live enforcement. `healthy: true` establishes an intact
+installation, not discovery or execution by a running host. The separate live
+smoke described below currently targets Claude Code.
+
+`python3 samples/codex-agent-guard/test_codex.py` exercises native payloads,
+generated commands from a nested directory, Stop/recorder transitions, migration,
+diagnosis and format-1/format-2 compatibility in temporary Git fixtures. It
+makes no live Codex enforcement claim. This baseline's own `.codex/hooks.json`
+invokes the same scripts directly from the Git root, avoiding a release pin
+that refers to the repository containing it; `check-agent-contract.py` guards
+that wiring in the existing CI context.
 
 ## Observe host enforcement
 
@@ -227,3 +301,17 @@ A lifecycle event alone is not a passing guard decision, and voluntary model
 compliance is never evidence of invocation. The first dated live attempt is
 [recorded separately](HOST-SMOKE-2026-09-05.md); it was unavailable, so successful
 live enforcement and the live negative control remain unobserved for #256.
+
+
+### Codex discovery observation — 2026-09-05
+
+Codex CLI 0.153.3 and its app-server discovered all three project hooks from the
+same native JSON in the original trusted baseline checkout. Each was visible
+as **untrusted**, with no errors or warnings. This proves project discovery;
+no hook was trusted or executed by these read-only inspections.
+
+The linked worktree returned no project hooks, including experiments with a
+project TOML file, inline hooks and an explicitly enabled hooks feature. A
+harmless Stop hook supplied through session flags was visible as untrusted.
+Discovery therefore differed by checkout; the exact worktree/project-layer
+cause remains unresolved. Neither observation establishes live enforcement.

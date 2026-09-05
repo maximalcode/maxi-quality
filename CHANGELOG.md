@@ -45,6 +45,14 @@ is no public v1.0.0 through v1.0.3 to backfill. `CLAUDE.md` §2 has the reason.
 
 ## Unreleased
 
+### Added
+
+- Opt-in native Codex guard wiring through `quality-runtime-migrate.py --host
+  codex`, with host-specific diagnosis and shared Stop/Git-verification policy.
+  The patch adapter protects receipts, expected findings and cited fixtures.
+  Runtime format 2 adds the adapter while retaining immutable format-1 pins.
+  Native protocol and installation fixtures do not establish live host enforcement.
+
 ### Rule changes
 
 - **Knip 6.31.0 → 6.33.0.** The dead-code action floor, test dependency and

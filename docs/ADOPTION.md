@@ -792,6 +792,9 @@ Full detail, including what each key is and is not evidence for:
 
 ## 5c. The agent — the session that writes the code
 
+For Codex, use the [native versioned migration](QUALITY-RUNTIME.md#native-codex-installation)
+with `--host codex`. The copied `--agent` path below installs Claude Code settings.
+
 CI gates the pull request and the editor shows you the same findings while you
 type. Neither reaches the surface where the code is now being written: an agent
 session, which reads your `CLAUDE.md` as advice and can drift from it. `--agent`
