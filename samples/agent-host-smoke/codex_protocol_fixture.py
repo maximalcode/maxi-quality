@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 
@@ -94,10 +95,11 @@ for line in sys.stdin:
         prompt = params["input"][0]["text"]
         if "exact harmless command" in prompt:
             command = prompt.splitlines()[-1]
-            item = {"id": "offline-command", "type": "commandExecution", "command": command,
+            item = {"id": "offline-command", "type": "commandExecution",
+                    "command": "/bin/zsh -lc " + shlex.quote(command),
                     "cwd": str(Path.cwd()), "commandActions": [], "status": "inProgress"}
-            notify("item/started", item=item, startedAtMs=1)
             allowed = hook("preToolUse", {**payload, "tool_name": "Bash", "tool_input": {"command": command}})
+            notify("item/started", item=item, startedAtMs=1)
             code = subprocess.run(command, shell=True).returncode if allowed else None
             notify("item/completed", item={**item, "status": "completed" if allowed else "declined",
                    "exitCode": code}, completedAtMs=2)

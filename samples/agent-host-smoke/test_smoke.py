@@ -121,6 +121,25 @@ class SmokeCommand(unittest.TestCase):
                 other["params"]["run"][field] = value
                 self.assertNotEqual(check([other]), "no-receipt-blocked")
 
+    def test_codex_ordinary_shell_accepts_the_observed_native_launch_wrapper(self):
+        observe = runpy.run_path(str(REPO / "scripts/agent_host_codex.py"))["observe"]
+        source = Path("/fixture/.codex/hooks.json")
+        command = "printf fixture > /fixture/root/.host-smoke-probes/host-01/ordinary/executed"
+        scope = {"threadId": "fixture-thread", "turnId": "fixture-turn"}
+        hook = {"method": "hook/completed", "params": {**scope, "run": {
+            "id": "fixture-hook", "eventName": "preToolUse", "source": "project", "sourcePath": str(source),
+            "handlerType": "command", "executionMode": "sync", "status": "completed", "entries": []}}}
+        # Codex 0.153.3 reports the launch wrapper on BOTH lifecycle items,
+        # after its synchronous PreToolUse event. Paths and IDs are synthetic.
+        for reported in (command, "/bin/zsh -lc '" + command + "'"):
+            with self.subTest(reported=reported):
+                item = {"type": "commandExecution", "id": "fixture-command", "command": reported}
+                events = [hook, {"method": "item/started", "params": {**scope, "item": item}},
+                          {"method": "item/completed", "params": {**scope, "item": {
+                              **item, "status": "completed", "exitCode": 0}}}]
+                self.assertEqual(observe("ordinary", events, [], "fixture-thread", "fixture-turn",
+                                         source, command, True), "ordinary-shell-allowed")
+
     def test_codex_shell_requires_exact_identified_request_native_denial_and_inert_tripwire(self):
         from copy import deepcopy
         observe = runpy.run_path(str(REPO / "scripts/agent_host_codex.py"))["observe"]
@@ -152,6 +171,46 @@ class SmokeCommand(unittest.TestCase):
                 for event in (malformed[0], malformed[2]):
                     event["params"]["item"][field] = value
                 self.assertNotEqual(check(malformed), "skip-verification-denied")
+
+    def test_codex_native_wrapper_rejects_misleading_commands_and_mismatched_results(self):
+        from copy import deepcopy
+        observe = runpy.run_path(str(REPO / "scripts/agent_host_codex.py"))["observe"]
+        source = Path("/fixture/.codex/hooks.json")
+        command = "printf fixture > /fixture/executed"
+        wrapper = "/bin/zsh -lc '" + command + "'"
+        scope = {"threadId": "fixture-thread", "turnId": "fixture-turn"}
+        item = {"type": "commandExecution", "id": "fixture-command", "command": wrapper}
+        events = [
+            {"method": "hook/completed", "params": {**scope, "run": {
+                "id": "fixture-hook", "eventName": "preToolUse", "source": "project", "sourcePath": str(source),
+                "handlerType": "command", "executionMode": "sync", "status": "completed", "entries": []}}},
+            {"method": "item/started", "params": {**scope, "item": item}},
+            {"method": "item/completed", "params": {**scope, "item": {
+                **item, "status": "completed", "exitCode": 0}}},
+        ]
+        def check(rows):
+            return observe("ordinary", rows, [], "fixture-thread", "fixture-turn", source, command, True)
+        for misleading in (
+            wrapper + " extra", wrapper + "; printf extra", wrapper + " && printf extra",
+            wrapper[:-1] + "; printf extra'", "env " + wrapper, "echo " + wrapper,
+            wrapper.replace("/bin/zsh", "/fixture/zsh"), wrapper.replace(" -lc ", " -lic "),
+            wrapper.replace("fixture >", "other >"), wrapper + " # comment", wrapper[:-1],
+            "/bin/zsh -lc '$(" + command + ")'",
+        ):
+            with self.subTest(misleading=misleading):
+                changed = deepcopy(events)
+                for event in changed[1:]:
+                    event["params"]["item"]["command"] = misleading
+                self.assertEqual(check(changed), "tool-not-requested")
+        for field, value in (("id", "other-command"), ("type", "fileChange"),
+                             ("command", command), ("command", wrapper + " extra"), ("exitCode", 1)):
+            with self.subTest(field=field, value=value):
+                changed = deepcopy(events)
+                changed[-1]["params"]["item"][field] = value
+                self.assertEqual(check(changed), "ordinary-shell-not-executed")
+        extra = {"method": "item/started", "params": {**scope, "item": {
+            "id": "other-tool", "type": "fileChange"}}}
+        self.assertEqual(check([*events, extra]), "ambiguous-tool-requests")
 
     def test_private_scratch_cannot_be_created_inside_a_git_checkout(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import shlex
 import signal
 import subprocess
 import threading
@@ -195,7 +196,11 @@ def observe(phase: str, events: list[dict], ledger: list[dict], thread: str, tur
         return "tripwire-executed"
     requested = [event["params"]["item"] for event in scoped if event.get("method") == "item/started"
                  and event["params"].get("item", {}).get("type") == "commandExecution"]
-    if not any(item.get("command") == command and isinstance(item.get("id"), str) and item["id"]
+    # Codex 0.153.3 reports its POSIX launch wrapper, not just the requested
+    # script. Recognize the measured canonical form without evaluating shell
+    # syntax or accepting extra arguments, commands, or lookalike executables.
+    commands = (command, "/bin/zsh -lc " + shlex.quote(command))
+    if not any(item.get("command") in commands and isinstance(item.get("id"), str) and item["id"]
                for item in requested):
         return "tool-not-requested"
     # Hook summaries do not carry a tool-call ID. A second tool request makes
@@ -211,7 +216,8 @@ def observe(phase: str, events: list[dict], ledger: list[dict], thread: str, tur
         return "hook-not-observed"
     results = [event["params"]["item"] for event in scoped if event.get("method") == "item/completed"
                and event["params"].get("item", {}).get("id") == requested[0].get("id")
-               and event["params"]["item"].get("command") == command]
+               and event["params"]["item"].get("type") == "commandExecution"
+               and event["params"]["item"].get("command") == requested[0].get("command")]
     if phase == "ordinary":
         return ("ordinary-shell-allowed" if executed and any(h.get("status") == "completed" for h in hooks)
                 and any(r.get("status") == "completed" and r.get("exitCode") == 0 for r in results)
