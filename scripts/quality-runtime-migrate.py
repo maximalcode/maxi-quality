@@ -12,11 +12,17 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
+import runpy
 import sys
 import tempfile
 import hashlib
 from pathlib import Path
+
+# Import only the trusted sibling source. Runtime installation still copies
+# one self-contained launcher; diagnosis never loads a candidate executable.
+_runtime = runpy.run_path(str(Path(__file__).with_name("quality-runtime.py")))
+launcher_command = _runtime["launcher_command"]
+runtime_command = _runtime["runtime_command"]
 
 SOURCE = "maximalcode/maxi-quality"
 SCHEMA = 1
@@ -61,19 +67,6 @@ def write_json(path: Path, value: object) -> None:
         except OSError:
             pass
         raise
-
-
-def launcher_command(launcher: str) -> str:
-    # A path to this repository's script is useful for tests and release
-    # maintenance; a globally installed executable is the normal deployment.
-    if launcher == "quality-runtime":
-        # Claude Code launched from a GUI can have a shorter PATH than an
-        # interactive shell. Resolve the supported default install directly;
-        # HOME is stable while PATH is not.
-        return '"$HOME/.local/bin/quality-runtime"'
-    if launcher.endswith(".py"):
-        return "python3 " + shlex.quote(launcher)
-    return shlex.quote(launcher)
 
 
 def hook_entry(command: str, timeout: int) -> dict:
@@ -269,36 +262,6 @@ def ignore_runtime_state(path: Path) -> None:
         if text and not text.endswith("\n"):
             text += "\n"
         write_text_preserving_link(path, text + "\n".join(missing) + "\n")
-
-
-def missing_fallback(name: str) -> str:
-    # This is deliberately only a missing-install message/decision adapter;
-    # all guard behavior remains in the validated external cache. Keeping the
-    # adapter inline means an absent launcher cannot make Claude reject every
-    # tool call before it can report how to repair the install.
-    code = (
-        "import json,re,sys; "
-        "n=sys.argv[1]; m='quality-runtime launcher is unavailable; install it and prepare the pinned cache'; "
-        "d=json.loads(sys.stdin.read() or '{}') if n=='no-verify-guard' else {}; "
-        "c=(d.get('tool_input') or {}).get('command',''); "
-        "deny=n=='no-verify-guard' and isinstance(c,str) and re.search(r'\\bgit\\s+(?:[^;&|]+\\s+)?(?:commit|push)\\b',c); "
-        "o=({'decision':'block','reason':m} if n=='stop-gate' else ({'hookSpecificOutput':{'hookEventName':'PreToolUse','permissionDecision':'deny','permissionDecisionReason':m}} if deny else None)); "
-        "json.dump(o,sys.stdout) if o else print('quality-runtime: '+m,file=sys.stderr); "
-        "print() if o else None"
-    )
-    return "python3 -c " + shlex.quote(code) + " " + shlex.quote(name)
-
-
-def runtime_command(launcher: str, name: str, root: str) -> str:
-    invoke = f"{launcher_command(launcher)} {name} --root {root}"
-    fallback = missing_fallback(name)
-    if launcher == "quality-runtime":
-        check = '[ -x "$HOME/.local/bin/quality-runtime" ]'
-    elif launcher.endswith(".py") or "/" in launcher:
-        check = "[ -f " + shlex.quote(launcher) + " ]"
-    else:
-        check = "command -v " + shlex.quote(launcher) + " >/dev/null 2>&1"
-    return f"if {check}; then {invoke}; else {fallback}; fi"
 
 
 def migrate(target: Path, version: str, commit: str, launcher: str, dry_run: bool,

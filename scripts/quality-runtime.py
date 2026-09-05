@@ -12,7 +12,6 @@ repositories may select different commits from the same cache.
 
 from __future__ import annotations
 
-import ast
 import hashlib
 import json
 import os
@@ -27,7 +26,7 @@ from pathlib import Path
 SOURCE = "maximalcode/maxi-quality"
 SCHEMA = 1
 LOCK_NAME = ".claude/quality-runtime.json"
-FORMAT = 2
+FORMAT = 1
 SCRIPTS = (
     "guard.py",
     "stop-gate.py",
@@ -78,115 +77,86 @@ def _hook_entries(settings: dict[str, object], event: str) -> list[tuple[str | N
     return found
 
 
-def _launcher_condition(launcher: str) -> list[str]:
-    """Return the condition emitted by ``quality-runtime-migrate.py``."""
-    if launcher == "$HOME/.local/bin/quality-runtime":
-        return ["[", "-x", launcher, "]"]
-    if "/" in launcher or launcher.startswith("."):
-        return ["[", "-f", launcher, "]"]
-    return ["command", "-v", launcher, ">", "/dev/null", "2", ">", "&", "1"]
+def launcher_command(launcher: str) -> str:
+    # A path to this repository's script is useful for tests and release
+    # maintenance; a globally installed executable is the normal deployment.
+    if launcher == "quality-runtime":
+        # Claude Code launched from a GUI can have a shorter PATH than an
+        # interactive shell. Resolve the supported default install directly;
+        # HOME is stable while PATH is not.
+        return '"$HOME/.local/bin/quality-runtime"'
+    if launcher.endswith(".py"):
+        return "python3 " + shlex.quote(launcher)
+    return shlex.quote(launcher)
 
 
-def _fallback_is_generated(branch: list[str], name: str) -> bool:
-    """Recognize the migration fallback without interpreting arbitrary shell."""
-    if len(branch) != 4 or branch[:2] != ["python3", "-c"] or branch[3] != name:
-        return False
-    code = branch[2]
-    try:
-        ast.parse(code, mode="exec")
-    except SyntaxError:
-        return False
-    return all(marker in code for marker in (
-        "import json,re,sys",
-        "n=sys.argv[1]",
-        "quality-runtime launcher is unavailable; install it and prepare the pinned cache",
-        "json.loads(sys.stdin.read() or '{}')",
-        "json.dump(o,sys.stdout)",
-    ))
+def direct_command(launcher: str, name: str, root: str,
+                   via_python: bool | None = None) -> str:
+    if via_python is None:
+        executable = launcher_command(launcher)
+    else:
+        executable = ("python3 " if via_python else "") + shlex.quote(launcher)
+    return f"{executable} {name} --root {root}"
 
 
-def _invocation_branch(branch: list[str], name: str) -> tuple[str, bool] | None:
-    """Parse one exact runtime invocation from a shell command branch."""
-    if not branch:
-        return None
-    via_python = branch[0] == "python3"
-    launcher_index = 1 if via_python else 0
-    if len(branch) <= launcher_index:
-        return None
-    launcher = branch[launcher_index]
-    action_index = launcher_index + 1
-    if len(branch) != action_index + 3 or branch[action_index] != name:
-        return None
-    if branch[action_index + 1:action_index + 3] != ["--root", "${CLAUDE_PROJECT_DIR}"]:
-        return None
-    if via_python and not launcher.endswith("quality-runtime.py"):
-        return None
-    return launcher, via_python
+def missing_fallback(name: str) -> str:
+    # This is deliberately only a missing-install message/decision adapter;
+    # all guard behavior remains in the validated external cache. Keeping the
+    # adapter inline means an absent launcher cannot make Claude reject every
+    # tool call before it can report how to repair the install.
+    code = (
+        "import json,re,sys; "
+        "n=sys.argv[1]; m='quality-runtime launcher is unavailable; install it and prepare the pinned cache'; "
+        "d=json.loads(sys.stdin.read() or '{}') if n=='no-verify-guard' else {}; "
+        "c=(d.get('tool_input') or {}).get('command',''); "
+        "deny=n=='no-verify-guard' and isinstance(c,str) and re.search(r'\\bgit\\s+(?:[^;&|]+\\s+)?(?:commit|push)\\b',c); "
+        "o=({'decision':'block','reason':m} if n=='stop-gate' else ({'hookSpecificOutput':{'hookEventName':'PreToolUse','permissionDecision':'deny','permissionDecisionReason':m}} if deny else None)); "
+        "json.dump(o,sys.stdout) if o else print('quality-runtime: '+m,file=sys.stderr); "
+        "print() if o else None"
+    )
+    return "python3 -c " + shlex.quote(code) + " " + shlex.quote(name)
+
+
+def runtime_command(launcher: str, name: str, root: str, *, fallback: bool = True) -> str:
+    invoke = direct_command(launcher, name, root)
+    if launcher == "quality-runtime":
+        check = '[ -x "$HOME/.local/bin/quality-runtime" ]'
+    elif launcher.endswith(".py") or "/" in launcher:
+        check = "[ -f " + shlex.quote(launcher) + " ]"
+    else:
+        check = "command -v " + shlex.quote(launcher) + " >/dev/null 2>&1"
+    alternative = f"; else {missing_fallback(name)}" if fallback else ""
+    return f"if {check}; then {invoke}{alternative}; fi"
 
 
 def _runtime_invocation(command: str, name: str) -> tuple[str, bool] | None:
-    """Extract a complete invocation emitted by ``quality-runtime-migrate.py``.
+    """Recognize supported commands by rebuilding their entire shell source.
 
-    The hook is a small, fixed shell program.  Requiring either its complete
-    direct argv shape or its complete ``if/then/else/fi`` shape, and matching
-    the launcher check to its true branch, prevents an inert condition, a
-    prefix such as ``exit 0``, or a command merely mentioning ``then`` from
-    being treated as a guard.
+    Tokens discover a candidate only; they cannot prove quoting, expansion or
+    control flow. Exact equality with the shared builder is the validation.
+    The installed launcher contains this builder so it remains a single file.
     """
-    # Newlines are shell command separators, not spaces.  The migration
-    # grammar never emits one, and accepting one here can turn a valid-looking
-    # argv sequence into two commands (the second of which is not guarded).
-    # Keep this check on the original source before shlex normalizes it.
     if "\n" in command or "\r" in command:
         return None
-    # The project root is deliberately a double-quoted shell expansion in the
-    # generated command.  shlex would make a single-quoted literal look like
-    # the same token even though the shell would pass the wrong root.
-    if '--root "${CLAUDE_PROJECT_DIR}"' not in command:
-        return None
     try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
-        lexer.whitespace_split = True
-        lexer.commenters = "#"
-        tokens = list(lexer)
+        tokens = shlex.split(command)
     except ValueError:
         return None
-    if not tokens:
-        return None
-    # A hand-written hook may use the direct form.  It is safe to recognize
-    # only the complete argv shape; wrappers and command substitutions remain
-    # outside the supported grammar.
-    if tokens[0] != "if":
-        return _invocation_branch(tokens, name)
-    try:
-        condition_end = tokens.index(";")
-        if tokens[condition_end + 1] != "then":
-            return None
-        then = condition_end + 1
-        true_end = tokens.index(";", then + 1)
-        tail = tokens[true_end + 1:]
-        if tail == ["fi"]:
-            else_start = false_end = None
-        else:
-            if not tail or tail[0] != "else":
-                return None
-            else_start = true_end + 1
-            false_end = tokens.index(";", else_start + 1)
-            if tokens[false_end + 1:] != ["fi"]:
-                return None
-    except (ValueError, IndexError):
-        return None
-
-    invocation = _invocation_branch(tokens[then + 1:true_end], name)
-    if invocation is None:
-        return None
-    launcher, via_python = invocation
-    if tokens[:condition_end] != ["if", *_launcher_condition(launcher)]:
-        return None
-    if (else_start is not None
-            and not _fallback_is_generated(tokens[else_start + 1:false_end], name)):
-        return None
-    return launcher, via_python
+    root = '"${CLAUDE_PROJECT_DIR}"'
+    for index, token in enumerate(tokens):
+        if token != name or index == 0:
+            continue
+        launcher = tokens[index - 1]
+        via_python = index >= 2 and tokens[index - 2] == "python3"
+        selected = "quality-runtime" if launcher == "$HOME/.local/bin/quality-runtime" else launcher
+        generated = runtime_command(selected, name, root)
+        # The earlier generated form omitted the missing-launcher adapter.
+        without_fallback = runtime_command(selected, name, root, fallback=False)
+        direct = direct_command(selected, name, root,
+                                None if selected == "quality-runtime" else via_python)
+        if command in (generated, without_fallback, direct):
+            return launcher, via_python
+    return None
 
 
 def _owned_command(settings: dict[str, object], event: str, name: str,
@@ -205,39 +175,40 @@ def _owned_command(settings: dict[str, object], event: str, name: str,
     return None
 
 
-def _launcher_identity(path: Path, expected_digest: str) -> bool:
-    """Check the launcher against the pinned runtime source, without executing it."""
+def _launcher_identity(path: Path) -> bool:
+    """Compare to this trusted diagnoser, independently of the guard release."""
     try:
-        content = path.read_bytes()
+        return path.read_bytes() == Path(__file__).read_bytes()
     except OSError:
         return False
-    return hashlib.sha256(content).hexdigest() == expected_digest
 
 
-def _launcher_ok(launcher: str, via_python: bool, root: Path,
-                 expected_digest: str | None) -> tuple[bool, str]:
-    """Check an extracted external launcher without running it."""
-    if expected_digest is None:
-        return False, "the pinned cache has no trusted launcher identity"
+def _launcher_ok(launcher: str, via_python: bool, root: Path) -> tuple[bool, str]:
+    """Check an extracted external launcher without running it.
+
+    Relative paths use the project directory, as the hook does. PATH and HOME
+    are the diagnoser's environment; a different host environment is unverified.
+    """
     if launcher == "$HOME/.local/bin/quality-runtime":
         path = Path.home() / ".local" / "bin" / "quality-runtime"
-        if not path.is_file() or not os.access(path, os.X_OK):
-            return False, str(path)
-        return _launcher_identity(path, expected_digest), str(path)
-    path = Path(launcher).expanduser()
-    if not path.is_absolute():
-        path = root / path
-    if via_python:
-        return (path.is_file() and _launcher_identity(path, expected_digest), str(path))
-    if "/" in launcher or launcher.startswith("."):
-        if not path.is_file() or not os.access(path, os.X_OK):
-            return False, str(path)
-        return _launcher_identity(path, expected_digest), str(path)
-    resolved = shutil.which(launcher)
-    if resolved:
-        resolved_path = Path(resolved)
-        return _launcher_identity(resolved_path, expected_digest), resolved
-    return False, f"the hook launcher is not available: {launcher}"
+    elif via_python or "/" in launcher or launcher.startswith("."):
+        path = Path(launcher)
+        if not path.is_absolute():
+            path = root / path
+    else:
+        search_path = os.pathsep.join(
+            str(Path(part) if Path(part).is_absolute() else root / part)
+            for part in os.environ.get("PATH", os.defpath).split(os.pathsep)
+        )
+        resolved = shutil.which(launcher, path=search_path)
+        if not resolved:
+            return False, f"the hook launcher is not available: {launcher}"
+        path = Path(resolved)
+    if not path.is_file() or (not via_python and not os.access(path, os.X_OK)):
+        return False, f"{path} is missing or not usable by this invocation"
+    if not _launcher_identity(path):
+        return False, f"{path} differs from this diagnoser; run diagnosis through the trusted launcher used by the hooks"
+    return True, str(path)
 
 
 def _legacy_profile(root: Path, settings: dict[str, object] | None) -> str | None:
@@ -249,6 +220,23 @@ def _legacy_profile(root: Path, settings: dict[str, object] | None) -> str | Non
     if any((directory / name).is_file() for name in SCRIPTS):
         return "legacy-copied"
     return None
+
+
+def _residual_guard_hooks(settings: dict[str, object]) -> bool:
+    """Find retained runtime wiring or references to the former guard files."""
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+    for event in hooks:
+        for _, entry in _hook_entries(settings, event):
+            command = entry.get("command")
+            if entry.get("type") != "command" or not isinstance(command, str):
+                continue
+            for name in ("stop-gate", "sample-guard", "no-verify-guard"):
+                if (_runtime_invocation(command, name) is not None
+                        or f"/.claude/agent-guard/{name}.py" in command):
+                    return True
+    return False
 
 
 def diagnose(root: Path, explicit_cache: str | None = None) -> dict[str, object]:
@@ -267,7 +255,8 @@ def diagnose(root: Path, explicit_cache: str | None = None) -> dict[str, object]
     try:
         settings = _settings(settings_path)
     except RuntimeError_ as exc:
-        _check(checks, "settings-json", "fail", str(exc))
+        if settings_path.exists():
+            _check(checks, "settings-json", "fail", str(exc))
 
     if not lock_exists:
         profile = _legacy_profile(root, settings)
@@ -306,8 +295,13 @@ def diagnose(root: Path, explicit_cache: str | None = None) -> dict[str, object]
     if lock["guard_enabled"] is not True:
         _check(checks, "guard-enabled", "skip", "agent guard is explicitly disabled for this profile")
         _check(checks, "release-lock", "pass", f"pinned {lock['version']} ({lock['commit']})")
+        residual = _residual_guard_hooks(settings or {})
+        _check(checks, "disabled-hook-wiring", "fail" if residual else "pass",
+               "disabled profile retains agent guard hooks; reconcile the lock and hook settings"
+               if residual else "disabled profile has no agent guard hooks")
+        failed = any(check["status"] == "fail" for check in checks)
         return {
-            "schema": 1, "status": "not-enabled", "healthy": True,
+            "schema": 1, "status": "broken" if failed else "not-enabled", "healthy": not failed,
             "installation_profile": "disabled", "release": release,
             "configured_gate": None, "checks": checks,
             "live_enforcement": "unverified", "host_settings": "unverified",
@@ -315,19 +309,14 @@ def diagnose(root: Path, explicit_cache: str | None = None) -> dict[str, object]
         }
 
     _check(checks, "release-lock", "pass", f"pinned {lock['version']} ({lock['commit']})")
+    if not settings_path.exists():
+        _check(checks, "settings-json", "fail", f"{settings_path} is missing")
     try:
         location = validate_cache(root, lock, explicit_cache)
     except RuntimeError_ as exc:
         _check(checks, "runtime-cache", "fail", str(exc))
-        location = None
     else:
         _check(checks, "runtime-cache", "pass", f"validated immutable cache at {location}")
-    launcher_digest: str | None = None
-    if location is not None:
-        manifest = _manifest(location / "manifest.json", lock)
-        candidate_digest = manifest.get("launcher_sha256")
-        if isinstance(candidate_digest, str):
-            launcher_digest = candidate_digest
 
     if settings is not None and settings.get("disableAllHooks") is True:
         _check(checks, "hooks-enabled", "fail",
@@ -365,7 +354,7 @@ def diagnose(root: Path, explicit_cache: str | None = None) -> dict[str, object]
             _check(checks, "hook-execution-mode", "fail",
                    f"{event} {matcher or '<none>'} hook is asynchronous and cannot enforce guard decisions")
         launcher_good, launcher_detail = _launcher_ok(
-            launcher, via_python, root, launcher_digest)
+            launcher, via_python, root)
         if not launcher_good:
             _check(checks, "launcher", "fail", f"launcher is unavailable: {launcher_detail}")
 
@@ -462,7 +451,7 @@ def _manifest(path: Path, lock: dict[str, object]) -> dict[str, object]:
     value = _json(path)
     if not isinstance(value, dict):
         raise RuntimeError_(f"cache manifest {path} must be a JSON object")
-    if set(value) != {"schema", "format", "source", "version", "commit", "files", "launcher_sha256"}:
+    if set(value) != {"schema", "format", "source", "version", "commit", "files"}:
         raise RuntimeError_(f"cache manifest {path} has unexpected fields")
     if (type(value["schema"]) is not int or value["schema"] != SCHEMA
             or type(value["format"]) is not int or value["format"] != FORMAT
@@ -476,9 +465,6 @@ def _manifest(path: Path, lock: dict[str, object]) -> dict[str, object]:
     for name, digest in files.items():
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise RuntimeError_(f"cache manifest {path} has an invalid digest for {name}")
-    launcher_digest = value["launcher_sha256"]
-    if not isinstance(launcher_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", launcher_digest):
-        raise RuntimeError_(f"cache manifest {path} has an invalid launcher digest")
     return value
 
 
@@ -564,8 +550,6 @@ def prepare(source: Path, version: str, commit: str, explicit_cache: str | None,
         )
     for name in SCRIPTS:
         _git(source, "cat-file", "-e", f"{commit}:scripts/agent-guard/{name}")
-    launcher_source = _git(source, "show", f"{commit}:scripts/quality-runtime.py")
-    launcher_digest = hashlib.sha256(launcher_source).hexdigest()
 
     destination = cache_root(explicit_cache) / commit
     lock = {"schema": SCHEMA, "source": SOURCE, "version": version, "commit": commit, "guard_enabled": True}
@@ -577,12 +561,6 @@ def prepare(source: Path, version: str, commit: str, explicit_cache: str | None,
                 source_blob = _git(source, "show", f"{commit}:scripts/agent-guard/{name}")
                 if cached != source_blob:
                     raise RuntimeError_(f"cached {name} does not match the pinned Git object")
-            manifest = _json(destination / "manifest.json")
-            if (not isinstance(manifest, dict)
-                    or manifest.get("launcher_sha256") != hashlib.sha256(
-                        _git(source, "show", f"{commit}:scripts/quality-runtime.py")
-                    ).hexdigest()):
-                raise RuntimeError_("cached launcher identity does not match the pinned Git object")
             return destination
         except RuntimeError_:
             raise RuntimeError_(f"cache entry already exists but is invalid: {destination}")
@@ -601,7 +579,7 @@ def prepare(source: Path, version: str, commit: str, explicit_cache: str | None,
         (temp / "manifest.json").write_text(
             json.dumps(
                 {"schema": SCHEMA, "format": FORMAT, "source": SOURCE, "version": version,
-                 "commit": commit, "files": hashes, "launcher_sha256": launcher_digest},
+                 "commit": commit, "files": hashes},
                 indent=2, sort_keys=True,
             ) + "\n",
             encoding="utf-8",

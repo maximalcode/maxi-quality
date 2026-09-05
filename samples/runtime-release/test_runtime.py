@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -20,10 +21,11 @@ RUNTIME = REPO / "scripts" / "quality-runtime.py"
 MIGRATE = REPO / "scripts" / "quality-runtime-migrate.py"
 
 
-def call(*args: str, cwd: Path | None = None, input: str = "") -> subprocess.CompletedProcess[str]:
+def call(*args: str, cwd: Path | None = None, input: str = "",
+         env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         (sys.executable, *args), cwd=cwd or REPO, input=input,
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, check=False, env=env,
     )
 
 
@@ -39,6 +41,46 @@ def project(path: Path) -> None:
     (path / "README.md").write_text("fixture\n", encoding="utf-8")
     git(path, "add", "-A")
     git(path, "commit", "--quiet", "-m", "base")
+
+
+def launcher_roundtrips(root: Path, commit: str, cache: Path) -> None:
+    """Migration, diagnosis and the host shell agree on supported launchers."""
+    target = root / "launcher project with spaces"
+    project(target)
+    home = root / "fixture-home"
+    bin_dir = home / ".local" / "bin"
+    bin_dir.mkdir(parents=True)
+    launchers = (
+        (str(bin_dir / "custom-runtime.py"), bin_dir / "custom-runtime.py"),
+        (str(bin_dir / "custom executable"), bin_dir / "custom executable"),
+        ("quality-runtime.py", target / "quality-runtime.py"),
+        ("qr.py", target / "qr.py"),
+        ("qr", bin_dir / "qr"),
+        ("quality-runtime", bin_dir / "quality-runtime"),
+    )
+    env = {**os.environ, "HOME": str(home), "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
+           "CLAUDE_PROJECT_DIR": str(target), "MAXI_QUALITY_RUNTIME_CACHE": str(cache)}
+    failures = []
+    for spelling, destination in launchers:
+        shutil.copyfile(RUNTIME, destination)
+        destination.chmod(0o755)
+        migrated = call(str(MIGRATE), "--target", str(target), "--version", "v1.2.0",
+                        "--commit", commit, "--launcher", spelling)
+        assert migrated.returncode == 0, migrated.stderr
+        (target / ".claude" / "agent-guard.json").write_text('{"gate_command":"false"}')
+        diagnosed = call(str(RUNTIME), "diagnose", "--root", str(target), "--json", env=env)
+        if diagnosed.returncode != 0:
+            failures.append(spelling + ": " + diagnosed.stdout)
+        settings = json.loads((target / ".claude" / "settings.json").read_text())
+        command = next(entry["command"] for group in settings["hooks"]["PreToolUse"]
+                       if group.get("matcher") == "Bash" for entry in group["hooks"])
+        invoked = subprocess.run(command, shell=True, cwd=target, env=env,
+                                 input='{"tool_name":"Bash","tool_input":{"command":"git commit --no-verify"}}',
+                                 capture_output=True, text=True)
+        assert invoked.returncode == 0, (spelling, invoked.stderr)
+        assert json.loads(invoked.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "unavailable" not in invoked.stdout, (spelling, invoked.stdout)
+    assert not failures, "Generated launcher roundtrips failed: " + "\n".join(failures)
 
 
 def main() -> int:
@@ -63,6 +105,10 @@ def main() -> int:
         head = git(source, "rev-parse", "HEAD")
         git(source, "tag", "v1.2.0")
         (source / "release-note").write_text("second pin\n", encoding="utf-8")
+        # A shared launcher serves guard releases whose launcher sources
+        # differ, including an otherwise harmless comment-only change.
+        with (source / "scripts" / "quality-runtime.py").open("a") as stream:
+            stream.write("\n# A different launcher source in this release.\n")
         git(source, "add", "-A")
         git(source, "commit", "--quiet", "-m", "follow-up")
         previous = git(source, "rev-parse", "HEAD")
@@ -75,6 +121,7 @@ def main() -> int:
             assert prepared.returncode == 0, prepared.stderr
         assert (cache / head / "manifest.json").is_file()
         assert (cache / previous / "manifest.json").is_file()
+        launcher_roundtrips(root, head, cache)
 
         # Migration preserves an existing hook and removes the copied guard
         # body.  A second migration produces byte-for-byte identical files.
@@ -160,6 +207,28 @@ def main() -> int:
         assert json.loads((target_b / ".claude" / "quality-runtime.json").read_text())["commit"] == previous
         status = call(str(RUNTIME), "status", "--root", str(target_b), "--cache-root", str(cache))
         assert status.returncode == 0, status.stderr
+
+        # Existing format-1 caches survive a launcher upgrade. Status,
+        # dispatch and repeated prepare use the same immutable directory.
+        manifest_path = cache / previous / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["format"] = 1
+        manifest.pop("launcher_sha256", None)
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        old_cache = {p: p.read_bytes() for p in (cache / previous).iterdir() if p.is_file()}
+        compatible = call(str(RUNTIME), "status", "--root", str(target_b),
+                          "--cache-root", str(cache))
+        assert compatible.returncode == 0, compatible.stderr
+        dispatched = call(str(RUNTIME), "no-verify-guard", "--root", str(target_b),
+                          "--cache-root", str(cache),
+                          input='{"tool_name":"Bash","tool_input":{"command":"git commit --no-verify"}}')
+        assert '"permissionDecision": "deny"' in dispatched.stdout
+        assert "unavailable" not in dispatched.stdout
+        prepared_again = call(str(RUNTIME), "prepare", "--source", str(source),
+                              "--version", "v1.1.0", "--commit", previous,
+                              "--cache-root", str(cache), "--allow-untagged-development")
+        assert prepared_again.returncode == 0, prepared_again.stderr
+        assert old_cache == {p: p.read_bytes() for p in (cache / previous).iterdir() if p.is_file()}
 
         # The installation doctor is read-only and observes the actual
         # Adopter wiring.  Its JSON shape is stable and says that a static
@@ -368,6 +437,9 @@ def main() -> int:
         # as an argument to another command.  Each mutation uses an existing
         # launcher so this exercises parsing independently from availability.
         control_flow_cases = (
+            "python3 " + str(RUNTIME)
+            + " stop-gate --root '${CLAUDE_PROJECT_DIR}'"
+            + ' # --root "${CLAUDE_PROJECT_DIR}"',
             "if false; then python3 " + str(RUNTIME)
             + ' stop-gate --root "${CLAUDE_PROJECT_DIR}"; fi',
             "exit 0; if [ -f /missing/path ]; then python3 " + str(RUNTIME)
@@ -456,6 +528,9 @@ def main() -> int:
             + '\nstop-gate --root "${CLAUDE_PROJECT_DIR}"',
             "python3 " + str(custom_launcher)
             + " stop-gate --root '${CLAUDE_PROJECT_DIR}'",
+            "python3 " + str(custom_launcher)
+            + " stop-gate --root '${CLAUDE_PROJECT_DIR}'"
+            + ' # --root "${CLAUDE_PROJECT_DIR}"',
         ):
             malformed = json.loads(original_settings_b)
             for group in malformed["hooks"]["Stop"]:
@@ -471,6 +546,18 @@ def main() -> int:
                        for c in json.loads(malformed_report.stdout)["checks"])
             settings_path_b.write_bytes(original_settings_b)
 
+        for direct in (
+            shlex.quote(str(custom_launcher)) + ' stop-gate --root "${CLAUDE_PROJECT_DIR}"',
+            "python3 " + shlex.quote(str(custom_launcher)) + ' stop-gate --root "${CLAUDE_PROJECT_DIR}"',
+        ):
+            direct_settings = json.loads(original_settings_b)
+            direct_settings["hooks"]["Stop"][0]["hooks"][0]["command"] = direct
+            settings_path_b.write_text(json.dumps(direct_settings))
+            direct_report = call(str(custom_launcher), "diagnose", "--root", str(target_b),
+                                 "--cache-root", str(cache), "--json")
+            assert direct_report.returncode == 0, direct_report.stdout
+        settings_path_b.write_bytes(original_settings_b)
+
         # A syntactically plausible copy that does not dispatch when invoked
         # is not a trusted launcher.  Diagnosis must inspect identity without
         # executing this candidate.
@@ -479,6 +566,8 @@ def main() -> int:
         hollow_launcher = hollow_bin / "quality-runtime"
         hollow_source = custom_launcher.read_text(encoding="utf-8")
         hollow_source = hollow_source.split("if __name__ == \"__main__\":", 1)[0]
+        executed_marker = root / "candidate-was-executed"
+        hollow_source += "\nPath(" + repr(str(executed_marker)) + ").write_text('executed')\n"
         hollow_launcher.write_text(hollow_source, encoding="utf-8")
         hollow_launcher.chmod(0o755)
         hollow_migrated = call(str(MIGRATE), "--target", str(target_b),
@@ -488,6 +577,7 @@ def main() -> int:
         hollow_report = call(str(custom_launcher), "diagnose", "--root", str(target_b),
                              "--cache-root", str(cache), "--json")
         assert hollow_report.returncode != 0
+        assert not executed_marker.exists(), "diagnosis executed the candidate launcher"
         assert any(c["id"] == "launcher" and c["status"] == "fail"
                    for c in json.loads(hollow_report.stdout)["checks"])
         restored = call(str(MIGRATE), "--target", str(target_b),
@@ -510,6 +600,48 @@ def main() -> int:
         assert disabled_json["status"] == "not-enabled"
         assert disabled_json["live_enforcement"] == "unverified"
 
+        # A workflow-only profile may still carry unrelated policy. Invalid
+        # JSON is a configuration failure even when the guard is disabled.
+        disabled_settings = target_disabled / ".claude" / "settings.json"
+        unrelated = {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo own"}]}]},
+                     "permissions": {"deny": ["Edit(/unrelated/**)"]}}
+        disabled_settings.write_text(json.dumps(unrelated))
+        unrelated_bytes = disabled_settings.read_bytes()
+        unrelated_report = call(str(RUNTIME), "diagnose", "--root", str(target_disabled), "--json")
+        assert unrelated_report.returncode == 0, unrelated_report.stdout
+        assert disabled_settings.read_bytes() == unrelated_bytes
+        disabled_settings.write_text("{")
+        invalid_disabled = call(str(RUNTIME), "diagnose", "--root", str(target_disabled), "--json")
+        assert invalid_disabled.returncode != 0
+        assert any(c["id"] == "settings-json" and c["status"] == "fail"
+                   for c in json.loads(invalid_disabled.stdout)["checks"])
+        disabled_settings.write_bytes(unrelated_bytes)
+
+        # Disabling a previously enabled lock does not remove its hooks.
+        # Diagnosis must report the inconsistent profile without repairing it.
+        for launcher in (str(RUNTIME), "legacy"):
+            if launcher == "legacy":
+                residue = {"hooks": {"Stop": [{"hooks": [{"type": "command", "command":
+                    'python3 "${CLAUDE_PROJECT_DIR}/.claude/agent-guard/stop-gate.py"'}]}]}}
+                (target_disabled / ".claude" / "settings.json").write_text(json.dumps(residue))
+            else:
+                enabled = call(str(MIGRATE), "--target", str(target_disabled),
+                               "--version", "v1.2.0", "--commit", head, "--launcher", launcher)
+                assert enabled.returncode == 0, enabled.stderr
+                disabled = call(str(MIGRATE), "--target", str(target_disabled),
+                                "--version", "v1.2.0", "--commit", head, "--guard-disabled")
+                assert disabled.returncode == 0, disabled.stderr
+            before_disabled = {p: p.read_bytes() for p in (target_disabled / ".claude").rglob("*") if p.is_file()}
+            residual_report = call(str(RUNTIME), "diagnose", "--root", str(target_disabled),
+                                   "--cache-root", str(cache), "--json")
+            assert residual_report.returncode != 0, residual_report.stdout
+            residual_json = json.loads(residual_report.stdout)
+            assert residual_json["healthy"] is False
+            assert residual_json["installation_profile"] == "disabled"
+            assert any(c["id"] == "disabled-hook-wiring" and c["status"] == "fail"
+                       for c in residual_json["checks"])
+            assert before_disabled == {p: p.read_bytes() for p in (target_disabled / ".claude").rglob("*") if p.is_file()}
+
         # Legacy copied and shared installs are migration candidates, not
         # versioned healthy installs.  The classification is based on the
         # actual files and command wiring, and includes the supported seam.
@@ -527,6 +659,13 @@ def main() -> int:
         legacy_json = json.loads(legacy_report.stdout)
         assert legacy_json["status"] == "legacy-copied"
         assert "quality-runtime-migrate.py" in legacy_json["migration"]
+        (legacy / ".claude" / "agent-guard" / "shim.py").write_text("shared fixture")
+        shared_report = call(str(RUNTIME), "diagnose", "--root", str(legacy), "--json")
+        assert shared_report.returncode == 0
+        shared_json = json.loads(shared_report.stdout)
+        assert shared_json["status"] == "legacy-shared"
+        assert shared_json["healthy"] is False
+        assert "quality-runtime-migrate.py" in shared_json["migration"]
     print("runtime-release: all checks passed")
     return 0
 

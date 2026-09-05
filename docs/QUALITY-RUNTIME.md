@@ -34,7 +34,7 @@ python3 scripts/quality-runtime.py prepare \
 
 `prepare` requires the source to carry the matching release tag. The
 `--allow-untagged-development` switch exists only for local fixture testing.
-Install the launcher itself from the same pinned source, outside consumer
+Install the launcher itself from a trusted pinned source, outside consumer
 trees, with `quality-runtime.py install --source ... --commit ...`; its default
 destination is `~/.local/bin/quality-runtime` (an explicit `--install-root`
 is available for staging).
@@ -55,9 +55,12 @@ the pre-tool guards remain scoped to their policy decisions so ordinary shell
 and edit actions remain repairable.
 
 The runtime validates the lock, fixed source, release version, full commit
-shape, fixed script allowlist, every cached file hash, and the pinned launcher
-source digest before execution. It does not authenticate a Git repository or
-protect against a user who can modify both the lock and cache. The cache is a
+shape, fixed script allowlist and every cached file hash before execution.
+The cache format remains 1; existing cache entries continue to work with
+updated launchers. A single launcher can serve projects pinning different
+guard releases, regardless of the launcher source in those releases. It does
+not authenticate a Git repository or protect against a user who can modify
+both the lock and cache. The cache is a
 distribution convenience, not a security boundary; the repository's CI and
 release process remain the source of release authenticity.
 
@@ -84,19 +87,36 @@ selected installation profile. Unrelated hooks and permission entries are
 ignored. The JSON result has stable keys (`schema`, `status`, `healthy`,
 `installation_profile`, `release`, `configured_gate`, `checks`,
 `live_enforcement`, `host_settings`, and `migration`) and each check names its
-own pass, skip, or failure. Commands are checked as shell invocations, so a
-comment or an `echo` containing the expected launcher text is reported as
-changed wiring. Shell separators and alternate quoting of the project root are
-also rejected because they change what the host executes. An asynchronous
-owned hook is also reported as broken because it cannot enforce a guard
-decision.
+own pass, skip, or failure. Migration and diagnosis share a command builder
+inside the single-file launcher. Diagnosis accepts exact generated commands,
+the earlier generated form without a missing-launcher fallback, and direct
+invocations with the generated quoting. It rejects other shell programs, even
+if they might be equivalent; comments, wrappers and alternate root quoting
+cannot stand in for the supported commands. An asynchronous owned hook is also
+reported as broken because it cannot enforce a guard decision.
+
+Launcher identity is checked by comparing its bytes with the trusted launcher
+running the diagnosis, without executing or importing the candidate. That
+comparison is independent of the project's guard pin. Run diagnosis through
+the trusted launcher named by the hooks: a different copy, even one with only
+a comment changed, cannot verify that candidate. This assumes the executing
+diagnoser itself is trusted; it is not an authenticity check or proof that
+Python, the shell or the host will execute it successfully. Relative paths use
+the project root, and HOME/PATH resolution uses the diagnoser's environment.
+
 `live_enforcement` and `host_settings` are `unverified`: a static diagnosis
 cannot prove that an agent host loaded or executed a hook during a real
 session, or infer host overrides from the project files.
 
 The supported profiles are `versioned-with-samples`,
 `versioned-without-samples`, and `disabled`. The latter is a deliberate
-workflow-only profile and reports `not-enabled`; it never reports enforcement.
+workflow-only profile and reports `not-enabled` when no guard hooks remain;
+it never reports enforcement. `--guard-disabled` writes the disabled lock but
+does not remove existing hooks. A disabled lock alongside recognized runtime
+hooks or references to legacy guard scripts reports `broken`, requiring the
+owner to reconcile the profile and wiring. Diagnosis does not repair either.
+Malformed settings also fail; absent settings are valid for a clean disabled
+profile.
 The presence of `samples/expected/` selects the first profile, so a missing
 sample hook is a failure in that profile rather than a way to opt out. A
 checkout with the old copied or shared guard is classified as `legacy-copied`
