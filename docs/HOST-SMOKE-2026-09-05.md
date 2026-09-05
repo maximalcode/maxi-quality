@@ -1,6 +1,6 @@
 # Host smoke observation — 2026-09-05
 
-**Unavailable. No live enforcement assertion passed.** The available Claude
+**Unavailable for both hosts. No live enforcement assertion passed.** The available Claude
 Code 2.1.236 reported a logged-in account through `auth status --json`, but the
 actual disposable repository-root launch failed with an expired OAuth session
 that could not be refreshed. No host hook lifecycle event was emitted.
@@ -34,3 +34,37 @@ observations, and wiring-removed negative control remain **unobserved**. The
 issue is incomplete. No host switch, credential change, installation, or user
 settings override was used to obtain a different result. This synthetic
 attempt contributes nothing to natural-session measurements.
+
+The complete harness also made a separate native Codex CLI 0.153.3 attempt,
+recorded in the [Codex public outcome record](../samples/agent-host-smoke/observation-codex-2026-09-05.json).
+It used the committed guard revision
+`76db4f3bba15a09d6ceae81b58908e216b537c8d` and the same isolated development
+runtime profile. Native `account/read` was usable. Before any model turn,
+`hooks/list` at `host-01` (repository root), `host-02` (linked worktree) and
+`host-03` (subdirectory) each reported zero project hooks. The independent
+installation diagnoses were healthy. The command returned exit 2,
+`host-project-hooks-not-discovered`; all enforcement observations remained
+empty. `host-04` had zero discovered hooks after removing its wiring, but its
+real-turn negative assertion remained `not-run`.
+
+These newly created projects had received no project or hook trust onboarding.
+No task or model turn was started by the adapter, and no trust or configuration
+was changed to force discovery. Raw protocol responses, which may contain
+account information, were retained only in new private directories outside
+Git with owner-only directory/file access. The owned repositories and cache
+were removed. This preflight result establishes neither runtime invocation nor
+a passing negative control.
+
+A separate read-only comparison of the native hook source showed that Codex
+0.153.3 discovers a linked worktree's project hooks from its original checkout:
+three hooks appeared when the same candidate JSON was temporarily present in
+the original checkout, and disappeared when that source was removed. The
+candidate file was removed after inspection; none of those hooks was trusted
+or executed. The harness models that source location in its disposable layout.
+
+The Codex adapter's offline protocol test covers the full phase sequence and
+removed-wiring control, including Stop continuation and interruption. Its
+shell assertion deliberately requires native command request/result items;
+whether PreToolUse denial actually emits the assumed item sequence remains
+unverified. A host that omits it cannot pass from hook feedback alone. Both
+hosts' live observations are still required to complete #256.

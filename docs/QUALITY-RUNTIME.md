@@ -203,7 +203,7 @@ settings when Python 3.11+ can parse them. A local disabled hooks feature fails
 diagnosis. Other sources, session overrides and persisted trust remain
 `unverified`, as does live enforcement. `healthy: true` establishes an intact
 installation, not discovery or execution by a running host. The separate live
-smoke described below currently targets Claude Code.
+smoke described below selects either native host explicitly.
 
 `python3 samples/codex-agent-guard/test_codex.py` exercises native payloads,
 generated commands from a nested directory, Stop/recorder transitions, migration,
@@ -215,11 +215,13 @@ that wiring in the existing CI context.
 
 ## Observe host enforcement
 
-The separate opt-in command uses an already installed Claude Code and its
-existing authentication. Run from a baseline checkout with Python 3 and Git:
+The separate opt-in command selects an already installed native host and uses
+only that host's existing authentication. Run from a baseline checkout with
+Python 3 and Git:
 
 ```bash
-python3 scripts/agent-host-smoke.py --run-live
+python3 scripts/agent-host-smoke.py --run-live --host claude
+python3 scripts/agent-host-smoke.py --run-live --host codex
 ```
 
 It creates disposable Git repositories and an isolated development runtime
@@ -230,8 +232,10 @@ or real push requested. Git routing inherited from the caller is excluded
 from fixture operations. The temporary repositories, receipts, ledgers and
 cache are removed when the command returns, including failure paths.
 
-`--claude /path/to/claude` selects an existing executable. No other host is
-selected automatically. `--timeout 90` bounds each host turn. The launch uses
+`--claude /path/to/claude` and `--codex /path/to/codex` select existing
+executables. Omitting `--host` preserves the Claude default; a Codex request
+never probes Claude authentication or falls back to it. `--timeout 90` bounds
+each host operation and turn. The Claude launch uses
 `--print --verbose --output-format stream-json --include-hook-events
 --no-session-persistence`. Stop probes expose no tools; shell probes expose
 only Bash and authorize Bash for that invocation. Existing user, project and
@@ -239,6 +243,36 @@ local settings remain in the host's normal selection. The command does not
 override a setting that disables hooks, skip permissions, or retry through an
 access refusal. The host may write its own normal local operational metadata;
 the command does not edit it.
+
+Codex launches its native `app-server` over stdio, using the configured OpenAI
+model. The adapter first calls `account/read` without requesting token refresh,
+then `hooks/list` independently at all three launch locations and the control.
+It requires the three expected project hooks, their source, enabled state and
+current trusted definitions. No discovered hooks, missing protocol metadata,
+disabled hooks, or unreviewed definitions produce a concrete unavailable code
+before any model turn. Discovery and installation diagnosis remain separate.
+The linked fixture uses its original checkout's hook source, matching the
+0.153.3 discovery observation below.
+
+Fresh disposable projects normally need a human's project and hook review.
+For an interactive run, add `--wait-for-hook-review` in a private terminal. The
+command keeps its own fixtures alive and prints the exact root, linked,
+subdirectory and negative-control locations to that terminal. Review the
+fixture gate, native hook definitions and referenced runtime using normal
+Codex project onboarding and `/hooks`, then close the review sessions and press
+Enter. The command rechecks discovery; Enter is not a trust grant and cannot
+make missing or untrusted hooks pass. Cancellation removes the owned fixtures.
+It never writes a trust store, supplies a trust-bypass flag or changes user
+configuration. Without this option, unmet prerequisites return exit 2 promptly.
+
+After preflight, each Codex probe starts an ephemeral native task with workspace
+write sandboxing and approval requests disabled (requests cannot be granted).
+It preserves the configured model and never overrides hook settings. Shell
+markers and the inert `git` executable stay inside the disposable workspace so
+the probe needs no extra writable directories. Native Stop refusal causes
+continuation, so refusal probes interrupt only after the matching native
+`hook/completed` event and guard ledger establish the decision. Fresh-pass and
+negative-control probes require a successfully completed native turn.
 
 Each supported root first gets the read-only `diagnose` result from the same
 launcher its hooks use. That result stays separate, with `live_enforcement`
@@ -260,9 +294,20 @@ same disposable repository:
    its tripwire executes. That executable only writes a marker: even missing
    enforcement cannot commit, push, or reach another repository.
 
-Shell phases require exactly one tool request. The host's hook response has no
+Shell phases require exactly one tool request. Neither host's hook summary has a
 tool-use identifier, so additional requests make attribution ambiguous and
 produce `ambiguous-tool-requests`, never a passing enforcement assertion.
+Codex also requires the event's project source and thread/turn identity. Its
+shell assertion requires an exact native `commandExecution` request and the
+same item's completed result (`declined` for denial), plus a blocked
+`preToolUse` hook summary with the guard's reason. **That denied-command event
+ordering is an unverified integration assumption.** The published App Server
+contract describes it for command approval, but does not establish that
+PreToolUse denial emits the same items. The offline simulator exercises this
+shape; it does not prove a real host emits it. If Codex omits those items, the
+smoke remains unverified (`tool-not-requested` or an incomplete/timeout outcome),
+even when hook feedback exists. This is an outstanding live observation for
+#256, not a claim of completed shell enforcement.
 
 The phases run at a repository root (`host-01`), a linked-worktree root
 (`host-02`), and a subdirectory (`host-03`). The subdirectory outcomes are
@@ -295,8 +340,10 @@ counts. The
 command without authenticating; their invented host messages prove no live
 integration.
 
-The host event adapter follows the published
-[Claude Agent SDK message contract](https://code.claude.com/docs/en/agent-sdk/typescript#sdkhookresponsemessage).
+The host adapters use the published
+[Claude Agent SDK message contract](https://code.claude.com/docs/en/agent-sdk/typescript#sdkhookresponsemessage)
+and the native [Codex App Server contract](https://learn.chatgpt.com/docs/app-server),
+including its installed JSON schema for `hook/completed` and item/turn events.
 A lifecycle event alone is not a passing guard decision, and voluntary model
 compliance is never evidence of invocation. The first dated live attempt is
 [recorded separately](HOST-SMOKE-2026-09-05.md); it was unavailable, so successful
@@ -310,8 +357,21 @@ same native JSON in the original trusted baseline checkout. Each was visible
 as **untrusted**, with no errors or warnings. This proves project discovery;
 no hook was trusted or executed by these read-only inspections.
 
-The linked worktree returned no project hooks, including experiments with a
-project TOML file, inline hooks and an explicitly enabled hooks feature. A
-harmless Stop hook supplied through session flags was visible as untrusted.
-Discovery therefore differed by checkout; the exact worktree/project-layer
-cause remains unresolved. Neither observation establishes live enforcement.
+A linked worktree initially returned no project hooks when only its own hook
+file was present. A later read-only comparison found the cause: with the same
+candidate JSON temporarily present in the original checkout, the linked
+worktree discovered three project hooks whose source paths pointed to the
+**original checkout**. Removing that original source returned discovery to
+zero. The temporary candidate file was removed after the comparison. For this
+host version, linked-worktree discovery uses the original checkout's project
+hook source. This is source-location evidence, not execution evidence.
+
+The repeatable Codex smoke was then run against entirely new disposable
+fixtures. All three locations returned zero project hooks; installation
+diagnosis was healthy independently. The result was exit 2 with
+`host-project-hooks-not-discovered`, no model turns and no enforcement
+observations. The removed-wiring control had zero discovered hooks but its
+live assertion was `not-run`. See the separate
+[Codex outcome record](../samples/agent-host-smoke/observation-codex-2026-09-05.json)
+and [dated account of both hosts](HOST-SMOKE-2026-09-05.md). #256 remains
+incomplete until both hosts' required live observations succeed.

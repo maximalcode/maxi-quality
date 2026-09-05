@@ -17,6 +17,171 @@ COMMAND = REPO / "scripts" / "agent-host-smoke.py"
 
 
 class SmokeCommand(unittest.TestCase):
+    def test_codex_native_protocol_runs_every_phase_and_removed_wiring_control(self):
+        with tempfile.TemporaryDirectory() as temp:
+            host = Path(temp) / "codex"
+            host.write_text("#!" + sys.executable + "\n" +
+                            (REPO / "samples/agent-host-smoke/codex_protocol_fixture.py").read_text())
+            host.chmod(0o700)
+            private = Path(temp) / "evidence"
+            result = subprocess.run(
+                [sys.executable, str(COMMAND), "--run-live", "--host", "codex",
+                 "--codex", str(host), "--claude", "/never/call/claude",
+                 "--private-output", str(private), "--timeout", "5"],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads(result.stdout)
+            self.assertEqual(report["host"], "codex")
+            self.assertEqual(report["negative_control"]["status"], "detected")
+            for fixture in report["fixtures"]:
+                self.assertTrue(fixture["diagnosis"]["healthy"])
+                self.assertEqual([o["outcome"] for o in fixture["observations"]], [
+                    "no-receipt-blocked", "fresh-stop-allowed", "content-changed-blocked",
+                    "ordinary-shell-allowed", "skip-verification-denied"])
+            for artifact in (private, *private.rglob("*")):
+                self.assertEqual(artifact.stat().st_mode & 0o077, 0)
+            # Native events/ledger are retained privately; IDs and paths never
+            # leak into the public outcome report.
+            self.assertTrue(list(private.rglob("stdout.jsonl")))
+            self.assertNotIn("offline-codex-thread", result.stdout)
+            self.assertNotIn(str(Path(temp)), result.stdout)
+
+    def test_codex_subdirectory_discovery_failure_stays_separate_from_supported_roots(self):
+        with tempfile.TemporaryDirectory() as temp:
+            host = Path(temp) / "codex"
+            host.write_text("#!" + sys.executable + "\n" +
+                            (REPO / "samples/agent-host-smoke/codex_protocol_fixture.py").read_text())
+            host.chmod(0o700)
+            result = subprocess.run(
+                [sys.executable, str(COMMAND), "--run-live", "--host", "codex",
+                 "--codex", str(host), "--timeout", "5"], capture_output=True, text=True,
+                env={**os.environ, "SMOKE_CODEX_PROTOCOL": "subdirectory-absent"},
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads(result.stdout)
+            self.assertEqual(report["live_enforcement"], "verified-supported-roots")
+            subdirectory = report["fixtures"][2]
+            self.assertEqual(subdirectory["discovery"]["outcome"], "host-project-hooks-not-discovered")
+            self.assertEqual(subdirectory["observations"], [])
+            self.assertEqual(subdirectory["status"], "unavailable")
+
+    def test_codex_missing_untrusted_disabled_or_unauthenticated_preflight_never_starts_a_turn(self):
+        for mode, code in (("untrusted", "host-hook-trust-required"),
+                           ("modified", "host-hook-trust-required"),
+                           ("disabled", "host-hooks-disabled"),
+                           ("absent", "host-project-hooks-not-discovered"),
+                           ("no-auth", "host-authentication-unavailable"),
+                           ("missing-hash", "host-hook-discovery-unavailable")):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temp:
+                host = Path(temp) / "codex"
+                host.write_text("#!" + sys.executable + "\n" +
+                                (REPO / "samples/agent-host-smoke/codex_protocol_fixture.py").read_text())
+                host.chmod(0o700)
+                private = Path(temp) / "evidence"
+                result = subprocess.run(
+                    [sys.executable, str(COMMAND), "--run-live", "--host", "codex",
+                     "--codex", str(host), "--timeout", "2", "--private-output", str(private)],
+                    capture_output=True, text=True, env={**os.environ, "SMOKE_CODEX_PROTOCOL": mode},
+                )
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                report = json.loads(result.stdout)
+                self.assertEqual(report["reason"], code)
+                self.assertEqual(report["live_enforcement"], "unverified")
+                self.assertEqual(len(report["fixtures"]), 3)
+                self.assertEqual(report["negative_control"]["status"], "not-run")
+                for log in private.rglob("requests.private.jsonl"):
+                    requests = [json.loads(line) for line in log.read_text().splitlines()]
+                    self.assertNotIn("thread/start", [r.get("method") for r in requests])
+                    self.assertNotIn("turn/start", [r.get("method") for r in requests])
+
+    def test_codex_stop_requires_native_identity_source_and_guard_decision(self):
+        from copy import deepcopy
+        observe = runpy.run_path(str(REPO / "scripts/agent_host_codex.py"))["observe"]
+        source = Path("/fixture/.codex/hooks.json")
+        hook = {"method": "hook/completed", "params": {"threadId": "fixture-thread", "turnId": "fixture-turn",
+                "run": {"id": "fixture-hook", "eventName": "stop", "source": "project",
+                        "sourcePath": str(source), "handlerType": "command", "executionMode": "sync",
+                        "status": "blocked", "entries": [{"kind": "feedback", "text": "The gate has not run."}]}}}
+        ledger = [{"session": "fixture-thread", "outcome": "no-receipt", "blocked": True}]
+        def check(events, rows=ledger):
+            return observe("no-receipt", events, rows, "fixture-thread", "fixture-turn", source)
+        self.assertEqual(check([hook]), "no-receipt-blocked")
+        self.assertEqual(check([]), "hook-not-observed")
+        self.assertEqual(check([hook], []), "guard-decision-not-observed")
+        self.assertEqual(check([hook], [{**ledger[0], "session": "other-thread"}]), "guard-decision-not-observed")
+        for field, value in (("threadId", "other-thread"), ("turnId", "other-turn")):
+            other = deepcopy(hook)
+            other["params"][field] = value
+            self.assertEqual(check([other]), "hook-not-observed")
+        for field, value in (("source", "user"), ("sourcePath", "/other/hooks.json"),
+                             ("id", ""), ("status", "failed"), ("entries", [])):
+            with self.subTest(field=field):
+                other = deepcopy(hook)
+                other["params"]["run"][field] = value
+                self.assertNotEqual(check([other]), "no-receipt-blocked")
+
+    def test_codex_shell_requires_exact_identified_request_native_denial_and_inert_tripwire(self):
+        from copy import deepcopy
+        observe = runpy.run_path(str(REPO / "scripts/agent_host_codex.py"))["observe"]
+        source = Path("/fixture/.codex/hooks.json")
+        command = "/fixture/git commit --no-verify -m smoke"
+        scope = {"threadId": "fixture-thread", "turnId": "fixture-turn"}
+        item = {"type": "commandExecution", "id": "fixture-command", "command": command}
+        request = {"method": "item/started", "params": {**scope, "item": item}}
+        result = {"method": "item/completed", "params": {**scope, "item": {**item, "status": "declined"}}}
+        hook = {"method": "hook/completed", "params": {**scope, "run": {
+            "id": "fixture-hook", "eventName": "preToolUse", "source": "project", "sourcePath": str(source),
+            "handlerType": "command", "executionMode": "sync", "status": "blocked",
+            "entries": [{"kind": "feedback", "text": "This `git commit` passes --no-verify, which switches off the hook."}]}}}
+        def check(events, executed=False):
+            return observe("skip", events, [], "fixture-thread", "fixture-turn", source, command, executed)
+        events = [request, hook, result]
+        self.assertEqual(check(events), "skip-verification-denied")
+        self.assertEqual(check(events, True), "tripwire-executed")
+        self.assertEqual(check([request, result]), "hook-not-observed")
+        # PreToolUse may not emit command items on a native host. That shape
+        # must stay unverified; hook feedback alone cannot prove this request.
+        self.assertEqual(check([hook]), "tool-not-requested")
+        extra = deepcopy(request)
+        extra["params"]["item"] = {**item, "id": "other-command", "command": "echo other"}
+        self.assertEqual(check([extra, *events]), "ambiguous-tool-requests")
+        for field, value in (("id", ""), ("command", "echo other")):
+            with self.subTest(field=field):
+                malformed = deepcopy(events)
+                for event in (malformed[0], malformed[2]):
+                    event["params"]["item"][field] = value
+                self.assertNotEqual(check(malformed), "skip-verification-denied")
+
+    def test_private_scratch_cannot_be_created_inside_a_git_checkout(self):
+        with tempfile.TemporaryDirectory() as temp:
+            parent = Path(temp) / "checkout"
+            parent.mkdir()
+            subprocess.run(["git", "init", "--quiet", str(parent)], check=True)
+            host = Path(temp) / "codex"
+            host.write_text("#!" + sys.executable + "\n" +
+                            (REPO / "samples/agent-host-smoke/codex_protocol_fixture.py").read_text())
+            host.chmod(0o700)
+            result = subprocess.run(
+                [sys.executable, str(COMMAND), "--run-live", "--host", "codex", "--codex", str(host)],
+                env={**os.environ, "TMPDIR": str(parent), "SMOKE_CODEX_PROTOCOL": "untrusted"},
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout)["reason"], "private-scratch-inside-git-checkout")
+            self.assertEqual([path.name for path in parent.iterdir()], [".git"])
+
+    def test_codex_selection_never_requires_claude(self):
+        result = subprocess.run(
+            [sys.executable, str(COMMAND), "--run-live", "--host", "codex",
+             "--codex", "/unavailable/private-host/codex"], capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["host"], "codex")
+        self.assertEqual(report["reason"], "host-not-found")
+        self.assertNotIn("private-host", result.stdout)
+
     def test_protocol_simulation_exercises_fixture_setup_and_real_recorder(self):
         # This executable simulates a host protocol in the OFFLINE test only.
         # It invokes configured hooks directly and is never live host evidence.

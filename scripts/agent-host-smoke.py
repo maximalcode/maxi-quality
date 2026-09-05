@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Opt-in Claude Code invocation evidence, exclusively in disposable repos."""
+"""Opt-in native host invocation evidence, exclusively in disposable repos."""
 
 from __future__ import annotations
 
@@ -179,8 +179,8 @@ def launch(host: str, cwd: Path, env: dict[str, str], output: Path,
     return events
 
 
-def diagnosis(root: Path, env: dict[str, str], output: Path) -> dict:
-    result = run([sys.executable, str(RUNTIME), "diagnose", "--root", str(root), "--json"], cwd=root, env=env)
+def diagnosis(root: Path, env: dict[str, str], output: Path, host_kind: str = "claude") -> dict:
+    result = run([sys.executable, str(RUNTIME), "diagnose", "--host", host_kind, "--root", str(root), "--json"], cwd=root, env=env)
     (output / "diagnosis.private.json").write_text(result.stdout)
     try:
         report = json.loads(result.stdout)
@@ -193,7 +193,7 @@ def diagnosis(root: Path, env: dict[str, str], output: Path) -> dict:
             "checks": [{"id": c["id"], "status": c["status"]} for c in report["checks"]]}
 
 
-def make_repository(root: Path, commit: str, env: dict[str, str]) -> None:
+def make_repository(root: Path, commit: str, env: dict[str, str], host_kind: str = "claude") -> None:
     root.mkdir()
     git_env = {**env, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
     def git(*args: str) -> str:
@@ -202,7 +202,7 @@ def make_repository(root: Path, commit: str, env: dict[str, str]) -> None:
     git("config", "user.name", "maximalcode")
     git("config", "user.email", "213183497+maximalcode@users.noreply.github.com")
     checked([sys.executable, str(REPO / "scripts/quality-runtime-migrate.py"),
-             "--target", str(root), "--version", VERSION, "--commit", commit,
+             "--target", str(root), "--host", host_kind, "--version", VERSION, "--commit", commit,
              "--launcher", str(RUNTIME)], cwd=root, env=env)
     (root / ".claude/agent-guard.json").write_text('{"gate_command":"python3 gate.py"}\n')
     (root / "gate.py").write_text(
@@ -218,11 +218,19 @@ def make_repository(root: Path, commit: str, env: dict[str, str]) -> None:
 
 def observe_fixture(ident: str, shape: str, root: Path, cwd: Path, host: str,
                     env: dict[str, str], artifacts: Path, timeout: float,
-                    *, negative: bool = False) -> dict:
+                    *, negative: bool = False, host_kind: str = "claude", source: Path | None = None,
+                    preflight: dict | None = None) -> dict:
     out = artifacts / ident
     out.mkdir()
-    report = {"fixture": ident, "launch_shape": shape, "diagnosis": diagnosis(root, env, out),
+    report = {"fixture": ident, "launch_shape": shape, "diagnosis": diagnosis(root, env, out, host_kind),
               "observations": []}
+    if preflight is not None:
+        report["discovery"] = preflight
+        if not negative and preflight["outcome"] != "ready":
+            report["status"] = "unavailable"
+            if shape == "subdirectory":
+                report["documented_limitation"] = "issue-222-subdirectory-hook-loading"
+            return report
     if negative:
         report["wiring"] = "removed"
     elif not report["diagnosis"]["healthy"]:
@@ -246,17 +254,27 @@ def observe_fixture(ident: str, shape: str, root: Path, cwd: Path, host: str,
         if phase == "content-changed":
             (root / "fixture.txt").write_text("fixture edited again\n")
         before = len(json_lines(ledger_path.read_text())) if ledger_path.exists() else 0
-        marker = phase_out / "executed"
+        probe = root / ".host-smoke-probes" / ident / phase if host_kind == "codex" else phase_out
+        probe.mkdir(parents=True, exist_ok=True)
+        marker = probe / "executed"
         command = None
         if phase == "ordinary":
             command = "printf fixture > " + shlex.quote(str(marker))
         elif phase == "skip":
-            tripwire = phase_out / "git"
+            tripwire = probe / "git"
             tripwire.write_text("#!/bin/sh\nprintf fixture > " + shlex.quote(str(marker)) + "\n")
             tripwire.chmod(0o700)
             command = shlex.quote(str(tripwire)) + " commit --no-verify -m host-smoke"
         try:
-            events = launch(host, cwd, env, phase_out, timeout, command)
+            if host_kind == "codex":
+                import agent_host_codex as codex
+                try:
+                    events, native_outcome = codex.launch(host, cwd, env, phase_out, timeout, phase,
+                        source, ledger_path, before, command, marker, negative=negative)
+                except codex.Unavailable as exc:
+                    raise Unavailable(str(exc)) from exc
+            else:
+                events = launch(host, cwd, env, phase_out, timeout, command)
         except Unavailable as exc:
             report["observations"].append({"phase": phase, "outcome": str(exc)})
             (out / "observation.json").write_text(json.dumps(report, indent=2) + "\n")
@@ -264,7 +282,8 @@ def observe_fixture(ident: str, shape: str, root: Path, cwd: Path, host: str,
             raise
         ledger = json_lines(ledger_path.read_text())[before:] if ledger_path.exists() else []
         (phase_out / "ledger.private.json").write_text(json.dumps(ledger) + "\n")
-        outcome = (observe_shell(phase, events, command, marker.exists()) if command else
+        outcome = (native_outcome if host_kind == "codex" else
+                   observe_shell(phase, events, command, marker.exists()) if command else
                    observe(phase, events, ledger))
         report["observations"].append({"phase": phase, "outcome": outcome})
         (out / "observation.json").write_text(json.dumps(report, indent=2) + "\n")
@@ -281,40 +300,84 @@ def owner_only_creation() -> Iterator[None]:
         os.umask(previous)
 
 
-def smoke(host: str, commit: str, timeout: float, private: Path | None, report: dict) -> None:
+def smoke(host: str, commit: str, timeout: float, private: Path | None, report: dict,
+          host_kind: str = "claude", wait_for_hook_review: bool = False) -> None:
     # copytree also copies directory modes. Create its source with private
     # modes so it cannot loosen the retained directory, even during the copy.
     with owner_only_creation(), tempfile.TemporaryDirectory(prefix="agent-host-smoke-") as temp:
-        scratch = Path(temp)
+        scratch = Path(temp).resolve()
         artifacts = scratch / "artifacts"
         artifacts.mkdir()
         # Git routing inherited from an enclosing hook must never point a
         # disposable operation at the caller's index or repository.
         env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
         env.update({"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"})
+        if run(["git", "rev-parse", "--show-toplevel"], cwd=scratch, env=env).returncode == 0:
+            raise Unavailable("private-scratch-inside-git-checkout")
         env["MAXI_QUALITY_RUNTIME_CACHE"] = str(scratch / "cache")
         try:
             checked([sys.executable, str(RUNTIME), "prepare", "--source", str(REPO),
                      "--version", VERSION, "--commit", commit, "--cache-root", str(scratch / "cache"),
                      "--allow-untagged-development"], cwd=REPO, env=env)
             root = scratch / "root"
-            make_repository(root, commit, env)
+            make_repository(root, commit, env, host_kind)
             linked = scratch / "linked"
             checked(["git", "worktree", "add", "--quiet", "-b", "linked", str(linked)], cwd=root, env=env)
-            for ident, shape, repo, cwd in (
-                ("host-01", "repository-root", root, root),
-                ("host-02", "linked-worktree-root", linked, linked),
-                ("host-03", "subdirectory", root, root / "subdirectory"),
-            ):
-                report["fixtures"].append(observe_fixture(ident, shape, repo, cwd, host, env, artifacts, timeout))
             negative = scratch / "negative"
-            make_repository(negative, commit, env)
-            settings = negative / ".claude/settings.json"
+            make_repository(negative, commit, env, host_kind)
+            settings = negative / (".codex/hooks.json" if host_kind == "codex" else ".claude/settings.json")
             data = json.loads(settings.read_text())
             del data["hooks"]
             settings.write_text(json.dumps(data) + "\n")
+            fixtures = (
+                ("host-01", "repository-root", root, root),
+                ("host-02", "linked-worktree-root", linked, linked),
+                ("host-03", "subdirectory", root, root / "subdirectory"),
+            )
+            preflights = {}
+            if host_kind == "codex":
+                import agent_host_codex as codex
+                if wait_for_hook_review:
+                    if not sys.stdin.isatty() or not sys.stderr.isatty():
+                        raise Unavailable("hook-review-requires-terminal")
+                    print("Private disposable fixture paths for normal Codex project and /hooks review:", file=sys.stderr)
+                    for _, _, _, cwd in fixtures:
+                        print(str(cwd), file=sys.stderr)
+                    print("Negative control (empty project hooks): " + str(negative), file=sys.stderr)
+                    print("Review the fixture gate, native hooks and referenced runtime. The command never "
+                          "trusts them. Close review sessions, then press Enter to recheck discovery. "
+                          "Ctrl-C cancels and cleans these fixtures.", file=sys.stderr)
+                    input()
+                unavailable = []
+                for ident, shape, repo, cwd in (*fixtures, ("host-04", "repository-root", negative, negative)):
+                    out = artifacts / (ident + "-preflight")
+                    out.mkdir()
+                    source = (negative if ident == "host-04" else root) / ".codex/hooks.json"
+                    try:
+                        found = codex.discovery(host, cwd, env, out, timeout, source, negative=ident == "host-04")
+                    except codex.Unavailable as exc:
+                        found = {"outcome": str(exc)}
+                    preflights[ident] = found
+                    if ident != "host-03" and found["outcome"] != ("wiring-absent" if ident == "host-04" else "ready"):
+                        unavailable.append(found["outcome"])
+                if unavailable:
+                    for ident, shape, repo, cwd in fixtures:
+                        out = artifacts / (ident + "-preflight")
+                        fixture = {"fixture": ident, "launch_shape": shape,
+                                   "status": "unavailable",
+                                   "diagnosis": diagnosis(repo, env, out, host_kind),
+                                   "discovery": preflights[ident], "observations": []}
+                        if shape == "subdirectory":
+                            fixture["documented_limitation"] = "issue-222-subdirectory-hook-loading"
+                        report["fixtures"].append(fixture)
+                    report["negative_control"]["discovery"] = preflights["host-04"]
+                    raise Unavailable(unavailable[0])
+            for ident, shape, repo, cwd in fixtures:
+                report["fixtures"].append(observe_fixture(ident, shape, repo, cwd, host, env, artifacts, timeout,
+                    host_kind=host_kind, source=root / ".codex/hooks.json", preflight=preflights.get(ident)))
             control = observe_fixture("host-04", "repository-root", negative, negative,
-                                      host, env, artifacts, timeout, negative=True)
+                host, env, artifacts, timeout, negative=True, host_kind=host_kind,
+                source=negative / ".codex/hooks.json", preflight=preflights.get("host-04"))
             assertion = control["observations"][0]["outcome"]
             report["negative_control"] = {**control, "assertion": assertion,
                 "status": "detected" if assertion == "hook-not-observed" else "failed"}
@@ -334,42 +397,51 @@ def smoke(host: str, commit: str, timeout: float, private: Path | None, report: 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-live", action="store_true", required=True,
-                        help="Explicitly authorize using the existing Claude login in disposable fixtures")
+                        help="Authorize using the selected host's existing login in disposable fixtures")
+    parser.add_argument("--host", choices=("claude", "codex"), default="claude")
     parser.add_argument("--claude", default="claude", help="Existing Claude Code executable; no fallback or installation")
+    parser.add_argument("--codex", default="codex", help="Existing native OpenAI Codex executable")
+    parser.add_argument("--wait-for-hook-review", action="store_true",
+                        help="Codex only: keep fixtures while a human reviews normal project and hook trust")
     parser.add_argument("--commit", help="Committed baseline guard revision (default: HEAD)")
     parser.add_argument("--timeout", type=float, default=90, help="Maximum seconds per host turn")
     parser.add_argument("--private-output", type=Path, help="New directory outside Git checkouts for raw private evidence")
     args = parser.parse_args()
     now = datetime.now(timezone.utc).date().isoformat()  # nosemgrep: no-ambient-clock-python — clock read at the command edge
     report = {"schema": 1, "measurement": "synthetic-host-smoke", "date": now,
-              "host": "claude-code", "host_version": None, "baseline_revision": None,
+              "host": "claude-code" if args.host == "claude" else "codex",
+              "host_version": None, "baseline_revision": None,
               "runtime_version": VERSION, "installation_profile": "versioned-without-samples",
-              "launch_mode": "print-stream-json-default-settings", "status": "unavailable",
+              "launch_mode": ("print-stream-json-default-settings" if args.host == "claude" else
+                              "native-app-server-stdio-default-settings"), "status": "unavailable",
               "live_enforcement": "unverified", "fixtures": [],
               "negative_control": {"status": "not-run"}}
     try:
         if args.timeout <= 0:
             raise Unavailable("invalid-timeout")
-        host = shutil.which(args.claude)
+        host = shutil.which(args.claude if args.host == "claude" else args.codex)
         if host is None:
             raise Unavailable("host-not-found")
         if shutil.which("git") is None or shutil.which("python3") is None:
             raise Unavailable("git-or-python3-not-found")
         version = run([host, "--version"], cwd=REPO, env=os.environ)
-        match = re.fullmatch(r"([0-9]+\.[0-9]+\.[0-9]+) \(Claude Code\)\s*", version.stdout)
+        pattern = (r"([0-9]+\.[0-9]+\.[0-9]+) \(Claude Code\)\s*" if args.host == "claude" else
+                   r"codex-cli ([0-9]+\.[0-9]+\.[0-9]+)\s*")
+        match = re.fullmatch(pattern, version.stdout)
         if version.returncode or not match:
             raise Unavailable("unsupported-host-version-output")
         report["host_version"] = match.group(1)
-        help_result = run([host, "--help"], cwd=REPO, env=os.environ)
-        if "--include-hook-events" not in help_result.stdout:
-            raise Unavailable("host-hook-events-unavailable")
-        auth = run([host, "auth", "status", "--json"], cwd=REPO, env=os.environ)
-        try:
-            authenticated = json.loads(auth.stdout).get("loggedIn") is True
-        except (ValueError, AttributeError):
-            authenticated = False
-        if auth.returncode or not authenticated:
-            raise Unavailable("host-authentication-unavailable")
+        if args.host == "claude":
+            help_result = run([host, "--help"], cwd=REPO, env=os.environ)
+            if "--include-hook-events" not in help_result.stdout:
+                raise Unavailable("host-hook-events-unavailable")
+            auth = run([host, "auth", "status", "--json"], cwd=REPO, env=os.environ)
+            try:
+                authenticated = json.loads(auth.stdout).get("loggedIn") is True
+            except (ValueError, AttributeError):
+                authenticated = False
+            if auth.returncode or not authenticated:
+                raise Unavailable("host-authentication-unavailable")
         git_env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
         commit = checked(["git", "rev-parse", "--verify", (args.commit or "HEAD") + "^{commit}"],
                          cwd=REPO, env=git_env)
@@ -382,12 +454,15 @@ def main() -> int:
             if inside.returncode == 0:
                 raise Unavailable("private-output-inside-git-checkout")
             private.mkdir(mode=0o700)
-        smoke(host, commit, args.timeout, args.private_output, report)
+        smoke(host, commit, args.timeout, args.private_output, report, args.host, args.wait_for_hook_review)
     except Unavailable as exc:
         report["status"] = "unavailable"
         report["reason"] = str(exc)
         if exc.fixture is not None:
             report["fixtures"].append(exc.fixture)
+    except (KeyboardInterrupt, EOFError):
+        report["status"] = "unavailable"
+        report["reason"] = "hook-review-cancelled"
     except OSError:
         report["status"] = "unavailable"
         report["reason"] = "fixture-io-unavailable"
