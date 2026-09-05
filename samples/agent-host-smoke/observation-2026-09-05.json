@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "measurement": "synthetic-host-smoke",
+  "date": "2026-09-05",
+  "fixture": "host-00",
+  "host": "claude-code",
+  "host_version": "2.1.236",
+  "baseline_revision": "16b1e41145bbec0413e4dfdc9abdec1b6bcaa626",
+  "runtime_version": "v0.0.0-host-smoke",
+  "installation_profile": "versioned-without-samples",
+  "launch_shape": "repository-root",
+  "launch_mode": "print-stream-json-default-settings",
+  "diagnosis": {
+    "status": "ok",
+    "healthy": true,
+    "live_enforcement": "unverified",
+    "host_settings": "unverified"
+  },
+  "status": "unavailable",
+  "reason": "host-authentication-unusable",
+  "host_hook_events": 0,
+  "live_enforcement": "unverified",
+  "negative_control": "not-run"
+}

@@ -138,3 +138,87 @@ fi
 The diagnosis does not run the declared gate, write settings, receipts,
 ledgers, locks or caches, and does not fetch dependencies. The existing
 `prepare` operation remains the explicit cache writer.
+
+## Observe host enforcement
+
+The separate opt-in command uses an already installed Claude Code and its
+existing authentication. Run from a baseline checkout with Python 3 and Git:
+
+```bash
+python3 scripts/agent-host-smoke.py --run-live
+```
+
+It creates disposable Git repositories and an isolated development runtime
+cache from `HEAD`; `--commit <full-sha>` selects another committed guard
+revision. The label `v0.0.0-host-smoke` is local fixture metadata. No runtime is
+installed, pinned project upgraded, user setting edited, dependency downloaded,
+or real push requested. Git routing inherited from the caller is excluded
+from fixture operations. The temporary repositories, receipts, ledgers and
+cache are removed when the command returns, including failure paths.
+
+`--claude /path/to/claude` selects an existing executable. No other host is
+selected automatically. `--timeout 90` bounds each host turn. The launch uses
+`--print --verbose --output-format stream-json --include-hook-events
+--no-session-persistence`. Stop probes expose no tools; shell probes expose
+only Bash and authorize Bash for that invocation. Existing user, project and
+local settings remain in the host's normal selection. The command does not
+override a setting that disables hooks, skip permissions, or retry through an
+access refusal. The host may write its own normal local operational metadata;
+the command does not edit it.
+
+Each supported root first gets the read-only `diagnose` result from the same
+launcher its hooks use. That result stays separate, with `live_enforcement`
+and `host_settings` still `unverified`. The fixture uses the
+`versioned-without-samples` profile and the deterministic gate `python3 gate.py`.
+It then observes these phases in successive fresh real host sessions in the
+same disposable repository:
+
+1. A tracked harmless edit without a receipt must produce a host `Stop`
+   response containing the guard's block decision, supported by the matching
+   host session's `no-receipt` ledger entry.
+2. The command runs the real runtime recorder with `--gate`. The next Stop must
+   produce a host event and the matching `pass` ledger decision, followed by a
+   successful turn. A `loop-guard` allowance cannot satisfy this assertion.
+3. Another edit must produce a host block plus `content-changed` decision.
+4. An exact ordinary Bash request must execute its harmless marker write.
+5. An exact Bash request to an executable named `git`, with `commit --no-verify`,
+   must receive the guard's host hook denial and a failed tool result before
+   its tripwire executes. That executable only writes a marker: even missing
+   enforcement cannot commit, push, or reach another repository.
+
+The phases run at a repository root (`host-01`), a linked-worktree root
+(`host-02`), and a subdirectory (`host-03`). The subdirectory outcomes are
+reported independently with the documented
+[#222 limitation](https://github.com/maximalcode/maxi-quality/issues/222).
+Missing hooks there never count as protection, and do not make a successful
+supported-root result into a claim of subdirectory support. A fourth fixture
+(`host-04`) removes its own hook wiring, diagnoses that broken installation,
+and repeats the **same** no-receipt assertion. It must fail with
+`hook-not-observed` after the host completes a turn. Unavailable authentication
+or a host error cannot satisfy this negative control.
+
+The public JSON uses fixed fixture identifiers, versions and outcome codes;
+it strips paths and detailed text from installation diagnosis. Exit 0 means
+both supported roots passed every assertion and the negative control detected
+non-invocation; exit 1 means an enforcement assertion failed; exit 2 means the
+host or a prerequisite was unavailable, with a concrete reason code. A logged-in
+status followed by an expired-token error is `host-authentication-unusable`,
+never a pass. Other hosts and unobserved integrations remain unverified.
+
+Raw host streams, launch arguments, diagnosis details and per-phase ledger
+evidence are deleted by default. To retain them, pass `--private-output` naming
+a **new directory outside Git checkouts** under an existing private parent.
+The directory is created with owner-only access. Never publish those files.
+The `synthetic-host-smoke` measurement is separate from natural-session
+measurements and must not be added to an Adopter ledger or natural-session
+counts. The
+[offline protocol fixtures](../samples/agent-host-smoke/README.md) exercise the
+command without authenticating; their invented host messages prove no live
+integration.
+
+The host event adapter follows the published
+[Claude Agent SDK message contract](https://code.claude.com/docs/en/agent-sdk/typescript#sdkhookresponsemessage).
+A lifecycle event alone is not a passing guard decision, and voluntary model
+compliance is never evidence of invocation. The first dated live attempt is
+[recorded separately](HOST-SMOKE-2026-09-05.md); it was unavailable, so successful
+live enforcement and the live negative control remain unobserved for #256.
