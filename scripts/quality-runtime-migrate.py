@@ -12,11 +12,17 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
+import runpy
 import sys
 import tempfile
 import hashlib
 from pathlib import Path
+
+# Import only the trusted sibling source. Runtime installation still copies
+# one self-contained launcher; diagnosis never loads a candidate executable.
+_runtime = runpy.run_path(str(Path(__file__).with_name("quality-runtime.py")))
+launcher_command = _runtime["launcher_command"]
+runtime_command = _runtime["runtime_command"]
 
 SOURCE = "maximalcode/maxi-quality"
 SCHEMA = 1
@@ -61,19 +67,6 @@ def write_json(path: Path, value: object) -> None:
         except OSError:
             pass
         raise
-
-
-def launcher_command(launcher: str) -> str:
-    # A path to this repository's script is useful for tests and release
-    # maintenance; a globally installed executable is the normal deployment.
-    if launcher == "quality-runtime":
-        # Claude Code launched from a GUI can have a shorter PATH than an
-        # interactive shell. Resolve the supported default install directly;
-        # HOME is stable while PATH is not.
-        return '"$HOME/.local/bin/quality-runtime"'
-    if launcher.endswith(".py"):
-        return "python3 " + shlex.quote(launcher)
-    return shlex.quote(launcher)
 
 
 def hook_entry(command: str, timeout: int) -> dict:
@@ -131,6 +124,22 @@ def append_runtime(settings: dict, commands: dict[str, str]) -> None:
             raise Refused(f".claude/settings.json hooks.{event} entry is malformed")
         if not any(isinstance(e, dict) and e.get("command") == command for e in entries):
             entries.append(hook_entry(command, timeout))
+
+
+def append_runtime_permissions(settings: dict, samples: bool) -> None:
+    """Install the two owned deny rules while retaining consumer policy."""
+    permissions = settings.setdefault("permissions", {})
+    if not isinstance(permissions, dict):
+        raise Refused(".claude/settings.json has a non-object permissions key")
+    deny = permissions.setdefault("deny", [])
+    if not isinstance(deny, list) or any(not isinstance(rule, str) for rule in deny):
+        raise Refused(".claude/settings.json permissions.deny must be an array of strings")
+    wanted = ["Edit(/.claude/agent-guard-receipt.json)"]
+    if samples:
+        wanted.append("Edit(/samples/expected/**)")
+    for rule in wanted:
+        if rule not in deny:
+            deny.append(rule)
 
 
 def remove_legacy_files(target: Path) -> None:
@@ -255,36 +264,6 @@ def ignore_runtime_state(path: Path) -> None:
         write_text_preserving_link(path, text + "\n".join(missing) + "\n")
 
 
-def missing_fallback(name: str) -> str:
-    # This is deliberately only a missing-install message/decision adapter;
-    # all guard behavior remains in the validated external cache. Keeping the
-    # adapter inline means an absent launcher cannot make Claude reject every
-    # tool call before it can report how to repair the install.
-    code = (
-        "import json,re,sys; "
-        "n=sys.argv[1]; m='quality-runtime launcher is unavailable; install it and prepare the pinned cache'; "
-        "d=json.loads(sys.stdin.read() or '{}') if n=='no-verify-guard' else {}; "
-        "c=(d.get('tool_input') or {}).get('command',''); "
-        "deny=n=='no-verify-guard' and isinstance(c,str) and re.search(r'\\bgit\\s+(?:[^;&|]+\\s+)?(?:commit|push)\\b',c); "
-        "o=({'decision':'block','reason':m} if n=='stop-gate' else ({'hookSpecificOutput':{'hookEventName':'PreToolUse','permissionDecision':'deny','permissionDecisionReason':m}} if deny else None)); "
-        "json.dump(o,sys.stdout) if o else print('quality-runtime: '+m,file=sys.stderr); "
-        "print() if o else None"
-    )
-    return "python3 -c " + shlex.quote(code) + " " + shlex.quote(name)
-
-
-def runtime_command(launcher: str, name: str, root: str) -> str:
-    invoke = f"{launcher_command(launcher)} {name} --root {root}"
-    fallback = missing_fallback(name)
-    if launcher == "quality-runtime":
-        check = '[ -x "$HOME/.local/bin/quality-runtime" ]'
-    elif launcher.endswith(".py") or "/" in launcher:
-        check = "[ -f " + shlex.quote(launcher) + " ]"
-    else:
-        check = "command -v " + shlex.quote(launcher) + " >/dev/null 2>&1"
-    return f"if {check}; then {invoke}; else {fallback}; fi"
-
-
 def migrate(target: Path, version: str, commit: str, launcher: str, dry_run: bool,
             guard_enabled: bool = True) -> None:
     target = target.resolve()
@@ -314,12 +293,14 @@ def migrate(target: Path, version: str, commit: str, launcher: str, dry_run: boo
         for name in GUARDS
         if name != "sample-guard" or (target / "samples" / "expected").is_dir()
     }
+    expected_samples = (target / "samples" / "expected").is_dir()
     if guard_enabled:
         validate_instruction(target)
         if (target / ".claude" / "agent-guard").is_symlink():
             raise Refused(f"{target / '.claude' / 'agent-guard'} is a symlink; refusing to remove files outside the target")
         remove_owned(settings)
         append_runtime(settings, commands)
+        append_runtime_permissions(settings, expected_samples)
     if dry_run:
         print(json.dumps({"lock": lock, "settings": settings}, indent=2, sort_keys=False))
         return
