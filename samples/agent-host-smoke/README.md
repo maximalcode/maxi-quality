@@ -39,5 +39,13 @@ simulator reproduces the separately observed experimental raw code-mode request
 and native hook sequence; tests require exact program input, matching IDs and
 event order, and reject missing raw provenance and a tripwire racing interruption.
 The [dated account](../../docs/HOST-SMOKE-2026-09-05.md) distinguishes early
-unavailable attempts, later partial live observations and the diagnostic probe
-from the full committed harness run still required to complete #256.
+unavailable attempts, partial live observations and the diagnostic probe from
+the full committed Codex CLI 0.153.3 run that passed on 2026-09-07. The
+[public outcome record](observation-codex-2026-09-07.json) records all five phases
+passing at the repository root, linked-worktree root and subdirectory, and the
+removed-wiring negative control detecting `hook-not-observed`. It used normal
+project and exact hook trust review and the experimental raw-event protocol
+described in the runtime guide. This is dated synthetic evidence; #222 remains
+separate, and these live phases did not test patch/sample edit protection.
+Claude live enforcement remains unverified, skipped and nonblocking by the
+owner's decision; its offline regressions remain required.

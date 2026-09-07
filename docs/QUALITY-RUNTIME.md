@@ -318,7 +318,8 @@ This depends on an **experimental protocol measured on Codex CLI 0.153.3**.
 A rejected experimental opt-in is `host-experimental-events-unavailable`; missing
 raw request provenance is `host-tool-request-provenance-unavailable`. Both are
 unavailable outcomes, never a fallback to hook feedback or model claims. The
-full committed harness still needs its successful live run to complete #256.
+full committed harness passed on 2026-09-07 with this protocol and version; see
+the [dated run](HOST-SMOKE-2026-09-05.md#codex-complete-harness-run--2026-09-07).
 
 The phases run at a repository root (`host-01`), a linked-worktree root
 (`host-02`), and a subdirectory (`host-03`). The subdirectory outcomes are
@@ -356,12 +357,17 @@ The host adapters use the published
 and the native [Codex App Server contract](https://learn.chatgpt.com/docs/app-server),
 including its installed JSON schema for `hook/completed` and item/turn events.
 A lifecycle event alone is not a passing guard decision, and voluntary model
-compliance is never evidence of invocation. The first dated live attempt is
-[recorded separately](HOST-SMOKE-2026-09-05.md). Later normally trusted Codex
-fixtures established the Stop, ordinary-shell and negative-control observations;
-exact denied-request provenance remains incomplete for #256. The owner's
-current scope requires Codex live proof. Claude live verification is skipped
-and nonblocking; its configuration and offline regressions remain required.
+compliance is never evidence of invocation. The
+[dated observations](HOST-SMOKE-2026-09-05.md) preserve the early unavailable
+attempts and record the complete Codex CLI 0.153.3 run on 2026-09-07. With normal
+project and exact hook trust review, all five phases passed at the repository
+root, linked-worktree root and subdirectory; the removed-wiring control detected
+`hook-not-observed`. The result was `passed`, `verified-supported-roots`, exit 0.
+That run satisfies the required Codex live observations for #256. The
+subdirectory result remains separate from #222, and patch/sample edit protection
+was not exercised by these live phases; its evidence remains offline fixtures.
+Claude live verification remains unverified, skipped and nonblocking by the
+owner's decision; its configuration and offline regressions remain required.
 
 
 ### Codex discovery observation — 2026-09-05
@@ -387,7 +393,9 @@ diagnosis was healthy independently. The result was exit 2 with
 observations. The removed-wiring control had zero discovered hooks but its
 live assertion was `not-run`. See the separate
 [Codex outcome record](../samples/agent-host-smoke/observation-codex-2026-09-05.json)
-and [dated account of both hosts](HOST-SMOKE-2026-09-05.md), which also records
-the later normally trusted fixture run. #256 remains incomplete until Codex's
-required live observations succeed; Claude live verification is skipped and
-nonblocking by the owner's decision.
+and [dated account of both hosts](HOST-SMOKE-2026-09-05.md). The later complete
+run on 2026-09-07, after normal fixture project and hook trust review, passed
+the required Codex live observations; its
+[public outcome record](../samples/agent-host-smoke/observation-codex-2026-09-07.json)
+is separate from this historical discovery result. Claude live verification
+remains unverified, skipped and nonblocking by the owner's decision.

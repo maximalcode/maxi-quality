@@ -1,10 +1,15 @@
-# Host smoke observation — 2026-09-05
+# Host smoke observations — 2026-09-05 and 2026-09-07
 
-**Codex live verification is incomplete; Claude live verification is skipped and
-nonblocking by the owner's decision.** The initial attempts below were unavailable.
-The available Claude
-Code 2.1.236 reported a logged-in account through `auth status --json`, but the
-actual disposable repository-root launch failed with an expired OAuth session
+**The full committed Codex smoke passed on 2026-09-07; Claude live verification
+is skipped and nonblocking by the owner's decision.** The initial unavailable
+attempts and partial observations remain below as historical evidence; the
+[successful run](#codex-complete-harness-run--2026-09-07) records the verified scope.
+
+## Initial attempts and diagnostic probes
+
+The available Claude Code 2.1.236 reported a logged-in account through
+`auth status --json`, but the actual disposable repository-root launch failed
+with an expired OAuth session
 that could not be refreshed. No host hook lifecycle event was emitted.
 
 The [public outcome record](../samples/agent-host-smoke/observation-2026-09-05.json)
@@ -85,11 +90,58 @@ single-call shell program, followed by matching project hook start and blocked
 completion events. The tripwire was absent. The observer now accepts that
 measured sequence and rejects mismatched requests, IDs and event order. Raw
 request input is retained only in private owner-only artifacts. This diagnostic
-probe proves the event shape; Codex remains incomplete until the full committed
-harness succeeds using it. The experimental protocol dependency and unavailable
+probe proved the event shape; it did not by itself complete the full committed
+harness run. The experimental protocol dependency and unavailable
 outcomes are documented in [QUALITY-RUNTIME.md](QUALITY-RUNTIME.md).
 
 Only Codex's required live observations gate completion of #256 in the current
 owner-approved scope. Claude's native configuration and offline integration
 regressions remain required; its live authentication failure is recorded above
 and its live run is skipped, nonblocking.
+
+## Codex complete harness run — 2026-09-07
+
+The full committed harness passed with Codex CLI **0.153.3**, testing guard
+revision `c6597f1af4ae19519a5c8a4c23282e32a4690816`. The
+[public outcome record](../samples/agent-host-smoke/observation-codex-2026-09-07.json)
+records `status: passed` and `live_enforcement: verified-supported-roots`.
+The command returned exit 0 and removed its disposable repositories and cache.
+
+The fixture projects and all three exact hook definitions received normal,
+owner-authorized CLI project and hook trust review before the harness resumed.
+No trust bypass was used. Preflight then discovered all three enabled, trusted
+project hooks at each launch location. Installation diagnosis remained a
+separate static result, with its live-enforcement and host-settings fields
+still `unverified`.
+
+All three locations — repository root (`host-01`), linked-worktree root
+(`host-02`) and subdirectory (`host-03`) — produced all five required outcomes:
+
+| Phase | Observed outcome |
+|---|---|
+| No receipt | `no-receipt-blocked` |
+| Actual recorder runs the declared gate | `fresh-stop-allowed` |
+| Content changed after recording | `content-changed-blocked` |
+| Exact ordinary shell request | `ordinary-shell-allowed` |
+| Exact skip-verification request | `skip-verification-denied` |
+
+The removed-wiring fixture (`host-04`) completed a real turn and failed the
+**same** no-receipt assertion with `hook-not-observed`; the negative control
+was `detected`. This establishes that the assertion detects absent invocation.
+The denied shell request was attributed through the exact experimental raw
+request and matching native hook sequence described above. The run depends on
+`experimentalApi` and `experimentalRawEvents` as observed on Codex CLI 0.153.3;
+it does not establish compatibility with other protocol versions or tool paths.
+
+These are synthetic `versioned-without-samples` fixture observations, not
+natural-session measurements. The subdirectory pass is dated evidence for this
+run; [#222](https://github.com/maximalcode/maxi-quality/issues/222) remains a
+separate issue and this result is not a general subdirectory support claim.
+Patch and cited-sample edit protection retain their offline fixture proof;
+these five live phases did not exercise them. Raw streams, paths and detailed
+ledger evidence remain private.
+
+This run satisfies the Codex live observations required by the owner's scope
+for #256. Claude live enforcement remains unverified: its live run was skipped
+and is nonblocking. Its native configuration and offline integration regressions
+remain required independently.
