@@ -743,6 +743,20 @@ string and deny rules by the rule string, and appended to what is already
 there. Nothing of the consumer's is replaced, reordered or removed, and
 re-running adds nothing twice. `scripts/agent-settings.py` holds it.
 
+`scripts/agent-install.py` owns the complete installation behind `adopt.sh`:
+it derives the repository's profile once, selects and refreshes its files,
+renders the matching instruction region, merges settings and verifies the
+installed wiring. The settings and region helpers keep their existing commands;
+the installer uses the same implementation in-process. `adopt.sh` forwards
+the requested options and presents the outcome, without knowing the profile's
+file inventory or the order those files must be written.
+
+The same module owns `--install-shared` as a separate, explicit operation.
+An `--agent --shared` adoption never publishes or updates the central runtime.
+The central runtime serves both sample profiles and preserves unrelated files
+beside the scripts. `samples/agent-install/` exercises these ownership rules;
+the `adopt` job retains the existing installed-tree regression scenarios.
+
 It **refuses** a `.claude/settings.json` it cannot fully read — one that does
 not parse, or a `hooks` key whose shape is not the documented one — and the
 refusal skips the whole flag rather than just that file. Half a contract is a

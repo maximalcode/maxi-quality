@@ -53,6 +53,13 @@ is no public v1.0.0 through v1.0.3 to backfill. `CLAUDE.md` §2 has the reason.
   Runtime format 2 adds the adapter while retaining immutable format-1 pins.
   Native protocol and installation fixtures do not establish live host enforcement.
 
+### Changed
+
+- Agent contract installation now has one module owning profile selection,
+  files, settings, instructions and verification. Existing adoption commands,
+  settings refusals and exit 7 for a held-back instruction region are unchanged;
+  updating the shared runtime still requires an explicit `--install-shared`.
+
 ### Rule changes
 
 - **Knip 6.31.0 → 6.33.0.** The dead-code action floor, test dependency and

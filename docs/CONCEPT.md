@@ -376,6 +376,15 @@ projects silently — projects upgrade by bumping the tag.
 
 ## 8. Adoption paths
 
+**Agent contract:** `adopt.sh <repo-path> --agent` delegates the complete
+installation to `scripts/agent-install.py`. That module owns profile selection,
+files, settings, instructions and verification, using the existing settings and
+region helpers. Copied and shared installations remain supported; publishing
+the central shared runtime is a separate, explicit `--install-shared` operation.
+Unreadable settings refuse the installation before writes; a refused instruction
+region leaves enforcement installed and returns exit 7. Details and evidence:
+[`configs/agent/README.md`](../configs/agent/README.md) §7.
+
 **New project:**
 `"$BASELINE"/scripts/adopt.sh <repo-path>` — detects languages, drops the
 stub workflow plus the 1–3 consume-files, prints what it did.

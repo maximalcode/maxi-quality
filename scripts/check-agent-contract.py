@@ -628,9 +628,10 @@ def check(root: pathlib.Path, today: datetime.date) -> list[str]:
     # a CLAUDE.md that is a link to AGENTS.md deleted the arrangement, put the
     # region in the file the repo does not treat as canonical, and exited 0.
     # Both writing scripts carry the fix, and they carry it as two copies:
-    # these are standalone CLIs with hyphenated names, so neither can import
-    # the other, and the alternative — a third module both import — buys one
-    # shared function at the cost of a new file on every adoption path.
+    # these are standalone CLIs, and a third module solely to share this
+    # function buys one shared function at the cost of a new dependency for
+    # both. agent-install.py now composes their implementation for the whole
+    # installation; it does not change this write-policy decision.
     #
     # Two copies drift, and the drift is invisible because no consumer holds
     # both. This is the tripwire. It compares the BODY, not the docstring: the

@@ -4850,6 +4850,8 @@ jobs:
               || { echo "::error::--dry-run never mentioned $want"; exit 1; }
           done
           echo 'OK: nothing written, everything named'
+      - name: Agent installation owns profiles and explicit shared updates
+        run: python3 samples/agent-install/test_install.py
       - name: Preflight never gates on bad input or unavailable tools
         run: python3 samples/preflight/test_preflight.py contract
 
