@@ -1,0 +1,180 @@
+{
+  "baseline_revision": "76db4f3bba15a09d6ceae81b58908e216b537c8d",
+  "date": "2026-09-05",
+  "fixtures": [
+    {
+      "diagnosis": {
+        "checks": [
+          {
+            "id": "release-lock",
+            "status": "pass"
+          },
+          {
+            "id": "runtime-cache",
+            "status": "pass"
+          },
+          {
+            "id": "hook-trust",
+            "status": "unverified"
+          },
+          {
+            "id": "configured-gate",
+            "status": "pass"
+          },
+          {
+            "id": "hook-codex-patch",
+            "status": "pass"
+          },
+          {
+            "id": "hook-no-verify",
+            "status": "pass"
+          },
+          {
+            "id": "hook-stop-gate",
+            "status": "pass"
+          },
+          {
+            "id": "sample-protection",
+            "status": "skip"
+          }
+        ],
+        "healthy": true,
+        "host_settings": "unverified",
+        "installation_profile": "versioned-without-samples",
+        "live_enforcement": "unverified",
+        "schema": 1,
+        "status": "ok"
+      },
+      "discovery": {
+        "outcome": "host-project-hooks-not-discovered",
+        "project_hooks": 0
+      },
+      "fixture": "host-01",
+      "launch_shape": "repository-root",
+      "observations": [],
+      "status": "unavailable"
+    },
+    {
+      "diagnosis": {
+        "checks": [
+          {
+            "id": "release-lock",
+            "status": "pass"
+          },
+          {
+            "id": "runtime-cache",
+            "status": "pass"
+          },
+          {
+            "id": "hook-trust",
+            "status": "unverified"
+          },
+          {
+            "id": "configured-gate",
+            "status": "pass"
+          },
+          {
+            "id": "hook-codex-patch",
+            "status": "pass"
+          },
+          {
+            "id": "hook-no-verify",
+            "status": "pass"
+          },
+          {
+            "id": "hook-stop-gate",
+            "status": "pass"
+          },
+          {
+            "id": "sample-protection",
+            "status": "skip"
+          }
+        ],
+        "healthy": true,
+        "host_settings": "unverified",
+        "installation_profile": "versioned-without-samples",
+        "live_enforcement": "unverified",
+        "schema": 1,
+        "status": "ok"
+      },
+      "discovery": {
+        "outcome": "host-project-hooks-not-discovered",
+        "project_hooks": 0
+      },
+      "fixture": "host-02",
+      "launch_shape": "linked-worktree-root",
+      "observations": [],
+      "status": "unavailable"
+    },
+    {
+      "diagnosis": {
+        "checks": [
+          {
+            "id": "release-lock",
+            "status": "pass"
+          },
+          {
+            "id": "runtime-cache",
+            "status": "pass"
+          },
+          {
+            "id": "hook-trust",
+            "status": "unverified"
+          },
+          {
+            "id": "configured-gate",
+            "status": "pass"
+          },
+          {
+            "id": "hook-codex-patch",
+            "status": "pass"
+          },
+          {
+            "id": "hook-no-verify",
+            "status": "pass"
+          },
+          {
+            "id": "hook-stop-gate",
+            "status": "pass"
+          },
+          {
+            "id": "sample-protection",
+            "status": "skip"
+          }
+        ],
+        "healthy": true,
+        "host_settings": "unverified",
+        "installation_profile": "versioned-without-samples",
+        "live_enforcement": "unverified",
+        "schema": 1,
+        "status": "ok"
+      },
+      "discovery": {
+        "outcome": "host-project-hooks-not-discovered",
+        "project_hooks": 0
+      },
+      "documented_limitation": "issue-222-subdirectory-hook-loading",
+      "fixture": "host-03",
+      "launch_shape": "subdirectory",
+      "observations": [],
+      "status": "unavailable"
+    }
+  ],
+  "host": "codex",
+  "host_version": "0.153.3",
+  "installation_profile": "versioned-without-samples",
+  "launch_mode": "native-app-server-stdio-default-settings",
+  "live_enforcement": "unverified",
+  "measurement": "synthetic-host-smoke",
+  "negative_control": {
+    "discovery": {
+      "outcome": "wiring-absent",
+      "project_hooks": 0
+    },
+    "status": "not-run"
+  },
+  "reason": "host-project-hooks-not-discovered",
+  "runtime_version": "v0.0.0-host-smoke",
+  "schema": 1,
+  "status": "unavailable"
+}

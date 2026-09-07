@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/agent-guard/codex-patch-guard.py\"",
+            "timeout": 15
+          }
+        ],
+        "matcher": "apply_patch"
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/agent-guard/no-verify-guard.py\"",
+            "timeout": 15
+          }
+        ],
+        "matcher": "Bash"
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/agent-guard/stop-gate.py\"",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}

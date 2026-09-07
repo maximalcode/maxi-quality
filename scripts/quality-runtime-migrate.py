@@ -23,12 +23,14 @@ from pathlib import Path
 _runtime = runpy.run_path(str(Path(__file__).with_name("quality-runtime.py")))
 launcher_command = _runtime["launcher_command"]
 runtime_command = _runtime["runtime_command"]
+host_root = _runtime["host_root"]
+host_specs = _runtime["host_specs"]
 
 SOURCE = "maximalcode/maxi-quality"
 SCHEMA = 1
 LOCK_NAME = ".claude/quality-runtime.json"
 OWNED_MARKER = "/.claude/agent-guard/"
-GUARDS = ("stop-gate", "sample-guard", "no-verify-guard")
+GUARDS = ("stop-gate", "sample-guard", "no-verify-guard", "codex-patch-guard")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 VERSION = re.compile(r"^v?[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
 BEGIN = "<!-- BEGIN maxi-quality agent-guard"
@@ -88,7 +90,9 @@ def remove_owned(settings: dict) -> None:
                 if not (
                     isinstance(entry, dict)
                     and isinstance(entry.get("command"), str)
-                    and (OWNED_MARKER in entry["command"]
+                    and (any(_runtime["_runtime_invocation"](entry["command"], name, "codex") is not None
+                             for name in GUARDS)
+                         or OWNED_MARKER in entry["command"]
                          or ("--root \"${CLAUDE_PROJECT_DIR}\"" in entry["command"]
                              and any(f" {name} " in entry["command"]
                                      for name in GUARDS)))
@@ -97,18 +101,17 @@ def remove_owned(settings: dict) -> None:
         groups[:] = [group for group in groups if group.get("hooks")]
 
 
-def append_runtime(settings: dict, commands: dict[str, str]) -> None:
+def append_runtime(settings: dict, commands: dict[str, str], host: str = "claude") -> None:
+    label = ".codex/hooks.json" if host == "codex" else ".claude/settings.json"
     hooks = settings.setdefault("hooks", {})
     if not isinstance(hooks, dict):
-        raise Refused(".claude/settings.json has a non-object hooks key")
-    specs = [("PreToolUse", "Bash", "no-verify-guard", 15), ("Stop", None, "stop-gate", 60)]
-    if "sample-guard" in commands:
-        specs.insert(0, ("PreToolUse", "Edit|Write|MultiEdit", "sample-guard", 15))
+        raise Refused(f"{label} has a non-object hooks key")
+    specs = host_specs(host, "sample-guard" in commands)
     for event, matcher, name, timeout in specs:
         command = commands[name]
         groups = hooks.setdefault(event, [])
         if not isinstance(groups, list):
-            raise Refused(f".claude/settings.json hooks.{event} must be an array")
+            raise Refused(f"{label} hooks.{event} must be an array")
         matching = None
         for group in groups:
             if isinstance(group, dict) and group.get("matcher") == matcher:
@@ -121,7 +124,7 @@ def append_runtime(settings: dict, commands: dict[str, str]) -> None:
             groups.append(matching)
         entries = matching.setdefault("hooks", [])
         if not isinstance(entries, list):
-            raise Refused(f".claude/settings.json hooks.{event} entry is malformed")
+            raise Refused(f"{label} hooks.{event} entry is malformed")
         if not any(isinstance(e, dict) and e.get("command") == command for e in entries):
             entries.append(hook_entry(command, timeout))
 
@@ -167,6 +170,12 @@ def instruction_path(target: Path) -> Path | None:
     for name in ("CLAUDE.md", "AGENTS.md"):
         path = target / name
         if path.exists() or path.is_symlink():
+            # Codex owns a separate region. A later Claude migration must not
+            # mistake it for a legacy Claude region or replace its commands.
+            if name == "AGENTS.md" and path.is_file() and target in path.resolve().parents:
+                text = path.read_text(encoding="utf-8")
+                if "<!-- BEGIN maxi-quality codex-guard" in text and BEGIN not in text:
+                    return None
             return path
     return None
 
@@ -264,8 +273,42 @@ def ignore_runtime_state(path: Path) -> None:
         write_text_preserving_link(path, text + "\n".join(missing) + "\n")
 
 
+def plan_codex_instruction(target: Path, launcher: str) -> tuple[Path, str]:
+    """Append or refresh our Codex region; preserve all existing instructions."""
+    path = resolved_file(target / "AGENTS.md", target)
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    begin = "<!-- BEGIN maxi-quality codex-guard"
+    end_marker = "<!-- END maxi-quality codex-guard -->"
+    start = text.find(begin)
+    end = text.find(end_marker)
+    if start >= 0 or end >= 0:
+        match = re.search(re.escape(begin) + r" sha256:([0-9a-f]{16}) -->\n(.*?)" + re.escape(end_marker), text, re.S)
+        if not match or hashlib.sha256(match.group(2).encode()).hexdigest()[:16] != match.group(1):
+            raise Refused(f"{path} Codex guard region is incomplete or edited; reconcile it before migration")
+    # Recorder is a direct user command: missing installation must fail visibly.
+    record = _runtime["direct_command"](launcher, "record-gate", host_root("codex")) + " --gate"
+    body = (
+        "Native Codex hooks are configured in `.codex/hooks.json`. After adoption or\n"
+        "a hook change, review and trust the exact definitions in Codex `/hooks`.\n"
+        "Configuration alone does not prove that this session enforces the hooks.\n\n"
+        "Before finishing changed work, run the declared gate through the recorder:\n\n"
+        "```bash\n" + record + "\n```\n\n"
+        "The declaration, receipt and ledger remain under `.claude/` as shared\n"
+        "engine data; Codex needs no Claude CLI or login. Let the recorder write its\n"
+        "receipt. Preserve expected findings and cited samples; fix the config when\n"
+        "a sample stops failing. Keep Git verification enabled on commits and pushes.\n"
+    )
+    region = begin + " sha256:" + hashlib.sha256(body.encode()).hexdigest()[:16] + " -->\n" + body + end_marker
+    if start >= 0:
+        text = text[:start] + region + text[end + len(end_marker):]
+    else:
+        separator = "" if not text or text.endswith("\n\n") else ("\n" if text.endswith("\n") else "\n\n")
+        text = text + separator + region + "\n"
+    return path, text
+
+
 def migrate(target: Path, version: str, commit: str, launcher: str, dry_run: bool,
-            guard_enabled: bool = True) -> None:
+            guard_enabled: bool = True, host: str = "claude") -> None:
     target = target.resolve()
     if not target.is_dir():
         raise Refused(f"target is not a directory: {target}")
@@ -275,7 +318,9 @@ def migrate(target: Path, version: str, commit: str, launcher: str, dry_run: boo
         raise Refused("version must look like v1.2.0")
     if not SHA.fullmatch(commit):
         raise Refused("commit must be a lowercase full Git object id")
-    settings_path = target / ".claude" / "settings.json"
+    if host not in ("claude", "codex"):
+        raise Refused(f"unsupported host {host!r}; choose claude or codex")
+    settings_path = target / (".codex/hooks.json" if host == "codex" else ".claude/settings.json")
     lock_path = resolved_file(target / LOCK_NAME, target)
     settings_path = resolved_file(settings_path, target)
     ignore_path = resolved_file(target / ".gitignore", target)
@@ -287,20 +332,22 @@ def migrate(target: Path, version: str, commit: str, launcher: str, dry_run: boo
         "commit": commit,
         "guard_enabled": guard_enabled,
     }
-    root = '"${CLAUDE_PROJECT_DIR}"'
-    commands = {
-        name: runtime_command(launcher, name, root)
-        for name in GUARDS
-        if name != "sample-guard" or (target / "samples" / "expected").is_dir()
-    }
+    root = host_root(host)
     expected_samples = (target / "samples" / "expected").is_dir()
+    commands = {name: runtime_command(launcher, name, root)
+                for _event, _matcher, name, _timeout in host_specs(host, expected_samples)}
+    codex_instruction = None
     if guard_enabled:
-        validate_instruction(target)
-        if (target / ".claude" / "agent-guard").is_symlink():
-            raise Refused(f"{target / '.claude' / 'agent-guard'} is a symlink; refusing to remove files outside the target")
+        if host == "claude":
+            validate_instruction(target)
+            if (target / ".claude" / "agent-guard").is_symlink():
+                raise Refused(f"{target / '.claude' / 'agent-guard'} is a symlink; refusing to remove files outside the target")
+        else:
+            codex_instruction = plan_codex_instruction(target, launcher)
         remove_owned(settings)
-        append_runtime(settings, commands)
-        append_runtime_permissions(settings, expected_samples)
+        append_runtime(settings, commands, host)
+        if host == "claude":
+            append_runtime_permissions(settings, expected_samples)
     if dry_run:
         print(json.dumps({"lock": lock, "settings": settings}, indent=2, sort_keys=False))
         return
@@ -308,14 +355,18 @@ def migrate(target: Path, version: str, commit: str, launcher: str, dry_run: boo
     if guard_enabled:
         write_json(settings_path, settings)
         ignore_runtime_state(ignore_path)
-        remove_legacy_files(target)
-        update_instruction(target, launcher)
+        if host == "claude":
+            remove_legacy_files(target)
+            update_instruction(target, launcher)
+        elif codex_instruction is not None:
+            path, text = codex_instruction
+            write_text_preserving_link(path, text)
     print(f"migrated {target} to {version} ({commit})")
 
 
 def main(argv: list[str]) -> int:
     args = list(argv[1:])
-    values: dict[str, str | None] = {"target": None, "version": None, "commit": None, "launcher": "quality-runtime"}
+    values: dict[str, str | None] = {"target": None, "version": None, "commit": None, "launcher": "quality-runtime", "host": "claude"}
     dry_run = False
     guard_enabled = True
     i = 0
@@ -325,14 +376,14 @@ def main(argv: list[str]) -> int:
             dry_run = True; i += 1; continue
         if arg == "--guard-disabled":
             guard_enabled = False; i += 1; continue
-        if arg in ("--target", "--version", "--commit", "--launcher") and i + 1 < len(args):
-            values[{"--target": "target", "--version": "version", "--commit": "commit", "--launcher": "launcher"}[arg]] = args[i + 1]
+        if arg in ("--target", "--version", "--commit", "--launcher", "--host") and i + 1 < len(args):
+            values[{"--target": "target", "--version": "version", "--commit": "commit", "--launcher": "launcher", "--host": "host"}[arg]] = args[i + 1]
             i += 2; continue
         raise Refused(f"unknown argument {arg!r}")
     values["target"] = values["target"] or os.getcwd()
     if not values["version"] or not values["commit"]:
         raise Refused("usage: quality-runtime-migrate.py --version V --commit SHA [--target DIR]")
-    migrate(Path(values["target"]), values["version"], values["commit"], values["launcher"] or "quality-runtime", dry_run, guard_enabled)
+    migrate(Path(values["target"]), values["version"], values["commit"], values["launcher"] or "quality-runtime", dry_run, guard_enabled, values["host"] or "claude")
     return 0
 
 

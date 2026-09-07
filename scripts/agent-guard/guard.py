@@ -251,8 +251,8 @@ def read_receipt(root: str) -> dict | None:
 def read_event() -> dict | None:
     """The hook payload on stdin, or None if it is not a JSON object.
 
-    Malformed stdin is plumbing, not policy: every caller of this treats None
-    as "warn and allow".
+    The original Claude hooks treat malformed stdin as plumbing and warn/allow.
+    The native Codex patch adapter denies an unreadable patch event explicitly.
     """
     try:
         data = json.loads(sys.stdin.read() or "null")

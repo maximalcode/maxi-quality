@@ -100,6 +100,11 @@ must pin all their maxi-quality workflow calls to the same SHA and full version
 comment; Layer 2 checks that agreement. Existing copied adoption remains
 available. See `docs/QUALITY-RUNTIME.md` for the install and migration commands
 and `docs/RELEASE-REFERENCES.md` for release publication.
+The versioned migration selects the native host explicitly: Claude Code uses
+`.claude/settings.json`, Codex uses `.codex/hooks.json`, and both share the pinned
+engine and gate state. Native configuration, host trust and observed enforcement
+are separate claims; fixture proof alone establishes neither trust nor live
+host enforcement.
 
 ---
 

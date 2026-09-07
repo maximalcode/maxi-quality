@@ -144,6 +144,20 @@ def proposed_text(tool: str, ti: dict, current: str | None) -> str | None:
     return None
 
 
+def fixture_shrink_reason(root: str, rel: str, before: int, after: int) -> str | None:
+    """Shared deletion-shaped sample policy, independent of the host edit format."""
+    if rel in cited_files(root) and after < before:
+        return (
+            f"This edit removes {before - after} line(s) from {rel}, which "
+            "an expectation manifest in samples/expected/ cites as the "
+            "location of a planted finding. samples/ is the test suite: a "
+            "fixture that stops failing means the config regressed.\n\n"
+            "Fix the config instead. Adding a NEW failing case to this "
+            "file is always allowed."
+        )
+    return None
+
+
 def main() -> int:
     event = read_event()
     if event is None:
@@ -214,17 +228,11 @@ def main() -> int:
         return ALLOW
 
     # --- a cited fixture: refuse a shrink ----------------------------------
-    if rel in cited_files(root) and current is not None:
-        before, after = len(current.splitlines()), len(proposed.splitlines())
-        if after < before:
-            deny_tool(
-                f"This edit removes {before - after} line(s) from {rel}, which "
-                "an expectation manifest in samples/expected/ cites as the "
-                "location of a planted finding. samples/ is the test suite: a "
-                "fixture that stops failing means the config regressed.\n\n"
-                "Fix the config instead. Adding a NEW failing case to this "
-                "file is always allowed."
-            )
+    if current is not None:
+        reason = fixture_shrink_reason(root, rel, len(current.splitlines()),
+                                       len(proposed.splitlines()))
+        if reason:
+            deny_tool(reason)
             return ALLOW
 
     return ALLOW
