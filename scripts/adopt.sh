@@ -181,18 +181,11 @@ HOOKS=0
 # shadows someone's $EDITOR is a script that surprises them elsewhere.
 WANT_EDITOR=0
 EDITOR_CONFLICT=0
-# Beside EDITOR_CONFLICT and not beside NEEDS_MERGE, which is declared far
-# below: the --agent branch READS this one and exits before that point, so
-# initialising it there is an unbound variable under `set -u` on the success
-# path — a refusal flag that fails the runs it was supposed to leave alone.
-REGION_REFUSED=0
 # Not named AGENT either: --hooks already taught this script that a short,
 # obvious name can mean two unrelated things (configs/agent/README.md §8).
 WANT_AGENT=0
 WANT_SHARED=0
 INSTALL_SHARED=0
-SHARED_DIR="$HOME/.claude/agent-guard"
-AGENT_CONFLICT=0
 
 # Escapes a path for a command line a human will paste. A checkout under
 # "My Documents" is not exotic, and an unquoted path there runs a different
@@ -213,260 +206,14 @@ wrote() { printf '\033[32mwrite\033[0m %s\n' "$1"; }
 # after editing anything above.
 usage() { sed -n '3,113p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
 
-# --- the agent contract, only on --agent -------------------------------------
-#
-# ONLY on --agent, and for the strongest reason any of the three opt-ins has.
-# --hooks installs something a developer can bypass; --editor writes something
-# that gates nothing. This writes EXECUTABLE POLICY into someone's repository:
-# hooks Claude Code runs on every tool call and every stop, and deny rules it
-# enforces before any of them. Nothing about that should arrive by default.
-#
-# It is also the one thing here that MERGES rather than refusing, which is the
-# opposite of --editor two blocks up. The reason is the file, not a change of
-# heart: .vscode/settings.json is a file a consumer may not have, and
-# .claude/settings.json is a file a consumer who runs Claude Code almost
-# certainly does. Refuse-if-exists there would mean this never adopts anywhere
-# it matters. scripts/agent-settings.py holds the merge and its ownership rule.
-#
-# EVERYTHING OR NOTHING. The merge is dry-run first, and a refusal skips the
-# whole block — not just the settings file. Copying the scripts and appending
-# the fragment without the hooks would leave a CLAUDE.md that says "they are
-# not advice — they refuse" in a repo where nothing refuses. A contract that
-# describes enforcement it does not have is worse than no contract, because
-# the next session reads it and believes it.
+# The installer owns profile selection, file ownership, writing and verification.
+# The shell only forwards user choices and presents the returned outcome.
 install_agent_contract() {
-  AGENT_SETTINGS="$TARGET/.claude/settings.json"
-  AGENT_DIR="$TARGET/.claude/agent-guard"
-
-  # #182 — install only what can fire. Two of the five rules, sample-guard.py
-  # and Edit(/samples/expected/**), are hardcoded to this repo's fixture layout;
-  # in a tree without expectation manifests the hook allows everything and the
-  # deny rule matches no file that exists. Shipped anyway, they produced a
-  # consumer whose CLAUDE.md said it was protected by three hooks and two deny
-  # rules, a third of which could never fire.
-  #
-  # Re-running after a samples/expected/ appears installs both, so this is a
-  # decision about THIS tree today and not a permanent verdict on it.
-  AGENT_SHARED=()
-  [ "$WANT_SHARED" -eq 1 ] && AGENT_SHARED=(--shared)
-  AGENT_SAMPLES=no
-  AGENT_WITHOUT=(--without-samples)
-  if [ -d "$TARGET/samples/expected" ]; then
-    AGENT_SAMPLES=yes
-    AGENT_WITHOUT=()
-  fi
-
-  # Preflight. Runs before the first byte is written, so a refusal costs the
-  # consumer a message and not a half-adopted tree.
-  if ! python3 "$BASELINE/scripts/agent-settings.py" merge \
-         --baseline "$BASELINE/configs/agent/settings.json" \
-         --target "$AGENT_SETTINGS" "${AGENT_WITHOUT[@]+"${AGENT_WITHOUT[@]}"}" \
-         "${AGENT_SHARED[@]+"${AGENT_SHARED[@]}"}" --dry-run >/dev/null; then
-    AGENT_CONFLICT=1
-    NEEDS_MERGE=1
-  else
-    # A guard that is not in a git working tree allows every stop and reports
-    # nothing — stop-gate.py fails open on plumbing, by design. Installing it
-    # there anyway produces the one outcome this script cares most about
-    # avoiding: a tree that looks adopted and enforces nothing.
-    if ! git -C "$TARGET" rev-parse --show-toplevel >/dev/null 2>&1; then
-      warn "--agent: $TARGET is not a git working tree. The Stop gate"
-      warn "fingerprints \`git status\`, so outside one it allows every stop and"
-      warn "says nothing. Installing anyway; run \`git init\` before you rely on it."
-      NEEDS_MERGE=1
-    fi
-
-    # The scripts are BASELINE CODE, not your configuration, so unlike every
-    # other copy in this script they are refreshed rather than skipped. A hook
-    # `command` is a path on disk, so re-running this script IS the upgrade
-    # path, the same trade the C# and Rust configs already make.
-    #
-    # This used to say Claude Code has "no remote consumption". That is FALSE:
-    # a plugin can ship hooks from a git source, pinned by SHA. The decision to
-    # copy is unchanged — a plugin cannot carry `permissions.deny` at all, so
-    # two of the contract's rules could not travel in one — but the reason had
-    # to be corrected, because a wrong reason for a right decision is how the
-    # decision gets overturned later (CLAUDE.md §2). --force does not apply to the scripts and would
-    # not mean
-    # anything here.
-    # WHAT gets copied is derived from the wiring, not from a glob (#191). A
-    # `*.py` loop shipped selftest.py — the baseline's own corpus runner, which
-    # needs samples/agent-guard/ and so can never run in a consumer — into
-    # every tree, 508 lines of it; and it kept shipping sample-guard.py after
-    # #182 stopped wiring it in a tree with no manifests. 43% of the install
-    # could not run. agent-settings.py holds the one definition of the set.
-    AGENT_WANT=()
-    if [ "$WANT_SHARED" -eq 1 ]; then
-      # --shared: one file, and the scripts live once at ~/.claude/agent-guard.
-      # 101 lines instead of 984, and a guard fix is one `--install-shared`
-      # rather than one commit per repo (#193).
-      AGENT_WANT=(shim.py)
-      if [ ! -d "$SHARED_DIR" ] && [ "$DRY_RUN" -eq 0 ]; then
-        warn "--shared: $SHARED_DIR does not exist yet. The wiring will be"
-        warn "installed and will REFUSE until you run:"
-        warn "  $SELF_CMD --install-shared"
-        NEEDS_MERGE=1
-      fi
-    else
-      while IFS= read -r n; do AGENT_WANT+=("$n"); done < <(
-        python3 "$BASELINE/scripts/agent-settings.py" scripts \
-          --baseline "$BASELINE/configs/agent/settings.json" \
-          "${AGENT_WITHOUT[@]+"${AGENT_WITHOUT[@]}"}")
-    fi
-    for n in "${AGENT_WANT[@]}"; do
-      wrote "$AGENT_DIR/$n (refreshed)"
-      [ "$DRY_RUN" -eq 1 ] && continue
-      mkdir -p "$AGENT_DIR"
-      if [ "$n" = "shim.py" ]; then
-        cp "$BASELINE/configs/agent/shim.py" "$AGENT_DIR/$n"
-      else
-        cp "$BASELINE/scripts/agent-guard/$n" "$AGENT_DIR/$n"
-      fi
-    done
-
-    # An orphan from an earlier adoption — a script this profile no longer
-    # wires — is REMOVED, and only if the baseline is the thing that put it
-    # there. Leaving it is the condition G1 fails the baseline for: a hook
-    # script no command names. Deleting a file from someone's tree is a bigger
-    # act than adding one, so the blast radius is fixed: only names that exist
-    # under scripts/agent-guard/, never anything else in that directory.
-    for src in "$BASELINE"/scripts/agent-guard/*.py "$BASELINE"/configs/agent/shim.py; do
-      n="$(basename "$src")"
-      case " ${AGENT_WANT[*]} " in *" $n "*) continue ;; esac
-      [ -e "$AGENT_DIR/$n" ] || continue
-      wrote "$AGENT_DIR/$n (removed — this tree does not wire it)"
-      [ "$DRY_RUN" -eq 1 ] || rm -f "$AGENT_DIR/$n"
-    done
-
-    # The fragment, marker-guarded, and REFRESHED rather than skipped (#177).
-    # scripts/agent-region.py owns it: it replaces what is between the markers
-    # and nothing outside them, tells an older baseline's text apart from an
-    # edit of your own by the checksum in the BEGIN marker, and refuses the
-    # second rather than overwriting it. --force overrides that refusal, which
-    # is the only thing --force means here.
-    AGENT_REGION_ARGS=(apply
-      --fragment "$BASELINE/configs/agent/CLAUDE.fragment.md"
-      --target "$TARGET/CLAUDE.md" --samples "$AGENT_SAMPLES"
-      # The region's recorder line names shim.py in a --shared tree and
-      # record-gate.py otherwise. Passing the WRONG one produced text that told
-      # a session to run a file the install does not have, which is why
-      # agent-region.py requires this rather than defaulting it.
-      --shared "$([ "$WANT_SHARED" -eq 1 ] && echo yes || echo no)")
-    if [ "$FORCE" -eq 1 ]; then AGENT_REGION_ARGS+=(--force); fi
-    if [ "$DRY_RUN" -eq 1 ]; then
-      info "$TARGET/CLAUDE.md (dry run) — the region would be checked and refreshed"
-    else
-      AGENT_REGION_RC=0
-      python3 "$BASELINE/scripts/agent-region.py" "${AGENT_REGION_ARGS[@]}" \
-        | sed 's/^/    /' || AGENT_REGION_RC=${PIPESTATUS[0]}
-      if [ "$AGENT_REGION_RC" -ne 0 ]; then
-        # Not fatal, and deliberately so: the hooks and the deny rules are
-        # installed and enforcing by this point. What is stale is the PROSE
-        # describing them, and stopping the run here would leave a tree with
-        # neither. Say it loudly and let the summary carry it.
-        warn "--agent: $TARGET/CLAUDE.md was left alone (see above). The rules"
-        warn "are installed; the text describing them is not current."
-        # NOT NEEDS_MERGE: that says "a file already existed and was left
-        # untouched", which is a different thing and reads as routine. This is a
-        # refusal, and until #198 it ended the run at exit 0 under the word
-        # ADOPTED — a tree with enforcing hooks and no text telling any session
-        # they exist, reported as success. --editor's exit 5 is the precedent
-        # and the shape is identical: everything else adopted, one part held
-        # back, the reason printed, and a code a caller can branch on.
-        REGION_REFUSED=1
-      fi
-    fi
-
-    # Per-checkout state: a receipt describes THIS working tree's diff, so a
-    # committed one is a claim about somebody else's. Nothing breaks if this
-    # line is missing — the receipt is excluded from the fingerprint either
-    # way — which is exactly why it is worth writing for people rather than
-    # leaving as a step nobody notices they skipped.
-    # Two lines, not one. The receipt is per-checkout state; __pycache__ is
-    # written by Python beside the scripts the moment a hook imports one, so a
-    # consumer with no Python section in their .gitignore — a Rust, C# or
-    # TypeScript repo, which is most of them — gets untracked noise the guard
-    # itself created, and `git add -A` commits .pyc files. guard.py also
-    # excludes it from the fingerprint; this is the tidier half of that pair,
-    # and neither is sufficient alone.
-    # A LIST, not three named variables. The pair was already a `&&` of two
-    # greps and a printf with two %s, so a third entry meant editing three
-    # places that could disagree — and the one that silently does nothing is
-    # the grep, which would re-append forever.
-    AGENT_IGNORES=(
-      '.claude/agent-guard-receipt.json'
-      '.claude/agent-guard/__pycache__/'
-      # The ledger (#167): per-checkout, like the receipt. Committing it would
-      # publish one machine's block counts as everyone's, and in a private
-      # consumer it is the file most worth keeping out of a public diff.
-      '.claude/agent-guard-ledger.jsonl'
-    )
-    AGENT_IGNORE_MISSING=0
-    for ig in "${AGENT_IGNORES[@]}"; do
-      [ -e "$TARGET/.gitignore" ] \
-        && grep -qxF "$ig" "$TARGET/.gitignore" 2>/dev/null \
-        || AGENT_IGNORE_MISSING=1
-    done
-    if [ "$AGENT_IGNORE_MISSING" -eq 0 ]; then
-      skip "$TARGET/.gitignore — already ignores the guard's own state"
-    else
-      wrote "$TARGET/.gitignore (append)"
-      if [ "$DRY_RUN" -eq 0 ]; then
-        if [ -s "$TARGET/.gitignore" ]; then
-          [ -z "$(tail -c 1 "$TARGET/.gitignore")" ] || printf '\n' >> "$TARGET/.gitignore"
-          # The blank separator belongs to a NEW block. Appending one missing
-          # entry to a block that already exists must not push it away from the
-          # heading that explains it.
-          grep -qF 'maxi-quality agent guard' "$TARGET/.gitignore" 2>/dev/null \
-            || printf '\n' >> "$TARGET/.gitignore"
-        fi
-        # Only when it is not already there. An upgrade — a tree adopted
-        # before the ledger existed — needs the one missing entry, not a second
-        # copy of the heading above the entries it already has.
-        grep -qF 'maxi-quality agent guard' "$TARGET/.gitignore" 2>/dev/null \
-          || printf '# maxi-quality agent guard — per-checkout state, never committed\n' \
-               >> "$TARGET/.gitignore"
-        for ig in "${AGENT_IGNORES[@]}"; do
-          grep -qxF "$ig" "$TARGET/.gitignore" 2>/dev/null \
-            || printf '%s\n' "$ig" >> "$TARGET/.gitignore"
-        done
-      fi
-    fi
-
-    # And the merge for real. The preflight above already proved it parses, so
-    # a failure HERE is ours: report it as such rather than as a conflict.
-    if [ "$DRY_RUN" -eq 1 ]; then
-      info "$AGENT_SETTINGS (dry run) — the merge would apply:"
-      python3 "$BASELINE/scripts/agent-settings.py" merge \
-        --baseline "$BASELINE/configs/agent/settings.json" \
-        --target "$AGENT_SETTINGS" "${AGENT_WITHOUT[@]+"${AGENT_WITHOUT[@]}"}" \
-        "${AGENT_SHARED[@]+"${AGENT_SHARED[@]}"}" --dry-run | sed 's/^/    /'
-    else
-      wrote "$AGENT_SETTINGS (merge)"
-      python3 "$BASELINE/scripts/agent-settings.py" merge \
-        --baseline "$BASELINE/configs/agent/settings.json" \
-        --target "$AGENT_SETTINGS" "${AGENT_WITHOUT[@]+"${AGENT_WITHOUT[@]}"}" \
-        "${AGENT_SHARED[@]+"${AGENT_SHARED[@]}"}" | sed 's/^/    /' \
-        || die "the merge failed after its own dry run passed — this is a bug in maxi-quality, not in your repo"
-
-      # POST-CONDITION, not a step (#196). Every hook command in the file we
-      # just wrote must name a file that exists.
-      #
-      # A hook whose script is missing fails at exec, BEFORE any of guard.py's
-      # fail-open handling can run, and Claude Code treats a PreToolUse hook
-      # error as blocking. The result is a repo where every Bash, Write and
-      # Edit call fails, and a session inside it cannot repair itself. That
-      # state reached a consumer's default branch before this check existed.
-      #
-      # Asserted as a property of the RESULT rather than by fixing the two
-      # paths that produced it — a profile that narrows, and a mode change —
-      # because the next one will not be either of those.
-      if ! python3 "$BASELINE/scripts/agent-settings.py" verify \
-             --target "$AGENT_SETTINGS" --root "$TARGET"; then
-        die "the wiring names a file that does not exist. Nothing further was written; this is a bug in maxi-quality, not in your repo"
-      fi
-    fi
-  fi
+  local args=(repo "$TARGET" --adopt-command "$SELF_CMD")
+  if [ "$WANT_SHARED" -eq 1 ]; then args+=(--shared); fi
+  if [ "$FORCE" -eq 1 ]; then args+=(--force); fi
+  if [ "$DRY_RUN" -eq 1 ]; then args+=(--dry-run); fi
+  python3 "$BASELINE/scripts/agent-install.py" "${args[@]}"
 }
 
 # The two things an installed contract still needs from a human, and the three
@@ -521,22 +268,9 @@ done
 # --shared repo executes from. Handled before target resolution because it is
 # not an adoption at all — nothing is written into a consuming repo.
 if [ "$INSTALL_SHARED" -eq 1 ]; then
-  info "shared agent guard -> $SHARED_DIR"
-  if [ "$DRY_RUN" -eq 0 ]; then
-    mkdir -p "$SHARED_DIR"
-    # EVERY script, not the per-repo profile: one directory serves repos with
-    # and without expectation manifests, and the shim picks by name. selftest.py
-    # is still excluded — it needs samples/agent-guard/, which no consumer has.
-    for src in "$BASELINE"/scripts/agent-guard/*.py; do
-      [ "$(basename "$src")" = "selftest.py" ] && continue
-      cp "$src" "$SHARED_DIR/$(basename "$src")"
-      wrote "$SHARED_DIR/$(basename "$src")"
-    done
-  fi
-  printf '\n'
-  info "every repo adopted with --agent --shared now runs this copy."
-  info "re-run this after pulling maxi-quality to update all of them at once."
-  exit 0
+  SHARED_ARGS=(shared)
+  if [ "$DRY_RUN" -eq 1 ]; then SHARED_ARGS+=(--dry-run); fi
+  exec python3 "$BASELINE/scripts/agent-install.py" "${SHARED_ARGS[@]}"
 fi
 
 [ -n "$TARGET" ] || TARGET="$(pwd)"
@@ -691,8 +425,13 @@ if [ "$WANT_AGENT" -eq 1 ]; then
     printf '\n'
   fi
 
-  install_agent_contract
-  if [ "$AGENT_CONFLICT" -eq 1 ]; then
+  AGENT_STATUS=0
+  install_agent_contract || AGENT_STATUS=$?
+  case "$AGENT_STATUS" in
+    0|6|7) ;; # Installed, refused settings, or installed with stale instructions.
+    *) exit "$AGENT_STATUS" ;;
+  esac
+  if [ "$AGENT_STATUS" -eq 6 ]; then
     printf '\n'
     printf '\033[31mAGENT CONTRACT NOT INSTALLED\033[0m — .claude/settings.json could not\n'
     printf 'be merged into, and the reason is above. NOTHING was written: not the\n'
@@ -732,7 +471,7 @@ if [ "$WANT_AGENT" -eq 1 ]; then
   # #198. The --agent branch exits here rather than falling through to the
   # tail, so this is the ONLY place the verdict can be corrected — putting it
   # beside --editor's exit 5 looks right and never runs.
-  if [ "$REGION_REFUSED" -eq 1 ]; then
+  if [ "$AGENT_STATUS" -eq 7 ]; then
     printf '\n\033[31mEXCEPT the CLAUDE.md region, which was NOT written\033[0m — the reason\n'
     printf 'is above. The hooks and deny rules ARE installed and enforcing. What is\n'
     printf 'missing is the text that tells a session they exist, which is the half a\n'
