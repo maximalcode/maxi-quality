@@ -3,51 +3,17 @@
 from __future__ import annotations
 
 import json
-import os
 import shlex
-import subprocess
 import sys
-import tempfile
 import unittest
-from pathlib import Path
 
-BASELINE = Path(__file__).resolve().parents[2]
+from fixture import ADOPT, BASELINE, InstallationFixture
+from adoption_cases import AdoptionTests
+
 INSTALL = [sys.executable, str(BASELINE / "scripts/agent-install.py")]
-ADOPT = ["bash", str(BASELINE / "scripts/adopt.sh")]
 
 
-class InstallationTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory(prefix="agent-install-")
-        self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name).resolve()
-        self.home = self.root / "isolated home"
-        self.home.mkdir()
-        self.runtime = self.home / ".claude/agent-guard"
-        self.env = {**os.environ, "HOME": str(self.home), "GIT_CONFIG_NOSYSTEM": "1"}
-        self.create_repo("adopter repo")
-
-    def create_repo(self, name: str) -> None:
-        self.repo = self.root / name
-        self.repo.mkdir()
-        self.run_command(["git", "init", "-q"])
-        (self.repo / "work.txt").write_text("initial\n")
-        self.run_command(["git", "add", "."])
-        self.run_command(["git", "-c", "user.name=fixture", "-c",
-                          "user.email=fixture@example.invalid", "commit", "-qm", "initial"])
-
-    def run_command(self, command: list[str], payload: dict | None = None,
-                    *, expected: int = 0) -> str:
-        result = subprocess.run(command, cwd=self.repo, env=self.env,
-                                input=json.dumps(payload) if payload is not None else None,
-                                capture_output=True, text=True, timeout=60)
-        self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
-        return result.stdout
-
-    def snapshot(self, directory: Path) -> dict[str, bytes]:
-        return {str(path.relative_to(directory)): path.read_bytes()
-                for path in directory.rglob("*") if path.is_file()}
-
+class InstallationTests(InstallationFixture):
     def test_installer_owns_all_four_repository_profiles(self) -> None:
         # No shell orchestration: a caller needs only the repository and mode.
         self.run_command([*INSTALL, "shared"])
