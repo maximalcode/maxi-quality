@@ -116,7 +116,7 @@ def instruction(root: str) -> str:
     if os.environ.get("MAXI_QUALITY_RUNTIME_COMMAND"):
         run_recorder = recorder_cmd
     else:
-        run_recorder = "python3 " + recorder_cmd
+        run_recorder = "python3 " + shlex.quote(recorder_cmd)
     cmd = gate_command(root)
     if cmd:
         return (f"{run_recorder} --gate\n\n"

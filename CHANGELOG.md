@@ -55,6 +55,10 @@ is no public v1.0.0 through v1.0.3 to backfill. `CLAUDE.md` §2 has the reason.
 
 ### Changed
 
+- Agent installation regression scenarios now run through the same local and
+  CI command, with isolated Git trees and individually selectable tests.
+- Shared guard refusal messages quote the recorder path, so the suggested
+  command also runs when the home directory contains spaces.
 - Agent contract installation now has one module owning profile selection,
   files, settings, instructions and verification. Existing adoption commands,
   settings refusals and exit 7 for a held-back instruction region are unchanged;
