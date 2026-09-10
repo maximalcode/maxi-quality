@@ -184,7 +184,7 @@ runs:
         PATCH_ARGS=()
         PATCH_STATUS_OVERRIDE=""
 
-        if [[ "$PATCH_THRESHOLD" == "0" ]]; then
+        if [[ "$PATCH_THRESHOLD" == "0" && -z "$BASE_REF$GH_BASE_REF" ]]; then
           echo "patch gate: off (patch-threshold: 0). The aggregate ratchet still runs."
           PATCH_STATUS_OVERRIDE="off"
         else
@@ -236,7 +236,7 @@ runs:
             fi
 
             if [[ -z "$MERGE_BASE" ]]; then
-              echo "::error::patch coverage: '${REF}' resolved to ${BASE_COMMIT} but shares no history with HEAD even after deepening this clone, so there is no merge base to diff from. Set fetch-depth: 0 on actions/checkout, or set patch-threshold: 0 to run the aggregate ratchet alone."
+              echo "::error::patch coverage: '${REF}' resolved to ${BASE_COMMIT} but shares no history with HEAD even after deepening this clone, so there is no merge base to diff from. Set fetch-depth: 0 on actions/checkout."
               exit 1
             fi
 

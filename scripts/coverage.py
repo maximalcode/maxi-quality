@@ -94,6 +94,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import xml.etree.ElementTree as ET
@@ -583,6 +584,10 @@ def main() -> int:
         "nothing and reports ok forever.",
     )
     args = ap.parse_args()
+
+    if args.patch_threshold is not None and not math.isfinite(args.patch_threshold):
+        print("error: --patch-threshold must be finite", file=sys.stderr)
+        return 3
 
     # A threshold with no diff would measure nothing, compare nothing, and pass
     # every run — while reading, in the workflow file, exactly like a gate. That
