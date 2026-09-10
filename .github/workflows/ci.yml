@@ -1983,6 +1983,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      - name: Coverage input and disabled-gate regressions
+        run: python3 samples/coverage/selftest.py
+
       - name: Both implementations, both formats, against the hand-count
         shell: bash
         run: scripts/patch-coverage-demo.sh
@@ -2264,8 +2267,10 @@ jobs:
           COVERAGE: ${{ steps.gateoff.outputs.coverage }}
         run: |
           set -Eeuo pipefail
-          [[ "$STATUS" == 'off' ]] || {
-            echo "::error::patch-status was '$STATUS', expected 'off'"; exit 1; }
+          # This checkout's diff may contain no lines measured by the fixture.
+          # selftest.py asserts the measured, disabled case on real fixture history.
+          [[ "$STATUS" == 'off' || "$STATUS" == 'n/a' ]] || {
+            echo "::error::patch-status was '$STATUS', expected 'off' or 'n/a'"; exit 1; }
           [[ "$COVERAGE" == '94.95' ]] || {
             echo "::error::the aggregate reported $COVERAGE with the gate off"; exit 1; }
           echo 'OK: 0 disables the gate and the ratchet still ran'
