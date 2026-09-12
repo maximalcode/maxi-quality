@@ -107,6 +107,13 @@ def build(root: str, setup: dict) -> None:
     for flag, paths in setup.get("index_flags", {}).items():
         run_git(root, "update-index", "--" + flag, "--", *paths)
 
+    for nested in setup.get("embedded_repos", []):
+        directory = os.path.join(root, nested)
+        os.makedirs(directory, exist_ok=True)
+        run_git(directory, "init", "--quiet", "--initial-branch=main")
+        assert os.path.isdir(os.path.join(directory, ".git", "objects"))
+        assert os.path.isdir(os.path.join(directory, ".git", "refs"))
+
     # A REAL run of record-gate.py, so the wrapper is covered end to end
     # rather than by fixtures that hand-write the receipt it is supposed to
     # produce. `after` edits the tree once the receipt exists, which is the
@@ -429,11 +436,18 @@ def run_case(path: str) -> list[str]:
             if isinstance(ti, dict) and isinstance(ti.get(key), str):
                 ti[key] = ti[key].replace("{{ROOT}}", root)
 
+        preserved = [pathlib.Path(root) / ".git" / "index"] if setup.get("embedded_repos") else []
+        for nested in setup.get("embedded_repos", []):
+            preserved.extend(p for p in (pathlib.Path(root) / nested).rglob("*")
+                             if p.is_file())
+        before = {p: p.read_bytes() for p in preserved}
         proc = subprocess.run(
             (sys.executable, os.path.join(HERE, HOOKS[hook])),
             input=json.dumps(event), cwd=root,
             capture_output=True, text=True, timeout=60,
         )
+        setup["_inspection_preserved"] = all(
+            p.exists() and p.read_bytes() == content for p, content in before.items())
         # Read INSIDE the try: the fixture tree is removed in `finally`, before
         # any assertion runs, so a check that opened this path afterwards would
         # find nothing and pass for the wrong reason.
@@ -447,6 +461,8 @@ def run_case(path: str) -> list[str]:
         shutil.rmtree(tmp, ignore_errors=True)
 
     fails: list[str] = []
+    if not setup.get("_inspection_preserved", True):
+        fails.append("inspection changed the outer index or nested repository")
     expect = case["expect"]
 
     # record-gate.py must hand the gate's own exit code back untouched, or

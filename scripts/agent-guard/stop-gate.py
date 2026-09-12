@@ -143,6 +143,7 @@ OUTCOMES = {
     "gate-failed":        True,
     "not-the-gate":       True,
     "content-changed":    True,
+    "unverifiable-directory": True,
 }
 
 
@@ -260,6 +261,21 @@ def main() -> int:
         # Nothing differs from HEAD. There is no such thing as an ungated
         # change here, and a read-only session must not be made to run a gate.
         return record(event, root, "clean", now=now)
+
+    # With --untracked-files=all, Git still collapses embedded repositories
+    # into directory entries. hash-object cannot cover their contents. Refuse
+    # this unsupported shape before consulting even a fresh passing receipt.
+    # Use Git's trailing slash, so no metadata probing or traversal is needed;
+    # outer ignored directories never enter this set.
+    if any(path.endswith("/") for path in changed):
+        block_stop(
+            "Cannot verify an untracked embedded Git repository. Git reports "
+            "only its directory, so a passing receipt cannot cover its contents. "
+            "Move it outside this working tree before stopping. If it is "
+            "intentionally outside the gate's scope, explicitly ignore it in "
+            "the outer repository. Rerunning the gate alone cannot resolve this."
+        )
+        return record(event, root, "unverifiable-directory", len(changed), now=now)
 
     receipt = read_receipt(root)
     current = fingerprint(root)

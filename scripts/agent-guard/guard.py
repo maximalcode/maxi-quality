@@ -186,7 +186,8 @@ def changed_files(root: str) -> list[str]:
     both matter — a rename is a deletion the gate must not be able to miss.
     """
     try:
-        out = git("status", "--porcelain=1", "-z", "--untracked-files=all", cwd=root)
+        out = git("--no-optional-locks", "status", "--porcelain=1", "-z",
+                  "--untracked-files=all", cwd=root)
         indexed = git("ls-files", "-v", "-z", cwd=root)
     except (subprocess.CalledProcessError, FileNotFoundError, OSError):
         return []
