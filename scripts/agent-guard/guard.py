@@ -153,15 +153,22 @@ def warn(msg: str) -> None:
     print(f"agent-guard: {msg}", file=sys.stderr)
 
 
-def git(*args: str, cwd: str | None = None) -> str:
+class InspectionError(RuntimeError):
+    """Git could not reliably enumerate the working tree."""
+
+
+def git(*args: str, cwd: str | None = None, reject_stderr: bool = False) -> str:
     """Run git and return stdout, or raise CalledProcessError."""
-    return subprocess.run(
+    result = subprocess.run(
         ("git", *args),
         cwd=cwd,
         check=True,
         capture_output=True,
         text=True,
-    ).stdout
+    )
+    if reject_stderr and result.stderr:
+        raise InspectionError("Git reported a warning while inspecting the tree")
+    return result.stdout
 
 
 def repo_root(start: str | None = None) -> str | None:
@@ -186,10 +193,11 @@ def changed_files(root: str) -> list[str]:
     both matter — a rename is a deletion the gate must not be able to miss.
     """
     try:
-        out = git("status", "--porcelain=1", "-z", "--untracked-files=all", cwd=root)
-        indexed = git("ls-files", "-v", "-z", cwd=root)
-    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
-        return []
+        out = git("--no-optional-locks", "status", "--porcelain=1", "-z",
+                  "--untracked-files=all", cwd=root, reject_stderr=True)
+        indexed = git("ls-files", "-v", "-z", cwd=root, reject_stderr=True)
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
+        raise InspectionError("Git could not enumerate the working tree") from exc
 
     fields = out.split("\0")
     paths: set[str] = set()
