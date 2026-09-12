@@ -14,7 +14,8 @@ comparison is a hash, not a toolchain.
 WHAT THE FINGERPRINT COVERS
 
 The content of every file that differs from HEAD: tracked modifications,
-staged changes, and untracked files git would not ignore. Renames and
+staged changes, and untracked files git would not ignore. Index paths marked
+assume-unchanged or skip-worktree are always included, even if unchanged. Renames and
 deletions move it. A file the gate never saw cannot be inside a receipt that
 matches, which is the only property the Stop hook needs.
 
@@ -176,9 +177,9 @@ def repo_root(start: str | None = None) -> str | None:
 
 
 def changed_files(root: str) -> list[str]:
-    """Repo-relative paths that differ from HEAD, sorted, deduplicated.
+    """Changed or index-flagged repo-relative paths, sorted, deduplicated.
 
-    `git status --porcelain -z` is the single source: it already merges the
+    `git status --porcelain -z` merges the
     index and the working tree, already honours .gitignore for untracked
     files, and -z is the only form that survives a path with a space, a quote
     or a newline in it. The rename form carries two NUL-separated paths and
@@ -186,6 +187,7 @@ def changed_files(root: str) -> list[str]:
     """
     try:
         out = git("status", "--porcelain=1", "-z", "--untracked-files=all", cwd=root)
+        indexed = git("ls-files", "-v", "-z", cwd=root)
     except (subprocess.CalledProcessError, FileNotFoundError, OSError):
         return []
 
@@ -213,6 +215,15 @@ def changed_files(root: str) -> list[str]:
                 if not excluded(fields[i]):
                     paths.add(fields[i])
                 i += 1
+    # Status trusts these bits and can omit modified files. Treat flagged
+    # paths as changed even when their bytes match HEAD, so a gate records
+    # their content and later edits invalidate it. -v lowercases the tag for
+    # assume-unchanged; skip-worktree is S (or s when both bits are set).
+    for entry in indexed.split("\0"):
+        if len(entry) >= 3 and (entry[0].islower() or entry[0] == "S"):
+            path = entry[2:]
+            if not excluded(path):
+                paths.add(path)
     return sorted(paths)
 
 

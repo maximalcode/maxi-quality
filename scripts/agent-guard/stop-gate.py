@@ -15,7 +15,8 @@ The docs are explicit that a tool matcher does not see everything: "Claude can
 also create or modify files by running shell commands", and the recommended
 answer is "a Stop hook that scans the working tree once per turn". So
 `sample-guard.py` can be walked around with a heredoc, and this cannot —
-whatever wrote the bytes, they are in `git status` at the end of the turn.
+whatever wrote the bytes, status plus the index-flag cross-check covers them
+at the end of the turn.
 That is why the fixture asserts a Bash-written change is caught here.
 
 THE LOOP GUARD IS NOT OPTIONAL

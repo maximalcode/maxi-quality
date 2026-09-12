@@ -45,6 +45,10 @@ is no public v1.0.0 through v1.0.3 to backfill. `CLAUDE.md` §2 has the reason.
 
 ## Unreleased
 
+- Fix agent-guard fingerprints omitting tracked files marked assume-unchanged
+  or skip-worktree (#217). Flagged paths now require a gate run, and later edits
+  invalidate its receipt even when Git status hides them.
+
 ### Added
 
 - Opt-in native Codex guard wiring through `quality-runtime-migrate.py --host

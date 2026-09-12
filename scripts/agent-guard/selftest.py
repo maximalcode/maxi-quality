@@ -102,6 +102,11 @@ def build(root: str, setup: dict) -> None:
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(setup["config"], fh)
 
+    # Set the bits before recording: a pre-existing flag must not hide later
+    # drift, and a passing run must still be usable while the bit remains set.
+    for flag, paths in setup.get("index_flags", {}).items():
+        run_git(root, "update-index", "--" + flag, "--", *paths)
+
     # A REAL run of record-gate.py, so the wrapper is covered end to end
     # rather than by fixtures that hand-write the receipt it is supposed to
     # produce. `after` edits the tree once the receipt exists, which is the
