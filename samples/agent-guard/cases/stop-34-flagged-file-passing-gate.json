@@ -1,0 +1,26 @@
+{
+  "why": "#217: a flagged path with a fresh passing gate must allow stopping without clearing the index bit.",
+  "hook": "stop",
+  "setup": {
+    "committed": {
+      "a.txt": "one\n"
+    },
+    "index_flags": {
+      "skip-worktree": [
+        "a.txt"
+      ]
+    },
+    "record": {
+      "command": [
+        "true"
+      ]
+    }
+  },
+  "event": {
+    "hook_event_name": "Stop"
+  },
+  "expect": {
+    "decision": "allow",
+    "record_exit": 0
+  }
+}

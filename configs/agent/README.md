@@ -71,6 +71,11 @@ this repo's declared gate, or when the fingerprint no longer matches. Each of
 those gets a different message, because "the gate failed" and "the gate never
 ran" are different problems.
 
+Tracked paths marked `assume-unchanged` or `skip-worktree` are always included
+via `git ls-files -v -z`, even if their bytes match `HEAD`: status alone can
+hide their edits. A passing gate covers those bytes normally; later edits
+invalidate its receipt. The guard does not clear either index bit.
+
 The receipt is written by `record-gate.py`. Declare the gate once:
 
 ```json
@@ -323,7 +328,7 @@ redirect or a three-line Python script writes either file and nothing here sees
 it.
 
 For a **manifest** that is survivable, and the Stop gate is why: whatever wrote
-the bytes, they are in `git status` at the end of the turn, the fingerprint
+the bytes, status plus the index-flag cross-check covers them, the fingerprint
 moves, and the gate has to run again over the new content.
 `samples/agent-guard/cases/stop-07-untracked-file.json` is that assertion.
 
@@ -374,7 +379,7 @@ which is the entire argument for §5's structural checker.
 
 ## 5. Evidence
 
-`samples/agent-guard/` is 73 cases. Every hook case runs the real hook as a
+`samples/agent-guard/` is 77 cases. Every hook case runs the real hook as a
 subprocess with a real payload on stdin and parses stdout the way Claude Code
 does; the `stop-` and `edit-` cases build a real git repository first, and the
 `noverify-` cases do not, because a command guard reads a string and has no
@@ -645,7 +650,7 @@ tidied, because a record that gets edited to match the current code is no longer
 a record of anything.
 
 **A live session was blocked on 2026-08-25.** This is the observation the
-milestone actually needed, and it is separate from the fixtures: all 73 cases in
+milestone actually needed, and it is separate from the fixtures: all 77 cases in
 `samples/agent-guard/` invoke the hooks as subprocesses on synthetic payloads,
 so none of them can tell you whether Claude Code *wires* them. It was reached
 deliberately — one real uncommitted edit to this file, the gate not run — and

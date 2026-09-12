@@ -1,6 +1,6 @@
 # The agent guard's test suite
 
-Seventy-three cases, one JSON file each, in [`cases/`](cases). Run them:
+Seventy-seven cases, one JSON file each, in [`cases/`](cases). Run them:
 
 ```bash
 python3 scripts/agent-guard/selftest.py
@@ -65,9 +65,14 @@ The `noverify-` cases set `"git": false`: the command guard reads a string and
 has no opinion about the repository it is standing in, so building one would be
 a fixture asserting something the hook does not do.
 
+Cases `stop-31` through `stop-33` set assume-unchanged, skip-worktree, and both
+bits before recording a real passing gate, then edit the hidden file. Each must
+block on the stale fingerprint. `stop-34` keeps the flagged file unchanged after
+the gate and must allow stopping.
+
 ## The negative controls matter as much as the blocks
 
-Seventeen cases exist to prove the guards stay out of the way: an edit outside
+Eighteen cases exist to prove the guards stay out of the way: an edit outside
 `samples/`, an edit that adds a manifest entry, an edit that grows a fixture, an
 edit to an uncited clean fixture, a brand-new manifest, a tool the matcher should
 never have routed here, an ordinary `git commit -m`, `npm test -- -n`,
