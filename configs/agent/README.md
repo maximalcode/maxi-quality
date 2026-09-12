@@ -348,7 +348,9 @@ Rerunning the gate alone does not clear this block. Outer ignored directories
 remain outside inspection. The guard neither traverses the nested repository
 nor changes its metadata or the outer index flags. The real `git init` fixtures
 `stop-35` through `stop-37` cover changed, unchanged, and ignored cases;
-`changed-05` pins Git's collapsed directory result.
+`changed-05` pins Git's collapsed directory result. Git inspection warnings or
+errors also block Stop and prevent recording a new receipt: an unreadable
+nested directory can otherwise disappear from status entirely (`stop-38`).
 
 **The sample guard catches deletion-shaped weakening only.** It does not decide
 whether a fixture still fires — that needs the toolchain the fixture is for, five
@@ -391,7 +393,7 @@ which is the entire argument for §5's structural checker.
 
 ## 5. Evidence
 
-`samples/agent-guard/` is 81 cases. Every hook case runs the real hook as a
+`samples/agent-guard/` is 82 cases. Every hook case runs the real hook as a
 subprocess with a real payload on stdin and parses stdout the way Claude Code
 does; the `stop-` and `edit-` cases build a real git repository first, and the
 `noverify-` cases do not, because a command guard reads a string and has no
@@ -662,7 +664,7 @@ tidied, because a record that gets edited to match the current code is no longer
 a record of anything.
 
 **A live session was blocked on 2026-08-25.** This is the observation the
-milestone actually needed, and it is separate from the fixtures: all 81 cases in
+milestone actually needed, and it is separate from the fixtures: all 82 cases in
 `samples/agent-guard/` invoke the hooks as subprocesses on synthetic payloads,
 so none of them can tell you whether Claude Code *wires* them. It was reached
 deliberately — one real uncommitted edit to this file, the gate not run — and

@@ -1,6 +1,6 @@
 # The agent guard's test suite
 
-Eighty-one cases, one JSON file each, in [`cases/`](cases). Run them:
+Eighty-two cases, one JSON file each, in [`cases/`](cases). Run them:
 
 ```bash
 python3 scripts/agent-guard/selftest.py

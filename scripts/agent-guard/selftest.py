@@ -441,11 +441,15 @@ def run_case(path: str) -> list[str]:
             preserved.extend(p for p in (pathlib.Path(root) / nested).rglob("*")
                              if p.is_file())
         before = {p: p.read_bytes() for p in preserved}
+        for nested in setup.get("unreadable_repos", []):
+            os.chmod(os.path.join(root, nested), 0)
         proc = subprocess.run(
             (sys.executable, os.path.join(HERE, HOOKS[hook])),
             input=json.dumps(event), cwd=root,
             capture_output=True, text=True, timeout=60,
         )
+        for nested in setup.get("unreadable_repos", []):
+            os.chmod(os.path.join(root, nested), 0o700)
         setup["_inspection_preserved"] = all(
             p.exists() and p.read_bytes() == content for p, content in before.items())
         # Read INSIDE the try: the fixture tree is removed in `finally`, before

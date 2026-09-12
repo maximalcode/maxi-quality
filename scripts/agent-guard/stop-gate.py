@@ -44,6 +44,7 @@ from guard import (  # noqa: E402
     ALLOW,
     CONFIG,
     RECEIPT,
+    InspectionError,
     block_stop,
     changed_files,
     is_declared_gate,
@@ -144,6 +145,7 @@ OUTCOMES = {
     "not-the-gate":       True,
     "content-changed":    True,
     "unverifiable-directory": True,
+    "inspection-failed": True,
 }
 
 
@@ -256,7 +258,14 @@ def main() -> int:
         warn("stop: not inside a git working tree; allowing the stop")
         return ALLOW  # nowhere to write; same case as an unreadable payload
 
-    changed = changed_files(root)
+    try:
+        changed = changed_files(root)
+        current = fingerprint(root) if changed else None
+    except InspectionError:
+        block_stop("Cannot verify the working tree: Git could not inspect it "
+                   "without errors or warnings. Restore readable access to "
+                   "the working tree, then run the gate again.")
+        return record(event, root, "inspection-failed", now=now)
     if not changed:
         # Nothing differs from HEAD. There is no such thing as an ungated
         # change here, and a read-only session must not be made to run a gate.
@@ -278,7 +287,6 @@ def main() -> int:
         return record(event, root, "unverifiable-directory", len(changed), now=now)
 
     receipt = read_receipt(root)
-    current = fingerprint(root)
 
     if receipt is None:
         block_stop(
