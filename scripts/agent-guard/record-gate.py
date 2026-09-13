@@ -57,6 +57,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from guard import (  # noqa: E402
     CONFIG,
     RECEIPT,
+    InspectionError,
     fingerprint,
     gate_argv,
     gate_command,
@@ -152,7 +153,11 @@ def main(argv: list[str]) -> int:
                   file=sys.stderr)
 
     # BEFORE the command runs — see the module docstring.
-    before = fingerprint(root)
+    try:
+        before = fingerprint(root)
+    except InspectionError as exc:
+        print(f"record-gate: Cannot verify the working tree: {exc}", file=sys.stderr)
+        return 3
 
     # No shell HERE, in either form. Under `--` the command arrives as a list
     # the caller's own shell already split, and re-quoting it through `sh -c`

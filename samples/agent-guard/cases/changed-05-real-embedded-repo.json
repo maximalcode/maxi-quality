@@ -1,0 +1,20 @@
+{
+  "why": "#219: Git collapses a real embedded repository to a directory, even with --untracked-files=all. Stop must not trust this as content coverage.",
+  "hook": "changed",
+  "setup": {
+    "committed": {
+      "a.txt": "one\n"
+    },
+    "worktree": {
+      "nested/a.txt": "inside\n"
+    },
+    "embedded_repos": [
+      "nested"
+    ]
+  },
+  "expect": {
+    "files": [
+      "nested/"
+    ]
+  }
+}

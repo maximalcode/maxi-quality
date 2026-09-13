@@ -1,6 +1,6 @@
 # The agent guard's test suite
 
-Seventy-seven cases, one JSON file each, in [`cases/`](cases). Run them:
+Eighty-two cases, one JSON file each, in [`cases/`](cases). Run them:
 
 ```bash
 python3 scripts/agent-guard/selftest.py
@@ -129,3 +129,9 @@ A `deny-` case's `denied` and `allowed` lists must together be **exactly** the
 tree it plants. A planted path in neither list is a path the case has no opinion
 about, and a case with no opinion is how a rule's blast radius grows with
 nothing in the diff to notice.
+
+`embedded_repos` initializes real nested Git repositories before recording the
+gate. Cases `stop-35` and `stop-36` require an explicit inability-to-verify block
+after a passing gate, with and without a later nested edit. `stop-37` proves
+the outer ignored-directory boundary. These cases also assert that inspection
+preserves the outer index and every nested file, including Git metadata.
