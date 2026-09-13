@@ -379,12 +379,42 @@ def run_permissions_case(case: dict) -> list[str]:
     return fails
 
 
+def run_summary_case(case: dict) -> list[str]:
+    """Exercise the public-paste summary with deliberately unsafe ledger values."""
+    with tempfile.TemporaryDirectory(prefix="agent-guard-") as tmp:
+        root = os.path.realpath(tmp)
+        build(root, dict(case["setup"]))
+        proc = subprocess.run(
+            (sys.executable, os.path.join(HERE, "stop-gate.py"), "--summary"),
+            cwd=root, capture_output=True, text=True, timeout=60,
+        )
+
+    fails: list[str] = []
+    if proc.returncode != 0:
+        fails.append(f"summary exit {proc.returncode}, expected 0")
+    if proc.stderr:
+        fails.append("summary unexpectedly wrote to stderr")
+    for needle in case["expect"]["stdout_contains"]:
+        if needle not in proc.stdout:
+            fails.append(f"summary never mentioned {needle!r}")
+    output = proc.stdout + proc.stderr
+    for needle in case["expect"]["output_excludes"]:
+        if needle in output:
+            fails.append("summary disclosed a planted ledger value")
+    if os.sep in output:
+        fails.append("summary contains a path separator")
+    return fails
+
+
 def run_case(path: str) -> list[str]:
     """Returns a list of failure messages; empty means the case passed."""
     with open(path, encoding="utf-8") as fh:
         case = json.load(fh)
 
     hook = case["hook"]
+
+    if hook == "summary":
+        return run_summary_case(case)
 
     if hook == "permissions":
         return run_permissions_case(case)

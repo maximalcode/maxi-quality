@@ -1,6 +1,6 @@
 # The agent guard's test suite
 
-Eighty-seven cases, one JSON file each, in [`cases/`](cases). Run them:
+Eighty-eight cases, one JSON file each, in [`cases/`](cases). Run them:
 
 ```bash
 python3 scripts/agent-guard/selftest.py
@@ -11,13 +11,14 @@ both branches. The same job runs `scripts/check-agent-contract.py`, which holds
 the count in the line above to the number of files in `cases/` — the count is
 this README's to state and that script's to read, never to update.
 
-## Five kinds of case, and why the fifth is different
+## Six kinds of case, and why permissions are different
 
 | Prefix | `hook` | What it runs |
 |---|---|---|
 | `stop-` | `stop` | the real `stop-gate.py`, as a subprocess, on a real repo |
 | `edit-` | `sample` | the real `sample-guard.py`, the same way |
 | `noverify-` | `noverify` | the real `no-verify-guard.py`, the same way |
+| `summary-` | `summary` | the real `stop-gate.py --summary`, on a planted ledger |
 | `changed-` | `changed` | `changed_files()` directly, on a real repo |
 | `deny-` | `permissions` | **nothing runs.** See below |
 
@@ -142,3 +143,7 @@ on a case-insensitive volume the alias must deny; on a case-sensitive volume it
 creates a separate file with the same content and requires allow. The two
 hardlink cases require denial on both filesystems, so Linux also detects a
 regression in identity matching. Each run prints which branch it exercised.
+
+`summary-01` plants a path-shaped session id and a distinctive changed count.
+It requires aggregate counts from the real `--summary` command, excludes both
+raw values, and rejects any `os.sep` in stdout or stderr.
