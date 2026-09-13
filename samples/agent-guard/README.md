@@ -1,6 +1,6 @@
 # The agent guard's test suite
 
-Eighty-two cases, one JSON file each, in [`cases/`](cases). Run them:
+Eighty-seven cases, one JSON file each, in [`cases/`](cases). Run them:
 
 ```bash
 python3 scripts/agent-guard/selftest.py
@@ -135,3 +135,10 @@ gate. Cases `stop-35` and `stop-36` require an explicit inability-to-verify bloc
 after a passing gate, with and without a later nested edit. `stop-37` proves
 the outer ignored-directory boundary. These cases also assert that inspection
 preserves the outer index and every nested file, including Git metadata.
+
+Cases `edit-15` through `edit-19` compare case variants of the sample directory,
+fixture basename, and manifest path. The runner probes the actual file identity:
+on a case-insensitive volume the alias must deny; on a case-sensitive volume it
+creates a separate file with the same content and requires allow. The two
+hardlink cases require denial on both filesystems, so Linux also detects a
+regression in identity matching. Each run prints which branch it exercised.

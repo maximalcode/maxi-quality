@@ -86,6 +86,23 @@ def cited_files(root: str) -> set[str]:
     return cited
 
 
+def protected_path(root: str, target: str) -> str:
+    """Use the protected spelling when the filesystem identifies the same file.
+
+    realpath resolves symlinks but preserves case on case-insensitive volumes.
+    Comparing identity also avoids conflating distinct case-sensitive files.
+    Missing or unreadable paths retain the ordinary lexical checks below.
+    """
+    for rel in sorted(set(manifests(root)) | cited_files(root)):
+        candidate = os.path.join(root, rel)
+        try:
+            if os.path.samefile(target, candidate):
+                return os.path.realpath(candidate)
+        except OSError:
+            continue
+    return target
+
+
 def read_text(path: str) -> str | None:
     try:
         with open(path, encoding="utf-8") as fh:
@@ -182,6 +199,7 @@ def main() -> int:
     # under it compares unequal to itself unless both sides are resolved.
     base = event.get("cwd") if isinstance(event.get("cwd"), str) else root
     target = os.path.realpath(raw if os.path.isabs(raw) else os.path.join(base, raw))
+    target = protected_path(root, target)
     # Belt and braces: `git rev-parse --show-toplevel` already returns a
     # resolved path, so no fixture can falsify this line and the mutation
     # table in the README says so rather than leaving it looking covered. The
