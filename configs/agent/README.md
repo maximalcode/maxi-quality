@@ -616,8 +616,10 @@ branch or any text from the tree — so the summary is safe to paste into a publ
 issue **by construction** rather than because someone read it carefully first.
 CLAUDE.md §2 has no cleanup pass, and a field added later that quietly carried
 content is exactly the leak nobody notices at the moment it is written; the
-corpus therefore asserts the **key set**, not only the values, and a mutation
-adding `cwd` fails all four ledger cases.
+corpus therefore asserts the **allowed key set** and the count/id value shapes:
+`changed` must be an integer, and `session`, when present, must contain 1–128
+ASCII letters, digits, underscores or hyphens and no path separator. Mutations
+adding `cwd` or replacing `changed` with a list of paths fail the ledger cases.
 
 **It refuses to guess the split.** `--summary` prints sessions run, stops seen,
 stops blocked, and the blocked count broken down by reason. It prints `?` for

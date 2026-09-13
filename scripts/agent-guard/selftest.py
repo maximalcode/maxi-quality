@@ -530,9 +530,9 @@ def run_case(path: str) -> list[str]:
         if needle not in proc.stderr:
             fails.append(f"stderr never mentioned {needle!r}")
 
-    # The ledger (#167). Two assertions, and the second is the one that matters
-    # more: the OUTCOME CODE, so a decision that silently stops being logged is
-    # a failure rather than a gap; and the KEY SET, because this file's summary
+    # The ledger (#167): the OUTCOME CODE, so a decision that silently stops
+    # being logged is a failure rather than a gap; and the KEY SET and count/id
+    # VALUE SHAPES, because this file's summary
     # is meant to be pasteable into a public issue by construction. A field
     # added later that carried a path or a command would leak from a private
     # tree into the baseline, and nobody would notice at the moment it was
@@ -551,6 +551,15 @@ def run_case(path: str) -> list[str]:
                     "allowed key set. Every field here is copied into a public "
                     "summary; add it to `allowed` only once it cannot carry "
                     "content from the consumer's tree")
+            if type(r.get("changed")) is not int:
+                fails.append("ledger changed must be an int count")
+            if "session" in r:
+                session = r["session"]
+                if (not isinstance(session, str)
+                        or os.sep in session
+                        or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session) is None):
+                    fails.append("ledger session must be a short id-like string "
+                                 "without a path separator")
 
     return fails
 
