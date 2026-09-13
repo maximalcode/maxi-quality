@@ -293,7 +293,9 @@ match the file at any depth; double it and `//` anchors at the filesystem root
 and matches nothing in the repo at all. All three spellings survive review.
 
 **There is no `Read` deny.** The hooks read the manifests themselves —
-`sample-guard.py` compares the finding sets, and a `Read` deny would also block
+`sample-guard.py` matches protected paths by filesystem identity, so case aliases
+on case-insensitive volumes retain protection while distinct files stay distinct.
+It compares the finding sets, and a `Read` deny would also block
 the tools that do it. A rule that breaks the guard it is protecting is not a
 harder rule, it is a broken one.
 
@@ -393,7 +395,7 @@ which is the entire argument for §5's structural checker.
 
 ## 5. Evidence
 
-`samples/agent-guard/` is 82 cases. Every hook case runs the real hook as a
+`samples/agent-guard/` is 87 cases. Every hook case runs the real hook as a
 subprocess with a real payload on stdin and parses stdout the way Claude Code
 does; the `stop-` and `edit-` cases build a real git repository first, and the
 `noverify-` cases do not, because a command guard reads a string and has no
@@ -664,7 +666,7 @@ tidied, because a record that gets edited to match the current code is no longer
 a record of anything.
 
 **A live session was blocked on 2026-08-25.** This is the observation the
-milestone actually needed, and it is separate from the fixtures: all 82 cases in
+milestone actually needed, and it is separate from the fixtures: all 87 cases in
 `samples/agent-guard/` invoke the hooks as subprocesses on synthetic payloads,
 so none of them can tell you whether Claude Code *wires* them. It was reached
 deliberately — one real uncommitted edit to this file, the gate not run — and

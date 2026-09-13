@@ -420,6 +420,26 @@ def run_case(path: str) -> list[str]:
         setup = dict(case.get("setup", {}))
         build(root, setup)
 
+        expect = dict(case["expect"])
+        variant = setup.get("case_variant")
+        if variant:
+            original = pathlib.Path(root) / variant["original"]
+            alternate = pathlib.Path(root) / variant["alternate"]
+            if not alternate.exists():
+                alternate.parent.mkdir(parents=True, exist_ok=True)
+                if variant.get("hardlink"):
+                    os.link(original, alternate)
+                else:
+                    alternate.write_bytes(original.read_bytes())
+            same = os.path.samefile(original, alternate)
+            assert alternate.read_bytes() == original.read_bytes()
+            if variant.get("hardlink"):
+                assert same, "hardlink control must exercise identity matching"
+            if not same:
+                expect = {"decision": "allow"}
+            print(f"     {pathlib.Path(path).stem}: "
+                  f"{'same file, must deny' if same else 'distinct file, must allow'}")
+
         event = dict(case.get("event", {}))
         # A case may hand the hook a path that reaches the repo through a
         # symlink. Constructed here rather than relying on the OS providing
@@ -467,8 +487,6 @@ def run_case(path: str) -> list[str]:
     fails: list[str] = []
     if not setup.get("_inspection_preserved", True):
         fails.append("inspection changed the outer index or nested repository")
-    expect = case["expect"]
-
     # record-gate.py must hand the gate's own exit code back untouched, or
     # putting the wrapper in front of a command changes what CI and a human
     # see — which would be a reason not to use it.
