@@ -1,6 +1,6 @@
 # The agent guard's test suite
 
-Eighty-eight cases, one JSON file each, in [`cases/`](cases). Run them:
+Ninety-two cases, one JSON file each, in [`cases/`](cases). Run them:
 
 ```bash
 python3 scripts/agent-guard/selftest.py
@@ -147,3 +147,7 @@ regression in identity matching. Each run prints which branch it exercised.
 `summary-01` plants a path-shaped session id and a distinctive changed count.
 It requires aggregate counts from the real `--summary` command, excludes both
 raw values, and rejects any `os.sep` in stdout or stderr.
+
+The classification cases drive `--classify` with fixed category codes, invalid
+input, skip, quit, and end-of-input. They check append-only judgments, exact
+classification keys and values, resumption, and summary counts (#224).

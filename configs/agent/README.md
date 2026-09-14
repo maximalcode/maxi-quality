@@ -395,7 +395,7 @@ which is the entire argument for §5's structural checker.
 
 ## 5. Evidence
 
-`samples/agent-guard/` is 88 cases. Every hook case runs the real hook as a
+`samples/agent-guard/` is 92 cases. Every hook case runs the real hook as a
 subprocess with a real payload on stdin and parses stdout the way Claude Code
 does; the `stop-` and `edit-` cases build a real git repository first, and the
 `noverify-` cases do not, because a command guard reads a string and has no
@@ -621,13 +621,28 @@ corpus therefore asserts the **allowed key set** and the count/id value shapes:
 ASCII letters, digits, underscores or hyphens and no path separator. Mutations
 adding `cwd` or replacing `changed` with a list of paths fail the ledger cases.
 
-**It refuses to guess the split.** `--summary` prints sessions run, stops seen,
-stops blocked, and the blocked count broken down by reason. It prints `?` for
-*blocks correct* and *blocks wrong*, because that is a judgement — did the gate
-genuinely not run, or did the guard misfire on its own plumbing, a gate that
-rewrites files, or a Claude Code change? A number invented there would be
-indistinguishable from a measured one the moment it reached `docs/STATUS.md`
-§5, which is the precise failure #167's acceptance criteria name.
+**It asks for the split instead of guessing.** `--summary` prints sessions run,
+stops seen, stops blocked, and the blocked count broken down by reason. While
+any blocked stops remain unclassified, it prints `blocks correct ? (N
+unclassified)` (and the same for wrong), followed by a prompt to run
+`python3 <installed-stop-gate.py> --classify`. Once all blocks are classified,
+it prints the human-classified correct and wrong totals.
+
+`--classify` walks blocked rows in order and offers fixed category codes:
+`gate-required` means correct; `guard-plumbing`, `gate-rewrites-files`,
+`client-change`, and `other-misfire` mean wrong. Judge against the local evidence;
+the ledger alone cannot establish whether a refusal was justified. `skip`
+leaves a row for later; `quit`, end-of-input and interruption preserve judgments
+already saved. Rerunning skips classified blocks.
+
+Each judgment appends exactly `ts`, `classifies`, `verdict`, and `category`.
+`classifies` is the original stop's one-based nonblank ledger row number, so
+keep the ledger append-only: do not reorder or remove rows. Category and verdict
+are fixed codes, the reference is an integer, and the timestamp is UTC; no input
+explanation is stored. Classification rows do not count as stops or sessions.
+The fixture tripwire checks this separate key set and value shapes. Explicit
+classification write failures report an error; hook bookkeeping remains
+fail-open.
 
 Two design notes worth keeping. The write is fail-open harder than anything
 else here — every exception swallowed — because a guard that refused a stop over
