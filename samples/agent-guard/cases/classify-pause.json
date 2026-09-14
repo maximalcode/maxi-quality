@@ -1,0 +1,26 @@
+{
+  "why": "Human classifications append only codes; retries, interruption and summaries preserve stop counts (#224).",
+  "hook": "classify",
+  "setup": {
+    "committed": {
+      "a.txt": "one\n"
+    },
+    "worktree": {
+      ".claude/agent-guard-ledger.jsonl": "{\"ts\": \"2026-08-30T12:00:00Z\", \"outcome\": \"no-receipt\", \"blocked\": true, \"changed\": 1, \"session\": \"one\"}\n{\"ts\": \"2026-08-30T12:00:00Z\", \"outcome\": \"clean\", \"blocked\": false, \"changed\": 0, \"session\": \"one\"}\n{\"ts\": \"2026-08-30T12:00:00Z\", \"outcome\": \"content-changed\", \"blocked\": true, \"changed\": 1, \"session\": \"two\"}"
+    }
+  },
+  "answers": [
+    "quit\n",
+    ""
+  ],
+  "expect": {
+    "classifications": [],
+    "stdout_contains": [
+      "sessions run    2",
+      "stops seen      3",
+      "stops blocked   2",
+      "blocks correct  ? (2 unclassified)",
+      "--classify"
+    ]
+  }
+}

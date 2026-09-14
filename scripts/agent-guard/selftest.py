@@ -379,6 +379,47 @@ def run_permissions_case(case: dict) -> list[str]:
     return fails
 
 
+def run_classify_case(case: dict) -> list[str]:
+    """Drive real interactive runs and assert append-only coded judgments."""
+    fails = []
+    with tempfile.TemporaryDirectory(prefix="agent-guard-") as tmp:
+        root = os.path.realpath(tmp)
+        build(root, dict(case["setup"]))
+        path = pathlib.Path(root) / ".claude/agent-guard-ledger.jsonl"
+        original = path.read_bytes()
+        for answers in case["answers"]:
+            proc = subprocess.run(
+                (sys.executable, os.path.join(HERE, "stop-gate.py"), "--classify"),
+                input=answers, cwd=root, capture_output=True, text=True, timeout=60,
+            )
+            if proc.returncode != 0:
+                fails.append("classification failed")
+        if not path.read_bytes().startswith(original):
+            fails.append("classification rewrote existing ledger bytes")
+        rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        additions = rows[len([line for line in original.splitlines() if line.strip()]):]
+        for row in additions:
+            if set(row) != {"ts", "classifies", "verdict", "category"}:
+                fails.append("classification violates codes-only key set")
+            if type(row.get("classifies")) is not int:
+                fails.append("classification reference is not an integer")
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00", row.get("ts", "")) is None:
+                fails.append("classification timestamp has unexpected shape")
+        got = [{k: v for k, v in row.items() if k != "ts"} for row in additions]
+        if got != case["expect"]["classifications"]:
+            fails.append(f"unexpected classifications: {got}")
+        proc = subprocess.run(
+            (sys.executable, os.path.join(HERE, "stop-gate.py"), "--summary"),
+            cwd=root, capture_output=True, text=True, timeout=60,
+        )
+        if proc.returncode != 0:
+            fails.append("summary failed after classification")
+        for needle in case["expect"]["stdout_contains"]:
+            if needle not in proc.stdout:
+                fails.append(f"summary missing {needle!r}")
+    return fails
+
+
 def run_summary_case(case: dict) -> list[str]:
     """Exercise the public-paste summary with deliberately unsafe ledger values."""
     with tempfile.TemporaryDirectory(prefix="agent-guard-") as tmp:
@@ -412,6 +453,9 @@ def run_case(path: str) -> list[str]:
         case = json.load(fh)
 
     hook = case["hook"]
+
+    if hook == "classify":
+        return run_classify_case(case)
 
     if hook == "summary":
         return run_summary_case(case)
