@@ -133,7 +133,8 @@
 #               which is the half a reader sees. Mirrors 5: everything else
 #               adopted, one part held back, the reason printed. Before #198
 #               this returned 0 under the word ADOPTED.
-#             6 --agent refused: .claude/settings.json could not be merged into.
+#             6 --agent refused: python3 >= 3.8 is unavailable, or
+#               .claude/settings.json could not be merged into.
 #               Nothing was written — not the scripts, not the fragment —
 #               because half an agent contract is a CLAUDE.md that promises
 #               refusals nothing performs. Since #183 an --agent run does
@@ -263,6 +264,15 @@ while [ $# -gt 0 ]; do
       TARGET="$1"; shift ;;
   esac
 done
+
+# Check before either agent path can write, including previews. The hook
+# commands resolve this same python3 from PATH when the agent host runs them.
+if [ "$WANT_AGENT" -eq 1 ] || [ "$INSTALL_SHARED" -eq 1 ]; then
+  if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 8))' >/dev/null 2>&1; then
+    printf '%s\n' 'REFUSED: agent installation requires a working python3 >= 3.8 on PATH; install it before retrying. Nothing was written.' >&2
+    exit 6
+  fi
+fi
 
 # --install-shared takes no target: it populates the ONE directory every
 # --shared repo executes from. Handled before target resolution because it is

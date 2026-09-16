@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import shutil
 import sys
 import unittest
 
@@ -14,6 +15,34 @@ INSTALL = [sys.executable, str(BASELINE / "scripts/agent-install.py")]
 
 
 class InstallationTests(InstallationFixture):
+    def test_unusable_python_refuses_without_writes(self) -> None:
+        tools = self.root / "tools"
+        tools.mkdir()
+        for name in ("bash", "dirname"):
+            (tools / name).symlink_to(shutil.which(name))
+        python = tools / "python3"
+        # A missing executable, a broken executable, and a real interpreter
+        # reporting an older version must all refuse before installation.
+        for kind in ("missing", "broken", "old"):
+            with self.subTest(kind=kind):
+                if kind == "broken":
+                    python.write_text("#!/bin/sh\nexit 1\n")
+                    python.chmod(0o755)
+                elif kind == "old":
+                    python.write_text(
+                        "#!/bin/sh\nexec " + shlex.quote(sys.executable) +
+                        " -c 'import sys; sys.version_info = (3, 7); "
+                        "exec(sys.argv[1])' \"$2\"\n")
+                self.env["PATH"] = str(tools)
+                before = self.snapshot(self.root)
+                for flags in ((str(self.repo), "--agent"),
+                              (str(self.repo), "--agent", "--shared"),
+                              (str(self.repo), "--agent", "--dry-run"),
+                              ("--install-shared",)):
+                    result = self.run_result([*ADOPT, *flags], expected=6)
+                    self.assertIn("python3 >= 3.8", result.stderr)
+                    self.assertEqual(self.snapshot(self.root), before)
+
     def test_installer_owns_all_four_repository_profiles(self) -> None:
         # No shell orchestration: a caller needs only the repository and mode.
         self.run_command([*INSTALL, "shared"])

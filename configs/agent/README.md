@@ -6,6 +6,27 @@ Claude Code. The sections below describe the original Claude Code profile;
 its `permissions.deny` rules are not Codex settings. Native patch fixtures live
 in [`samples/codex-agent-guard`](../../samples/codex-agent-guard/README.md).
 
+**Runtime decision:** copied and shared agent hooks require **Python 3.8 or
+newer**, available as `python3` on the agent host's `PATH`. `adopt.sh --agent`
+(and `--install-shared`) checks that it runs at the required version before
+writing anything, including on a dry run; refusal exits 6. This check describes
+the installation machine, so keep that runtime available on every machine that
+runs the hooks.
+
+Python's standard library provides JSON input/output and `shlex` command
+parsing without pip packages. Shell would require another JSON tool and a
+replacement tokenizer for the no-verify guard. The cost is a Python runtime
+even for non-Python projects: the adopter must install and maintain it; do not
+assume the operating system supplies it. Python 3.8 is the compatibility floor
+because the guard uses `shlex.join`, introduced in 3.8; deferred annotations do
+not require Python 3.10. Prefer a maintained Python release for daily use.
+
+The `adopt` CI job runs installation scenarios and the guard corpus on 3.8 to
+check that floor, as well as testing a PATH with missing, broken and too-old
+Python. Revisit the runtime choice only with a measured alternative against
+`samples/agent-guard/` that preserves detection and reduces the installation
+and maintenance cost. This is the runtime decision for [issue #190](https://github.com/maximalcode/maxi-quality/issues/190).
+
 The baseline speaks on two surfaces. CI is the gate. `configs/editor/` is the
 frozen contract that makes the editor show what CI shows. Neither reaches the
 third one: **the agent session that writes the code in the first place.**

@@ -3605,6 +3605,16 @@ jobs:
       # The same named scenarios run locally with isolated Git trees and HOME.
       - name: Agent installation scenarios
         run: python3 samples/agent-install/test_install.py -v
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.8'
+      - name: Agent runtime minimum version
+        run: |
+          python3 samples/agent-install/test_install.py -v
+          python3 scripts/agent-guard/selftest.py
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
       - name: Preflight never gates on bad input or unavailable tools
         run: python3 samples/preflight/test_preflight.py contract
 
