@@ -15,7 +15,8 @@ The docs are explicit that a tool matcher does not see everything: "Claude can
 also create or modify files by running shell commands", and the recommended
 answer is "a Stop hook that scans the working tree once per turn". So
 `sample-guard.py` can be walked around with a heredoc, and this cannot —
-whatever wrote the bytes, they are in `git status` at the end of the turn.
+whatever wrote the bytes, status plus the index-flag cross-check covers them
+at the end of the turn.
 That is why the fixture asserts a Bash-written change is caught here.
 
 THE LOOP GUARD IS NOT OPTIONAL
@@ -43,6 +44,7 @@ from guard import (  # noqa: E402
     ALLOW,
     CONFIG,
     RECEIPT,
+    InspectionError,
     block_stop,
     changed_files,
     is_declared_gate,
@@ -116,7 +118,7 @@ def instruction(root: str) -> str:
     if os.environ.get("MAXI_QUALITY_RUNTIME_COMMAND"):
         run_recorder = recorder_cmd
     else:
-        run_recorder = "python3 " + recorder_cmd
+        run_recorder = "python3 " + shlex.quote(recorder_cmd)
     cmd = gate_command(root)
     if cmd:
         return (f"{run_recorder} --gate\n\n"
@@ -142,6 +144,8 @@ OUTCOMES = {
     "gate-failed":        True,
     "not-the-gate":       True,
     "content-changed":    True,
+    "unverifiable-directory": True,
+    "inspection-failed": True,
 }
 
 
@@ -177,32 +181,99 @@ def record(event: dict, root: str | None, outcome: str, changed: int = 0,
     return ALLOW
 
 
-def summarise(root: str) -> int:
-    """Print what the ledger can prove, and say plainly what it cannot (#167).
+# Fixed choices keep human explanations and consumer details out of the ledger.
+CLASSIFICATIONS = {
+    "gate-required": "correct",
+    "guard-plumbing": "wrong",
+    "gate-rewrites-files": "wrong",
+    "client-change": "wrong",
+    "other-misfire": "wrong",
+}
 
-    Two of the milestone's four integers are counting, and this does them.
-    The other two — blocks that were CORRECT and blocks that were WRONG — are a
-    judgement about whether the gate had genuinely not run, or whether the guard
-    misfired on its own plumbing, a formatter-shaped gate or a Claude Code
-    change. No file can settle that, so this prints the breakdown a person needs
-    to classify and refuses to guess the split. A number invented here would be
-    indistinguishable from a measured one the moment it reached STATUS §5, which
-    is the exact failure #167's acceptance criteria name.
-    """
-    path = os.path.join(root, LEDGER)
+
+def read_ledger(root: str) -> list[dict]:
+    """Nonblank row ordinals are stable references in this append-only file."""
+    with open(os.path.join(root, LEDGER), encoding="utf-8") as fh:
+        rows = [json.loads(line) for line in fh if line.strip()]
+    if any(not isinstance(row, dict) for row in rows):
+        raise ValueError("ledger rows must be objects")
+    return rows
+
+
+def classified_blocks(rows: list[dict]) -> dict[int, str]:
+    """Accept only coded judgments referencing an earlier blocked stop."""
+    result = {}
+    for index, row in enumerate(rows, 1):
+        target = row.get("classifies")
+        if (set(row) == {"ts", "classifies", "verdict", "category"}
+                and type(target) is int and 0 < target < index
+                and rows[target - 1].get("blocked") is True
+                and "classifies" not in rows[target - 1]
+                and isinstance(row.get("category"), str)
+                and row["category"] in CLASSIFICATIONS
+                and row.get("verdict") == CLASSIFICATIONS[row["category"]]):
+            result.setdefault(target, row["verdict"])
+    return result
+
+
+def classify(root: str, rows: list[dict], *, now: str) -> int:
+    """Ask the human; persist only a fixed choice, never their input text."""
+    done = classified_blocks(rows)
+    for index, row in enumerate(rows, 1):
+        if row.get("blocked") is not True or "classifies" in row or index in done:
+            continue
+        reason = row.get("outcome")
+        if not isinstance(reason, str) or reason not in OUTCOMES:
+            reason = "unknown"
+        print(f"Blocked row {index}: {reason}")
+        print("correct: gate-required; wrong: guard-plumbing, gate-rewrites-files, "
+              "client-change, other-misfire")
+        while True:
+            try:
+                choice = input("Category code (skip or quit): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nClassification paused; remaining blocks are unclassified.")
+                return 0
+            if choice == "quit":
+                return 0
+            if choice == "skip":
+                break
+            if choice not in CLASSIFICATIONS:
+                print("Choose a listed category code, skip or quit.")
+                continue
+            # Unlike hook bookkeeping, an explicit classification must report
+            # a failed write instead of pretending the judgment was saved.
+            entry = {"ts": now, "classifies": index,
+                     "verdict": CLASSIFICATIONS[choice], "category": choice}
+            with open(os.path.join(root, LEDGER), "a", encoding="utf-8") as fh:
+                # Also support a final JSON row without a newline.
+                fh.write("\n" + json.dumps(entry, sort_keys=True) + "\n")
+            break
+    return 0
+
+
+def ledger_mode(root: str, *, interactive: bool, now: str) -> int:
     try:
-        with open(path, encoding="utf-8") as fh:
-            rows = [json.loads(l) for l in fh if l.strip()]
+        rows = read_ledger(root)
+        if not rows:
+            print("No ledger rows to report.")
+            return 1
+        return classify(root, rows, now=now) if interactive else summarise(rows)
     except FileNotFoundError:
-        print(f"no ledger at {LEDGER} — nothing has stopped in this checkout yet")
+        print("No ledger — nothing has stopped in this checkout yet.")
         return 1
-    except (OSError, ValueError) as exc:
-        print(f"{LEDGER} is unreadable: {exc}", file=sys.stderr)
+    except (OSError, ValueError):
+        print("Ledger could not be read or written.", file=sys.stderr)
         return 3
-    if not rows:
-        print(f"{LEDGER} is empty")
-        return 1
 
+
+def summarise(ledger: list[dict]) -> int:
+    """Count stops separately from the human judgments appended after them."""
+    judgments = classified_blocks(ledger)
+    rows = [row for row in ledger if "classifies" not in row]
+    unclassified = sum(row.get("blocked") is True and index not in judgments
+                       for index, row in enumerate(ledger, 1)
+                       if "classifies" not in row)
     stamps = sorted(r["ts"] for r in rows if "ts" in r)
     sessions = {r["session"] for r in rows if "session" in r}
     unattributed = sum(1 for r in rows if "session" not in r)
@@ -220,11 +291,12 @@ def summarise(root: str) -> int:
     for reason in sorted(by_reason):
         print(f"                  {by_reason[reason]:>4}  {reason}")
     print()
-    print("blocks correct  ?   these two are a judgement, not a count. Read the")
-    print("blocks wrong    ?   breakdown above and split it yourself: a block is")
-    print("                    WRONG when the guard misfired — its own plumbing,")
-    print("                    a gate that rewrites files, a Claude Code change —")
-    print("                    and CORRECT when the gate genuinely had not run.")
+    for verdict in ("correct", "wrong"):
+        value = (f"? ({unclassified} unclassified)" if unclassified
+                 else str(sum(value == verdict for value in judgments.values())))
+        print(f"{'blocks ' + verdict:<16}{value}")
+    if unclassified:
+        print("Run stop-gate with --classify to judge unclassified blocks while the evidence is fresh.")
     print()
     print("Nothing above names a file, a command or a branch. It is safe to")
     print("paste into a public issue as it stands.")
@@ -254,14 +326,35 @@ def main() -> int:
         warn("stop: not inside a git working tree; allowing the stop")
         return ALLOW  # nowhere to write; same case as an unreadable payload
 
-    changed = changed_files(root)
+    try:
+        changed = changed_files(root)
+        current = fingerprint(root) if changed else None
+    except InspectionError:
+        block_stop("Cannot verify the working tree: Git could not inspect it "
+                   "without errors or warnings. Restore readable access to "
+                   "the working tree, then run the gate again.")
+        return record(event, root, "inspection-failed", now=now)
     if not changed:
         # Nothing differs from HEAD. There is no such thing as an ungated
         # change here, and a read-only session must not be made to run a gate.
         return record(event, root, "clean", now=now)
 
+    # With --untracked-files=all, Git still collapses embedded repositories
+    # into directory entries. hash-object cannot cover their contents. Refuse
+    # this unsupported shape before consulting even a fresh passing receipt.
+    # Use Git's trailing slash, so no metadata probing or traversal is needed;
+    # outer ignored directories never enter this set.
+    if any(path.endswith("/") for path in changed):
+        block_stop(
+            "Cannot verify an untracked embedded Git repository. Git reports "
+            "only its directory, so a passing receipt cannot cover its contents. "
+            "Move it outside this working tree before stopping. If it is "
+            "intentionally outside the gate's scope, explicitly ignore it in "
+            "the outer repository. Rerunning the gate alone cannot resolve this."
+        )
+        return record(event, root, "unverifiable-directory", len(changed), now=now)
+
     receipt = read_receipt(root)
-    current = fingerprint(root)
 
     if receipt is None:
         block_stop(
@@ -313,11 +406,14 @@ if __name__ == "__main__":
     # (#191), so a new file here would either go unwired and unshipped or force
     # the derivation to grow a special case. The thing that writes the ledger
     # is the right thing to read it.
-    if "--summary" in sys.argv[1:]:
+    if "--summary" in sys.argv[1:] or "--classify" in sys.argv[1:]:
         here = repo_root(os.getcwd())
         if here is None:
-            print("stop-gate: --summary must run inside a git working tree",
+            print("stop-gate: ledger modes must run inside a git working tree",
                   file=sys.stderr)
             sys.exit(3)
-        sys.exit(summarise(here))
+        sys.exit(ledger_mode(
+            here, interactive="--classify" in sys.argv[1:],
+            now=datetime.now(timezone.utc).isoformat(timespec="seconds"),  # nosemgrep: no-ambient-clock-python — CLI edge
+        ))
     sys.exit(main())

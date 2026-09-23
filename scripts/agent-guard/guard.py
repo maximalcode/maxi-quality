@@ -14,7 +14,8 @@ comparison is a hash, not a toolchain.
 WHAT THE FINGERPRINT COVERS
 
 The content of every file that differs from HEAD: tracked modifications,
-staged changes, and untracked files git would not ignore. Renames and
+staged changes, and untracked files git would not ignore. Index paths marked
+assume-unchanged or skip-worktree are always included, even if unchanged. Renames and
 deletions move it. A file the gate never saw cannot be inside a receipt that
 matches, which is the only property the Stop hook needs.
 
@@ -152,15 +153,22 @@ def warn(msg: str) -> None:
     print(f"agent-guard: {msg}", file=sys.stderr)
 
 
-def git(*args: str, cwd: str | None = None) -> str:
+class InspectionError(RuntimeError):
+    """Git could not reliably enumerate the working tree."""
+
+
+def git(*args: str, cwd: str | None = None, reject_stderr: bool = False) -> str:
     """Run git and return stdout, or raise CalledProcessError."""
-    return subprocess.run(
+    result = subprocess.run(
         ("git", *args),
         cwd=cwd,
         check=True,
         capture_output=True,
         text=True,
-    ).stdout
+    )
+    if reject_stderr and result.stderr:
+        raise InspectionError("Git reported a warning while inspecting the tree")
+    return result.stdout
 
 
 def repo_root(start: str | None = None) -> str | None:
@@ -176,18 +184,20 @@ def repo_root(start: str | None = None) -> str | None:
 
 
 def changed_files(root: str) -> list[str]:
-    """Repo-relative paths that differ from HEAD, sorted, deduplicated.
+    """Changed or index-flagged repo-relative paths, sorted, deduplicated.
 
-    `git status --porcelain -z` is the single source: it already merges the
+    `git status --porcelain -z` merges the
     index and the working tree, already honours .gitignore for untracked
     files, and -z is the only form that survives a path with a space, a quote
     or a newline in it. The rename form carries two NUL-separated paths and
     both matter — a rename is a deletion the gate must not be able to miss.
     """
     try:
-        out = git("status", "--porcelain=1", "-z", "--untracked-files=all", cwd=root)
-    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
-        return []
+        out = git("--no-optional-locks", "status", "--porcelain=1", "-z",
+                  "--untracked-files=all", cwd=root, reject_stderr=True)
+        indexed = git("ls-files", "-v", "-z", cwd=root, reject_stderr=True)
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
+        raise InspectionError("Git could not enumerate the working tree") from exc
 
     fields = out.split("\0")
     paths: set[str] = set()
@@ -213,6 +223,15 @@ def changed_files(root: str) -> list[str]:
                 if not excluded(fields[i]):
                     paths.add(fields[i])
                 i += 1
+    # Status trusts these bits and can omit modified files. Treat flagged
+    # paths as changed even when their bytes match HEAD, so a gate records
+    # their content and later edits invalidate it. -v lowercases the tag for
+    # assume-unchanged; skip-worktree is S (or s when both bits are set).
+    for entry in indexed.split("\0"):
+        if len(entry) >= 3 and (entry[0].islower() or entry[0] == "S"):
+            path = entry[2:]
+            if not excluded(path):
+                paths.add(path)
     return sorted(paths)
 
 
@@ -251,8 +270,8 @@ def read_receipt(root: str) -> dict | None:
 def read_event() -> dict | None:
     """The hook payload on stdin, or None if it is not a JSON object.
 
-    Malformed stdin is plumbing, not policy: every caller of this treats None
-    as "warn and allow".
+    The original Claude hooks treat malformed stdin as plumbing and warn/allow.
+    The native Codex patch adapter denies an unreadable patch event explicitly.
     """
     try:
         data = json.loads(sys.stdin.read() or "null")

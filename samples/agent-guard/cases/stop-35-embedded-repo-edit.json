@@ -1,0 +1,38 @@
+{
+  "why": "#219: real embedded repositories must explicitly block verification; outer ignored repositories remain outside the boundary.",
+  "hook": "stop",
+  "setup": {
+    "committed": {
+      "a.txt": "one\n",
+      ".gitignore": ""
+    },
+    "worktree": {
+      "nested/a.txt": "before\n"
+    },
+    "embedded_repos": [
+      "nested"
+    ],
+    "record": {
+      "command": [
+        "true"
+      ],
+      "after": {
+        "nested/a.txt": "after\n"
+      }
+    }
+  },
+  "event": {
+    "hook_event_name": "Stop"
+  },
+  "expect": {
+    "decision": "block",
+    "record_exit": 0,
+    "reason_contains": [
+      "Cannot verify",
+      "untracked embedded"
+    ],
+    "ledger": [
+      "unverifiable-directory"
+    ]
+  }
+}

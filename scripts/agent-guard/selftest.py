@@ -102,6 +102,18 @@ def build(root: str, setup: dict) -> None:
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(setup["config"], fh)
 
+    # Set the bits before recording: a pre-existing flag must not hide later
+    # drift, and a passing run must still be usable while the bit remains set.
+    for flag, paths in setup.get("index_flags", {}).items():
+        run_git(root, "update-index", "--" + flag, "--", *paths)
+
+    for nested in setup.get("embedded_repos", []):
+        directory = os.path.join(root, nested)
+        os.makedirs(directory, exist_ok=True)
+        run_git(directory, "init", "--quiet", "--initial-branch=main")
+        assert os.path.isdir(os.path.join(directory, ".git", "objects"))
+        assert os.path.isdir(os.path.join(directory, ".git", "refs"))
+
     # A REAL run of record-gate.py, so the wrapper is covered end to end
     # rather than by fixtures that hand-write the receipt it is supposed to
     # produce. `after` edits the tree once the receipt exists, which is the
@@ -367,12 +379,86 @@ def run_permissions_case(case: dict) -> list[str]:
     return fails
 
 
+def run_classify_case(case: dict) -> list[str]:
+    """Drive real interactive runs and assert append-only coded judgments."""
+    fails = []
+    with tempfile.TemporaryDirectory(prefix="agent-guard-") as tmp:
+        root = os.path.realpath(tmp)
+        build(root, dict(case["setup"]))
+        path = pathlib.Path(root) / ".claude/agent-guard-ledger.jsonl"
+        original = path.read_bytes()
+        for answers in case["answers"]:
+            proc = subprocess.run(
+                (sys.executable, os.path.join(HERE, "stop-gate.py"), "--classify"),
+                input=answers, cwd=root, capture_output=True, text=True, timeout=60,
+            )
+            if proc.returncode != 0:
+                fails.append("classification failed")
+        if not path.read_bytes().startswith(original):
+            fails.append("classification rewrote existing ledger bytes")
+        rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        additions = rows[len([line for line in original.splitlines() if line.strip()]):]
+        for row in additions:
+            if set(row) != {"ts", "classifies", "verdict", "category"}:
+                fails.append("classification violates codes-only key set")
+            if type(row.get("classifies")) is not int:
+                fails.append("classification reference is not an integer")
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00", row.get("ts", "")) is None:
+                fails.append("classification timestamp has unexpected shape")
+        got = [{k: v for k, v in row.items() if k != "ts"} for row in additions]
+        if got != case["expect"]["classifications"]:
+            fails.append(f"unexpected classifications: {got}")
+        proc = subprocess.run(
+            (sys.executable, os.path.join(HERE, "stop-gate.py"), "--summary"),
+            cwd=root, capture_output=True, text=True, timeout=60,
+        )
+        if proc.returncode != 0:
+            fails.append("summary failed after classification")
+        for needle in case["expect"]["stdout_contains"]:
+            if needle not in proc.stdout:
+                fails.append(f"summary missing {needle!r}")
+    return fails
+
+
+def run_summary_case(case: dict) -> list[str]:
+    """Exercise the public-paste summary with deliberately unsafe ledger values."""
+    with tempfile.TemporaryDirectory(prefix="agent-guard-") as tmp:
+        root = os.path.realpath(tmp)
+        build(root, dict(case["setup"]))
+        proc = subprocess.run(
+            (sys.executable, os.path.join(HERE, "stop-gate.py"), "--summary"),
+            cwd=root, capture_output=True, text=True, timeout=60,
+        )
+
+    fails: list[str] = []
+    if proc.returncode != 0:
+        fails.append(f"summary exit {proc.returncode}, expected 0")
+    if proc.stderr:
+        fails.append("summary unexpectedly wrote to stderr")
+    for needle in case["expect"]["stdout_contains"]:
+        if needle not in proc.stdout:
+            fails.append(f"summary never mentioned {needle!r}")
+    output = proc.stdout + proc.stderr
+    for needle in case["expect"]["output_excludes"]:
+        if needle in output:
+            fails.append("summary disclosed a planted ledger value")
+    if os.sep in output:
+        fails.append("summary contains a path separator")
+    return fails
+
+
 def run_case(path: str) -> list[str]:
     """Returns a list of failure messages; empty means the case passed."""
     with open(path, encoding="utf-8") as fh:
         case = json.load(fh)
 
     hook = case["hook"]
+
+    if hook == "classify":
+        return run_classify_case(case)
+
+    if hook == "summary":
+        return run_summary_case(case)
 
     if hook == "permissions":
         return run_permissions_case(case)
@@ -408,6 +494,26 @@ def run_case(path: str) -> list[str]:
         setup = dict(case.get("setup", {}))
         build(root, setup)
 
+        expect = dict(case["expect"])
+        variant = setup.get("case_variant")
+        if variant:
+            original = pathlib.Path(root) / variant["original"]
+            alternate = pathlib.Path(root) / variant["alternate"]
+            if not alternate.exists():
+                alternate.parent.mkdir(parents=True, exist_ok=True)
+                if variant.get("hardlink"):
+                    os.link(original, alternate)
+                else:
+                    alternate.write_bytes(original.read_bytes())
+            same = os.path.samefile(original, alternate)
+            assert alternate.read_bytes() == original.read_bytes()
+            if variant.get("hardlink"):
+                assert same, "hardlink control must exercise identity matching"
+            if not same:
+                expect = {"decision": "allow"}
+            print(f"     {pathlib.Path(path).stem}: "
+                  f"{'same file, must deny' if same else 'distinct file, must allow'}")
+
         event = dict(case.get("event", {}))
         # A case may hand the hook a path that reaches the repo through a
         # symlink. Constructed here rather than relying on the OS providing
@@ -424,11 +530,22 @@ def run_case(path: str) -> list[str]:
             if isinstance(ti, dict) and isinstance(ti.get(key), str):
                 ti[key] = ti[key].replace("{{ROOT}}", root)
 
+        preserved = [pathlib.Path(root) / ".git" / "index"] if setup.get("embedded_repos") else []
+        for nested in setup.get("embedded_repos", []):
+            preserved.extend(p for p in (pathlib.Path(root) / nested).rglob("*")
+                             if p.is_file())
+        before = {p: p.read_bytes() for p in preserved}
+        for nested in setup.get("unreadable_repos", []):
+            os.chmod(os.path.join(root, nested), 0)
         proc = subprocess.run(
             (sys.executable, os.path.join(HERE, HOOKS[hook])),
             input=json.dumps(event), cwd=root,
             capture_output=True, text=True, timeout=60,
         )
+        for nested in setup.get("unreadable_repos", []):
+            os.chmod(os.path.join(root, nested), 0o700)
+        setup["_inspection_preserved"] = all(
+            p.exists() and p.read_bytes() == content for p, content in before.items())
         # Read INSIDE the try: the fixture tree is removed in `finally`, before
         # any assertion runs, so a check that opened this path afterwards would
         # find nothing and pass for the wrong reason.
@@ -442,8 +559,8 @@ def run_case(path: str) -> list[str]:
         shutil.rmtree(tmp, ignore_errors=True)
 
     fails: list[str] = []
-    expect = case["expect"]
-
+    if not setup.get("_inspection_preserved", True):
+        fails.append("inspection changed the outer index or nested repository")
     # record-gate.py must hand the gate's own exit code back untouched, or
     # putting the wrapper in front of a command changes what CI and a human
     # see — which would be a reason not to use it.
@@ -487,9 +604,9 @@ def run_case(path: str) -> list[str]:
         if needle not in proc.stderr:
             fails.append(f"stderr never mentioned {needle!r}")
 
-    # The ledger (#167). Two assertions, and the second is the one that matters
-    # more: the OUTCOME CODE, so a decision that silently stops being logged is
-    # a failure rather than a gap; and the KEY SET, because this file's summary
+    # The ledger (#167): the OUTCOME CODE, so a decision that silently stops
+    # being logged is a failure rather than a gap; and the KEY SET and count/id
+    # VALUE SHAPES, because this file's summary
     # is meant to be pasteable into a public issue by construction. A field
     # added later that carried a path or a command would leak from a private
     # tree into the baseline, and nobody would notice at the moment it was
@@ -508,6 +625,15 @@ def run_case(path: str) -> list[str]:
                     "allowed key set. Every field here is copied into a public "
                     "summary; add it to `allowed` only once it cannot carry "
                     "content from the consumer's tree")
+            if type(r.get("changed")) is not int:
+                fails.append("ledger changed must be an int count")
+            if "session" in r:
+                session = r["session"]
+                if (not isinstance(session, str)
+                        or os.sep in session
+                        or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session) is None):
+                    fails.append("ledger session must be a short id-like string "
+                                 "without a path separator")
 
     return fails
 

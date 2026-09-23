@@ -1,6 +1,6 @@
 # `examples/` — copyable consumer repos
 
-Seven complete consumer repos, each asserted by CI to scan clean and to gate
+Eight complete consumer repos, each asserted by CI to scan clean and to gate
 correctly. Copy the directory that matches the shape of your repo rather than
 assembling snippets, then run `adopt.sh` against it to get the files that cannot
 be consumed remotely. If your repo is not new, start with
@@ -15,6 +15,7 @@ be consumed remotely. If your repo is not new, start with
 | [`java-maven/`](java-maven/) | one Maven module | the marker-delimited managed region in your own `pom.xml` — Maven cannot consume lint config remotely, so this is the one language where the baseline edits a file you own |
 | [`mixed-monorepo/`](mixed-monorepo/) | TS + C# side by side | pinning `languages:`, and a `.maxi-quality.yml` that disables and downgrades |
 | [`legacy-ratchet/`](legacy-ratchet/) | an existing repo nobody has linted | `changed-only` + `languages: none` — **start here if the repo is not new** |
+| [`runtime-release/`](runtime-release/) | a minimal guard installation with a Python standard-library gate | preparing an isolated runtime cache, diagnosing healthy wiring, detecting a deliberately broken matcher, and restoring the installation |
 
 **These are not fixtures.** `samples/` holds deliberately broken code that the
 baseline must reject. Everything here is the correct thing to copy. CI asserts

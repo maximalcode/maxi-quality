@@ -45,6 +45,29 @@ is no public v1.0.0 through v1.0.3 to backfill. `CLAUDE.md` §2 has the reason.
 
 ## Unreleased
 
+- Fix agent-guard fingerprints omitting tracked files marked assume-unchanged
+  or skip-worktree (#217). Flagged paths now require a gate run, and later edits
+  invalidate its receipt even when Git status hides them.
+
+### Added
+
+- Opt-in native Codex guard wiring through `quality-runtime-migrate.py --host
+  codex`, with host-specific diagnosis and shared Stop/Git-verification policy.
+  The patch adapter protects receipts, expected findings and cited fixtures.
+  Runtime format 2 adds the adapter while retaining immutable format-1 pins.
+  Native protocol and installation fixtures do not establish live host enforcement.
+
+### Changed
+
+- Agent installation regression scenarios now run through the same local and
+  CI command, with isolated Git trees and individually selectable tests.
+- Shared guard refusal messages quote the recorder path, so the suggested
+  command also runs when the home directory contains spaces.
+- Agent contract installation now has one module owning profile selection,
+  files, settings, instructions and verification. Existing adoption commands,
+  settings refusals and exit 7 for a held-back instruction region are unchanged;
+  updating the shared runtime still requires an explicit `--install-shared`.
+
 ### Rule changes
 
 - **Knip 6.31.0 → 6.33.0.** The dead-code action floor, test dependency and

@@ -229,7 +229,7 @@ one language at a time, when someone has the week to spend on it.
 | Editor defaults | one shared `.editorconfig` | [`configs/editorconfig`](configs/editorconfig) |
 | Editor parity | `adopt.sh --editor` writes the settings that make the official extensions show what CI shows, for the languages you actually have | [`configs/editor/`](configs/editor/) |
 | Agent guard | `adopt.sh --agent` installs hooks that refuse to end a session on code the gate has not seen, refuse an edit that weakens the test suite, and refuse `--no-verify`. Every stop decision is appended to a per-checkout ledger — a reason code, never content — so the guard's track record is counted rather than recalled | [`configs/agent/`](configs/agent/) |
-| Copyable examples | seven complete consumer repos, each asserted by CI | [`examples/`](examples/) |
+| Copyable examples | eight complete consumer repos, each asserted by CI | [`examples/`](examples/) |
 | Test suite | planted-bug samples per language; a sample that stops failing means the config regressed | [`samples/`](samples/) |
 
 ---

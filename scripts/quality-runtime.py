@@ -26,7 +26,7 @@ from pathlib import Path
 SOURCE = "maximalcode/maxi-quality"
 SCHEMA = 1
 LOCK_NAME = ".claude/quality-runtime.json"
-FORMAT = 1
+FORMAT = 2
 SCRIPTS = (
     "guard.py",
     "stop-gate.py",
@@ -34,13 +34,427 @@ SCRIPTS = (
     "no-verify-guard.py",
     "record-gate.py",
 )
-SCRIPT_SET = frozenset(SCRIPTS)
+SCRIPT_FORMATS = {1: SCRIPTS, 2: (*SCRIPTS, "codex-patch-guard.py")}
+SCRIPT_SET = frozenset(SCRIPT_FORMATS[FORMAT])
 SHA = re.compile(r"^[0-9a-f]{40}$")
 VERSION = re.compile(r"^v?[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
 
 
+def host_root(host: str) -> str:
+    if host == "claude":
+        return '"${CLAUDE_PROJECT_DIR}"'
+    if host == "codex":
+        return '"$(git rev-parse --show-toplevel)"'
+    raise RuntimeError_(f"unsupported host {host!r}; choose claude or codex")
+
+
+def host_specs(host: str, samples: bool) -> list[tuple[str, str | None, str, int]]:
+    host_root(host)  # Validate the explicit host; never guess from a model.
+    specs = [("PreToolUse", "Bash", "no-verify-guard", 15), ("Stop", None, "stop-gate", 60)]
+    if host == "codex":
+        specs.insert(0, ("PreToolUse", "apply_patch", "codex-patch-guard", 15))
+    elif samples:
+        specs.insert(0, ("PreToolUse", "Edit|Write|MultiEdit", "sample-guard", 15))
+    return specs
+
+
 class RuntimeError_(Exception):
     """A user-fixable lock or cache problem."""
+
+
+def _check(checks: list[dict[str, str]], ident: str, status: str, detail: str) -> None:
+    """Append one stable, human-readable diagnosis result."""
+    checks.append({"id": ident, "status": status, "detail": detail})
+
+
+def _settings(path: Path) -> dict[str, object]:
+    value = _json(path)
+    if not isinstance(value, dict):
+        raise RuntimeError_(f"{path} must contain a JSON object")
+    return value
+
+
+def _hook_entries(settings: dict[str, object], event: str) -> list[tuple[str | None, dict[str, object]]]:
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict):
+        return []
+    groups = hooks.get(event)
+    if not isinstance(groups, list):
+        return []
+    found: list[tuple[str | None, dict[str, object]]] = []
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        matcher = group.get("matcher")
+        matcher = matcher if isinstance(matcher, str) else None
+        entries = group.get("hooks")
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if isinstance(entry, dict):
+                found.append((matcher, entry))
+    return found
+
+
+def launcher_command(launcher: str) -> str:
+    # A path to this repository's script is useful for tests and release
+    # maintenance; a globally installed executable is the normal deployment.
+    if launcher == "quality-runtime":
+        # Claude Code launched from a GUI can have a shorter PATH than an
+        # interactive shell. Resolve the supported default install directly;
+        # HOME is stable while PATH is not.
+        return '"$HOME/.local/bin/quality-runtime"'
+    if launcher.endswith(".py"):
+        return "python3 " + shlex.quote(launcher)
+    return shlex.quote(launcher)
+
+
+def direct_command(launcher: str, name: str, root: str,
+                   via_python: bool | None = None) -> str:
+    if via_python is None:
+        executable = launcher_command(launcher)
+    else:
+        executable = ("python3 " if via_python else "") + shlex.quote(launcher)
+    return f"{executable} {name} --root {root}"
+
+
+def missing_fallback(name: str) -> str:
+    if name == "codex-patch-guard":
+        code = "import json; print(json.dumps(" + repr({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": "quality-runtime launcher is unavailable; install it and prepare the pinned cache before retrying the patch",
+        }}) + "))"
+        return "python3 -c " + shlex.quote(code)
+    # This is deliberately only a missing-install message/decision adapter;
+    # all guard behavior remains in the validated external cache. Keeping the
+    # adapter inline means an absent launcher cannot make Claude reject every
+    # tool call before it can report how to repair the install.
+    code = (
+        "import json,re,sys; "
+        "n=sys.argv[1]; m='quality-runtime launcher is unavailable; install it and prepare the pinned cache'; "
+        "d=json.loads(sys.stdin.read() or '{}') if n=='no-verify-guard' else {}; "
+        "c=(d.get('tool_input') or {}).get('command',''); "
+        "deny=n=='no-verify-guard' and isinstance(c,str) and re.search(r'\\bgit\\s+(?:[^;&|]+\\s+)?(?:commit|push)\\b',c); "
+        "o=({'decision':'block','reason':m} if n=='stop-gate' else ({'hookSpecificOutput':{'hookEventName':'PreToolUse','permissionDecision':'deny','permissionDecisionReason':m}} if deny else None)); "
+        "json.dump(o,sys.stdout) if o else print('quality-runtime: '+m,file=sys.stderr); "
+        "print() if o else None"
+    )
+    return "python3 -c " + shlex.quote(code) + " " + shlex.quote(name)
+
+
+def runtime_command(launcher: str, name: str, root: str, *, fallback: bool = True) -> str:
+    invoke = direct_command(launcher, name, root)
+    if launcher == "quality-runtime":
+        check = '[ -x "$HOME/.local/bin/quality-runtime" ]'
+    elif launcher.endswith(".py") or "/" in launcher:
+        check = "[ -f " + shlex.quote(launcher) + " ]"
+    else:
+        check = "command -v " + shlex.quote(launcher) + " >/dev/null 2>&1"
+    alternative = f"; else {missing_fallback(name)}" if fallback else ""
+    return f"if {check}; then {invoke}{alternative}; fi"
+
+
+def _runtime_invocation(command: str, name: str, host: str = "claude") -> tuple[str, bool] | None:
+    """Recognize supported commands by rebuilding their entire shell source.
+
+    Tokens discover a candidate only; they cannot prove quoting, expansion or
+    control flow. Exact equality with the shared builder is the validation.
+    The installed launcher contains this builder so it remains a single file.
+    """
+    if "\n" in command or "\r" in command:
+        return None
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None
+    root = host_root(host)
+    for index, token in enumerate(tokens):
+        if token != name or index == 0:
+            continue
+        launcher = tokens[index - 1]
+        via_python = index >= 2 and tokens[index - 2] == "python3"
+        selected = "quality-runtime" if launcher == "$HOME/.local/bin/quality-runtime" else launcher
+        generated = runtime_command(selected, name, root)
+        # The earlier generated form omitted the missing-launcher adapter.
+        without_fallback = runtime_command(selected, name, root, fallback=False)
+        direct = direct_command(selected, name, root,
+                                None if selected == "quality-runtime" else via_python)
+        if command in (generated, without_fallback, direct):
+            return launcher, via_python
+    return None
+
+
+def _owned_command(settings: dict[str, object], event: str, name: str,
+                   matcher: str | None, host: str = "claude") -> tuple[dict[str, object], str, bool] | None:
+    """Find a runtime entry only when its matcher and invocation agree."""
+    for actual_matcher, entry in _hook_entries(settings, event):
+        command = entry.get("command")
+        if (actual_matcher != matcher or entry.get("type") != "command"
+                or not isinstance(command, str)):
+            continue
+        invocation = _runtime_invocation(command, name, host)
+        if invocation is None:
+            continue
+        launcher, via_python = invocation
+        return entry, launcher, via_python
+    return None
+
+
+def _launcher_identity(path: Path) -> bool:
+    """Compare to this trusted diagnoser, independently of the guard release."""
+    try:
+        return path.read_bytes() == Path(__file__).read_bytes()
+    except OSError:
+        return False
+
+
+def _launcher_ok(launcher: str, via_python: bool, root: Path) -> tuple[bool, str]:
+    """Check an extracted external launcher without running it.
+
+    Relative paths use the project directory, as the hook does. PATH and HOME
+    are the diagnoser's environment; a different host environment is unverified.
+    """
+    if launcher == "$HOME/.local/bin/quality-runtime":
+        path = Path.home() / ".local" / "bin" / "quality-runtime"
+    elif via_python or "/" in launcher or launcher.startswith("."):
+        path = Path(launcher)
+        if not path.is_absolute():
+            path = root / path
+    else:
+        search_path = os.pathsep.join(
+            str(Path(part) if Path(part).is_absolute() else root / part)
+            for part in os.environ.get("PATH", os.defpath).split(os.pathsep)
+        )
+        resolved = shutil.which(launcher, path=search_path)
+        if not resolved:
+            return False, f"the hook launcher is not available: {launcher}"
+        path = Path(resolved)
+    if not path.is_file() or (not via_python and not os.access(path, os.X_OK)):
+        return False, f"{path} is missing or not usable by this invocation"
+    if not _launcher_identity(path):
+        return False, f"{path} differs from this diagnoser; run diagnosis through the trusted launcher used by the hooks"
+    return True, str(path)
+
+
+def _legacy_profile(root: Path, settings: dict[str, object] | None) -> str | None:
+    directory = root / ".claude" / "agent-guard"
+    if not directory.is_dir() or directory.is_symlink():
+        return None
+    if (directory / "shim.py").is_file():
+        return "legacy-shared"
+    if any((directory / name).is_file() for name in SCRIPTS):
+        return "legacy-copied"
+    return None
+
+
+def _residual_guard_hooks(settings: dict[str, object]) -> bool:
+    """Find retained runtime wiring or references to the former guard files."""
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+    for event in hooks:
+        for _, entry in _hook_entries(settings, event):
+            command = entry.get("command")
+            if entry.get("type") != "command" or not isinstance(command, str):
+                continue
+            try:
+                tokens = shlex.split(command)
+            except ValueError:
+                tokens = []
+            for name in ("stop-gate", "sample-guard", "no-verify-guard", "codex-patch-guard"):
+                if (any(_runtime_invocation(command, name, h) is not None for h in ("claude", "codex"))
+                        or f"/.claude/agent-guard/{name}.py" in command):
+                    return True
+                # The former shared profile routes all three hooks through
+                # one shim, with the guard name supplied as its first argument.
+                if any(action == name and (path == ".claude/agent-guard/shim.py"
+                                           or path.endswith("/.claude/agent-guard/shim.py"))
+                       for path, action in zip(tokens, tokens[1:])):
+                    return True
+    return False
+
+
+def diagnose(root: Path, explicit_cache: str | None = None, host: str = "claude") -> dict[str, object]:
+    """Read-only diagnosis of one Adopter checkout's guard installation.
+
+    This deliberately compares only entries owned by the baseline.  Other
+    hooks and permission rules are a consumer's policy and remain untouched.
+    No gate, hook, cache writer, network operation, or subprocess is called.
+    """
+    root = root.resolve()
+    checks: list[dict[str, str]] = []
+    lock_path = root / LOCK_NAME
+    host_root(host)
+    settings_path = root / (".codex/hooks.json" if host == "codex" else ".claude/settings.json")
+    lock_exists = lock_path.is_file()
+    settings: dict[str, object] | None = None
+    try:
+        settings = _settings(settings_path)
+    except RuntimeError_ as exc:
+        if settings_path.exists():
+            _check(checks, "settings-json", "fail", str(exc))
+
+    if not lock_exists:
+        profile = _legacy_profile(root, settings) if host == "claude" else None
+        if profile:
+            return {
+                "schema": 1, "status": profile, "healthy": False,
+                "installation_profile": profile, "release": None,
+                "configured_gate": None, "checks": checks,
+                "live_enforcement": "unverified", "host_settings": "unverified",
+                "migration": "python3 scripts/quality-runtime-migrate.py --target <checkout> --version V --commit SHA",
+            }
+        _check(checks, "release-lock", "fail",
+               f"{lock_path} is missing; this checkout has no versioned runtime lock")
+        report = {
+            "schema": 1, "status": "unavailable", "healthy": False,
+            "installation_profile": "unconfigured", "release": None,
+            "configured_gate": None, "checks": checks,
+            "live_enforcement": "unverified", "host_settings": "unverified",
+            "migration": "install and prepare the versioned runtime, then run diagnose again",
+        }
+        return report
+
+    try:
+        lock = read_lock(root, require_guard=False)
+    except RuntimeError_ as exc:
+        _check(checks, "release-lock", "fail", str(exc))
+        return {
+            "schema": 1, "status": "broken", "healthy": False,
+            "installation_profile": "invalid-lock", "release": None,
+            "configured_gate": None, "checks": checks,
+            "live_enforcement": "unverified", "host_settings": "unverified",
+            "migration": "repair .claude/quality-runtime.json with a pinned release",
+        }
+
+    release = {"source": lock["source"], "version": lock["version"], "commit": lock["commit"]}
+    if lock["guard_enabled"] is not True:
+        _check(checks, "guard-enabled", "skip", "agent guard is explicitly disabled for this profile")
+        _check(checks, "release-lock", "pass", f"pinned {lock['version']} ({lock['commit']})")
+        residual = _residual_guard_hooks(settings or {})
+        _check(checks, "disabled-hook-wiring", "fail" if residual else "pass",
+               "disabled profile retains agent guard hooks; reconcile the lock and hook settings"
+               if residual else "disabled profile has no agent guard hooks")
+        failed = any(check["status"] == "fail" for check in checks)
+        return {
+            "schema": 1, "status": "broken" if failed else "not-enabled", "healthy": not failed,
+            "installation_profile": "disabled", "release": release,
+            "configured_gate": None, "checks": checks,
+            "live_enforcement": "unverified", "host_settings": "unverified",
+            "migration": "enable the guard by migrating without --guard-disabled",
+        }
+
+    _check(checks, "release-lock", "pass", f"pinned {lock['version']} ({lock['commit']})")
+    if not settings_path.exists():
+        _check(checks, "settings-json", "fail", f"{settings_path} is missing")
+    try:
+        location = validate_cache(root, lock, explicit_cache)
+    except RuntimeError_ as exc:
+        _check(checks, "runtime-cache", "fail", str(exc))
+    else:
+        _check(checks, "runtime-cache", "pass", f"validated immutable cache at {location}")
+        if host == "codex" and "codex-patch-guard.py" not in _manifest(location / "manifest.json", lock)["files"]:
+            _check(checks, "codex-runtime", "fail", "pinned runtime predates native Codex support; explicitly select a release containing the adapter")
+
+    if host == "codex":
+        _check(checks, "hook-trust", "unverified", "review and trust the exact hooks in Codex /hooks; project trust, user/system/plugin settings and session overrides are not inferred from repository wiring")
+        config_path = root / ".codex/config.toml"
+        if config_path.exists():
+            try:
+                import tomllib
+                config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+            except ImportError:
+                _check(checks, "codex-config", "unverified", "Python 3.11+ is needed to inspect the project TOML; host settings remain unverified")
+            except (OSError, ValueError) as exc:
+                _check(checks, "codex-config", "fail", f"unreadable project config: {exc}")
+            else:
+                features = config.get("features", {})
+                if isinstance(features, dict) and (features.get("hooks") is False or features.get("codex_hooks") is False):
+                    _check(checks, "hooks-enabled", "fail", "project config disables native Codex hooks")
+                if "hooks" in config:
+                    _check(checks, "additional-hook-sources", "unverified", "project inline hooks merge with hooks.json; their effects have not been verified")
+    if host == "claude" and settings is not None and settings.get("disableAllHooks") is True:
+        _check(checks, "hooks-enabled", "fail",
+               "project settings disable all hooks; the agent guard cannot enforce its decisions")
+    elif host == "claude":
+        _check(checks, "hooks-enabled", "pass", "project settings leave hooks enabled")
+
+    expected_samples = (root / "samples" / "expected").is_dir()
+    profile = "versioned-with-samples" if expected_samples else "versioned-without-samples"
+    gate_value: str | None = None
+    gate_path = root / ".claude" / "agent-guard.json"
+    try:
+        gate_data = _json(gate_path)
+        if isinstance(gate_data, dict) and isinstance(gate_data.get("gate_command"), str) and gate_data["gate_command"].strip():
+            gate_value = gate_data["gate_command"]
+            _check(checks, "configured-gate", "pass", f"declared gate: {gate_value}")
+        else:
+            _check(checks, "configured-gate", "fail", f"{gate_path} has no non-empty gate_command")
+    except RuntimeError_ as exc:
+        _check(checks, "configured-gate", "fail", str(exc))
+
+    for event, matcher, name, _timeout in host_specs(host, expected_samples):
+        ident = {"no-verify-guard": "hook-no-verify", "stop-gate": "hook-stop-gate",
+                 "sample-guard": "hook-sample-guard", "codex-patch-guard": "hook-codex-patch"}[name]
+        owned = _owned_command(settings or {}, event, name, matcher, host)
+        if owned is None:
+            _check(checks, ident, "fail",
+                   f"required {event} hook for {name} with matcher {matcher or '<none>'} is missing or changed")
+            continue
+        entry, launcher, via_python = owned
+        _check(checks, ident, "pass", f"{event} {matcher or '<none>'} runs {name}")
+        if entry.get("async") is True:
+            _check(checks, "hook-execution-mode", "fail",
+                   f"{event} {matcher or '<none>'} hook is asynchronous and cannot enforce guard decisions")
+        launcher_good, launcher_detail = _launcher_ok(
+            launcher, via_python, root)
+        if not launcher_good:
+            _check(checks, "launcher", "fail", f"launcher is unavailable: {launcher_detail}")
+
+    # A samples profile is the only one that owns this rule.  Absence is an
+    # intentional profile choice, not a wiring failure.
+    if expected_samples:
+        _check(checks, "sample-protection", "pass", "samples/expected has native patch protection" if host == "codex" else "samples/expected is protected by the owned sample hook and deny rule")
+    else:
+        _check(checks, "sample-protection", "skip", "profile has no samples/expected; sample protection is not applicable")
+
+    deny = ((settings or {}).get("permissions") or {}) if isinstance((settings or {}).get("permissions"), dict) else {}
+    deny_rules = deny.get("deny", []) if isinstance(deny, dict) else []
+    baseline_deny = ["Edit(/.claude/agent-guard-receipt.json)"] if host == "claude" else []
+    if expected_samples and host == "claude":
+        baseline_deny.append("Edit(/samples/expected/**)")
+    for rule in baseline_deny:
+        if isinstance(deny_rules, list) and rule in deny_rules:
+            _check(checks, "deny-" + re.sub(r"[^a-z]+", "-", rule.lower()).strip("-"), "pass", f"owned deny rule present: {rule}")
+        else:
+            _check(checks, "deny-rules", "fail", f"required deny rule is missing: {rule}")
+
+    failed = [c for c in checks if c["status"] == "fail"]
+    return {
+        "schema": 1, "status": "broken" if failed else "ok", "healthy": not failed,
+        "installation_profile": profile, "release": release,
+        "configured_gate": gate_value, "checks": checks,
+        "live_enforcement": "unverified", "host_settings": "unverified",
+        "migration": "python3 scripts/quality-runtime-migrate.py --target <checkout> --version V --commit SHA",
+    }
+
+
+def print_diagnosis(report: dict[str, object], as_json: bool) -> int:
+    if as_json:
+        print(json.dumps(report, indent=2, sort_keys=True) + "\n", end="")
+    else:
+        print(f"quality-runtime: {report['status']} ({report['installation_profile']})")
+        release = report.get("release")
+        if isinstance(release, dict):
+            print(f"release: {release['version']} @ {release['commit']}")
+        print(f"configured gate: {report.get('configured_gate') or 'not declared'}")
+        print(f"live enforcement: {report['live_enforcement']}")
+        print(f"host settings: {report['host_settings']}")
+        for check in report["checks"]:
+            print(f"{check['status']}: {check['id']}: {check['detail']}")
+        if report.get("migration"):
+            print(f"migration: {report['migration']}")
+    return 0 if report["healthy"] or str(report["status"]).startswith("legacy-") else 1
 
 
 def cache_root(explicit: str | None = None) -> Path:
@@ -93,13 +507,13 @@ def _manifest(path: Path, lock: dict[str, object]) -> dict[str, object]:
     if set(value) != {"schema", "format", "source", "version", "commit", "files"}:
         raise RuntimeError_(f"cache manifest {path} has unexpected fields")
     if (type(value["schema"]) is not int or value["schema"] != SCHEMA
-            or type(value["format"]) is not int or value["format"] != FORMAT
+            or type(value["format"]) is not int or value["format"] not in SCRIPT_FORMATS
             or value["source"] != SOURCE):
         raise RuntimeError_(f"cache manifest {path} has the wrong format or source")
     if value["version"] != lock["version"] or value["commit"] != lock["commit"]:
         raise RuntimeError_(f"cache manifest {path} does not match the repository lock")
     files = value["files"]
-    if not isinstance(files, dict) or set(files) != SCRIPT_SET:
+    if not isinstance(files, dict) or set(files) != set(SCRIPT_FORMATS[value["format"]]):
         raise RuntimeError_(f"cache manifest {path} has the wrong script allowlist")
     for name, digest in files.items():
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
@@ -115,7 +529,7 @@ def validate_cache(root: Path, lock: dict[str, object], explicit: str | None = N
             "run the explicit prepare step"
         )
     manifest = _manifest(location / "manifest.json", lock)
-    for name in SCRIPTS:
+    for name in manifest["files"]:
         path = location / name
         if not path.is_file() or path.is_symlink():
             raise RuntimeError_(f"runtime cache entry {path} is missing or not a regular file")
@@ -187,7 +601,16 @@ def prepare(source: Path, version: str, commit: str, explicit_cache: str | None,
             f"source has no release tag {version}; use --allow-untagged-development "
             "only for a local fixture"
         )
-    for name in SCRIPTS:
+    # Old pins keep the original exact allowlist and format. Presence in the
+    # pinned Git tree, never the current checkout, admits the new adapter.
+    try:
+        _git(source, "cat-file", "-e", f"{commit}:scripts/agent-guard/codex-patch-guard.py")
+    except RuntimeError_:
+        script_format = 1
+    else:
+        script_format = 2
+    scripts = SCRIPT_FORMATS[script_format]
+    for name in scripts:
         _git(source, "cat-file", "-e", f"{commit}:scripts/agent-guard/{name}")
 
     destination = cache_root(explicit_cache) / commit
@@ -195,7 +618,9 @@ def prepare(source: Path, version: str, commit: str, explicit_cache: str | None,
     if destination.exists():
         try:
             validate_cache(destination.parent.parent, lock, str(destination.parent))
-            for name in SCRIPTS:
+            if _manifest(destination / "manifest.json", lock)["format"] != script_format:
+                raise RuntimeError_("existing cache has a different script format than the pinned source")
+            for name in scripts:
                 cached = (destination / name).read_bytes()
                 source_blob = _git(source, "show", f"{commit}:scripts/agent-guard/{name}")
                 if cached != source_blob:
@@ -209,7 +634,7 @@ def prepare(source: Path, version: str, commit: str, explicit_cache: str | None,
     temp = Path(tempfile.mkdtemp(prefix=f".{commit}.", dir=parent))
     try:
         hashes: dict[str, str] = {}
-        for name in SCRIPTS:
+        for name in scripts:
             content = _git(source, "show", f"{commit}:scripts/agent-guard/{name}")
             path = temp / name
             path.write_bytes(content)
@@ -217,7 +642,7 @@ def prepare(source: Path, version: str, commit: str, explicit_cache: str | None,
             hashes[name] = hashlib.sha256(content).hexdigest()
         (temp / "manifest.json").write_text(
             json.dumps(
-                {"schema": SCHEMA, "format": FORMAT, "source": SOURCE, "version": version,
+                {"schema": SCHEMA, "format": script_format, "source": SOURCE, "version": version,
                  "commit": commit, "files": hashes},
                 indent=2, sort_keys=True,
             ) + "\n",
@@ -262,6 +687,12 @@ def _missing_hook(name: str, message: str) -> int:
     if name == "stop-gate":
         json.dump({"decision": "block", "reason": f"quality-runtime: {message}"}, sys.stdout)
         sys.stdout.write("\n")
+    elif name == "codex-patch-guard":
+        json.dump({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": f"Codex patch protection is unavailable: {message}. Prepare a pinned runtime with native Codex support.",
+        }}, sys.stdout)
+        sys.stdout.write("\n")
     elif name == "no-verify-guard":
         try:
             event = json.loads(sys.stdin.read() or "{}")
@@ -289,6 +720,9 @@ def dispatch(name: str, root: Path, explicit_cache: str | None, args: list[str])
     except RuntimeError_ as exc:
         return _missing_hook(name, str(exc))
     script = location / script_name
+    manifest = _manifest(location / "manifest.json", lock)
+    if script_name not in manifest["files"]:
+        return _missing_hook(name, "the pinned release does not contain this host adapter")
     # cwd is the consumer root so git status, receipt and ledger are all scoped
     # to the project that invoked the hook, even though the code lives outside it.
     child_env = os.environ.copy()
@@ -375,6 +809,33 @@ def main(argv: list[str]) -> int:
         location = validate_cache(Path(root).resolve(), lock, cache)
         print(f"ok {lock['version']} {lock['commit']} {location}")
         return 0
+
+    if command == "diagnose":
+        root: str | None = None
+        cache: str | None = None
+        as_json = False
+        host = "claude"
+        i = 0
+        while i < len(args):
+            if args[i] in ("--root", "--cache-root") and i + 1 < len(args):
+                if args[i] == "--root":
+                    root = args[i + 1]
+                else:
+                    cache = args[i + 1]
+                i += 2
+            elif args[i] == "--host" and i + 1 < len(args):
+                host = args[i + 1]
+                host_root(host)
+                i += 2
+            elif args[i] in ("--json", "--format=json"):
+                as_json = True
+                i += 1
+            else:
+                raise RuntimeError_(f"unknown diagnose argument {args[i]!r}")
+        root_path = Path(root or (os.environ.get("CLAUDE_PROJECT_DIR") if host == "claude" else None) or os.getcwd()).resolve()
+        report = diagnose(root_path, cache, host)
+        report["host"] = host
+        return print_diagnosis(report, as_json)
 
     root: str | None = None; cache: str | None = None; remaining: list[str] = []
     i = 0

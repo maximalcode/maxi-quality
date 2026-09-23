@@ -157,7 +157,7 @@ scripts/check-agent-contract.py  the agent contract is four files that a single
                           or the host's effective settings.
                           It READS those numbers
                           and refuses to write them. `selftest` mutates a staged
-                          copy 35 ways and asserts each run names what moved;
+                          copy 37 ways and asserts each run names what moved;
                           two positive controls keep staging and harmless
                           settings changes from becoming false failures
 scripts/editor-parity.py  the differ for the #121 parity run: a VS Code Problems
