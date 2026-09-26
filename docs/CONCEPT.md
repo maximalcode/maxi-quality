@@ -376,6 +376,11 @@ projects silently — projects upgrade by bumping the tag.
 
 ## 8. Adoption paths
 
+**Local check evidence:** `scripts/guardian.py run <project-root> --base <ref>`
+runs the existing declared gate through its recorder without CI or an agent
+host. Versioned reports keep execution, freshness, unknown analysis scope and
+unassessed requirements separate. See [GUARDIAN.md](GUARDIAN.md).
+
 **Agent contract:** `adopt.sh <repo-path> --agent` delegates the complete
 installation to `scripts/agent-install.py`. That module owns profile selection,
 files, settings, instructions and verification, using the existing settings and

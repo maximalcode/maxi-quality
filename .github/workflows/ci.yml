@@ -2957,6 +2957,9 @@ jobs:
       # every tree that adopted it. STEPS rather than a job, for the reason the
       # parity differ next door is one — no toolchain, and a new context would
       # have to be added to branch protection on both branches to gate anything.
+      - name: Local Guardian evidence must match real gate execution
+        shell: bash
+        run: python3 scripts/check-guardian.py
       - name: The agent contract's four parts must still agree
         shell: bash
         run: python3 scripts/check-agent-contract.py

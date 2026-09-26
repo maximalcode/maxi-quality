@@ -152,54 +152,53 @@ def main(argv: list[str]) -> int:
                   "  run it with --gate to record the declared gate instead.",
                   file=sys.stderr)
 
-    # BEFORE the command runs — see the module docstring.
     try:
-        before = fingerprint(root)
-    except InspectionError as exc:
-        print(f"record-gate: Cannot verify the working tree: {exc}", file=sys.stderr)
+        receipt = execute_and_record(root, args, declared)
+    except (InspectionError, OSError) as exc:
+        print(f"record-gate: could not run or record the gate: {exc}", file=sys.stderr)
         return 3
+    return receipt["exit_code"]
 
-    # No shell HERE, in either form. Under `--` the command arrives as a list
-    # the caller's own shell already split, and re-quoting it through `sh -c`
-    # would turn a path with a space into two arguments that fail in a way
-    # nobody would attribute to this wrapper. Under `--gate` the list is
-    # `bash -c <the declared string>`, built by guard.gate_argv() from a value
-    # that was a shell command to begin with — so there is still nothing being
-    # re-quoted, which is the distinction that keeps both forms honest.
-    try:
-        rc = subprocess.run(args).returncode
-    except (OSError, FileNotFoundError) as exc:
-        print(f"record-gate: could not run {args[0]!r}: {exc}", file=sys.stderr)
-        return 3
 
+class RecordingError(OSError):
+    """The command finished, but its receipt could not be persisted."""
+
+    def __init__(self, receipt, cause):
+        super().__init__(str(cause))
+        self.receipt = receipt
+
+
+def execute_and_record(root, args, declared, *, cwd=None, stdout=None, stderr=None):
+    """Execute once and write the authoritative receipt; callers may retain output.
+
+    The CLI keeps its historical working directory. Local project runners pass
+    the explicit project root as cwd. Inspection and start failures raise, so a
+    caller cannot mistake an older receipt for this invocation's result.
+    """
+    before = fingerprint(root)
+    rc = subprocess.run(args, cwd=cwd, stdout=stdout, stderr=stderr).returncode
+    receipt = {
+        "fingerprint": before,
+        "verdict": "pass" if rc == 0 else "fail",
+        "exit_code": rc,
+        # Preserve quoting: joining argv with spaces describes a different
+        # command when the declaration contains shell operators (#178).
+        "command": shlex.join(args),
+        **({"gate_command": declared} if declared is not None else {}),
+    }
     path = os.path.join(root, RECEIPT)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    # Written whole and replaced atomically: a receipt truncated by a Ctrl-C
-    # mid-write is unparseable, and unparseable is treated as absent, which
-    # would silently discard a passing run.
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(
-            {
-                "fingerprint": before,
-                "verdict": "pass" if rc == 0 else "fail",
-                "exit_code": rc,
-                # shlex.join, not " ".join: the latter renders
-                # ["bash", "-c", "a && b"] as `bash -c a && b`, which is a
-                # DIFFERENT command and the exact one #178 is about. A label
-                # that reads back as the broken form is worse than no label,
-                # and the Stop hook now compares this field.
-                "command": shlex.join(args),
-                **({"gate_command": declared} if declared is not None else {}),
-            },
-            fh,
-            indent=2,
-            sort_keys=True,
-        )
-        fh.write("\n")
-    os.replace(tmp, path)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        # Atomic replacement keeps interrupted writes from becoming receipts.
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(receipt, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+        os.replace(tmp, path)
+    except OSError as exc:
+        raise RecordingError(receipt, exc) from exc
 
-    return rc
+    return receipt
 
 
 if __name__ == "__main__":
