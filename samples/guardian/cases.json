@@ -1,0 +1,9 @@
+[
+  {"name": "pass", "gate": "printf 'checked locally\\n'", "exit": 0, "outcome": "succeeded"},
+  {"name": "compound-failure", "gate": "(printf 'first failed\\n' >&2; exit 23) && touch second-ran", "exit": 23, "outcome": "failed"},
+  {"name": "missing-executable", "gate": "./does-not-exist", "exit": 127, "outcome": "failed"},
+  {"name": "misleading-stderr", "gate": "printf 'dependency missing\\n' >&2; exit 19", "exit": 19, "outcome": "failed"},
+  {"name": "missing-declaration", "gate": null, "exit": 3, "outcome": "incomplete"},
+  {"name": "invalid-base", "gate": "touch second-ran", "base": "no-such-base", "exit": 3, "outcome": "incomplete"},
+  {"name": "editing-gate", "gate": "printf 'changed\\n' > source.txt", "exit": 3, "outcome": "stale"}
+]
