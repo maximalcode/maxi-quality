@@ -380,6 +380,9 @@ projects silently — projects upgrade by bumping the tag.
 runs the existing declared gate through its recorder without CI or an agent
 host. Versioned reports keep execution, freshness, unknown analysis scope and
 unassessed requirements separate. See [GUARDIAN.md](GUARDIAN.md).
+The installable [Guardian skill](GUARDIAN-SKILL.md) uses the same setup and runner
+interfaces for explicit review or scoped review-and-repair, adding AI assessment
+separately from execution evidence.
 
 **Agent contract:** `adopt.sh <repo-path> --agent` delegates the complete
 installation to `scripts/agent-install.py`. That module owns profile selection,

@@ -169,6 +169,68 @@ class GuardianTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 3)
         self.assertEqual(report["outcome"], "incomplete")
 
+class SkillTests(unittest.TestCase):
+    def test_installed_skill_uses_local_interfaces_and_revalidates_repair(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            installed = temp / "skills/guardian"
+            installed.parent.mkdir()
+            installed.symlink_to(BASELINE / "skills/guardian", target_is_directory=True)
+            skill = installed / "SKILL.md"
+            self.assertTrue(skill.is_file())
+            runner = skill.resolve().parents[2] / "scripts/guardian.py"
+            self.assertEqual(runner, RUNNER)
+            fixture = json.loads((BASELINE / "samples/guardian/skill-review.json").read_text())
+            gate = fixture["gate"]
+            root = project(temp / "project", gate)
+            (root / "SPEC.md").write_text(fixture["task"])
+            original = {name: (root / name).read_bytes() for name in
+                        ("source.txt", "SPEC.md", ".claude/agent-guard.json")}
+
+            def invoke(*args):
+                proc = command([sys.executable, str(runner), *args, "--json"], root)
+                return proc, json.loads(proc.stdout)
+
+            _, preview = invoke("setup", str(root))
+            self.assertEqual(preview["selected_gate"], gate)
+            self.assertEqual(preview["changes"], {})
+            direct, measured = run(root)
+            proc, reviewed = invoke("run", str(root), "--base", "HEAD", "--task", "SPEC.md")
+            self.assertEqual(proc.returncode, direct.returncode)
+            for key in ("command", "argv", "execution", "outcome", "freshness", "checked_state"):
+                self.assertEqual(reviewed[key], measured[key])
+            self.assertEqual(reviewed["execution"], {"outcome": "failed", "exit_code": 1})
+            self.assertEqual(reviewed["requirements"], {"reference": "SPEC.md", "assessment": "not_assessed"})
+            self.assertEqual(reviewed["finding_attribution"], "unknown")
+            _, missing_task = invoke("run", str(root), "--base", "HEAD")
+            self.assertEqual(missing_task["requirements"], {"reference": None, "assessment": "not_assessed"})
+            self.assertEqual({name: (root / name).read_bytes() for name in original}, original)
+            receipt = Path(reviewed["receipt"]).read_bytes()
+            failed_report = Path(reviewed["report_path"]).read_bytes()
+            # A separate human-decision note is never consumed as success evidence.
+            override = Path(reviewed["report_path"]).parent / "human-decision.txt"
+            override.write_text("Invented human decision: proceed despite this failed check.\n")
+            proc, observation = invoke("check", reviewed["report_path"])
+            self.assertEqual(proc.returncode, 3)
+            self.assertEqual(observation["outcome"], "failed")
+            self.assertEqual(Path(reviewed["receipt"]).read_bytes(), receipt)
+            (root / "source.txt").write_text(fixture["repair"])
+            _, observation = invoke("check", reviewed["report_path"])
+            self.assertEqual(observation["freshness"], "stale")
+            proc, repaired = invoke("run", str(root), "--base", "HEAD", "--task", "SPEC.md")
+            self.assertEqual(proc.returncode, 0, repaired)
+            self.assertEqual(repaired["outcome"], "succeeded")
+            self.assertEqual(invoke("check", repaired["report_path"])[0].returncode, 0)
+            self.assertEqual(Path(reviewed["report_path"]).read_bytes(), failed_report)
+            for name in ("SPEC.md", ".claude/agent-guard.json"):
+                self.assertEqual((root / name).read_bytes(), original[name])
+            unavailable = project(temp / "unavailable", None)
+            proc, missing = invoke("run", str(unavailable), "--base", "HEAD")
+            self.assertEqual(proc.returncode, 3)
+            self.assertEqual(missing["execution"]["outcome"], "not_run")
+            self.assertEqual(missing["outcome"], "incomplete")
+
+
 class SetupTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()

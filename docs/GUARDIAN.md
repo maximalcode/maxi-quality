@@ -28,6 +28,9 @@ Git metadata. They may contain private source, commands or paths; they are local
 evidence, not a public or paste-safe summary. Removing that directory removes the
 saved report and logs without changing the recorder's receipt.
 
+The optional [Guardian skill](GUARDIAN-SKILL.md) invokes these same interfaces
+and adds a separately identified AI assessment.
+
 ## Version 1 result contract
 
 Every run emits a JSON object with `schema_version: 1`:

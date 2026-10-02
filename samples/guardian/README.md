@@ -22,3 +22,11 @@ comparisons. Invented tagged baseline repositories exercise payload validation,
 read-only previews, repeated application, native Codex wiring, retained unrelated
 hooks, immutable updates and truthful post-update failure evidence. The tests
 never launch an agent host or assert that hooks are trusted.
+
+`skill-review.json` defines the invented named task, failing gate and scoped
+repair for the installed skill's interface fixture. The test resolves a linked
+skill to the same runner as the CLI, retains failed evidence across an external
+human-decision note, and verifies freshness before and after repair. It does
+not simulate an actual human decision or prove AI obedience. The interactive
+[skill demo](../../docs/GUARDIAN-SKILL.md#evidence-limits-and-demo) covers the
+reporting instructions separately.
