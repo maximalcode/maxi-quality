@@ -18,10 +18,7 @@ alone, report the missing checkout and use the installation instructions in
 upgrade runtime code during review.
 
 Read the target project's agent and contribution instructions. Establish its Git
-root, the requested operation, task/issue/spec source and comparison base. Read
-the supplied requirements; a name or inaccessible link alone is not assessed
-requirements. Resolve the base to a commit and retain it throughout the review.
-Ask for a base if neither the request nor project context establishes one.
+root and the requested operation.
 
 Default to **review**. **Review-and-repair** authorizes fixes only within the
 named task and agreed scope. **Setup/update** changes configuration only when
@@ -53,7 +50,17 @@ unaccepted definitions mean **unavailable enforcement**; unknown host trust or
 unobserved enforcement stays **unverified**. A script or setup success is not a
 live host observation. Preserve setup refusals and failed post-update checks.
 
+Finish setup by reporting the selected command, applied changes (or refusal),
+current/requested pin when present, returned verification and host prerequisites.
+A setup preview or an application returning `verification: not_run` is not a
+passing check. Stop here unless review was also requested.
+
 ## Review and measured evidence
+
+Establish the task/issue/spec source and comparison base. Read the supplied
+requirements; a name or inaccessible link alone is not assessed requirements.
+Resolve the base to a commit and retain it throughout the review. Ask for a base
+if neither the request nor project context establishes one.
 
 Read `BASELINE/docs/GUARDIAN.md` for result fields and freshness limits. Capture
 the initial source/configuration state, including existing uncommitted work.
