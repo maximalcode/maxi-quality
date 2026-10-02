@@ -50,6 +50,7 @@ def run(args) -> tuple[dict, int]:
     root = str(Path(args.root).resolve())
     report = {
         "schema_version": 1,
+        # nosemgrep: no-ambient-clock-python — observation timestamp only; freshness uses content, never time.
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "project_root": root, "working_directory": root,
         "comparison": {"requested_base": args.base, "base_commit": None,
