@@ -14,8 +14,10 @@ These prove the local mechanism, not adoption cost on a real consuming project
 or enforcement inside an agent host. No tool-specific findings are parsed.
 
 The setup cases additionally require Cargo with an installed toolchain and
-exercise the dependency-free `rust-local/` crate offline through step 1. Its
-lockfile and build-output ignore keep generated artifacts out of freshness
+exercise the dependency-free `rust-local/` crate offline through step 1. The
+manifest and lockfile use `.fixture` suffixes and are materialized under their
+Cargo names only in the temporary project, so this fixture does not become a
+fourth project in the repository detection contract. Its lockfile and build-output ignore keep generated artifacts out of freshness
 comparisons. Invented tagged baseline repositories exercise payload validation,
 read-only previews, repeated application, native Codex wiring, retained unrelated
 hooks, immutable updates and truthful post-update failure evidence. The tests

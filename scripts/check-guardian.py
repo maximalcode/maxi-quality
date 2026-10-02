@@ -218,6 +218,8 @@ class SetupTests(unittest.TestCase):
         root = project(self.root / "rust", None)
         fixture = BASELINE / "samples/guardian/rust-local"
         shutil.copytree(fixture, root, dirs_exist_ok=True)
+        for name in ("Cargo.toml", "Cargo.lock"):
+            (root / (name + ".fixture")).rename(root / name)
         before = self.snapshot(root)
         proc, report = self.setup(root)
         self.assertEqual(proc.returncode, 3)
