@@ -1,5 +1,9 @@
 # Versioned agent guard runtime
 
+For the local Rust pilot, [Guardian setup](GUARDIAN-SETUP.md) combines preview,
+explicit application and pinned updates in one entry. The lower-level commands
+below remain available for existing delivery modes.
+
 Agent guard code is distributed through a small launcher installed outside a
 consumer repository. A migrated repository commits one data file,
 `.claude/quality-runtime.json`, and hook wiring that invokes the launcher with

@@ -7,6 +7,7 @@ import argparse
 import datetime
 import importlib.util
 import json
+import importlib
 import os
 from pathlib import Path
 import subprocess
@@ -166,7 +167,23 @@ def main() -> int:
     inspect.add_argument("report")
     for command in (execute, inspect):
         command.add_argument("--json", action="store_true", help="print machine-readable evidence")
+    setup = commands.add_parser("setup", help="preview local setup or an explicit pinned update")
+    setup.add_argument("root")
+    setup.add_argument("--apply", action="store_true", help="apply the displayed selection")
+    setup.add_argument("--gate", help="explicitly select or replace the whole gate command")
+    setup.add_argument("--guardian", choices=("codex",), help="enable the native Codex integration")
+    setup.add_argument("--version", help="requested immutable release tag")
+    setup.add_argument("--commit", help="full commit matching the requested release tag")
+    setup.add_argument("--source", default=str(Path(__file__).resolve().parent.parent),
+                       help="local baseline checkout containing the requested release; never downloaded")
+    setup.add_argument("--base", default="HEAD", help="comparison base for post-update checks")
+    setup.add_argument("--task", help="task reference for post-update evidence")
+    setup.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    if args.action == "setup":
+        report, rc = importlib.import_module("guardian_setup").setup(args, sys.modules[__name__])
+        print(json.dumps(report, indent=2))
+        return rc if rc >= 0 else 128 - rc
     report, rc = run(args) if args.action == "run" else check(args.report)
     if args.json:
         print(json.dumps(report, indent=2))
