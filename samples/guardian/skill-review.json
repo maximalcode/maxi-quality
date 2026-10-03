@@ -1,0 +1,5 @@
+{
+  "task": "source.txt must contain repaired followed by a newline.\n",
+  "repair": "repaired\n",
+  "gate": "python3 -c \"from pathlib import Path; assert Path('source.txt').read_text() == 'repaired\\n'\""
+}
