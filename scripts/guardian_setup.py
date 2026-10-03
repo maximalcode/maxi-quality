@@ -104,7 +104,11 @@ def discover(root: Path) -> tuple[dict, dict | None, str, str | None, list[str]]
 
 def proposed_files(root: Path, gate: dict, lock: dict | None, enable: bool,
                    launcher: str) -> dict[str, bytes]:
-    names = [".claude/agent-guard.json", runtime.LOCK_NAME, ".codex/hooks.json", "AGENTS.md", ".gitignore"]
+    names = [".claude/agent-guard.json"]
+    if lock is not None:
+        names.append(runtime.LOCK_NAME)
+    if enable:
+        names.extend([".codex/hooks.json", "AGENTS.md", ".gitignore"])
     for name in names:
         safe_path(root, name)
     with tempfile.TemporaryDirectory(prefix="guardian-plan-") as directory:

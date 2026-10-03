@@ -276,6 +276,35 @@ class SetupTests(unittest.TestCase):
             self.assertEqual(self.snapshot(root), before)
         self.assertEqual(report["tests"], "not_inferred")
 
+    def test_local_setup_preserves_linked_instructions(self):
+        root = project(self.root / "project")
+        (root / "CLAUDE.md").write_text("Shared project instructions.\n")
+        (root / "AGENTS.md").symlink_to("CLAUDE.md")
+        before = self.snapshot(root)
+        for args in ((), ("--apply",), ("--apply",)):
+            proc, report = self.setup(root, *args)
+            self.assertEqual(proc.returncode, 0, report)
+            self.assertEqual(report["changes"], {})
+            self.assertEqual(self.snapshot(root), before)
+        proc, report = self.setup(root, "--gate", "printf selected", "--apply")
+        self.assertEqual(proc.returncode, 0, report)
+        self.assertEqual(set(report["changes"]), {".claude/agent-guard.json"})
+        self.assertEqual((root / "AGENTS.md").readlink(), Path("CLAUDE.md"))
+        self.assertEqual((root / "CLAUDE.md").read_bytes(), before["CLAUDE.md"])
+
+    def test_native_setup_still_refuses_linked_instructions(self):
+        root = project(self.root / "project")
+        (root / "CLAUDE.md").write_text("Shared project instructions.\n")
+        (root / "AGENTS.md").symlink_to("CLAUDE.md")
+        _, release = self.release()
+        before = self.snapshot(root)
+        proc, report = self.setup(root, "--guardian", "codex", *release, "--apply")
+        self.assertEqual(proc.returncode, 3, report)
+        self.assertEqual(report["outcome"], "refused")
+        self.assertIn("reconcile symbolic links", report["error"])
+        self.assertEqual(self.snapshot(root), before)
+        self.assertEqual((root / "AGENTS.md").readlink(), Path("CLAUDE.md"))
+
     def test_fresh_rust_local_checks(self):
         root = project(self.root / "rust", None)
         fixture = BASELINE / "samples/guardian/rust-local"
@@ -400,8 +429,13 @@ class SetupTests(unittest.TestCase):
         outside = self.root / "outside"
         outside.write_text("untouched")
         (root / "AGENTS.md").symlink_to(outside)
-        proc, report = self.setup(root, "--gate", "true", "--apply")
+        # Native setup writes instructions; local-only setup does not.
+        _, release = self.release()
+        before = self.snapshot(root)
+        proc, report = self.setup(root, "--guardian", "codex", *release,
+                                  "--gate", "true", "--apply")
         self.assertEqual(proc.returncode, 3, report)
+        self.assertEqual(self.snapshot(root), before)
         self.assertEqual(outside.read_text(), "untouched")
 
     def test_legacy_profile_is_not_migrated(self):
