@@ -1,6 +1,6 @@
 # Local Guardian pilot evidence
 
-Observation date: 2026-10-03. Scope: [issue #273](https://github.com/maximalcode/maxi-quality/issues/273).
+Observation dates: 2026-10-03 and 2026-10-04. Scope: [issue #273](https://github.com/maximalcode/maxi-quality/issues/273).
 
 **Owner acceptance pending.** A separate invented Rust fixture completed fresh
 local-check setup and checking. An owner-selected private Rust CLI/library
@@ -8,7 +8,10 @@ project also completed a real task and local review without CI. Its initial
 setup exposed a baseline defect tracked separately in
 [#283](https://github.com/maximalcode/maxi-quality/issues/283). The original
 refusal remains evidence of unmet first-attempt usability; a successful repair
-does not erase that cost. The owner has not yet given the required setup/clarity
+does not erase that cost. The setup fix (#284) and subsequent prerequisite
+guidance (#286, closing #285) are now merged. A repeat real-project review on
+that combined baseline passed without source/configuration changes or a new
+environment correction. The owner has not yet given the required setup/clarity
 verdict, so the complete pilot is not claimed as passed.
 
 ## Environment and prerequisites
@@ -16,7 +19,8 @@ verdict, so the complete pilot is not claimed as passed.
 | Item | Observed version or scope |
 | --- | --- |
 | Original baseline / fresh fixture | `d8c1ba172afee2fc84d6d7ab4c89eb72fee2a066` (development commit) |
-| Corrected setup / final real review | `5ab652697412274f0f5ac97e73eccf8be195a4b7` (development fix for #283; not a release promotion) |
+| Corrected setup / first real review | `5ab652697412274f0f5ac97e73eccf8be195a4b7` (development fix for #283; not a release promotion) |
+| Resumed real review | `6612b74f2e8513d9c944ed57df36ef63850d5bfe` (merged development baseline, 2026-10-04) |
 | OS | macOS 15.7.8, arm64 |
 | Python | 3.14.7 |
 | Git | 2.50.1 (Apple Git-155) |
@@ -148,17 +152,61 @@ success. An initial exploratory run overlapped implementation edits, produced
 stale failed evidence, and was discarded as a verification result; later runs
 used fixed content and preserved the failed history.
 
+## Repeat observation after the merged fixes — 2026-10-04
+
+The same private task revision and fixed comparison base were reviewed again
+using the combined development baseline above. The current skill directs the
+operator through the common setup and run entry. Setup preview succeeded;
+application and reapplication returned `unchanged`, with zero proposed file
+changes. Their `next_step` explicitly kept check prerequisites unverified and
+pointed to execution and evidence-based recovery guidance. No storage-mode
+selection, global settings change or additional installation was needed.
+
+The whole existing gate passed in the inherited process environment, with no
+PATH adjustment by this session: four fixture renders, formatting, compiler
+lint checks, 16 passing tests, two ignored live-network tests, and successful
+dependency-policy checks. The same non-failing license-allowance warning remained
+visible. The saved report's freshness check passed, and before/after hashes
+confirmed all Git-visible source/configuration was unchanged. No CI result was
+needed to reach that outcome. Five common-entry operations completed: preview,
+apply, reapply, run, and freshness check.
+
+**Correction to the earlier prerequisite interpretation:** a direct shell lookup
+for the standalone dependency-check executable failed, while invoking it through
+the gate's actual launcher succeeded in the same environment. The initial pilot
+had added a known installation directory to PATH before demonstrating any
+missing-prerequisite failure. That addition is recorded as work the agent did,
+not as a proven requirement or a successful diagnosis of the gate's environment.
+The repeat run shows no such correction was needed in the resumed environment;
+it does not reconstruct every aspect of the earlier environment.
+
+The lesson is to inspect the actual invocation context before proposing recovery.
+A standalone shell lookup does not necessarily model a launcher's command
+resolution. #285's invented fixtures prove its recovery guidance for established
+prerequisite failures; this real repeat proves a successful unmodified-environment
+run, **not** a missing-prerequisite failure/recovery cycle. It would be misleading
+to manufacture that claim from the old PATH addition.
+
+Separately, AI assessment of the same committed task remains that its named
+requirements are met; the previous Standards and Spec reviews remain relevant
+because the task source has not changed. The new runner observation still has
+`requirements.assessment: not_assessed`, unknown analysis scope and unknown
+finding attribution. No human override was supplied. Native automatic completion
+was not enabled, and no hook-trust or enforcement claim is made.
+
 ## Adoption cost and limits
 
-The selected dependency-check executable was already installed but absent from
-the session's PATH. A process-local PATH addition made it available; no global
-configuration or package installation was needed for that prerequisite. The
+In the first observation, a standalone executable lookup failed and the agent
+added its known installation directory to the process PATH. The correction
+above limits what that action proves: it was not established as a prerequisite
+for the actual gate. No global configuration or tool installation occurred. The
 dependency patch itself required the package manager's ordinary registry access.
 This real-project observation was local and independent of CI, not an offline
 execution claim. The separate fresh fixture did run offline.
 
-The observed interventions were one session PATH correction, one baseline setup
-bug repair, and one consumer dependency patch followed by revalidation. No owner
+The first observation included one preemptive session PATH addition, one baseline
+setup bug repair, and one consumer dependency patch followed by revalidation.
+The repeat observation needed none of those corrections. No owner
 intervention was required after target/task selection. Agent-operated recovery
 is not evidence of effortless owner onboarding; there is no measured human
 onboarding duration. The existing profile is preserved rather than converted to
