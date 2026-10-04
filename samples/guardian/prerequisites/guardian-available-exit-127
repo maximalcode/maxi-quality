@@ -1,0 +1,3 @@
+#!/bin/bash
+printf 'deliberate exit 127\n' >&2
+exit 127

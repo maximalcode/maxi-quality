@@ -1,0 +1,3 @@
+#!/bin/bash
+printf 'dependency missing\n' >&2
+exit 19

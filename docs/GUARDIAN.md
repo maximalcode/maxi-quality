@@ -50,6 +50,7 @@ Every run emits a JSON object with `schema_version: 1`:
 | `receipt` | Existing recorder receipt path after recording, otherwise null |
 | `stdout`, `stderr`, `report_path` | Local evidence paths, or null if not created |
 | `created_at`, `error` | UTC observation time and any incomplete-run explanation |
+| `next_step` | Recovery guidance for failed/incomplete execution, a rerun instruction for stale evidence, or null on success; never a prerequisite diagnosis |
 
 Nonzero child exits are retained. The runner exits 0 only for a successful,
 current observation, preserves a positive child exit, and otherwise exits 3.
@@ -57,6 +58,10 @@ A child terminated by a signal retains its negative subprocess return code in
 JSON and yields `128 + signal` at the CLI. A shell's 127 remains a failed gate;
 stderr words do not establish which dependency is absent. Inspection, declaration
 and process-start errors are incomplete evidence, never a clean result.
+Failed/incomplete runs point to the common entry's
+[prerequisite recovery steps](GUARDIAN-SETUP.md#recover-an-unavailable-prerequisite).
+Explicit inspection can establish a diagnosis for the owner's report; it never
+rewrites the runner's observation or replaces a whole-gate rerun.
 
 The report is an observation, not another receipt authority. The recorder still
 writes `.claude/agent-guard-receipt.json`, and existing Stop behavior is unchanged.

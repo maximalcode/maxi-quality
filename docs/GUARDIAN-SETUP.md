@@ -35,6 +35,77 @@ rewritten to impose a stricter baseline. Toolchains must already be available;
 setup does not provision them. The selected gate controls its own subprocesses
 and any downloads those commands perform.
 
+## Recover an unavailable prerequisite
+
+Use this flow after a failed first run or post-update verification, including
+through the Guardian skill. Preview's `verification: not_run` leaves check
+prerequisites unverified. The common entry's `next_step` points here; the runner
+reports **cause unknown**. Separate inspection can support a diagnosis. The
+runner does not parse the shell command or classify stderr as a dependency failure.
+
+1. Retain the run's JSON and its `stdout` and `stderr` files. Report the exact
+   `command`, `argv`, working directory, `execution` and observed error/output.
+   For setup verification, these are inside `verification`. A shell that starts
+   and returns 127 is an executed, failed gate; a shell that cannot start is
+   `not_run`/`incomplete`. An `a && b` failure may leave `b` unexecuted. Report
+   only the subcommands whose execution the output or inspected script proves.
+2. Read the selected gate and the project's setup instructions. Identify a
+   prerequisite from that declaration, an inspected script or an explicit
+   project instruction. Check its visibility from the project root in the same
+   process environment used for the gate. For an inspected direct command named
+   `fixture-check`, this lookup executes no check:
+
+   ```bash
+   cd "$PROJECT"
+   bash -c 'command -v -- "$1"' guardian-inspect fixture-check
+   ```
+
+   If the project instructions or owner provide an installation path, inspect
+   that specific path for existence and executable permission:
+
+   ```bash
+   test -f "$KNOWN_EXECUTABLE" && test -x "$KNOWN_EXECUTABLE"
+   ```
+
+   Record the lookup result and inspected path. An unsuccessful lookup proves
+   only that this shell cannot resolve the name; it does not prove the tool is
+   uninstalled. A file with executable permission may still have an unavailable
+   interpreter or loader. A wrapper may change its own PATH or environment;
+   inspect that context before attributing a transitive failure to this lookup.
+3. Choose the next step from the evidence, keeping diagnosis separate from the
+   retained execution result:
+
+   | Evidence | Report and next step |
+   | --- | --- |
+   | Required executable exists at an inspected installation path, but the gate's lookup cannot resolve its name | **PATH visibility problem.** Show the known directory and propose a process-local PATH correction for a rerun. File presence alone does not prove the rerun will succeed. |
+   | The gate or inspected instructions require a specific executable path and that path is absent | **Missing executable at that path.** Use the project's documented provisioning step, citing it, or ask the owner how it is provisioned. Do not describe this as only a PATH problem. |
+   | An available check ran and inspection ties its failure to an assertion, lint finding or other check condition | **Failing check.** Report the finding and scoped repair; dependency-like stderr or exit 127 does not override that evidence. |
+   | The prerequisite cannot be established, including an opaque wrapper with unexplained output | **Unknown cause.** Link retained output and name the missing evidence: inspect the wrapper's implementation/setup instructions or obtain them from the owner. Do not invent a package or installation command. |
+
+4. State the concrete proposed correction before making it. Apply it only
+   within the owner's authorization; otherwise leave it as the next action.
+   There are no implicit downloads, global PATH/settings edits, weakened checks
+   or hook-trust changes in this recovery flow. When a known directory has been
+   deliberately selected, a one-process correction looks like this:
+
+   ```bash
+   PATH="$KNOWN_BIN:$PATH" python3 "$BASELINE/scripts/guardian.py" run "$PROJECT" \
+     --base "$BASE" --task "$TASK" --json
+   ```
+
+   Keep the original declaration and rerun the **whole gate**, even if only its
+   first command was unavailable. Report the new command, exit, output and
+   freshness alongside the earlier failed attempt. Preserve the earlier report
+   and logs; the recorder replaces its latest receipt only by executing again.
+   `guardian.py check "$REPORT" --json` can check content freshness, but cannot
+   validate a changed environment. An environment correction always needs a
+   new run. Explanation or inspection alone never turns the failed run green.
+
+The [invented prerequisite fixtures](../samples/guardian/README.md#prerequisite-recovery)
+record the observed friction, recovery steps and remaining manual work. They
+prove the local interfaces; they do not establish native host enforcement or
+discovery of arbitrary toolchains.
+
 ## Enable Guardian
 
 Use the same entry with the selected native host and an immutable release:

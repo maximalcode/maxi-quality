@@ -51,9 +51,12 @@ unobserved enforcement stays **unverified**. A script or setup success is not a
 live host observation. Preserve setup refusals and failed post-update checks.
 
 Finish setup by reporting the selected command, applied changes (or refusal),
-current/requested pin when present, returned verification and host prerequisites.
+current/requested pin when present, returned verification, `next_step` and host
+prerequisites. Keep check prerequisites unverified when no check ran.
 A setup preview or an application returning `verification: not_run` is not a
-passing check. Stop here unless review was also requested.
+passing check. For failed post-update verification, follow **Prerequisite
+recovery** below before reporting the next action. Stop here unless review was
+also requested.
 
 ## Review and measured evidence
 
@@ -84,6 +87,7 @@ compound command into invented per-check passes, or treat an unavailable command
 as success. If a shell starts and returns 127, retain the failed execution; only
 separate evidence can establish the missing prerequisite. A command that could
 not start is unexecuted/incomplete, distinct from a check that ran and failed.
+For failed or incomplete execution, follow **Prerequisite recovery** below.
 
 Assess the diff, current uncommitted changes and supplied requirements using the
 current host. Keep AI concerns, requirements conclusions and unchecked areas
@@ -96,6 +100,20 @@ cited evidence: for example, the same finding reproduced at the fixed base with
 the same relevant command/configuration. A red base alone cannot attribute every
 current failure. Keep verified old findings separate and preserve current
 failures. AI opinion or an unchanged line alone does not prove a failure's age.
+
+## Prerequisite recovery
+
+For a failed first run, incomplete execution or failed setup verification, read
+`BASELINE/docs/GUARDIAN-SETUP.md` §Recover an unavailable prerequisite and carry
+out its inspection steps. Return a self-contained owner-facing account of the
+exact selected gate, what executed, the observed failure and retained output,
+the evidence for a PATH problem, missing executable or failing check (or
+**unknown cause**), and the concrete next action. The owner should not have to
+assemble the recovery steps from separate documents. An opaque gate's
+transitive prerequisites remain unknown until inspected evidence identifies
+them. State any authorized environment correction before applying it, then
+rerun the whole original gate and retain both attempts. Inspection alone is
+not a passing check.
 
 ## Authorized repair and final report
 
