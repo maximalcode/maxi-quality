@@ -610,10 +610,16 @@ is the only thing left that can refuse.
 
 ## 6. What has NOT been measured
 
-**Adoption cost.** CONTEXT.md is explicit that it is measured by a Consumer
-turning it on and living with the result, never by a fixture built here. That
-has not happened. Consumer A is the intended first measurement (#152) and the
-cell in `docs/STATUS.md` says unmeasured until it is.
+**Adoption cost — 2026-10-04.** CONTEXT.md is explicit that it is measured by a
+Consumer turning it on and living with the result, never by a fixture built
+here. Consumer A's adoption cost is **not measured because no consumer
+observation period, classified counts, or co-installed profile have been
+reported**. [STATUS §5](../../docs/STATUS.md#5-what-adoption-cost-measured)
+records that gap explicitly. The prospective protocol belongs to
+[#167](https://github.com/maximalcode/maxi-quality/issues/167), restored by
+[#223](https://github.com/maximalcode/maxi-quality/issues/223); registering it
+does not supply the missing evidence. The historical baseline dogfood counts
+in STATUS are separate and cannot fill the consumer row.
 
 The cost is not the hooks firing. It is a blocked session belonging to a
 contributor who did not choose this, and it is API drift: **there is no
@@ -682,8 +688,8 @@ what is being measured is how often this gets in the way. And the ledger is
 excluded from the fingerprint, so appending to it cannot make the next stop
 report the tree as changed; that is asserted, not assumed.
 
-This does **not** close #167. It makes the measurement possible; the period of
-real use is still the part no agent can do.
+Issue #167 remains open for the consumer measurement. The ledger makes it
+possible; the period of real use is still the part no agent can do.
 
 ### 6a. The baseline runs its own contract, as of 2026-08-25
 
