@@ -262,6 +262,11 @@ def setup(args, runner) -> tuple[dict, int]:
         report["commands"] = [gate["gate_command"]]
         report["trust_prerequisite"] = ("Review and trust the exact definitions in Codex /hooks; live enforcement remains unverified."
                                          if report["host"] == "codex" else "No new host setup.")
+        report["next_step"] = (
+            "Check prerequisites remain unverified; preview never executes checks. After "
+            "applying any intended changes, use guardian.py run with the project root and "
+            "--base to execute the whole selected gate. If it fails, retain the output and inspect "
+            f"the prerequisite evidence: {runner.RECOVERY_GUIDE}")
         report["outcome"] = "preview"
         if not args.apply:
             return report, 0
@@ -275,6 +280,7 @@ def setup(args, runner) -> tuple[dict, int]:
             # Record the selected compound shell command through step 1.
             observation, rc = runner.run(args)
             report["verification"] = observation
+            report["next_step"] = observation["next_step"]
             if rc:
                 report["outcome"] = "applied_checks_failed"
             return report, rc

@@ -14,6 +14,7 @@ BASELINE = Path(__file__).resolve().parent.parent
 RUNNER = BASELINE / "scripts/guardian.py"
 STOP = BASELINE / "scripts/agent-guard/stop-gate.py"
 CASES = BASELINE / "samples/guardian/cases.json"
+PREREQUISITES = BASELINE / "samples/guardian/prerequisites"
 
 
 def command(argv, cwd, **kwargs):
@@ -59,8 +60,14 @@ class GuardianTests(unittest.TestCase):
                     "comparison", "command", "argv", "checked_state", "execution",
                     "outcome", "freshness", "analysis_scope", "finding_attribution",
                     "requirements", "receipt", "stdout", "stderr", "report_path", "error",
+                    "next_step",
                 })
                 self.assertEqual(report["outcome"], case["outcome"])
+                if case["outcome"] == "succeeded":
+                    self.assertIsNone(report["next_step"])
+                else:
+                    self.assertIsInstance(report["next_step"], str)
+                    self.assertTrue(report["next_step"].strip())
                 self.assertEqual(report["command"], case["gate"])
                 self.assertEqual(report["project_root"], str(root))
                 self.assertEqual(report["working_directory"], str(root))
@@ -169,6 +176,177 @@ class GuardianTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 3)
         self.assertEqual(report["outcome"], "incomplete")
 
+
+class PrerequisiteTests(unittest.TestCase):
+    """Exercise owner recovery with invented commands and real subprocesses."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.env = {**os.environ, "PATH": os.environ.get("PATH", "")}
+
+    def fixture_project(self, name, gate, executable=None):
+        root = project(self.root / name, gate)
+        if executable is not None:
+            source = PREREQUISITES / executable
+            destination = root / "bin" / source.name
+            destination.parent.mkdir()
+            shutil.copy2(source, destination)
+            destination.chmod(destination.stat().st_mode | 0o111)
+        return root
+
+    @staticmethod
+    def command_v(executable, root, env):
+        # This is an independent fact check, rather than a helper that asks
+        # Guardian or parses its output.
+        return command(["bash", "-c", "command -v \"$1\"", "bash", executable],
+                       root, env=env).stdout.strip() or None
+
+    @staticmethod
+    def full_snapshot(root):
+        """Capture files, modes and symlink targets, including .git state."""
+        snapshot = {}
+        for path in root.rglob("*"):
+            relative = str(path.relative_to(root))
+            if path.is_symlink():
+                snapshot[relative] = ("symlink", os.readlink(path))
+            elif path.is_file():
+                snapshot[relative] = ("file", path.stat().st_mode & 0o777,
+                                      path.read_bytes())
+        return snapshot
+
+    def setup_preview(self, root):
+        proc = command([sys.executable, str(RUNNER), "setup", str(root), "--json"],
+                       root, env=self.env)
+        return proc, json.loads(proc.stdout)
+
+    def assert_recovery_step(self, report):
+        self.assertIsInstance(report["next_step"], str)
+        step = report["next_step"].lower()
+        self.assertTrue(step.strip())
+        self.assertIn("unknown", step)
+        self.assertTrue("output" in step or "error" in step or "report" in step)
+        self.assertIn("guardian-setup.md#recover-an-unavailable-prerequisite", step)
+
+    def assert_setup_step(self, report):
+        self.assertIsInstance(report["next_step"], str)
+        step = report["next_step"].lower()
+        self.assertIn("preview", step)
+        self.assertIn("whole", step)
+        self.assertIn("guardian-setup.md#recover-an-unavailable-prerequisite", step)
+
+    def test_installed_outside_path_requires_explicit_process_path_recovery(self):
+        tail = self.root / "tail-marker"
+        gate = "guardian-installed-check && printf 'tail ran\\n' > \"$GUARDIAN_TAIL_FILE\""
+        root = self.fixture_project("installed-outside-path", gate, "guardian-installed-check")
+        base_env = {**self.env, "GUARDIAN_TAIL_FILE": str(tail)}
+
+        before = self.full_snapshot(root)
+        proc, preview = self.setup_preview(root)
+        self.assertEqual(proc.returncode, 0, preview)
+        self.assertEqual(preview["selected_gate"], gate)
+        self.assertEqual(preview["changes"], {})
+        self.assert_setup_step(preview)
+        self.assertEqual(self.full_snapshot(root), before)
+        self.assertFalse((root / ".claude/agent-guard-receipt.json").exists())
+
+        installed = root / "bin/guardian-installed-check"
+        self.assertTrue(installed.is_file())
+        self.assertTrue(os.access(installed, os.X_OK))
+        self.assertIsNone(self.command_v(installed.name, root, base_env))
+        proc, failed = run(root, env=base_env)
+        self.assertEqual(proc.returncode, 127, failed)
+        self.assertEqual(failed["command"], gate)
+        self.assertEqual(failed["execution"], {"outcome": "failed", "exit_code": 127})
+        self.assertEqual(failed["outcome"], "failed")
+        self.assertFalse(tail.exists(), "the compound gate must short-circuit before its tail")
+        self.assert_recovery_step(failed)
+        old_receipt = (root / ".claude/agent-guard-receipt.json").read_bytes()
+        old_receipt_data = json.loads(old_receipt)
+        self.assertEqual(old_receipt_data["verdict"], "fail")
+        self.assertEqual(old_receipt_data["exit_code"], 127)
+        old_report = Path(failed["report_path"]).read_bytes()
+        old_stdout = Path(failed["stdout"]).read_bytes()
+        old_stderr = Path(failed["stderr"]).read_bytes()
+
+        before = self.full_snapshot(root)
+        self.assertEqual(self.setup_preview(root)[0].returncode, 0)
+        self.assertIsNone(self.command_v(installed.name, root, base_env))
+        self.assertEqual(self.full_snapshot(root), before)
+        self.assertEqual((root / ".claude/agent-guard-receipt.json").read_bytes(), old_receipt)
+
+        corrected_env = {**base_env, "PATH": str(installed.parent) + os.pathsep + base_env["PATH"]}
+        self.assertTrue(self.command_v(installed.name, root, corrected_env))
+        proc, succeeded = run(root, env=corrected_env)
+        self.assertEqual(proc.returncode, 0, succeeded)
+        self.assertEqual(succeeded["command"], gate)
+        self.assertEqual(succeeded["execution"], {"outcome": "succeeded", "exit_code": 0})
+        self.assertEqual(succeeded["outcome"], "succeeded")
+        self.assertEqual(succeeded["freshness"], "current")
+        self.assertIsNone(succeeded["next_step"])
+        self.assertEqual(tail.read_text(), "tail ran\n")
+        receipt = json.loads((root / ".claude/agent-guard-receipt.json").read_text())
+        self.assertEqual(receipt["verdict"], "pass")
+        self.assertEqual(receipt["gate_command"], gate)
+        self.assertNotEqual((root / ".claude/agent-guard-receipt.json").read_bytes(), old_receipt)
+        checked_new = command([sys.executable, str(RUNNER), "check", succeeded["report_path"], "--json"], root)
+        self.assertEqual(checked_new.returncode, 0)
+        self.assertEqual(json.loads(checked_new.stdout)["freshness"], "current")
+
+        # The recovery changed only this subprocess's PATH. Failed evidence
+        # remains immutable, and checking it cannot turn it into a pass.
+        self.assertEqual(Path(failed["report_path"]).read_bytes(), old_report)
+        self.assertEqual(Path(failed["stdout"]).read_bytes(), old_stdout)
+        self.assertEqual(Path(failed["stderr"]).read_bytes(), old_stderr)
+        checked = command([sys.executable, str(RUNNER), "check", failed["report_path"], "--json"], root)
+        self.assertEqual(checked.returncode, 3)
+        self.assertEqual(json.loads(checked.stdout)["outcome"], "failed")
+
+    def test_missing_executable_and_opaque_failure_keep_cause_unknown(self):
+        missing = "./bin/guardian-missing-command-285"
+        root = self.fixture_project("absent-executable", missing)
+        proc, preview = self.setup_preview(root)
+        self.assertEqual(proc.returncode, 0, preview)
+        self.assert_setup_step(preview)
+        self.assertIsNone(self.command_v(missing, root, self.env))
+        self.assertFalse((root / missing).exists())
+        proc, report = run(root, env=self.env)
+        self.assertEqual(proc.returncode, 127, report)
+        self.assertEqual(report["outcome"], "failed")
+        self.assert_recovery_step(report)
+        self.assertNotIn("guardian-missing-command-285", report["next_step"])
+        human = command([sys.executable, str(RUNNER), "run", str(root), "--base", "HEAD"],
+                        root, env=self.env)
+        self.assertEqual(human.returncode, 127)
+        for value in ("Next step:", "Cause unknown", "GUARDIAN-SETUP.md#recover-an-unavailable-prerequisite"):
+            self.assertIn(value, human.stdout)
+
+        root = self.fixture_project("opaque-gate", "guardian-opaque-gate", "guardian-opaque-gate")
+        self.assertIsNone(self.command_v("guardian-opaque-gate", root, self.env))
+        opaque_env = {**self.env, "PATH": str(root / "bin") + os.pathsep + self.env["PATH"]}
+        self.assertTrue(self.command_v("guardian-opaque-gate", root, opaque_env))
+        proc, opaque = run(root, env=opaque_env)
+        self.assertEqual(proc.returncode, 42, opaque)
+        self.assertEqual(opaque["outcome"], "failed")
+        self.assert_recovery_step(opaque)
+        self.assertIn("opaque gate failure", Path(opaque["stderr"]).read_text())
+
+    def test_available_exit_127_and_misleading_stderr_are_not_missing_prerequisites(self):
+        cases = (("guardian-available-exit-127", 127, "deliberate exit 127"),
+                 ("guardian-misleading-failure", 19, "dependency missing"))
+        for executable, exit_code, stderr in cases:
+            with self.subTest(executable=executable):
+                root = self.fixture_project(executable, executable, executable)
+                env = {**self.env, "PATH": str(root / "bin") + os.pathsep + self.env["PATH"]}
+                self.assertTrue(self.command_v(executable, root, env))
+                proc, report = run(root, env=env)
+                self.assertEqual(proc.returncode, exit_code, report)
+                self.assertEqual(report["outcome"], "failed")
+                self.assertIn(stderr, Path(report["stderr"]).read_text())
+                self.assert_recovery_step(report)
+
+
 class SkillTests(unittest.TestCase):
     def test_installed_skill_uses_local_interfaces_and_revalidates_repair(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -199,6 +377,7 @@ class SkillTests(unittest.TestCase):
             self.assertEqual(proc.returncode, direct.returncode)
             for key in ("command", "argv", "execution", "outcome", "freshness", "checked_state"):
                 self.assertEqual(reviewed[key], measured[key])
+            self.assertEqual(reviewed["next_step"], measured["next_step"])
             self.assertEqual(reviewed["execution"], {"outcome": "failed", "exit_code": 1})
             self.assertEqual(reviewed["requirements"], {"reference": "SPEC.md", "assessment": "not_assessed"})
             self.assertEqual(reviewed["finding_attribution"], "unknown")
@@ -342,6 +521,7 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(self.snapshot(root), before)
         self.assertFalse((self.root / "cache").exists())
         self.assertFalse((self.home / ".local").exists())
+        self.assertIn("preview", report["next_step"].lower())
         proc, report = self.setup(root, "--guardian", "codex", *release, "--apply")
         self.assertEqual(proc.returncode, 0, report)
         self.assertEqual(report["verification"]["outcome"], "succeeded")
@@ -380,6 +560,7 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 17, report)
         self.assertEqual(report["outcome"], "applied_checks_failed")
         self.assertEqual(report["verification"]["execution"]["exit_code"], 17)
+        self.assertEqual(report["next_step"], report["verification"]["next_step"])
         self.assertEqual(json.loads((root / ".claude/quality-runtime.json").read_text())["commit"], sha)
 
     def test_refusals_do_not_write(self):

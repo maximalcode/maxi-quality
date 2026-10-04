@@ -16,6 +16,8 @@ import tempfile
 
 sys.dont_write_bytecode = True
 GUARD_DIR = Path(__file__).resolve().parent / "agent-guard"
+RECOVERY_GUIDE = (str(Path(__file__).resolve().parent.parent / "docs/GUARDIAN-SETUP.md")
+                  + "#recover-an-unavailable-prerequisite")
 sys.path.insert(0, str(GUARD_DIR))
 from guard import (  # noqa: E402
     CONFIG, RECEIPT, InspectionError, fingerprint, gate_argv, gate_command, git,
@@ -63,6 +65,7 @@ def run(args) -> tuple[dict, int]:
         "requirements": {"reference": args.task, "assessment": "not_assessed"},
         "receipt": None, "stdout": None, "stderr": None, "report_path": None,
         "error": None,
+        "next_step": None,
     }
     directory = None
     try:
@@ -104,6 +107,14 @@ def run(args) -> tuple[dict, int]:
     except (OSError, ValueError, InspectionError, subprocess.CalledProcessError) as exc:
         report["error"] = str(exc)
         report["outcome"] = "incomplete"
+    if report["outcome"] in ("failed", "incomplete"):
+        report["next_step"] = (
+            "Cause unknown: inspect error and the retained stdout/stderr, then the selected "
+            "gate and project setup instructions. Establish a prerequisite with explicit "
+            "inspection before proposing a PATH or installation change. "
+            f"Recovery steps: {RECOVERY_GUIDE}")
+    elif report["outcome"] == "stale":
+        report["next_step"] = "Checked content changed; rerun the whole declared gate on the final content."
     if directory is not None:
         try:
             Path(report["report_path"]).write_text(json.dumps(report, indent=2) + "\n")
@@ -111,6 +122,7 @@ def run(args) -> tuple[dict, int]:
             report["outcome"] = "incomplete"
             report["error"] = f"could not save report: {exc}"
             report["report_path"] = None
+            report["next_step"] = "Resolve the report storage error, then rerun the whole declared gate."
     child = report["execution"]["exit_code"]
     return report, child if child else (0 if report["outcome"] == "succeeded" else 3)
 
@@ -154,6 +166,8 @@ def display(report: dict) -> None:
     print(f"Report: {report.get('report_path')}")
     if report.get("error"):
         print(f"Error: {report['error']}")
+    if report.get("next_step"):
+        print(f"Next step: {report['next_step']}")
 
 
 def main() -> int:

@@ -30,3 +30,43 @@ human-decision note, and verifies freshness before and after repair. It does
 not simulate an actual human decision or prove AI obedience. The interactive
 [skill demo](../../docs/GUARDIAN-SKILL.md#evidence-limits-and-demo) covers the
 reporting instructions separately.
+
+## Prerequisite recovery
+
+Issue #285 was reproduced against `9cf827e` with invented local projects before
+selecting a change. An executable installed outside the gate's PATH and an
+absent executable both returned 127 through the common entry. A visible check
+returned 19 for an assertion failure; an opaque wrapper returned 42 with no
+established cause. The runner retained each failure correctly. Setup preview
+selected the existing command and reported `verification: not_run`, but neither
+preview nor the failed run supplied a recovery next step.
+
+The change adds `next_step` to the common entry and an explicit inspection
+workflow to the skill. It deliberately leaves dependency diagnosis outside the
+runner. The fixtures exercise setup and run, then perform the documented
+inspection separately; they do not simulate an AI diagnosis.
+
+| Case | Inspected evidence and owner action |
+| --- | --- |
+| Installed outside PATH | The direct executable exists and is executable at the fixture's known installation path; the same Bash environment cannot resolve it. Select that directory for a process-local PATH correction, then rerun the whole compound gate. |
+| Genuinely absent | The gate requires an explicit executable path that does not exist. Report it missing at that path; use documented provisioning or obtain instructions, without guessing an install command. |
+| Ordinary check failure | Available fixture executables deliberately return 127, or 19 with misleading dependency text. Inspect the check condition; neither the exit code nor stderr proves a missing tool. |
+| Opaque failure | Execution fails but identifies no prerequisite. Report unknown cause, retain the output, and request or inspect the wrapper's implementation/setup evidence. |
+
+The PATH recovery assertions keep the exact compound declaration, prove the
+tail did not run on failure, and run both parts after the deliberate correction.
+They check current successful evidence, the latest recorder receipt, and the
+unchanged earlier failed report/output. `check` continues to return failure for
+the old report even after the new successful run. Preview snapshots establish
+that no project configuration or prior evidence changed.
+
+**Manual interventions before and after:** both flows require four explicit
+actions after the first failure: read the gate and retained output, inspect the
+lookup and known installation path, choose the environment correction, and
+rerun the whole gate. Before this change, the operator had to devise that
+sequence. After it, the common entry points to the complete recovery workflow
+and the skill brings the evidence and next action into its report. The measured
+improvement is discoverable guidance, not fewer environment changes or an
+automatic installer. Preview does not fix PATH, download tools, weaken a check
+or change hook trust. These invented subprocess proofs establish neither real
+adoption cost nor reliable AI obedience or native host enforcement.

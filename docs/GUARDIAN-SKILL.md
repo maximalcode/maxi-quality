@@ -33,6 +33,11 @@ and invoke it, for example:
 
 A review without a task source cannot confirm requirements completion. A failed
 check, a check that could not run, and an AI concern remain separate facts.
+For failed checks or unavailable prerequisites, the skill follows the common
+entry's [recovery workflow](GUARDIAN-SETUP.md#recover-an-unavailable-prerequisite)
+and brings the inspected evidence and concrete next action into its report.
+Opaque gates retain an unknown cause until evidence establishes it; environment
+corrections are stated explicitly and followed by the whole original gate.
 Human overrides appear only when explicitly supplied by the user; they neither
 change a failed result nor disable enforcement. Old findings require evidence
 of their age; uncertain findings stay unknown.
