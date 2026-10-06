@@ -209,6 +209,73 @@ def patch_edges(root: Path) -> None:
     patch_verdict(root, "*** Begin Patch\n*** Add File: receipt-link\n+{}\n*** End Patch", True, "receipt")
 
 
+def native_aliases(root: Path) -> None:
+    """Exercise identity aliases at the native apply_patch hook boundary."""
+    samples = root / "samples"
+    expected = samples / "expected"
+    (root / ".claude").mkdir()
+    samples.mkdir(exist_ok=True)
+    expected.mkdir(exist_ok=True)
+    fixture = samples / "bad.py"
+    manifest = expected / "test.json"
+    fixture.write_text("keep\nplanted finding\n")
+    manifest.write_text(json.dumps({"findings": [
+        {"rule": "fixture", "file": "samples/bad.py", "line": 2}]}))
+
+    # The direct case-variant path is an alias only on a case-insensitive
+    # filesystem. On a case-sensitive host, allowing this genuinely different
+    # path is correct; hardlink and symlink identity remain tested below.
+    fixture_alias = root / "SAMPLES" / "BAD.PY"
+    manifest_alias = root / "SAMPLES" / "EXPECTED" / "TEST.JSON"
+    claude_alias = root / ".CLAUDE"
+    case_insensitive = (
+        fixture_alias.exists() and os.path.samefile(fixture_alias, fixture)
+        and manifest_alias.exists() and os.path.samefile(manifest_alias, manifest)
+        and claude_alias.exists() and os.path.samefile(claude_alias, root / ".claude")
+    )
+    if case_insensitive:
+        patch_verdict(root,
+                      "*** Begin Patch\n*** Update File: SAMPLES/BAD.PY\n@@\n keep\n-planted finding\n*** End Patch",
+                      True, "removes 1 line")
+        patch_verdict(root,
+                      "*** Begin Patch\n*** Add File: SAMPLES/EXPECTED/TEST.JSON\n+{\"findings\": []}\n*** End Patch",
+                      True, "manifests")
+        # The receipt does not exist yet, so matching its aliased parent is
+        # required for creation to be refused.
+        patch_verdict(root,
+                      "*** Begin Patch\n*** Add File: .CLAUDE/AGENT-GUARD-RECEIPT.JSON\n+{}\n*** End Patch",
+                      True, "receipt")
+        # The canonical parent plus an aliased, not-yet-existing leaf is a
+        # separate case; the resolver infers volume behavior read-only.
+        patch_verdict(root,
+                      "*** Begin Patch\n*** Add File: .claude/AGENT-GUARD-RECEIPT.JSON\n+{}\n*** End Patch",
+                      True, "receipt")
+        root_alias = str(root).upper()
+        patch_verdict(root,
+                      f"*** Begin Patch\n*** Add File: {root_alias}/SAMPLES/EXPECTED/NEW.JSON\n+{{}}\n*** End Patch",
+                      True, "manifests")
+
+    # A hardlink is a second name for the cited inode even on case-sensitive
+    # filesystems. A symlink is covered by realpath, and remains a useful
+    # regression control for the native path resolver.
+    hardlink = root / "fixture-hardlink.py"
+    hardlink.hardlink_to(fixture)
+    patch_verdict(root,
+                  "*** Begin Patch\n*** Update File: fixture-hardlink.py\n@@\n keep\n-planted finding\n*** End Patch",
+                  True, "removes 1 line")
+    symlink = root / "fixture-symlink.py"
+    symlink.symlink_to(fixture)
+    patch_verdict(root,
+                  "*** Begin Patch\n*** Update File: fixture-symlink.py\n@@\n keep\n-planted finding\n*** End Patch",
+                  True, "removes 1 line")
+
+    ordinary = root / "ordinary-source.txt"
+    ordinary.write_text("replacement\n")
+    patch_verdict(root,
+                  "*** Begin Patch\n*** Update File: ordinary-source.txt\n*** Move to: SAMPLES/BAD.PY\n@@\n-replacement\n+replacement\n*** End Patch",
+                  case_insensitive, "removes 1 line" if case_insensitive else "")
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory(prefix="codex-guard-") as tmp:
         root = Path(tmp)
@@ -226,6 +293,7 @@ def main() -> None:
         (root / "one.txt").write_text("short\n")
         patch_verdict(root, "*** Begin Patch\n*** Update File: one.txt\n*** Move to: samples/bad.txt\n@@\n-short\n+replacement\n*** End Patch", True, "removes 1 line")
         patch_edges(root)
+        native_aliases(root)
         native_installation(root)
     print("OK: Codex native hook fixtures")
 

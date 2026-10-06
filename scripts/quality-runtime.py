@@ -200,15 +200,50 @@ def _owned_command(settings: dict[str, object], event: str, name: str,
     return None
 
 
-def _launcher_identity(path: Path) -> bool:
-    """Compare to this trusted diagnoser, independently of the guard release."""
+def _launcher_identity(path: Path, trusted_launchers: set[str] | None = None) -> bool:
+    """Compare launcher bytes to trusted release sources without executing them."""
     try:
-        return path.read_bytes() == Path(__file__).read_bytes()
+        content = path.read_bytes()
     except OSError:
         return False
+    if trusted_launchers is None:
+        return content == Path(__file__).read_bytes()
+    return hashlib.sha256(content).hexdigest() in trusted_launchers
 
 
-def _launcher_ok(launcher: str, via_python: bool, root: Path) -> tuple[bool, str]:
+def trusted_launcher_hashes(source: Path) -> set[str]:
+    """Return launcher hashes from immutable release tags in an explicit source.
+
+    Setup uses this as additional identity evidence for an existing install.
+    The source objects are read and compiled for syntax only; no candidate
+    launcher is imported or executed.  Standalone diagnosis keeps its strict
+    current-file identity check by leaving this unset.
+    """
+    verify_source(source)
+    try:
+        tags = _git(source, "tag", "--list").decode().splitlines()
+    except (UnicodeDecodeError, RuntimeError_) as exc:
+        raise RuntimeError_(f"could not inspect trusted release tags in {source}: {exc}") from exc
+    # The current diagnoser is trusted independently of release tags.  This
+    # keeps a checked-out development source usable for an installation that
+    # already selected this exact launcher, while older launchers still need
+    # immutable release evidence below.
+    trusted: set[str] = {hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+    for tag in tags:
+        if not VERSION.fullmatch(tag):
+            continue
+        try:
+            commit = _git(source, "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}").decode().strip()
+            content = _git(source, "show", f"{commit}:scripts/quality-runtime.py")
+            compile(content, f"{source}:{tag}:scripts/quality-runtime.py", "exec")
+        except (RuntimeError_, SyntaxError, UnicodeDecodeError):
+            continue
+        trusted.add(hashlib.sha256(content).hexdigest())
+    return trusted
+
+
+def _launcher_ok(launcher: str, via_python: bool, root: Path,
+                 trusted_launchers: set[str] | None = None) -> tuple[bool, str]:
     """Check an extracted external launcher without running it.
 
     Relative paths use the project directory, as the hook does. PATH and HOME
@@ -231,7 +266,7 @@ def _launcher_ok(launcher: str, via_python: bool, root: Path) -> tuple[bool, str
         path = Path(resolved)
     if not path.is_file() or (not via_python and not os.access(path, os.X_OK)):
         return False, f"{path} is missing or not usable by this invocation"
-    if not _launcher_identity(path):
+    if not _launcher_identity(path, trusted_launchers):
         return False, f"{path} differs from this diagnoser; run diagnosis through the trusted launcher used by the hooks"
     return True, str(path)
 
@@ -274,7 +309,8 @@ def _residual_guard_hooks(settings: dict[str, object]) -> bool:
     return False
 
 
-def diagnose(root: Path, explicit_cache: str | None = None, host: str = "claude") -> dict[str, object]:
+def diagnose(root: Path, explicit_cache: str | None = None, host: str = "claude",
+             trusted_launchers: set[str] | None = None) -> dict[str, object]:
     """Read-only diagnosis of one Adopter checkout's guard installation.
 
     This deliberately compares only entries owned by the baseline.  Other
@@ -407,7 +443,7 @@ def diagnose(root: Path, explicit_cache: str | None = None, host: str = "claude"
             _check(checks, "hook-execution-mode", "fail",
                    f"{event} {matcher or '<none>'} hook is asynchronous and cannot enforce guard decisions")
         launcher_good, launcher_detail = _launcher_ok(
-            launcher, via_python, root)
+            launcher, via_python, root, trusted_launchers)
         if not launcher_good:
             _check(checks, "launcher", "fail", f"launcher is unavailable: {launcher_detail}")
 

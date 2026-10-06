@@ -70,9 +70,18 @@ is no public v1.0.0 through v1.0.3 to backfill. `CLAUDE.md` §2 has the reason.
 
 ### Rule changes
 
+- **ESLint 10.8.0 → 10.9.1 and typescript-eslint 8.65.0 → 8.68.0.** The
+  baseline and TypeScript fixture dependencies move together. Resolved-rule
+  snapshots and exact finding manifests continue to gate detection changes.
+- **Ruff 0.16.1 → 0.16.5 and mypy 2.3.0 → 2.3.1.** The Python analyzer
+  pins advance; resolved-settings snapshots and exact fixture findings remain
+  the checks against an unintended ruleset change.
 - **Knip 6.31.0 → 6.33.0.** The dead-code action floor, test dependency and
   TypeScript example move together. The exact fixture expectations remain the
   review gate for any detection change.
+- **smol-toml 1.8.0 → 1.9.0.** Refresh Knip's locked TOML parser to address
+  [GHSA-r4xh-jqrq-34v2](https://github.com/advisories/GHSA-r4xh-jqrq-34v2).
+  Knip remains pinned to 6.33.0; its exact fixture expectations are unchanged.
 
 ## [v1.2.0] — 2026-09-01
 

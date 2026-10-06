@@ -10,9 +10,14 @@ commands, generated shell hooks, and the shared immutable runtime launcher.
 Bad patch cases include a hand-written receipt, manifest deletion at depth,
 a cited fixture shrinking or being deleted, overwrites through Add File and
 Move to, a move out of the cited path, a later file in a multi-file patch,
-relative and symlinked paths, and unreadable patch input. Clean controls add a
-file or a finding, replace a fixture without shrinking it, or move/delete an
-uncited file. Same-size semantic weakening is deliberately left to CI.
+relative and symlinked paths, hardlinks, and unreadable patch input. On a
+case-insensitive filesystem, the native boundary also checks case-variant
+spellings of cited fixtures, manifests, and receipt creation under an aliased
+`.claude/` directory. The fixture is filesystem-aware: a differently cased
+path that is genuinely distinct on a case-sensitive filesystem remains an
+ordinary path. Clean controls add a file or a finding, replace a fixture
+without shrinking it, or move/delete an uncited file. Same-size semantic
+weakening is deliberately left to CI.
 
 The generated hooks are executed from a nested working directory with an
 incorrect Claude project environment variable. Bash blocks skipping Git
