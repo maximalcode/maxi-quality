@@ -110,6 +110,15 @@ diagnoser itself is trusted; it is not an authenticity check or proof that
 Python, the shell or the host will execute it successfully. Relative paths use
 the project root, and HOME/PATH resolution uses the diagnoser's environment.
 
+Guardian setup may add trust evidence from the explicit local `--source`: it
+reads launcher bytes from immutable, version-shaped release tags and compares
+their hashes without executing or importing those objects. This lets setup
+preview an existing installation whose launcher came from an earlier release
+while standalone `diagnose` keeps the strict identity check above. An explicit
+update installs the selected tagged launcher at a new release-specific path,
+updates only the owned hook entries, and leaves the previous launcher and
+unrelated settings intact; preview performs none of those writes.
+
 `live_enforcement` and `host_settings` are `unverified`: a static diagnosis
 cannot prove that an agent host loaded or executed a hook during a real
 session, or infer host overrides from the project files.

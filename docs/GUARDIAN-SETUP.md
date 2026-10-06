@@ -126,8 +126,12 @@ Fresh Guardian setup uses the existing versioned runtime internally. It installs
 a release-specific launcher outside the project, prepares the immutable cache,
 and writes only the selected Codex integration, instructions, release lock and
 runtime-state ignores. Unrelated hook entries and settings remain intact.
-Normal setup has no storage-mode question. Existing versioned hook commands and
-launcher selections are preserved on updates.
+Normal setup has no storage-mode question. Existing versioned profiles retain
+unrelated hooks and settings. A deliberate pinned update previews the owned
+hook changes and switches them to a release-specific launcher location; the
+old launcher remains untouched. The selected launcher is installed only when
+`--apply` is used, and the selected project checks run afterward. Native host
+trust and live hook enforcement remain separate observations.
 
 **Host trust and live enforcement remain unverified.** Review and trust the exact
 hook definitions through Codex `/hooks`. A successful setup or gate run proves

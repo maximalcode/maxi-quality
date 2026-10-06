@@ -563,6 +563,132 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(report["next_step"], report["verification"]["next_step"])
         self.assertEqual(json.loads((root / ".claude/quality-runtime.json").read_text())["commit"], sha)
 
+    def test_setup_accepts_trusted_prior_launcher_and_rejects_tampering(self):
+        source, _ = self.release()
+        launcher = source / "scripts/quality-runtime.py"
+        # The first release deliberately has a launcher from an older immutable
+        # release.  The setup process itself is newer, so this catches identity
+        # checks that silently equate the guard pin with the launcher source.
+        launcher.write_text(launcher.read_text() + "\n# prior release launcher\n")
+        command(["git", "add", "scripts/quality-runtime.py"], source, check=True)
+        command(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                 "-c", "core.hooksPath=/dev/null", "commit", "-qm", "prior launcher"], source,
+                check=True)
+        command(["git", "tag", "-f", "v9.0.0"], source, check=True)
+        prior_sha = command(["git", "rev-parse", "HEAD"], source, check=True).stdout.strip()
+        prior_release = ["--source", str(source), "--version", "v9.0.0", "--commit", prior_sha]
+
+        root = project(self.root / "project")
+        proc, report = self.setup(root, "--guardian", "codex", *prior_release, "--apply")
+        self.assertEqual(proc.returncode, 0, report)
+        installed = self.home / ".local/share/maxi-quality/launchers" / prior_sha / "quality-runtime"
+        self.assertNotEqual(installed.read_bytes(), (BASELINE / "scripts/quality-runtime.py").read_bytes())
+
+        # A read-only preview of the existing installation must accept that
+        # trusted prior launcher and preserve the target byte-for-byte.
+        before = self.snapshot(root)
+        proc, report = self.setup(root, "--source", str(source))
+        self.assertEqual(proc.returncode, 0, report)
+        self.assertEqual(report["changes"], {})
+        self.assertEqual(self.snapshot(root), before)
+
+        # A deliberate immutable update selects a newer launcher and payload.
+        launcher.write_text((BASELINE / "scripts/quality-runtime.py").read_text()
+                            + "\n# selected update launcher\n")
+        (source / "scripts/agent-guard/guard.py").write_text(
+            (source / "scripts/agent-guard/guard.py").read_text() + "\n# selected update\n")
+        command(["git", "add", "."], source, check=True)
+        command(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                 "-c", "core.hooksPath=/dev/null", "commit", "-qm", "selected update"], source,
+                check=True)
+        command(["git", "tag", "v9.0.1"], source, check=True)
+        update_sha = command(["git", "rev-parse", "HEAD"], source, check=True).stdout.strip()
+        update = ["--source", str(source), "--version", "v9.0.1", "--commit", update_sha]
+        proc, report = self.setup(root, *update)
+        self.assertEqual(proc.returncode, 0, report)
+        self.assertEqual(report["current_version"]["commit"], prior_sha)
+        self.assertEqual(report["requested_version"]["commit"], update_sha)
+        self.assertIn(".codex/hooks.json", report["changes"])
+        self.assertIn("AGENTS.md", report["changes"])
+        self.assertEqual(installed.read_bytes(), (source / "scripts/quality-runtime.py").read_bytes()
+                         .replace(b"# selected update launcher", b"# prior release launcher"))
+        proc, report = self.setup(root, *update, "--apply")
+        self.assertEqual(proc.returncode, 0, report)
+        updated_launcher = self.home / ".local/share/maxi-quality/launchers" / update_sha / "quality-runtime"
+        # Updates install the selected compatible launcher at a new immutable
+        # location and leave the prior launcher untouched.
+        self.assertEqual(installed.read_bytes(), (source / "scripts/quality-runtime.py").read_bytes()
+                         .replace(b"# selected update launcher", b"# prior release launcher"))
+        self.assertEqual(updated_launcher.read_bytes(), (source / "scripts/quality-runtime.py").read_bytes())
+        diagnosed = command([str(updated_launcher), "diagnose", "--root", str(root),
+                             "--host", "codex", "--json"], root, env=self.env)
+        self.assertEqual(diagnosed.returncode, 0, diagnosed.stderr + diagnosed.stdout)
+        self.assertTrue(json.loads(diagnosed.stdout)["healthy"])
+
+        # A launcher that is absent from the explicit source's immutable tags
+        # is untrusted; setup must refuse before touching the target.
+        updated_launcher.write_bytes(updated_launcher.read_bytes() + b"\n# tampered\n")
+        before = self.snapshot(root)
+        proc, report = self.setup(root, "--source", str(source))
+        self.assertEqual(proc.returncode, 3, report)
+        self.assertIn("trusted", report["error"].lower())
+        self.assertEqual(self.snapshot(root), before)
+
+    def test_setup_upgrades_format1_launcher_to_format2(self):
+        source, _ = self.release()
+        # Make a self-contained format-1 release: its launcher and payload have
+        # no native Codex adapter, so a later format-2 update must move to a
+        # new launcher location instead of overwriting this one.
+        (source / "scripts/agent-guard/codex-patch-guard.py").unlink()
+        old_launcher = source / "scripts/quality-runtime.py"
+        old_launcher.write_text(old_launcher.read_text().replace("FORMAT = 2", "FORMAT = 1", 1))
+        command(["git", "add", "."], source, check=True)
+        command(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                 "-c", "core.hooksPath=/dev/null", "commit", "-qm", "format one release"], source,
+                check=True)
+        command(["git", "tag", "-f", "v9.0.0"], source, check=True)
+        prior_sha = command(["git", "rev-parse", "HEAD"], source, check=True).stdout.strip()
+        root = project(self.root / "format-one")
+        prior_launcher_dir = self.home / ".local/share/maxi-quality/launchers" / prior_sha
+        prepare = command([sys.executable, str(BASELINE / "scripts/quality-runtime.py"), "prepare",
+                           "--source", str(source), "--version", "v9.0.0", "--commit", prior_sha,
+                           "--cache-root", str(self.root / "cache")], root, env=self.env)
+        self.assertEqual(prepare.returncode, 0, prepare.stderr)
+        install = command([sys.executable, str(BASELINE / "scripts/quality-runtime.py"), "install",
+                           "--source", str(source), "--commit", prior_sha,
+                           "--install-root", str(prior_launcher_dir)], root, env=self.env)
+        self.assertEqual(install.returncode, 0, install.stderr)
+        migrate = command([sys.executable, str(BASELINE / "scripts/quality-runtime-migrate.py"),
+                           "--target", str(root), "--host", "claude", "--version", "v9.0.0",
+                           "--commit", prior_sha, "--launcher", str(prior_launcher_dir / "quality-runtime")],
+                          root, env=self.env)
+        self.assertEqual(migrate.returncode, 0, migrate.stderr)
+        old_bytes = (prior_launcher_dir / "quality-runtime").read_bytes()
+
+        # Select a tagged format-2 release containing the native adapter.
+        shutil.copy(BASELINE / "scripts/agent-guard/codex-patch-guard.py",
+                    source / "scripts/agent-guard/codex-patch-guard.py")
+        shutil.copy(BASELINE / "scripts/quality-runtime.py", source / "scripts/quality-runtime.py")
+        command(["git", "add", "."], source, check=True)
+        command(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                 "-c", "core.hooksPath=/dev/null", "commit", "-qm", "format two update"], source,
+                check=True)
+        command(["git", "tag", "v9.0.1"], source, check=True)
+        update_sha = command(["git", "rev-parse", "HEAD"], source, check=True).stdout.strip()
+        update = ["--source", str(source), "--version", "v9.0.1", "--commit", update_sha]
+        proc, report = self.setup(root, *update)
+        self.assertEqual(proc.returncode, 0, report)
+        self.assertIn(".claude/settings.json", report["changes"])
+        proc, report = self.setup(root, *update, "--apply")
+        self.assertEqual(proc.returncode, 0, report)
+        updated_launcher = self.home / ".local/share/maxi-quality/launchers" / update_sha / "quality-runtime"
+        self.assertEqual((prior_launcher_dir / "quality-runtime").read_bytes(), old_bytes)
+        self.assertEqual(updated_launcher.read_bytes(), (source / "scripts/quality-runtime.py").read_bytes())
+        diagnosed = command([str(updated_launcher), "diagnose", "--root", str(root), "--json"],
+                            root, env=self.env)
+        self.assertEqual(diagnosed.returncode, 0, diagnosed.stderr + diagnosed.stdout)
+        self.assertTrue(json.loads(diagnosed.stdout)["healthy"])
+
     def test_refusals_do_not_write(self):
         for name, content in ((".claude/agent-guard.json", "[]"),
                               (".codex/hooks.json", '{"hooks": []}'),

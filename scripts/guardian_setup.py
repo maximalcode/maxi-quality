@@ -58,7 +58,7 @@ def settings(root: Path, name: str) -> dict:
     return value
 
 
-def discover(root: Path) -> tuple[dict, dict | None, str, str | None, list[str]]:
+def discover(root: Path, trusted_source: Path | None = None) -> tuple[dict, dict | None, str, str | None, list[str]]:
     gate = read_object(safe_path(root, ".claude/agent-guard.json"))
     if (root / ".claude/agent-guard.json").exists() and (
             not isinstance(gate.get("gate_command"), str) or not gate["gate_command"].strip()):
@@ -89,7 +89,9 @@ def discover(root: Path) -> tuple[dict, dict | None, str, str | None, list[str]]
             if verifier.verify(str(root / ".claude/settings.json"), str(root)):
                 raise Refused(errors.getvalue().strip())
     if host and lock:
-        report = runtime.diagnose(root, host=host)
+        trusted_launchers = (runtime.trusted_launcher_hashes(trusted_source)
+                             if trusted_source is not None else None)
+        report = runtime.diagnose(root, host=host, trusted_launchers=trusted_launchers)
         failures = [c["detail"] for c in report["checks"] if c["status"] == "fail"]
         if failures:
             raise Refused("; ".join(failures))
@@ -103,12 +105,19 @@ def discover(root: Path) -> tuple[dict, dict | None, str, str | None, list[str]]
 
 
 def proposed_files(root: Path, gate: dict, lock: dict | None, enable: bool,
-                   launcher: str) -> dict[str, bytes]:
+                   launcher: str, host: str | None = None,
+                   update: bool = False) -> dict[str, bytes]:
     names = [".claude/agent-guard.json"]
     if lock is not None:
         names.append(runtime.LOCK_NAME)
-    if enable:
+    migrate = enable or update
+    if migrate and (host == "codex" or enable):
         names.extend([".codex/hooks.json", "AGENTS.md", ".gitignore"])
+    elif migrate and host == "claude":
+        names.extend([".claude/settings.json", ".gitignore"])
+        instruction = migration.instruction_path(root)
+        if instruction is not None:
+            names.append(instruction.name)
     for name in names:
         safe_path(root, name)
     with tempfile.TemporaryDirectory(prefix="guardian-plan-") as directory:
@@ -124,8 +133,9 @@ def proposed_files(root: Path, gate: dict, lock: dict | None, enable: bool,
         existing_gate = read_object(stage / names[0])
         if gate != existing_gate:
             migration.write_json(stage / names[0], gate)
-        if enable:
-            migration.migrate(stage, lock["version"], lock["commit"], launcher, False, host="codex")
+        if migrate:
+            migration.migrate(stage, lock["version"], lock["commit"], launcher, False,
+                              host="codex" if enable else host)
         elif lock is not None and lock != read_object(stage / runtime.LOCK_NAME):
             migration.write_json(stage / runtime.LOCK_NAME, lock)
         return {name: (stage / name).read_bytes() for name in names
@@ -208,7 +218,8 @@ def setup(args, runner) -> tuple[dict, int]:
         root = Path(args.root).resolve()
         if runner.repo_root(str(root)) != str(root):
             raise Refused("target must be a Git working tree root")
-        gate, old_lock, profile, host, found = discover(root)
+        source = Path(args.source).resolve()
+        gate, old_lock, profile, host, found = discover(root, source)
         report.update(current_gate=gate.get("gate_command"), current_version=old_lock,
                       installation_profile=profile, host=host, quality_configuration=found)
         if args.gate is not None:
@@ -248,7 +259,6 @@ def setup(args, runner) -> tuple[dict, int]:
                     raise Refused("project configuration disables hooks; enable them deliberately before Guardian setup")
                 if "hooks" in parsed:
                     raise Refused("inline Codex hooks require reconciliation before Guardian setup")
-        source = Path(args.source).resolve()
         changed_version = lock is not None and lock != old_lock
         if lock:
             validate_workflows(root, lock)
@@ -256,8 +266,10 @@ def setup(args, runner) -> tuple[dict, int]:
             validate_payload(source, lock, host == "codex" or enable)
         launcher_dir = Path.home() / ".local/share/maxi-quality/launchers" / (lock["commit"] if lock else "unused")
         launcher = str(launcher_dir / "quality-runtime")
+        update_installation = bool(changed_version and host and lock and lock.get("guard_enabled") is True)
         with contextlib.redirect_stdout(io.StringIO()):
-            changes = proposed_files(root, gate, lock, enable, launcher)
+            changes = proposed_files(root, gate, lock, enable, launcher, host,
+                                     update_installation)
         report["changes"] = {name: content.decode() for name, content in changes.items()}
         report["commands"] = [gate["gate_command"]]
         report["trust_prerequisite"] = ("Review and trust the exact definitions in Codex /hooks; live enforcement remains unverified."
@@ -272,7 +284,7 @@ def setup(args, runner) -> tuple[dict, int]:
             return report, 0
         if changed_version:
             runtime.prepare(source, lock["version"], lock["commit"], None)
-        if enable:
+        if changed_version and lock and lock.get("guard_enabled") is True:
             runtime.install_launcher(source, lock["commit"], str(launcher_dir))
         activate(root, changes)
         report["outcome"] = "applied" if changes else "unchanged"
