@@ -43,45 +43,121 @@ is no public v1.0.0 through v1.0.3 to backfill. `CLAUDE.md` §2 has the reason.
 
 ---
 
-## Unreleased
+## [v1.3.0] — Unreleased
 
-- Fix agent-guard fingerprints omitting tracked files marked assume-unchanged
-  or skip-worktree (#217). Flagged paths now require a gate run, and later edits
-  invalidate its receipt even when Git status hides them.
+Everything on `develop` since v1.2.0. No release date has been assigned.
 
 ### Added
 
-- Opt-in native Codex guard wiring through `quality-runtime-migrate.py --host
-  codex`, with host-specific diagnosis and shared Stop/Git-verification policy.
-  The patch adapter protects receipts, expected findings and cited fixtures.
-  Runtime format 2 adds the adapter while retaining immutable format-1 pins.
-  Native protocol and installation fixtures do not establish live host enforcement.
+- **Local Guardian checks.** A local runner executes a project's existing
+  declared gate as one recorded observation and emits schema-versioned evidence
+  with the comparison commits, exact command, execution result, saved output
+  paths and content freshness. A separate check operation reports when saved
+  evidence is stale. The runner does not narrow a gate to changed files or
+  claim that requirements were assessed.
+- **Guardian setup and review.** Setup previews changes by default and applies
+  them only when explicitly requested. It can select an immutable runtime
+  release, preserve existing gates and Rust quality settings, validate the
+  selected payload, and run post-update checks. The Guardian skill adds a
+  separately identified AI assessment and review-and-repair flow while using
+  the same local gate evidence.
+- **Opt-in native Codex guard integration.** Runtime format 2 adds a Codex
+  host adapter and `.codex/hooks.json` wiring while retaining immutable format-1
+  installations. The adapter shares receipt, Git-verification and Stop policy,
+  protects expected-finding manifests and cited fixtures, and handles native
+  patch additions, deletions, updates and moves. Host diagnosis validates the
+  installed wiring and refuses a runtime pin that predates the adapter.
+- **Host-smoke and installation checks.** Explicit Claude/Codex smoke tooling,
+  native protocol fixtures, versioned-install diagnosis and isolated adoption
+  scenarios now exercise missing, damaged, disabled and inert hook wiring. A
+  dated Codex CLI 0.153.3 smoke record covers the documented fixture roots and
+  removed-wiring control; it is evidence for that protocol and scope only.
 
 ### Changed
 
-- Agent installation regression scenarios now run through the same local and
-  CI command, with isolated Git trees and individually selectable tests.
-- Shared guard refusal messages quote the recorder path, so the suggested
-  command also runs when the home directory contains spaces.
-- Agent contract installation now has one module owning profile selection,
-  files, settings, instructions and verification. Existing adoption commands,
-  settings refusals and exit 7 for a held-back instruction region are unchanged;
-  updating the shared runtime still requires an explicit `--install-shared`.
+- Agent contract installation is centralized so profile selection, copied or
+  shared files, settings, managed instructions and verification use one path.
+  Local and CI adoption scenarios share the same test command and isolated Git
+  fixtures. Reusing the shared runtime remains an explicit operation.
+- Guard refusal guidance now quotes recorder paths, including paths containing
+  spaces. Release workflow references are kept aligned with the recorded
+  immutable payload, and routine dependency updates cannot advance those
+  first-party references independently.
+- Versioned runtime diagnosis now validates generated hook commands, launcher
+  identity and disabled profiles. Guardian setup can accept a trusted prior
+  launcher when its bytes are proven from the selected local source; standalone
+  diagnosis remains strict. Deliberate immutable updates install a new
+  release-specific launcher and preserve the prior one; unrelated settings
+  remain intact.
+- Agent installation checks the required Python runtime before writing and
+  validates active settings before changing hook wiring. Routine dependency and
+  CI maintenance also refreshes the sample Click pin and pinned workflow action
+  versions; these maintenance updates do not change the ruleset.
+- Agent-guard ledger rows now have validated count and value shapes. Blocked
+  rows can be classified with append-only coded judgments, and summaries are
+  safe to paste without exposing ledger values or paths. Guardian prerequisite
+  recovery keeps the failed observation separate from any later diagnosis and
+  requires rerunning the whole declared gate after an environment correction.
+- The coverage action rejects non-finite patch thresholds before measuring. A
+  disabled patch gate still reports aggregate coverage, and a patch threshold
+  of zero still measures the patch when a base reference is available; the
+  regression fixtures cover both paths.
+
+### Fixed
+
+- Fingerprints include tracked files marked `assume-unchanged` or
+  `skip-worktree`, so hidden edits cannot reuse a receipt. Git inspection now
+  refuses warnings, incomplete embedded-repository inspection and unverifiable
+  untracked embedded repositories rather than treating them as clean.
+- Shared sample protection resolves cited fixtures by filesystem identity,
+  including hardlinks and case-variant paths where the filesystem identifies
+  the same file. Native Codex patch protection applies the identity check to
+  receipt aliases as well; trusted prior launchers remain accepted while
+  tampered payloads are refused.
+- Local Guardian setup preserves linked instruction files and keeps selected
+  setup separate from review. Rust manifests are materialized only in the
+  temporary test projects that need them, and unavailable or opaque
+  prerequisites remain explicitly unknown instead of being guessed from exit
+  text.
 
 ### Rule changes
 
+No Semgrep convention, rule id or severity changed; the ruleset remains 40 rule
+ids across 12 conventions. The analyzer and dependency updates below are
+Finding changes, so resolved snapshots and exact fixture manifests remain the
+checks against an unintended detection change.
+
 - **ESLint 10.8.0 → 10.9.1 and typescript-eslint 8.65.0 → 8.68.0.** The
-  baseline and TypeScript fixture dependencies move together. Resolved-rule
-  snapshots and exact finding manifests continue to gate detection changes.
-- **Ruff 0.16.1 → 0.16.5 and mypy 2.3.0 → 2.3.1.** The Python analyzer
-  pins advance; resolved-settings snapshots and exact fixture findings remain
-  the checks against an unintended ruleset change.
+  baseline and TypeScript fixture dependencies move together.
+- **Ruff 0.16.1 → 0.16.5 and mypy 2.3.0 → 2.3.1.** The Python analyzer pins
+  advance; resolved-settings snapshots and exact fixture findings remain the
+  checks against an unintended ruleset change.
 - **Knip 6.31.0 → 6.33.0.** The dead-code action floor, test dependency and
-  TypeScript example move together. The exact fixture expectations remain the
-  review gate for any detection change.
+  TypeScript example move together.
 - **smol-toml 1.8.0 → 1.9.0.** Refresh Knip's locked TOML parser to address
   [GHSA-r4xh-jqrq-34v2](https://github.com/advisories/GHSA-r4xh-jqrq-34v2).
-  Knip remains pinned to 6.33.0; its exact fixture expectations are unchanged.
+  Knip remains pinned to 6.33.0.
+
+### Compatibility and evidence
+
+- Existing language adoption and legacy copied/shared agent profiles remain
+  supported. Native Codex and Guardian are opt-in local surfaces; they do not
+  alter existing workflows or provision toolchains. Local Guardian setup
+  requires Python 3.11+ and Git; it can preserve an existing declared gate or
+  select the whole gate explicitly. Versioned native-host setup additionally
+  requires an immutable version and full commit from a local source. Review
+  and trust host hook definitions separately; setup and diagnosis do not
+  establish host trust or enforcement.
+- The analyzer bumps can add findings to a build that was previously green.
+  Consumers that cannot accept a moving Finding change should pin an immutable
+  `v1.x.y` tag. Existing adopters need not enable the opt-in surfaces; opting
+  in requires the documented setup or migration and host-trust review.
+- The new Guardian, installation, ledger and Codex behavior is covered by
+  local subprocess, temporary-repository and protocol fixtures. The dated Codex
+  smoke is tied to CLI 0.153.3 and its documented fixture scope; it does not
+  establish compatibility with other host versions or hosts. Adoption-cost
+  measurement is preregistered only; this release does not report a started
+  measurement or a consumer observation.
 
 ## [v1.2.0] — 2026-09-01
 
