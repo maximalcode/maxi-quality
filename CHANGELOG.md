@@ -79,6 +79,9 @@ is no public v1.0.0 through v1.0.3 to backfill. `CLAUDE.md` §2 has the reason.
 - **Knip 6.31.0 → 6.33.0.** The dead-code action floor, test dependency and
   TypeScript example move together. The exact fixture expectations remain the
   review gate for any detection change.
+- **smol-toml 1.8.0 → 1.9.0.** Refresh Knip's locked TOML parser to address
+  [GHSA-r4xh-jqrq-34v2](https://github.com/advisories/GHSA-r4xh-jqrq-34v2).
+  Knip remains pinned to 6.33.0; its exact fixture expectations are unchanged.
 
 ## [v1.2.0] — 2026-09-01
 
