@@ -722,7 +722,7 @@ jobs:
       # the file does not compile.
       - name: Dead code and unused dependencies (knip)
         if: inputs.dead-code != 'off'
-        uses: maximalcode/maxi-quality/actions/deadcode@86dc90d9799a378a7f0c51310e2ec2f1204ad470
+        uses: maximalcode/maxi-quality/actions/deadcode@613a26c952d3a5b224b15e7268b182826c1e53b2
         with:
           tool: knip
           dir: ${{ matrix.dir }}
@@ -861,7 +861,7 @@ jobs:
       # at the granularity deptry is designed for).
       - name: Unused and undeclared dependencies (deptry)
         if: inputs.dead-code != 'off'
-        uses: maximalcode/maxi-quality/actions/deadcode@86dc90d9799a378a7f0c51310e2ec2f1204ad470
+        uses: maximalcode/maxi-quality/actions/deadcode@613a26c952d3a5b224b15e7268b182826c1e53b2
         with:
           tool: deptry
           dir: ${{ matrix.dir }}
@@ -1035,12 +1035,9 @@ jobs:
         with:
           # Gitleaks scans commit history, not just the tree.
           fetch-depth: 0
-      # Pinned by commit-SHA: the v1 tag still names which release lineage this is,
-      # but a SHA means a moved tag cannot change which action revision runs
-      # inside a consumer workflow that is itself SHA-pinned to this file.
-      # Bump the two together: the SHA is the v1 tag's commit, and the comment
-      # records the lineage the SHA was taken from.
-      - uses: maximalcode/maxi-quality/actions/layer2@86dc90d9799a378a7f0c51310e2ec2f1204ad470 # v1
+      # Release finalization pins this action to release-payload.sha. A moved
+      # tag cannot change the action revision selected by this workflow.
+      - uses: maximalcode/maxi-quality/actions/layer2@613a26c952d3a5b224b15e7268b182826c1e53b2
         with:
           changed-only: ${{ inputs.changed-only }}
           licenses: ${{ inputs.licenses }}
@@ -1150,7 +1147,7 @@ jobs:
 
       - name: Coverage gate
         id: cov
-        uses: maximalcode/maxi-quality/actions/coverage@86dc90d9799a378a7f0c51310e2ec2f1204ad470
+        uses: maximalcode/maxi-quality/actions/coverage@613a26c952d3a5b224b15e7268b182826c1e53b2
         with:
           report: ${{ steps.find.outputs.reports }}
           floor-file: ${{ inputs.coverage-floor-file }}
