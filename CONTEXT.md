@@ -54,6 +54,12 @@ _Avoid_: "a real consuming project" — the fused phrase this replaces.
 
 ### What is promised
 
+**Agent contract**:
+The baseline's rules for agent work in an Adopter's repository, together with
+the instructions describing those rules. Its enforcement and instructions
+must agree about which protections apply to that repository.
+_Avoid_: using "hooks" for the whole contract — hooks are only part of it.
+
 **Version contract**:
 The only obligation owed to an Adopter: what may and may not change under a
 tag they have pinned. Issues and pull requests from outside carry no promise;

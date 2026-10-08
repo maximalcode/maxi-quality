@@ -6,7 +6,7 @@ WHY THIS EXISTS
 `configs/agent/` is a contract spread over four places that a single edit can
 put out of step, with nothing red in between:
 
-  * `configs/agent/settings.json` — the wiring Claude Code actually reads
+  * `configs/agent/settings.json` — the wiring template adopted into `.claude/`
   * `scripts/agent-guard/*.py` — the executables that wiring points at
   * `samples/agent-guard/` — the corpus that proves they still block
   * `configs/agent/README.md` — the prose a consumer decides to trust
@@ -27,6 +27,10 @@ that no longer selects the tool, a `command` that names a moved file, or a deny
 rule the README no longer describes. This is the guard for the seams between
 the parts, not for the parts.
 
+The installed `.claude/settings.json` is checked against that template too
+(#213). Checking the template alone cannot notice a missing deny rule or a
+narrowed matcher in the file this repo actually loads.
+
 WHAT IT REFUSES TO DO
 
 **It reads the README's numbers and never writes them.** A checker that
@@ -40,8 +44,10 @@ a recorded measurement, not a gate; the cost argument is in that section. What
 is checked here is that every row still names a file that exists, so a table
 about scripts that were renamed away cannot keep reading as evidence.
 
-**It does not check `adopt.sh`'s output.** That is its own assertion in the
-`adopt` job.
+**It checks this repo's installed settings and scripts, not arbitrary adopter
+installations.** The merge and profile behaviour of `adopt.sh` is tested in the
+`adopt` job. This does not inspect user/local settings or prove that the host
+loaded the project settings.
 
 WHY IT HAS A SELFTEST MODE
 
@@ -313,6 +319,31 @@ def check(root: pathlib.Path, today: datetime.date) -> list[str]:
             bad(f"settings.json runs `{name}` as a hook, and this checker "
                 f"excuses it from the orphan check as {why} — one of the two "
                 "is wrong")
+    # Codex loads a separate native file; it never consults Claude settings.
+    # Keep the baseline's own wiring covered by this same required context.
+    codex_path = root / ".codex/hooks.json"
+    try:
+        codex = json.loads(read(codex_path))
+    except ValueError:
+        bad(".codex/hooks.json is not readable JSON")
+        codex = {}
+    for event, matcher, name, timeout in (
+        ("PreToolUse", "apply_patch", "codex-patch-guard.py", 15),
+        ("PreToolUse", "Bash", "no-verify-guard.py", 15),
+        ("Stop", None, "stop-gate.py", 60),
+    ):
+        expected = {"type": "command", "command":
+                    f'python3 "$(git rev-parse --show-toplevel)/scripts/agent-guard/{name}"',
+                    "timeout": timeout}
+        groups = codex.get("hooks", {}).get(event, []) if isinstance(codex, dict) else []
+        if not any(isinstance(g, dict) and g.get("matcher") == matcher
+                   and expected in g.get("hooks", []) for g in groups):
+            bad(f".codex/hooks.json must synchronously wire {event} {matcher} to {name}")
+        elif not (hooks_dir / name).is_file():
+            bad(f".codex/hooks.json runs missing {name}")
+        else:
+            named.add(name)
+
     for script in sorted(hooks_dir.glob("*.py")):
         if script.name in NOT_HOOKS or script.name in named:
             continue
@@ -603,9 +634,10 @@ def check(root: pathlib.Path, today: datetime.date) -> list[str]:
     # a CLAUDE.md that is a link to AGENTS.md deleted the arrangement, put the
     # region in the file the repo does not treat as canonical, and exited 0.
     # Both writing scripts carry the fix, and they carry it as two copies:
-    # these are standalone CLIs with hyphenated names, so neither can import
-    # the other, and the alternative — a third module both import — buys one
-    # shared function at the cost of a new file on every adoption path.
+    # these are standalone CLIs, and a third module solely to share this
+    # function buys one shared function at the cost of a new dependency for
+    # both. agent-install.py now composes their implementation for the whole
+    # installation; it does not change this write-policy decision.
     #
     # Two copies drift, and the drift is invisible because no consumer holds
     # both. This is the tripwire. It compares the BODY, not the docstring: the
@@ -710,6 +742,39 @@ def check(root: pathlib.Path, today: datetime.date) -> list[str]:
                     "older copy of a rule it has already changed. Re-run "
                     "`scripts/adopt.sh . --agent`.")
 
+    # --- G13: the installed wiring must agree with the checked template ------
+    # G9 covers only the script bodies. Until #213, deleting the installed
+    # settings or emptying its deny array left the gate green. Compare parsed
+    # JSON so formatting and object-key order do not masquerade as drift.
+    installed_path = root / ".claude" / "settings.json"
+    try:
+        installed = json.loads(installed_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        bad(f".claude/settings.json cannot be read as JSON: {exc}")
+    else:
+        if not isinstance(installed, dict):
+            bad(".claude/settings.json must be a settings object")
+        else:
+            if installed.get("disableAllHooks", False) is not False:
+                bad(".claude/settings.json: disableAllHooks must be absent or "
+                    "false — the installed guard must remain enabled")
+            permissions = installed.get("permissions")
+            if (not isinstance(permissions, dict) or permissions.get("deny") !=
+                    settings.get("permissions", {}).get("deny")):
+                bad(".claude/settings.json: permissions.deny differs from "
+                    "configs/agent/settings.json — restore the installed "
+                    "guard's deny rules")
+            installed_hooks = installed.get("hooks")
+            if not isinstance(installed_hooks, dict):
+                bad(".claude/settings.json: hooks must be an object matching "
+                    "configs/agent/settings.json")
+            else:
+                for event, groups in settings.get("hooks", {}).items():
+                    if installed_hooks.get(event) != groups:
+                        bad(f".claude/settings.json: hooks.{event} differs "
+                            "from configs/agent/settings.json — restore the "
+                            "installed guard's matchers and commands")
+
     return fail
 
 
@@ -772,16 +837,16 @@ def _deny_block(readme: str):
 #     swapping them is a hand-edit no upgrade path produces.
 
 SURFACES = ("configs/agent", "scripts/agent-guard", "samples/agent-guard",
-            ".claude/agent-guard")
+            ".claude/agent-guard", ".claude/settings.json", "CLAUDE.md", ".codex")
 
 
 def _stage(root: pathlib.Path, copy: pathlib.Path) -> None:
     """A tree a mutation can edit, with the rest of the repo symlinked in place.
 
-    Only the three surfaces are copied — copying the repo would mean copying
+    Only the mutable surfaces are copied — copying the repo would mean copying
     node_modules and .git for every mutation. But everything ELSE is linked in
     rather than left absent, because the link check resolves paths: a legitimate
-    link from the contract to somewhere outside these three directories would
+    link from the contract to somewhere outside these surfaces would
     otherwise fail on the unmutated baseline and read as a broken checker rather
     than as a temp tree missing a file.
     """
@@ -790,6 +855,14 @@ def _stage(root: pathlib.Path, copy: pathlib.Path) -> None:
     copy.mkdir(parents=True)
     for entry in root.iterdir():
         here = pathlib.PurePath(entry.name)
+        if here in surfaces:
+            # Copy both instruction files and native host config directories;
+            # linking either would let mutations rewrite the real checkout.
+            if entry.is_dir():
+                shutil.copytree(entry, copy / entry.name)
+            else:
+                shutil.copy2(entry, copy / entry.name)
+            continue
         if here not in parents:
             (copy / entry.name).symlink_to(entry)
             continue
@@ -797,7 +870,10 @@ def _stage(root: pathlib.Path, copy: pathlib.Path) -> None:
         for child in entry.iterdir():
             target = copy / entry.name / child.name
             if here / child.name in surfaces:
-                shutil.copytree(child, target)
+                if child.is_dir():
+                    shutil.copytree(child, target)
+                else:
+                    shutil.copy2(child, target)
             else:
                 target.symlink_to(child)
 
@@ -835,6 +911,12 @@ def _edit_date(root: pathlib.Path, new: str) -> None:
 
 def mutations(cases: int, today: datetime.date) -> list[tuple]:
     return [
+        ("Codex patch matcher is narrowed away",
+         lambda r: _edit(r, ".codex/hooks.json", '"apply_patch"', '"Read"'),
+         (".codex/hooks.json", "codex-patch-guard.py")),
+        ("Codex Stop is made asynchronous",
+         lambda r: _edit(r, ".codex/hooks.json", '"timeout": 60', '"timeout": 60, "async": true'),
+         (".codex/hooks.json", "stop-gate.py")),
         # AC1 — a hook that silently stopped firing because its script moved.
         ("a hook script is renamed and settings.json is not",
          lambda r: (r / "scripts/agent-guard/stop-gate.py").rename(
@@ -884,11 +966,50 @@ def mutations(cases: int, today: datetime.date) -> list[tuple]:
         ("the adopted copy is missing a script the source has",
          lambda r: (r / ".claude/agent-guard/record-gate.py").unlink(),
          ("record-gate.py", "is missing")),
+        # #213 — break only the installed settings, leaving the source and
+        # the hook corpus untouched. The staged file must be a COPY: mutating
+        # a symlink here would damage the live guard while testing it.
+        ("the installed deny array is emptied",
+         lambda r: _edit(
+             r, ".claude/settings.json",
+             '"Edit(/.claude/agent-guard-receipt.json)",\n'
+             '      "Edit(/samples/expected/**)"', ""),
+         (".claude/settings.json", "permissions.deny")),
+        ("the installed PreToolUse matcher is narrowed",
+         lambda r: _edit(r, ".claude/settings.json",
+                         '"Edit|Write|MultiEdit"', '"Edit"'),
+         (".claude/settings.json", "hooks.PreToolUse")),
+        ("the installed hook command points at a different script",
+         lambda r: _edit(r, ".claude/settings.json",
+                         "agent-guard/stop-gate.py", "agent-guard/guard.py"),
+         (".claude/settings.json", "hooks.Stop")),
+        ("the installed Stop hook is unwired",
+         lambda r: _edit(r, ".claude/settings.json", '"Stop"', '"Unstop"'),
+         (".claude/settings.json", "hooks.Stop")),
+        ("the installed settings file is missing",
+         lambda r: (r / ".claude/settings.json").unlink(),
+         (".claude/settings.json",)),
+        ("the installed settings file is invalid JSON",
+         lambda r: (r / ".claude/settings.json").write_text("{", encoding="utf-8"),
+         (".claude/settings.json",)),
+        ("the installed settings file is not an object",
+         lambda r: (r / ".claude/settings.json").write_text("[]", encoding="utf-8"),
+         (".claude/settings.json",)),
+        ("the installed hooks are globally disabled",
+         lambda r: _edit(r, ".claude/settings.json", '"hooks":',
+                         '"disableAllHooks": true, "hooks":'),
+         (".claude/settings.json", "disableAllHooks")),
+        ("the installed hooks are not an object",
+         lambda r: (r / ".claude/settings.json").write_text(
+             '{"hooks": []}', encoding="utf-8"),
+         (".claude/settings.json", "hooks must be an object")),
+        ("the installed permissions are not an object",
+         lambda r: (r / ".claude/settings.json").write_text(
+             '{"permissions": null}', encoding="utf-8"),
+         (".claude/settings.json", "permissions.deny")),
         # AC (#178) — the fragment and this repo's own copy of it drift apart,
         # which is what happens by default: #177 means re-adoption does not
-        # refresh a region that is already there. Mutating the FRAGMENT rather
-        # than CLAUDE.md, because _stage symlinks root files and a write would
-        # follow the link into the real repo.
+        # refresh a region that is already there.
         ("this repo's CLAUDE.md region and the fragment disagree",
          lambda r: _edit(r, "configs/agent/CLAUDE.fragment.md",
                          "They are not advice — they refuse.",
@@ -970,6 +1091,19 @@ def mutations(cases: int, today: datetime.date) -> list[tuple]:
     ]
 
 
+def _reformat_installed_settings(root: pathlib.Path) -> None:
+    """Semantically identical guard policy amid unrelated project settings."""
+    path = root / ".claude/settings.json"
+    settings = json.loads(path.read_text(encoding="utf-8"))
+    settings["disableAllHooks"] = False
+    settings["permissions"]["allow"] = ["Read"]
+    settings["hooks"]["SessionStart"] = [
+        {"hooks": [{"type": "command", "command": "echo ready"}]},
+    ]
+    path.write_text(json.dumps(settings, sort_keys=True, indent=4) + "\n",
+                    encoding="utf-8")
+
+
 def selftest(root: pathlib.Path, today: datetime.date) -> int:
     cases = len(list((root / "samples/agent-guard/cases").glob("*.json")))
     baseline = check(root, today)
@@ -979,7 +1113,12 @@ def selftest(root: pathlib.Path, today: datetime.date) -> int:
         print("::error::the UNMUTATED contract already fails — fix that first")
         return 1
 
-    plan = mutations(cases, today)
+    controls = [
+        ("the staged contract remains valid", lambda r: None, None),
+        ("installed key order, formatting and unrelated settings may differ",
+         _reformat_installed_settings, None),
+    ]
+    plan = controls + mutations(cases, today)
     failed = 0
     for name, mutate, expect in plan:
         tmp = pathlib.Path(tempfile.mkdtemp(prefix="agent-contract-"))
@@ -991,7 +1130,14 @@ def selftest(root: pathlib.Path, today: datetime.date) -> int:
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
-        if not problems:
+        if expect is None:
+            if problems:
+                failed += 1
+                print(f"FAIL {name}")
+                print(f"     unchanged guard policy was rejected: {problems}")
+            else:
+                print(f"ok   {name}")
+        elif not problems:
             failed += 1
             print(f"FAIL {name}")
             print("     the mutated contract passed — this guard stopped guarding")
@@ -1005,7 +1151,8 @@ def selftest(root: pathlib.Path, today: datetime.date) -> int:
             else:
                 print(f"ok   {name}")
 
-    print(f"\nmutations={len(plan)} failed={failed}")
+    print(f"\ncontrols={len(controls)} mutations={len(plan) - len(controls)} "
+          f"failed={failed}")
     return 1 if failed else 0
 
 

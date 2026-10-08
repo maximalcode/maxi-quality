@@ -1,0 +1,25 @@
+{
+  "why": "The summary is advertised as safe to paste publicly: count sessions and stops without printing raw session or changed values (#221).",
+  "hook": "summary",
+  "setup": {
+    "committed": {
+      "a.txt": "one\n"
+    },
+    "worktree": {
+      ".claude/agent-guard-ledger.jsonl": "{\"ts\": \"2026-08-30T12:00:00Z\", \"outcome\": \"no-receipt\", \"blocked\": true, \"changed\": 7391, \"session\": \"private/session-marker\"}\n{\"ts\": \"2026-08-30T12:00:00Z\", \"outcome\": \"no-receipt\", \"blocked\": true, \"changed\": 7391, \"session\": \"private/session-marker\"}\n"
+    }
+  },
+  "expect": {
+    "stdout_contains": [
+      "sessions run    1",
+      "stops seen      2",
+      "stops blocked   2",
+      "2  no-receipt",
+      "Nothing above names a file, a command or a branch."
+    ],
+    "output_excludes": [
+      "private/session-marker",
+      "7391"
+    ]
+  }
+}

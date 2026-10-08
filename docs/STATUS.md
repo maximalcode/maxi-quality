@@ -3,7 +3,7 @@
 Handover doc. Read [`CONCEPT.md`](CONCEPT.md) for *what this is*; read this for
 *what actually exists, what is proven, and what to do next.*
 
-**Last updated:** 2026-08-09 · **Branches:** `develop` (default, where work
+**Last updated:** 2026-10-04 · **Branches:** `develop` (default, where work
 lands) → `main` (release) · **Tags:** `v1` (moving, follows `main`) · `v1.0.x`
 (immutable — the newest is on
 [Releases](https://github.com/maximalcode/maxi-quality/releases))
@@ -151,9 +151,15 @@ scripts/check-agent-contract.py  the agent contract is four files that a single
                           G10 (#178) is the same drift one file over: this repo's
                           own CLAUDE.md region against the fragment it was pasted
                           from, which nothing refreshes while #177 is open.
+                          G13 (#213) compares this repo's installed settings
+                          against the template: deny rules, hook events and
+                          enabled hooks. It does not inspect adopter installs
+                          or the host's effective settings.
                           It READS those numbers
                           and refuses to write them. `selftest` mutates a staged
-                          copy 25 ways and asserts each run names what moved
+                          copy 37 ways and asserts each run names what moved;
+                          two positive controls keep staging and harmless
+                          settings changes from becoming false failures
 scripts/editor-parity.py  the differ for the #121 parity run: a VS Code Problems
                           panel dumped as JSON ("Copy All"), diffed against the
                           manifest README §3 names for that sample. The observing
@@ -567,6 +573,25 @@ only a run against real code can answer.
 So: the config is proven, the adoption cost is unmeasured, and this paragraph is
 here so the second fact is as visible as the first. Recording a fixture number in
 that column would have been the more comfortable option and a false one.
+
+**Agent-surface adoption cost — 2026-10-04.** Consumer A is **not measured
+because no consumer observation period, classified counts, or co-installed
+profile have been reported**. The prospective protocol is tracked in
+[#167](https://github.com/maximalcode/maxi-quality/issues/167), restored by
+[#223](https://github.com/maximalcode/maxi-quality/issues/223). Registration is
+not a result; an unreported count is not zero.
+
+| Population | Observation period | Sessions run | Stops blocked | Blocks correct | Blocks wrong | Co-installed profile |
+|---|---|---|---|---|---|---|
+| Agent surface, **Consumer A** | Not reported | Not measured | Not measured | Not measured | Not measured | Not reported: agent host/version, guard delivery/revision, Git pre-commit hook enabled/disabled, other guards |
+| Baseline dogfood only | Snapshot reported in #223 on 2026-08-30; start not recorded | 3 | 0 | 0 | 0 | Baseline's own agent guard; host/version, delivery revision and co-installed Git hook not recorded in that snapshot |
+
+The historical baseline snapshot saw **16 stops**, all `clean` with
+`changed: 0` (#223). No blocked stops were observed in that snapshot:
+**0 correct / 0 wrong** cannot distinguish deterrence, redundancy with the
+commit hook, or a quiet period. It is inconclusive and cannot replace Consumer
+A's observation. The separate [Guardian pilot](EVAL-guardian-pilot.md) records a single
+task's setup and review evidence, not this natural-session measurement.
 
 Three things worth carrying forward, all of which are about *measuring*, not
 about any particular codebase:

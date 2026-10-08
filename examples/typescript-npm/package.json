@@ -12,7 +12,7 @@
     "@vitest/coverage-v8": "^4.0.6",
     "eslint": "^10.8.0",
     "eslint-plugin-sonarjs": "^4.2.0",
-    "knip": "^6.31.0",
+    "knip": "^6.33.0",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.65.0",
     "vitest": "^4.0.6"

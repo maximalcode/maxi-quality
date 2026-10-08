@@ -351,9 +351,10 @@ def write_atomically(path: str, text: str) -> None:
     # one file, two names. os.replace would replace the LINK, so the arrangement
     # dies silently and the real file never gets the wiring. See #198 and the
     # long note on resolve_write_target in scripts/agent-region.py; the two
-    # copies are deliberate (these are standalone CLIs with hyphenated names,
-    # which cannot import one another) and check-agent-contract.py G12 asserts
-    # they still agree.
+    # copies are deliberate: the two standalone CLIs retain their own write
+    # policy, and check-agent-contract.py G12 asserts they still agree. The
+    # installer composes these CLIs' implementation; it does not need a third
+    # module just for this one function.
     path = resolve_write_target(path)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = f"{path}.maxi-quality.{os.getpid()}"
@@ -474,6 +475,51 @@ def scripts_for(baseline: dict) -> list[str]:
     return sorted(names | set(UNWIRED_BUT_NEEDED))
 
 
+def prepare_merge(path: str, baseline: dict) -> tuple[dict, list[str]]:
+    """Read and merge without writing, so installation can refuse before copying."""
+    target = load(path)
+    keep = {e.get("command", "")
+            for groups in (baseline.get("hooks") or {}).values()
+            for g in groups for e in g.get("hooks", [])}
+    changed = prune_ours(target, keep) + merge_hooks(target, baseline) \
+        + merge_deny(target, baseline)
+    return target, changed
+
+
+def verify(target: str, root: str) -> int:
+    """Verify installed baseline commands; unrelated hooks remain the Adopter's."""
+    # Deliberately NOT going through load(): this asks whether the file we
+    # just wrote is usable, and a file too broken to parse is the loudest
+    # possible answer to that.
+    try:
+        with open(target, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError) as exc:
+        print(f"agent-settings: cannot read {target}: {exc}",
+              file=sys.stderr)
+        return 1
+    missing = []
+    for groups in ((doc.get("hooks") or {}) if isinstance(doc, dict) else {}).values():
+        for group in groups:
+            for entry in group.get("hooks", []):
+                cmd = entry.get("command", "")
+                if '"' not in cmd:
+                    continue
+                if OURS not in cmd:
+                    # A consumer's own hook pointing at their own missing
+                    # script is their business and predates this run.
+                    # Refusing their adoption over it would be this script
+                    # taking responsibility for a file it never wrote.
+                    continue
+                path = cmd.split('"')[1].replace("${CLAUDE_PROJECT_DIR}", root)
+                if not os.path.isfile(path):
+                    missing.append(path)
+    for m in missing:
+        print(f"agent-settings: a hook command names a missing file: {m}",
+              file=sys.stderr)
+    return 1 if missing else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(add_help=True, description=__doc__)
     sub = parser.add_subparsers(dest="mode", required=True)
@@ -494,7 +540,7 @@ def main(argv: list[str] | None = None) -> int:
     m.add_argument(
         "--dry-run",
         action="store_true",
-        help="report what would change and write nothing. adopt.sh runs this "
+        help="report what would change and write nothing. Installation checks this "
              "first on every run, so a refusal costs the consumer no half-"
              "adopted tree.",
     )
@@ -509,36 +555,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.mode == "verify":
-        # Deliberately NOT going through load(): this asks whether the file we
-        # just wrote is usable, and a file too broken to parse is the loudest
-        # possible answer to that.
-        try:
-            with open(args.target, encoding="utf-8") as fh:
-                doc = json.load(fh)
-        except (OSError, ValueError) as exc:
-            print(f"agent-settings: cannot read {args.target}: {exc}",
-                  file=sys.stderr)
-            return 1
-        missing = []
-        for groups in ((doc.get("hooks") or {}) if isinstance(doc, dict) else {}).values():
-            for group in groups:
-                for entry in group.get("hooks", []):
-                    cmd = entry.get("command", "")
-                    if '"' not in cmd:
-                        continue
-                    if OURS not in cmd:
-                        # A consumer's own hook pointing at their own missing
-                        # script is their business and predates this run.
-                        # Refusing their adoption over it would be this script
-                        # taking responsibility for a file it never wrote.
-                        continue
-                    path = cmd.split('"')[1].replace("${CLAUDE_PROJECT_DIR}", args.root)
-                    if not os.path.isfile(path):
-                        missing.append(path)
-        for m in missing:
-            print(f"agent-settings: a hook command names a missing file: {m}",
-                  file=sys.stderr)
-        return 1 if missing else 0
+        return verify(args.target, args.root)
 
     try:
         baseline = load(args.baseline)
@@ -559,16 +576,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        target = load(args.target)
+        target, changed = prepare_merge(args.target, baseline)
     except Refused as exc:
         print(f"agent-settings: refused. {exc}", file=sys.stderr)
         return 1
 
-    keep = {e.get("command", "")
-            for groups in (baseline.get("hooks") or {}).values()
-            for g in groups for e in g.get("hooks", [])}
-    changed = prune_ours(target, keep) + merge_hooks(target, baseline) \
-        + merge_deny(target, baseline)
     for line in changed:
         print(line)
     if not changed:

@@ -116,6 +116,12 @@ updates:
     schedule:
       interval: monthly
     open-pull-requests-limit: 3
+    # First-party references are part of the release wrapper, not independent
+    # dependencies. Only release-refs.py may advance them with the recorded
+    # payload; a routine bump otherwise invalidates release-payload.sha.
+    ignore:
+      - dependency-name: maximalcode/maxi-quality
+      - dependency-name: maximalcode/maxi-quality/*
     groups:
       ci-actions:
         patterns:

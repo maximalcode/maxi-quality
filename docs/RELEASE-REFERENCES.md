@@ -26,6 +26,13 @@ The helper has no network dependency and changes only first-party `uses:`
 values in reusable workflows; it leaves
 consumer examples and unrelated local workflows alone.
 
+Dependabot updates third-party actions, but excludes this repository's own
+actions and reusable workflows. Those references move together with the
+recorded payload during release finalization. If an older dependency PR already
+changed them, restore them with `rewrite --payload <recorded-payload-sha>` and
+verify the resulting commit; do not remove or weaken the release check to
+accept an independent first-party bump.
+
 It uses a deliberately narrow, line-preserving grammar for `uses:`. A quoted
 key, folded value, or any other non-comment first-party reference it cannot
 parse is an error, never an omitted reference. That keeps a new YAML spelling

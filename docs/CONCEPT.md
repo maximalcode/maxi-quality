@@ -100,6 +100,11 @@ must pin all their maxi-quality workflow calls to the same SHA and full version
 comment; Layer 2 checks that agreement. Existing copied adoption remains
 available. See `docs/QUALITY-RUNTIME.md` for the install and migration commands
 and `docs/RELEASE-REFERENCES.md` for release publication.
+The versioned migration selects the native host explicitly: Claude Code uses
+`.claude/settings.json`, Codex uses `.codex/hooks.json`, and both share the pinned
+engine and gate state. Native configuration, host trust and observed enforcement
+are separate claims; fixture proof alone establishes neither trust nor live
+host enforcement.
 
 ---
 
@@ -370,6 +375,23 @@ projects silently — projects upgrade by bumping the tag.
 ---
 
 ## 8. Adoption paths
+
+**Local check evidence:** `scripts/guardian.py run <project-root> --base <ref>`
+runs the existing declared gate through its recorder without CI or an agent
+host. Versioned reports keep execution, freshness, unknown analysis scope and
+unassessed requirements separate. See [GUARDIAN.md](GUARDIAN.md).
+The installable [Guardian skill](GUARDIAN-SKILL.md) uses the same setup and runner
+interfaces for explicit review or scoped review-and-repair, adding AI assessment
+separately from execution evidence.
+
+**Agent contract:** `adopt.sh <repo-path> --agent` delegates the complete
+installation to `scripts/agent-install.py`. That module owns profile selection,
+files, settings, instructions and verification, using the existing settings and
+region helpers. Copied and shared installations remain supported; publishing
+the central shared runtime is a separate, explicit `--install-shared` operation.
+Unreadable settings refuse the installation before writes; a refused instruction
+region leaves enforcement installed and returns exit 7. Details and evidence:
+[`configs/agent/README.md`](../configs/agent/README.md) §7.
 
 **New project:**
 `"$BASELINE"/scripts/adopt.sh <repo-path>` — detects languages, drops the

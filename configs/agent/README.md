@@ -1,5 +1,32 @@
 # The agent contract
 
+**Codex:** use the [native versioned installation](../../docs/QUALITY-RUNTIME.md#native-codex-installation).
+It writes `.codex/hooks.json` and shares this guard engine without requiring
+Claude Code. The sections below describe the original Claude Code profile;
+its `permissions.deny` rules are not Codex settings. Native patch fixtures live
+in [`samples/codex-agent-guard`](../../samples/codex-agent-guard/README.md).
+
+**Runtime decision:** copied and shared agent hooks require **Python 3.8 or
+newer**, available as `python3` on the agent host's `PATH`. `adopt.sh --agent`
+(and `--install-shared`) checks that it runs at the required version before
+writing anything, including on a dry run; refusal exits 6. This check describes
+the installation machine, so keep that runtime available on every machine that
+runs the hooks.
+
+Python's standard library provides JSON input/output and `shlex` command
+parsing without pip packages. Shell would require another JSON tool and a
+replacement tokenizer for the no-verify guard. The cost is a Python runtime
+even for non-Python projects: the adopter must install and maintain it; do not
+assume the operating system supplies it. Python 3.8 is the compatibility floor
+because the guard uses `shlex.join`, introduced in 3.8; deferred annotations do
+not require Python 3.10. Prefer a maintained Python release for daily use.
+
+The `adopt` CI job runs installation scenarios and the guard corpus on 3.8 to
+check that floor, as well as testing a PATH with missing, broken and too-old
+Python. Revisit the runtime choice only with a measured alternative against
+`samples/agent-guard/` that preserves detection and reduces the installation
+and maintenance cost. This is the runtime decision for [issue #190](https://github.com/maximalcode/maxi-quality/issues/190).
+
 The baseline speaks on two surfaces. CI is the gate. `configs/editor/` is the
 frozen contract that makes the editor show what CI shows. Neither reaches the
 third one: **the agent session that writes the code in the first place.**
@@ -64,6 +91,11 @@ receipt, when the recorded verdict is a failure, when the recorded run is not
 this repo's declared gate, or when the fingerprint no longer matches. Each of
 those gets a different message, because "the gate failed" and "the gate never
 ran" are different problems.
+
+Tracked paths marked `assume-unchanged` or `skip-worktree` are always included
+via `git ls-files -v -z`, even if their bytes match `HEAD`: status alone can
+hide their edits. A passing gate covers those bytes normally; later edits
+invalidate its receipt. The guard does not clear either index bit.
 
 The receipt is written by `record-gate.py`. Declare the gate once:
 
@@ -282,7 +314,9 @@ match the file at any depth; double it and `//` anchors at the filesystem root
 and matches nothing in the repo at all. All three spellings survive review.
 
 **There is no `Read` deny.** The hooks read the manifests themselves —
-`sample-guard.py` compares the finding sets, and a `Read` deny would also block
+`sample-guard.py` matches protected paths by filesystem identity, so case aliases
+on case-insensitive volumes retain protection while distinct files stay distinct.
+It compares the finding sets, and a `Read` deny would also block
 the tools that do it. A rule that breaks the guard it is protecting is not a
 harder rule, it is a broken one.
 
@@ -317,7 +351,7 @@ redirect or a three-line Python script writes either file and nothing here sees
 it.
 
 For a **manifest** that is survivable, and the Stop gate is why: whatever wrote
-the bytes, they are in `git status` at the end of the turn, the fingerprint
+the bytes, status plus the index-flag cross-check covers them, the fingerprint
 moves, and the gate has to run again over the new content.
 `samples/agent-guard/cases/stop-07-untracked-file.json` is that assertion.
 
@@ -326,6 +360,20 @@ is the Stop gate's own input, so a forged receipt with a matching fingerprint
 passes. That is the boundary. The failure this exists to stop is a model that
 forgets, not one that lies, and a guard sold as tamper-proof gets trusted for
 things it cannot do.
+
+**Untracked embedded Git repositories cannot be verified.** Even with all
+untracked files requested, Git reports an embedded repository as one directory
+entry, hiding its contents from the fingerprint. Stop explicitly blocks this
+shape, including after a passing gate and when the nested content is unchanged.
+Move the embedded repository outside the working tree, or explicitly ignore it
+in the outer repository if it is intentionally outside the gate's scope.
+Rerunning the gate alone does not clear this block. Outer ignored directories
+remain outside inspection. The guard neither traverses the nested repository
+nor changes its metadata or the outer index flags. The real `git init` fixtures
+`stop-35` through `stop-37` cover changed, unchanged, and ignored cases;
+`changed-05` pins Git's collapsed directory result. Git inspection warnings or
+errors also block Stop and prevent recording a new receipt: an unreadable
+nested directory can otherwise disappear from status entirely (`stop-38`).
 
 **The sample guard catches deletion-shaped weakening only.** It does not decide
 whether a fixture still fires — that needs the toolchain the fixture is for, five
@@ -368,7 +416,7 @@ which is the entire argument for §5's structural checker.
 
 ## 5. Evidence
 
-`samples/agent-guard/` is 73 cases. Every hook case runs the real hook as a
+`samples/agent-guard/` is 92 cases. Every hook case runs the real hook as a
 subprocess with a real payload on stdin and parses stdout the way Claude Code
 does; the `stop-` and `edit-` cases build a real git repository first, and the
 `noverify-` cases do not, because a command guard reads a string and has no
@@ -393,8 +441,13 @@ script against some `command`; the matchers against the prose in both
 directions; the case counts in both READMEs against `cases/`; every mutation
 row, cited case, cited section and link against what exists; the deny array
 against the block quoted in §2 and the table in §5a; and every reference in §6
-against its own `as of <date>`. **It reads the numbers here and refuses to
-write them** — a checker that updates its own expectations agrees with itself
+against its own `as of <date>`. It also compares this repo's installed
+`.claude/settings.json` with the template: `permissions.deny` and each baseline
+hook event must agree as parsed JSON, and `disableAllHooks` must be absent or
+false (#213). Missing or invalid installed settings fail the check too. Object
+key order, whitespace and unrelated settings do not affect the result.
+**It reads the numbers here and refuses to write them** — a checker that
+updates its own expectations agrees with itself
 forever, which is the argument `check-expected.py` and `editor-parity.py
 --update` already make about their own corpora.
 
@@ -404,6 +457,11 @@ asserts the run names what moved. That runs in a second, so there is no reason
 to record it in prose the way the tables below have to be. What no mutation
 reaches is marked at the site, for the same reason the zero rows below are
 published rather than dropped.
+
+This installed-settings check covers this repository's committed project file.
+It does not inspect an Adopter's installation, user/local overrides, or the
+host's effective settings. The mutations prove detection of broken wiring on
+disk; they do not replace the live enforcement evidence in §5a.
 
 **The deny rules are the exception, and it is paid for rather than granted.** A
 `permissions.deny` rule cannot be exercised headlessly — there is no way to make
@@ -552,10 +610,16 @@ is the only thing left that can refuse.
 
 ## 6. What has NOT been measured
 
-**Adoption cost.** CONTEXT.md is explicit that it is measured by a Consumer
-turning it on and living with the result, never by a fixture built here. That
-has not happened. Consumer A is the intended first measurement (#152) and the
-cell in `docs/STATUS.md` says unmeasured until it is.
+**Adoption cost — 2026-10-04.** CONTEXT.md is explicit that it is measured by a
+Consumer turning it on and living with the result, never by a fixture built
+here. Consumer A's adoption cost is **not measured because no consumer
+observation period, classified counts, or co-installed profile have been
+reported**. [STATUS §5](../../docs/STATUS.md#5-what-adoption-cost-measured)
+records that gap explicitly. The prospective protocol belongs to
+[#167](https://github.com/maximalcode/maxi-quality/issues/167), restored by
+[#223](https://github.com/maximalcode/maxi-quality/issues/223); registering it
+does not supply the missing evidence. The historical baseline dogfood counts
+in STATUS are separate and cannot fill the consumer row.
 
 The cost is not the hooks firing. It is a blocked session belonging to a
 contributor who did not choose this, and it is API drift: **there is no
@@ -589,16 +653,33 @@ branch or any text from the tree — so the summary is safe to paste into a publ
 issue **by construction** rather than because someone read it carefully first.
 CLAUDE.md §2 has no cleanup pass, and a field added later that quietly carried
 content is exactly the leak nobody notices at the moment it is written; the
-corpus therefore asserts the **key set**, not only the values, and a mutation
-adding `cwd` fails all four ledger cases.
+corpus therefore asserts the **allowed key set** and the count/id value shapes:
+`changed` must be an integer, and `session`, when present, must contain 1–128
+ASCII letters, digits, underscores or hyphens and no path separator. Mutations
+adding `cwd` or replacing `changed` with a list of paths fail the ledger cases.
 
-**It refuses to guess the split.** `--summary` prints sessions run, stops seen,
-stops blocked, and the blocked count broken down by reason. It prints `?` for
-*blocks correct* and *blocks wrong*, because that is a judgement — did the gate
-genuinely not run, or did the guard misfire on its own plumbing, a gate that
-rewrites files, or a Claude Code change? A number invented there would be
-indistinguishable from a measured one the moment it reached `docs/STATUS.md`
-§5, which is the precise failure #167's acceptance criteria name.
+**It asks for the split instead of guessing.** `--summary` prints sessions run,
+stops seen, stops blocked, and the blocked count broken down by reason. While
+any blocked stops remain unclassified, it prints `blocks correct ? (N
+unclassified)` (and the same for wrong), followed by a prompt to run
+`python3 <installed-stop-gate.py> --classify`. Once all blocks are classified,
+it prints the human-classified correct and wrong totals.
+
+`--classify` walks blocked rows in order and offers fixed category codes:
+`gate-required` means correct; `guard-plumbing`, `gate-rewrites-files`,
+`client-change`, and `other-misfire` mean wrong. Judge against the local evidence;
+the ledger alone cannot establish whether a refusal was justified. `skip`
+leaves a row for later; `quit`, end-of-input and interruption preserve judgments
+already saved. Rerunning skips classified blocks.
+
+Each judgment appends exactly `ts`, `classifies`, `verdict`, and `category`.
+`classifies` is the original stop's one-based nonblank ledger row number, so
+keep the ledger append-only: do not reorder or remove rows. Category and verdict
+are fixed codes, the reference is an integer, and the timestamp is UTC; no input
+explanation is stored. Classification rows do not count as stops or sessions.
+The fixture tripwire checks this separate key set and value shapes. Explicit
+classification write failures report an error; hook bookkeeping remains
+fail-open.
 
 Two design notes worth keeping. The write is fail-open harder than anything
 else here — every exception swallowed — because a guard that refused a stop over
@@ -607,8 +688,8 @@ what is being measured is how often this gets in the way. And the ledger is
 excluded from the fingerprint, so appending to it cannot make the next stop
 report the tree as changed; that is asserted, not assumed.
 
-This does **not** close #167. It makes the measurement possible; the period of
-real use is still the part no agent can do.
+Issue #167 remains open for the consumer measurement. The ledger makes it
+possible; the period of real use is still the part no agent can do.
 
 ### 6a. The baseline runs its own contract, as of 2026-08-25
 
@@ -621,8 +702,9 @@ something the baseline itself did not.
 
 It runs from a **copy** under `.claude/agent-guard/`, not a symlink to
 `scripts/agent-guard/`, so this tree drifts exactly the way a consumer's will.
-`check-agent-contract.py` G9 is what notices; nothing else could, because all 64
-fixtures in `samples/agent-guard/` run the source.
+`check-agent-contract.py` G9 notices script drift, and G13 checks the installed
+settings against the template (#213). The fixtures in `samples/agent-guard/`
+run the source and cannot detect either kind of installed drift themselves.
 
 The gate is declared in `.claude/agent-guard.json` as `python3
 scripts/agent-guard/selftest.py && python3 scripts/check-agent-contract.py` —
@@ -639,7 +721,7 @@ tidied, because a record that gets edited to match the current code is no longer
 a record of anything.
 
 **A live session was blocked on 2026-08-25.** This is the observation the
-milestone actually needed, and it is separate from the fixtures: all 73 cases in
+milestone actually needed, and it is separate from the fixtures: all 87 cases in
 `samples/agent-guard/` invoke the hooks as subprocesses on synthetic payloads,
 so none of them can tell you whether Claude Code *wires* them. It was reached
 deliberately — one real uncommitted edit to this file, the gate not run — and
@@ -736,6 +818,20 @@ The merge has ownership: baseline hook entries are matched by their `command`
 string and deny rules by the rule string, and appended to what is already
 there. Nothing of the consumer's is replaced, reordered or removed, and
 re-running adds nothing twice. `scripts/agent-settings.py` holds it.
+
+`scripts/agent-install.py` owns the complete installation behind `adopt.sh`:
+it derives the repository's profile once, selects and refreshes its files,
+renders the matching instruction region, merges settings and verifies the
+installed wiring. The settings and region helpers keep their existing commands;
+the installer uses the same implementation in-process. `adopt.sh` forwards
+the requested options and presents the outcome, without knowing the profile's
+file inventory or the order those files must be written.
+
+The same module owns `--install-shared` as a separate, explicit operation.
+An `--agent --shared` adoption never publishes or updates the central runtime.
+The central runtime serves both sample profiles and preserves unrelated files
+beside the scripts. `samples/agent-install/` exercises these ownership rules;
+the `adopt` job retains the existing installed-tree regression scenarios.
 
 It **refuses** a `.claude/settings.json` it cannot fully read — one that does
 not parse, or a `hooks` key whose shape is not the documented one — and the

@@ -1,6 +1,6 @@
 # The agent guard's test suite
 
-Seventy-three cases, one JSON file each, in [`cases/`](cases). Run them:
+Ninety-two cases, one JSON file each, in [`cases/`](cases). Run them:
 
 ```bash
 python3 scripts/agent-guard/selftest.py
@@ -11,13 +11,14 @@ both branches. The same job runs `scripts/check-agent-contract.py`, which holds
 the count in the line above to the number of files in `cases/` — the count is
 this README's to state and that script's to read, never to update.
 
-## Five kinds of case, and why the fifth is different
+## Six kinds of case, and why permissions are different
 
 | Prefix | `hook` | What it runs |
 |---|---|---|
 | `stop-` | `stop` | the real `stop-gate.py`, as a subprocess, on a real repo |
 | `edit-` | `sample` | the real `sample-guard.py`, the same way |
 | `noverify-` | `noverify` | the real `no-verify-guard.py`, the same way |
+| `summary-` | `summary` | the real `stop-gate.py --summary`, on a planted ledger |
 | `changed-` | `changed` | `changed_files()` directly, on a real repo |
 | `deny-` | `permissions` | **nothing runs.** See below |
 
@@ -65,9 +66,14 @@ The `noverify-` cases set `"git": false`: the command guard reads a string and
 has no opinion about the repository it is standing in, so building one would be
 a fixture asserting something the hook does not do.
 
+Cases `stop-31` through `stop-33` set assume-unchanged, skip-worktree, and both
+bits before recording a real passing gate, then edit the hidden file. Each must
+block on the stale fingerprint. `stop-34` keeps the flagged file unchanged after
+the gate and must allow stopping.
+
 ## The negative controls matter as much as the blocks
 
-Seventeen cases exist to prove the guards stay out of the way: an edit outside
+Eighteen cases exist to prove the guards stay out of the way: an edit outside
 `samples/`, an edit that adds a manifest entry, an edit that grows a fixture, an
 edit to an uncited clean fixture, a brand-new manifest, a tool the matcher should
 never have routed here, an ordinary `git commit -m`, `npm test -- -n`,
@@ -124,3 +130,24 @@ A `deny-` case's `denied` and `allowed` lists must together be **exactly** the
 tree it plants. A planted path in neither list is a path the case has no opinion
 about, and a case with no opinion is how a rule's blast radius grows with
 nothing in the diff to notice.
+
+`embedded_repos` initializes real nested Git repositories before recording the
+gate. Cases `stop-35` and `stop-36` require an explicit inability-to-verify block
+after a passing gate, with and without a later nested edit. `stop-37` proves
+the outer ignored-directory boundary. These cases also assert that inspection
+preserves the outer index and every nested file, including Git metadata.
+
+Cases `edit-15` through `edit-19` compare case variants of the sample directory,
+fixture basename, and manifest path. The runner probes the actual file identity:
+on a case-insensitive volume the alias must deny; on a case-sensitive volume it
+creates a separate file with the same content and requires allow. The two
+hardlink cases require denial on both filesystems, so Linux also detects a
+regression in identity matching. Each run prints which branch it exercised.
+
+`summary-01` plants a path-shaped session id and a distinctive changed count.
+It requires aggregate counts from the real `--summary` command, excludes both
+raw values, and rejects any `os.sep` in stdout or stderr.
+
+The classification cases drive `--classify` with fixed category codes, invalid
+input, skip, quit, and end-of-input. They check append-only judgments, exact
+classification keys and values, resumption, and summary counts (#224).

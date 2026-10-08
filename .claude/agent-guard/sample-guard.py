@@ -86,6 +86,23 @@ def cited_files(root: str) -> set[str]:
     return cited
 
 
+def protected_path(root: str, target: str) -> str:
+    """Use the protected spelling when the filesystem identifies the same file.
+
+    realpath resolves symlinks but preserves case on case-insensitive volumes.
+    Comparing identity also avoids conflating distinct case-sensitive files.
+    Missing or unreadable paths retain the ordinary lexical checks below.
+    """
+    for rel in sorted(set(manifests(root)) | cited_files(root)):
+        candidate = os.path.join(root, rel)
+        try:
+            if os.path.samefile(target, candidate):
+                return os.path.realpath(candidate)
+        except OSError:
+            continue
+    return target
+
+
 def read_text(path: str) -> str | None:
     try:
         with open(path, encoding="utf-8") as fh:
@@ -144,6 +161,20 @@ def proposed_text(tool: str, ti: dict, current: str | None) -> str | None:
     return None
 
 
+def fixture_shrink_reason(root: str, rel: str, before: int, after: int) -> str | None:
+    """Shared deletion-shaped sample policy, independent of the host edit format."""
+    if rel in cited_files(root) and after < before:
+        return (
+            f"This edit removes {before - after} line(s) from {rel}, which "
+            "an expectation manifest in samples/expected/ cites as the "
+            "location of a planted finding. samples/ is the test suite: a "
+            "fixture that stops failing means the config regressed.\n\n"
+            "Fix the config instead. Adding a NEW failing case to this "
+            "file is always allowed."
+        )
+    return None
+
+
 def main() -> int:
     event = read_event()
     if event is None:
@@ -168,6 +199,7 @@ def main() -> int:
     # under it compares unequal to itself unless both sides are resolved.
     base = event.get("cwd") if isinstance(event.get("cwd"), str) else root
     target = os.path.realpath(raw if os.path.isabs(raw) else os.path.join(base, raw))
+    target = protected_path(root, target)
     # Belt and braces: `git rev-parse --show-toplevel` already returns a
     # resolved path, so no fixture can falsify this line and the mutation
     # table in the README says so rather than leaving it looking covered. The
@@ -214,17 +246,11 @@ def main() -> int:
         return ALLOW
 
     # --- a cited fixture: refuse a shrink ----------------------------------
-    if rel in cited_files(root) and current is not None:
-        before, after = len(current.splitlines()), len(proposed.splitlines())
-        if after < before:
-            deny_tool(
-                f"This edit removes {before - after} line(s) from {rel}, which "
-                "an expectation manifest in samples/expected/ cites as the "
-                "location of a planted finding. samples/ is the test suite: a "
-                "fixture that stops failing means the config regressed.\n\n"
-                "Fix the config instead. Adding a NEW failing case to this "
-                "file is always allowed."
-            )
+    if current is not None:
+        reason = fixture_shrink_reason(root, rel, len(current.splitlines()),
+                                       len(proposed.splitlines()))
+        if reason:
+            deny_tool(reason)
             return ALLOW
 
     return ALLOW

@@ -1,0 +1,33 @@
+{
+  "why": "Case aliases must retain protection; distinct case-sensitive files must allow. Hardlink cases exercise alias denial even on Linux.",
+  "hook": "sample",
+  "setup": {
+    "committed": {
+      "samples/typescript/src/bad.ts": "export function f(a: any) {\n  if (a == 1) {\n    return a;\n  }\n  return null;\n}\n",
+      "samples/expected/eslint.json": "{\n  \"tool\": \"eslint\",\n  \"findings\": [\n    {\n      \"rule\": \"eqeqeq\",\n      \"file\": \"samples/typescript/src/bad.ts\",\n      \"line\": 2\n    },\n    {\n      \"rule\": \"@typescript-eslint/no-explicit-any\",\n      \"file\": \"samples/typescript/src/bad.ts\",\n      \"line\": 1\n    }\n  ]\n}\n",
+      "src/app.ts": "const x = 1;\nconst y = 2;\nconst z = 3;\n",
+      "samples/typescript-clean/src/ok.ts": "export const ok = 1;\n"
+    },
+    "case_variant": {
+      "original": "samples/typescript/src/bad.ts",
+      "alternate": "samples/typescript/src/BAD.ts",
+      "hardlink": false
+    }
+  },
+  "event": {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Edit",
+    "tool_input": {
+      "file_path": "{{ROOT}}/samples/typescript/src/BAD.ts",
+      "old_string": "  if (a == 1) {\n    return a;\n  }\n",
+      "new_string": "  return a;\n"
+    }
+  },
+  "expect": {
+    "decision": "deny",
+    "reason_contains": [
+      "line(s)",
+      "test suite"
+    ]
+  }
+}
