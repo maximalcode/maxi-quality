@@ -57,6 +57,10 @@ def read(path: pathlib.Path) -> dict[str, Any]:
         raise ValueError(f"cannot read workflow scope {path}: {exc}") from exc
     if not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION or value.get("kind") not in {"workflow-scope", "workflow-scope-fragment"}:
         raise ValueError(f"unsupported workflow scope contract in {path}")
+    if not isinstance(value.get("identity"), dict):
+        raise ValueError(f"workflow scope identity is not an object in {path}")
+    if value.get("kind") == "workflow-scope" and not isinstance(value.get("expected_jobs", []), list):
+        raise ValueError(f"workflow scope expected_jobs is not a list in {path}")
     return value
 
 
@@ -174,9 +178,12 @@ def missing_job(args: argparse.Namespace, item: dict[str, Any], reason: str = "n
     }
 
 
-def build_document(args: argparse.Namespace) -> dict[str, Any]:
+def build_document(args: argparse.Namespace, observe_presence: bool = True) -> dict[str, Any]:
     root = pathlib.Path(args.root).resolve()
-    presence = discover(root)
+    if observe_presence:
+        presence = discover(root)
+    else:
+        presence = {language: {"state": "unknown", "markers": [], "reason": "current-attempt manifest unavailable; presence was not observed"} for language in LANGUAGES}
     languages: dict[str, Any] = {}
     for language in LANGUAGES:
         observed = presence[language]
@@ -221,6 +228,7 @@ def build_document(args: argparse.Namespace) -> dict[str, Any]:
         "presence": presence,
         "languages": languages,
         "detection": {"state": "unknown", "outcome": "unknown", "diagnostics": [], "reason": "detector result is collected from its current-attempt fragment"},
+        "analysis": {"state": "unknown", "outcome": "unknown", "reason": "analysis outcome is collected from current-attempt job fragments"},
         "expected_jobs": expected,
         "jobs": [],
         "coverage": {"state": args.coverage_state, "reason": "coverage is represented as workflow state, not analysis scope"},
@@ -265,7 +273,7 @@ def fragment(args: argparse.Namespace) -> None:
 
 
 def fallback_document(args: argparse.Namespace, issue: str) -> dict[str, Any]:
-    document = build_document(args)
+    document = build_document(args, observe_presence=False)
     document["layer2"] = []
     document["jobs"] = [missing_job(args, item, "current-attempt manifest unavailable; execution is unknown") for item in document.get("expected_jobs", [])]
     document["collection"] = {
@@ -289,10 +297,17 @@ def layer2_records(directory: pathlib.Path, identity: dict[str, Any], invocation
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
+            issues.append(f"malformed Layer 2 scope {path.name}")
+            continue
+        if not isinstance(value, dict):
+            issues.append(f"malformed Layer 2 scope {path.name}: root is not an object")
             continue
         if value.get("kind") != "layer2-scope":
             continue
         value_identity = value.get("identity", {})
+        if not isinstance(value_identity, dict):
+            issues.append(f"malformed Layer 2 scope {path.name}: identity is not an object")
+            continue
         expected_identity = {
             "producer": identity.get("producer", "gate"),
             "run_id": identity.get("run_id"),
@@ -308,20 +323,16 @@ def layer2_records(directory: pathlib.Path, identity: dict[str, Any], invocation
 
 def collect(args: argparse.Namespace) -> None:
     manifest_path = pathlib.Path(args.manifest)
+    manifest_issue = ""
     try:
         document = read(manifest_path)
     except ValueError as exc:
-        document = fallback_document(args, f"current-attempt manifest unavailable: {exc}")
-        records, issues = layer2_records(pathlib.Path(args.layer2_dir), document["identity"], args.layer2_invocation_id)
-        document["layer2"] = records
-        document["collection"]["issues"].extend(issues)
-        document["summary"] = {"artifact": pathlib.Path(args.out).name, "lines": render_lines(document)}
-        write(pathlib.Path(args.out), document)
-        return
+        document = build_document(args, observe_presence=False)
+        manifest_issue = f"current-attempt manifest unavailable: {exc}"
     identity = document["identity"]
     expected = document.get("expected_jobs", [])
     received: dict[str, dict[str, Any]] = {}
-    issues: list[str] = []
+    issues: list[str] = [manifest_issue] if manifest_issue else []
     directory = pathlib.Path(args.fragments_dir)
     for path in sorted(directory.rglob("*.json")) if directory.exists() else []:
         try:
@@ -388,6 +399,15 @@ def collect(args: argparse.Namespace) -> None:
             layer2_job["state"] = "unknown" if layer2_job["state"] == "run" else layer2_job["state"]
             layer2_job["reason"] = "Layer 2 scope artifact is unavailable for this invocation and attempt"
             layer2_job["reason_code"] = "missing_layer2_scope"
+    outcomes = [str(job.get("outcome", "unknown")) for job in jobs if job.get("logical_job") != "coverage"]
+    if "failure" in outcomes:
+        document["analysis"] = {"state": "complete", "outcome": "failure", "reason": "one or more analysis boundaries failed"}
+    elif "cancelled" in outcomes:
+        document["analysis"] = {"state": "complete", "outcome": "cancelled", "reason": "analysis was cancelled"}
+    elif any(outcome == "unknown" for outcome in outcomes):
+        document["analysis"] = {"state": "unknown", "outcome": "unknown", "reason": "one or more current-attempt analysis boundaries are unknown"}
+    else:
+        document["analysis"] = {"state": "complete", "outcome": "success", "reason": "all observed analysis boundaries completed or were explicitly skipped"}
     document["collection"] = {
         "status": "complete" if not missing and not issues else "partial",
         "expected": len(expected),

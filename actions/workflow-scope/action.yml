@@ -223,6 +223,16 @@ runs:
         CANCELLATION: ${{ inputs.cancellation }}
       run: |
         set -u
+        INPUT_ROOT="${INPUT_ROOT:-$RUNNER_TEMP/maxi-quality-workflow-scope-input}"
+        LAYER2_INPUT_ROOT="${LAYER2_INPUT_ROOT:-$RUNNER_TEMP/maxi-quality-layer2-scope-input}"
+        OUT="${OUT:-$RUNNER_TEMP/maxi-quality-workflow-scope.json}"
+        ROOT="${ROOT:-.}"; PRODUCER="${PRODUCER:-gate}"; WORKFLOW="${WORKFLOW:-quality}"
+        INVOCATION="${INVOCATION:-unknown}"; RUN_ID="${RUN_ID:-unknown}"; RUN_ATTEMPT="${RUN_ATTEMPT:-1}"
+        COMMIT="${COMMIT:-unknown}"; REF="${REF:-unknown}"; LANGUAGES="${LANGUAGES:-auto}"
+        MODE_NAME="${MODE_NAME:-full}"; BASELINE="${BASELINE:-}"; EXPECTED="${EXPECTED:-[]}"
+        JOB_OUTCOMES="${JOB_OUTCOMES:-{}}"; COVERAGE="${COVERAGE:-unknown}"
+        LAYER2_INVOCATION="${LAYER2_INVOCATION:-}"; CANCELLATION="${CANCELLATION:-}"
+        GITHUB_STEP_SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
         script="$GITHUB_ACTION_PATH/../../scripts/workflow_scope.py"
         manifest=$(find "$INPUT_ROOT" -type f -name '*manifest.json' -print -quit 2>/dev/null || true)
         fragments="$RUNNER_TEMP/maxi-quality-workflow-scope-fragments"

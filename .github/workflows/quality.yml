@@ -1383,6 +1383,7 @@ jobs:
   workflow-scope:
     needs: [detect, typescript, dotnet, python, rust, java, layer2, coverage]
     if: always()
+    continue-on-error: true
     runs-on: ${{ inputs.runner }}
     steps:
       - name: Publish whole-workflow scope

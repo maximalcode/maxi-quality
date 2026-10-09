@@ -368,6 +368,7 @@ class WorkflowScopeTests(unittest.TestCase):
         jobs = workflow["jobs"]
         collector = jobs["workflow-scope"]
         self.assertEqual(collector["if"], "always()")
+        self.assertTrue(collector["continue-on-error"])
         self.assertEqual(
             set(collector["needs"]),
             {"detect", "typescript", "dotnet", "python", "rust", "java", "layer2", "coverage"},
@@ -504,12 +505,22 @@ class WorkflowScopeTests(unittest.TestCase):
                 root = Path(tmp)
                 inputs = root / "inputs"
                 inputs.mkdir()
+                empty_workspace = root / "empty-workspace"
+                empty_workspace.mkdir()
                 if invalid:
                     (inputs / "bad-manifest.json").write_text("not-json\n")
+                else:
+                    fresh = inputs / "fresh-artifact" / "maxi-quality-workflow-scope-fragment.json"
+                    fresh.parent.mkdir()
+                    self.assertEqual(run_helper(
+                        "fragment", "--out", str(fresh), "--logical-job", "typescript", "--language", "ts",
+                        "--leg", "pkg", "--invocation-id", "current", "--run-id", "run", "--run-attempt", "2",
+                        "--state", "run", "--outcome", "failure", "--reason", "fresh failed rerun",
+                    ).returncode, 0)
                 env = {
                     **os.environ,
                     "INPUT_ROOT": str(inputs), "LAYER2_INPUT_ROOT": str(root / "no-layer2"), "OUT": str(root / "out.json"),
-                    "ROOT": str(root), "PRODUCER": "gate", "WORKFLOW": "quality", "INVOCATION": "current",
+                    "ROOT": str(empty_workspace), "PRODUCER": "gate", "WORKFLOW": "quality", "INVOCATION": "current",
                     "RUN_ID": "run", "RUN_ATTEMPT": "2", "COMMIT": "c", "REF": "r", "LANGUAGES": "ts",
                     "MODE_NAME": "full", "BASELINE": "", "EXPECTED": "[{\"logical_job\":\"typescript\",\"language\":\"ts\",\"leg\":\"pkg\"}]",
                     "COVERAGE": "not_applicable", "LAYER2_INVOCATION": "", "CANCELLATION": "", "RUNNER_TEMP": str(root),
@@ -522,7 +533,37 @@ class WorkflowScopeTests(unittest.TestCase):
                 self.assertEqual(data["identity"]["run_attempt"], "2")
                 self.assertEqual(data["collection"]["status"], "partial")
                 self.assertTrue(data["collection"]["issues"])
-                self.assertIsNone(data["jobs"][0]["examined"]["count"])
+                if invalid:
+                    self.assertIsNone(data["jobs"][0]["examined"]["count"])
+                else:
+                    self.assertEqual(data["presence"]["ts"]["state"], "unknown")
+                    fresh_job = next(job for job in data["jobs"] if job["logical_job"] == "typescript")
+                    self.assertEqual(fresh_job["outcome"], "failure")
+                    self.assertEqual(data["analysis"]["outcome"], "failure")
+
+    def test_missing_manifest_reconciles_fresh_fragment_without_rediscovering_collector_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fragments = root / "fragments"
+            fragments.mkdir()
+            fresh = fragments / "fresh.json"
+            self.assertEqual(run_helper(
+                "fragment", "--out", str(fresh), "--workflow", "quality", "--invocation-id", "inv",
+                "--run-id", "123", "--run-attempt", "2", "--logical-job", "typescript", "--language", "ts",
+                "--leg", "packages/a", "--state", "run", "--outcome", "failure", "--reason", "fresh failed rerun",
+            ).returncode, 0)
+            out = root / "out.json"
+            self.assertEqual(run_helper(
+                "collect", "--manifest", str(root / "missing-manifest.json"), "--fragments-dir", str(fragments),
+                "--out", str(out), "--root", str(root / "empty-workspace"), "--workflow", "quality",
+                "--invocation-id", "inv", "--run-id", "123", "--run-attempt", "2", "--expected-job",
+                "typescript|ts|packages/a",
+            ).returncode, 0)
+            data = json.loads(out.read_text())
+            self.assertEqual(data["presence"]["ts"]["state"], "unknown")
+            job = next(job for job in data["jobs"] if job["logical_job"] == "typescript")
+            self.assertEqual(job["outcome"], "failure")
+            self.assertEqual(data["analysis"]["outcome"], "failure")
 
 
 if __name__ == "__main__":
