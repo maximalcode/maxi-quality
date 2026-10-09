@@ -4638,6 +4638,11 @@ jobs:
 
           echo 'OK: every detection fixture classified, and the two silent skips now fail loud'
 
+          # Keep the whole-workflow scope fixture in this existing detector
+          # context so the shipped detector body and the scope handoff are
+          # exercised by the same CI check.
+          bash samples/workflow-scope/run.sh
+
   # The counts, asserted precisely — semgrep JSON, no fragile CLI-output greps.
   layer2-counts:
     runs-on: ubuntu-latest
