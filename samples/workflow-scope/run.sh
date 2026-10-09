@@ -4,6 +4,7 @@ set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 python3 "$ROOT/samples/workflow-scope/test_scope.py"
+python3 "$ROOT/samples/workflow-scope/test_language_tools.py"
 
 # The fixture must execute the detector body that ships in quality.yml. Keep
 # this check textual and structural: actionlint owns YAML syntax, while the

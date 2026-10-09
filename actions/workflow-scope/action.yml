@@ -6,7 +6,7 @@ description: >-
 
 inputs:
   mode:
-    description: 'init, fragment, or collect.'
+    description: 'helper, init, fragment, or collect.'
     default: fragment
   root:
     description: 'Checkout root used for independent presence observation.'
@@ -77,6 +77,18 @@ inputs:
   diagnostic-file:
     description: 'Optional file containing complete boundary diagnostics.'
     default: ''
+  tools-file:
+    description: 'Optional JSON file of actual language command records.'
+    default: ''
+  expected-tools:
+    description: 'Expected language tools as name|state|outcome|reason-code|reason lines.'
+    default: ''
+  dead-code-mode:
+    description: 'Dead-code input used to distinguish an intentional opt-out.'
+    default: auto
+  job-outcome:
+    description: 'Actual enclosing job outcome for missing-boundary interpretation.'
+    default: unknown
   cancellation:
     description: 'Cancellation metadata when finalization observes it.'
     default: ''
@@ -90,6 +102,23 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Prepare workflow scope helper
+      id: helper
+      if: always() && inputs.mode == 'helper'
+      continue-on-error: true
+      shell: bash
+      env:
+        OUT: ${{ runner.temp }}/maxi-quality-workflow-scope.py
+      run: |
+        set -u
+        source="$GITHUB_ACTION_PATH/../../scripts/workflow_scope.py"
+        if [[ -f "$source" ]] && cp "$source" "$OUT" 2>/dev/null; then
+          chmod 700 "$OUT" 2>/dev/null || true
+          echo "helper_path=$OUT" >> "$GITHUB_OUTPUT"
+        else
+          echo '::warning::workflow scope helper could not be prepared; language command recording remains unavailable'
+        fi
+
     - name: Initialize workflow scope
       id: initialize
       if: always() && inputs.mode == 'init'
@@ -154,6 +183,10 @@ runs:
         REASON_CODE: ${{ inputs.reason-code }}
         DIAGNOSTIC: ${{ inputs.diagnostic }}
         DIAGNOSTIC_FILE: ${{ inputs.diagnostic-file }}
+        TOOLS_FILE: ${{ inputs.tools-file }}
+        EXPECTED_TOOLS: ${{ inputs.expected-tools }}
+        DEAD_CODE_MODE: ${{ inputs.dead-code-mode }}
+        JOB_OUTCOME: ${{ inputs.job-outcome }}
         ARTIFACT_PREFIX: ${{ inputs.artifact-prefix }}
       run: |
         set -u
@@ -166,6 +199,15 @@ runs:
         if [[ -n "$DIAGNOSTIC_FILE" && -f "$DIAGNOSTIC_FILE" ]]; then
           args+=(--diagnostic-file "$DIAGNOSTIC_FILE")
         fi
+        if [[ -n "${TOOLS_FILE:-}" ]]; then
+          args+=(--tools-file "$TOOLS_FILE")
+        fi
+        if [[ -n "${EXPECTED_TOOLS:-}" ]]; then
+          while IFS= read -r expected; do
+            [[ -n "$expected" ]] && args+=(--expected-tool "$expected")
+          done <<< "$EXPECTED_TOOLS"
+        fi
+        args+=(--dead-code-mode "${DEAD_CODE_MODE:-auto}" --job-outcome "${JOB_OUTCOME:-unknown}")
         python3 "$script" "${args[@]}"
         transport=$(python3 -c 'import hashlib, os; print(hashlib.sha256((os.environ["ARTIFACT_PREFIX"] + "\0" + os.environ["LOGICAL_JOB"] + "\0" + os.environ["LEG"]).encode()).hexdigest()[:16])')
         echo "artifact_name=${ARTIFACT_PREFIX}-${transport}-fragment" >> "$GITHUB_OUTPUT"

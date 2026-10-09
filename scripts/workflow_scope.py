@@ -128,6 +128,72 @@ def unknown_measurements(reason: str = "job scope is not instrumented") -> dict[
     return {name: measurement(reason=reason) for name in ("examined", "unparsed", "policy_excluded")}
 
 
+def read_tools(path: pathlib.Path) -> list[dict[str, Any]]:
+    """Read the best-effort command records written on a language runner."""
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return value if isinstance(value, list) and all(isinstance(item, dict) for item in value) else []
+
+
+def tool_record(args: argparse.Namespace) -> None:
+    """Append one command-boundary record without owning the command verdict."""
+    path = pathlib.Path(args.file)
+    records = read_tools(path) if path.exists() else []
+    diagnostics = list(args.diagnostic or [])
+    if args.diagnostic_file:
+        try:
+            diagnostics.append(pathlib.Path(args.diagnostic_file).read_text(encoding="utf-8", errors="replace"))
+        except OSError as exc:
+            diagnostics.append(f"cannot read diagnostic file {args.diagnostic_file}: {exc}")
+    try:
+        exit_code = int(args.exit_code) if args.exit_code != "" else None
+    except ValueError:
+        exit_code = None
+    record: dict[str, Any] = {
+        "name": args.name,
+        "command": list(args.argv or []),
+        "working_directory": args.working_directory or None,
+        "state": args.state,
+        "outcome": args.outcome,
+        "reason": args.reason,
+        "reason_code": args.reason_code or None,
+        "exit_code": exit_code,
+        "diagnostics": diagnostics,
+        "measurements": unknown_measurements("measurement is not available at this command boundary"),
+    }
+    records.append(record)
+    write(path, records)
+
+
+def expected_tool_record(spec: str, dead_code_mode: str, blocked: bool = False) -> dict[str, Any]:
+    bits = spec.split("|", 4)
+    name = bits[0]
+    state = bits[1] if len(bits) > 1 and bits[1] else "unknown"
+    outcome = bits[2] if len(bits) > 2 and bits[2] else "unknown"
+    reason_code = bits[3] if len(bits) > 3 and bits[3] else "missing_tool_record"
+    reason = bits[4] if len(bits) > 4 and bits[4] else "command execution is unknown because no boundary record was received"
+    if blocked:
+        state, outcome, reason_code, reason = "skipped", "unknown", "blocked", "command was prevented by an earlier recorded failure"
+    else:
+        state, outcome, reason_code, reason = "unknown", "unknown", "missing_tool_record", "command execution is unknown because no boundary record was received"
+    if dead_code_mode == "off" and name in {"knip", "deptry"}:
+        state, outcome, reason_code, reason = "skipped", "success", "disabled", "dead-code check is disabled"
+    return {
+        "name": name,
+        "command": [],
+        "working_directory": None,
+        "state": state,
+        "outcome": outcome,
+        "reason": reason,
+        "reason_code": reason_code,
+        "exit_code": None,
+        "diagnostics": [],
+        "measurements": unknown_measurements("command boundary was not reached"),
+    }
+
+
 def expected_jobs(args: argparse.Namespace) -> list[dict[str, str]]:
     values = list(args.expected_job or [])
     if args.expected_jobs_json:
@@ -294,7 +360,22 @@ def fragment(args: argparse.Namespace) -> None:
         "reason_code": args.reason_code,
         "diagnostics": diagnostics,
         "measurements": unknown_measurements(),
+        "tools": read_tools(pathlib.Path(args.tools_file)) if args.tools_file else [],
     }
+    observed = {str(item.get("name")) for item in value["tools"] if item.get("name")}
+    failure_seen = False
+    previous_names: set[str] = set()
+    for spec in args.expected_tool or []:
+        expected_name = spec.split("|", 1)[0]
+        matching = [item for item in value["tools"] if str(item.get("name")) == expected_name or str(item.get("name", "")).startswith(expected_name + ":")]
+        prior = [item for item in value["tools"] if not previous_names or str(item.get("name")) in previous_names or any(str(item.get("name", "")).startswith(name + ":") for name in previous_names)]
+        if any(item.get("outcome") == "failure" for item in matching + prior):
+            failure_seen = True
+        expected = expected_tool_record(spec, args.dead_code_mode, blocked=failure_seen)
+        seen = expected["name"] in observed or any(name.startswith(expected["name"] + ":") for name in observed)
+        if not seen:
+            value["tools"].append(expected)
+        previous_names.add(expected_name)
     write(pathlib.Path(args.out), value)
 
 
@@ -413,6 +494,7 @@ def collect(args: argparse.Namespace) -> None:
                 "reason_code": fragment_value.get("reason_code"),
                 "diagnostics": fragment_value.get("diagnostics", []),
                 "measurements": fragment_value.get("measurements", unknown_measurements()),
+                "tools": fragment_value.get("tools", []),
             })
     document["jobs"] = jobs
     detect = next((job for job in jobs if job["logical_job"] == "detect" and not job.get("leg")), None)
@@ -495,6 +577,14 @@ def render_lines(document: dict[str, Any]) -> list[str]:
         lines.append(f"Job {safe(job['logical_job'])}{leg}: {safe(job['state'])}/{safe(job['outcome'])} — {safe(job['reason'])}")
         for diagnostic in job.get("diagnostics", []):
             lines.append(f"Diagnostic {safe(job['logical_job'])}{leg}: {safe(diagnostic)}")
+        for tool in job.get("tools", []):
+            tool_leg = f"{safe(tool.get('name', 'unknown'))}{leg}"
+            lines.append(
+                f"Tool {tool_leg}: {safe(tool.get('state', 'unknown'))}/{safe(tool.get('outcome', 'unknown'))}"
+                f" rc={safe(tool.get('exit_code'))} — {safe(tool.get('reason', ''))}"
+            )
+            for diagnostic in tool.get("diagnostics", []):
+                lines.append(f"Tool diagnostic {tool_leg}: {safe(diagnostic)}")
     for issue in document["collection"].get("issues", []):
         lines.append(f"Collection issue: {safe(issue)}")
     if document["collection"].get("missing"):
@@ -543,7 +633,24 @@ def parser() -> argparse.ArgumentParser:
         fragment_parser.add_argument("--" + name, default=default)
     fragment_parser.add_argument("--diagnostic", action="append")
     fragment_parser.add_argument("--diagnostic-file", default="")
+    fragment_parser.add_argument("--tools-file", default="")
+    fragment_parser.add_argument("--expected-tool", action="append")
+    fragment_parser.add_argument("--dead-code-mode", default="auto")
+    fragment_parser.add_argument("--job-outcome", default="unknown")
     fragment_parser.set_defaults(func=fragment)
+    tool_parser = sub.add_parser("tool")
+    tool_parser.add_argument("--file", required=True)
+    tool_parser.add_argument("--name", required=True)
+    tool_parser.add_argument("--state", default="run", choices=sorted(VALID_STATES))
+    tool_parser.add_argument("--outcome", default="unknown", choices=sorted(VALID_OUTCOMES))
+    tool_parser.add_argument("--reason", default="command boundary executed")
+    tool_parser.add_argument("--reason-code", default="command")
+    tool_parser.add_argument("--exit-code", default="")
+    tool_parser.add_argument("--diagnostic", action="append")
+    tool_parser.add_argument("--diagnostic-file", default="")
+    tool_parser.add_argument("--working-directory", default="")
+    tool_parser.add_argument("--argv", nargs=argparse.REMAINDER, default=[])
+    tool_parser.set_defaults(func=tool_record)
     collect_parser = sub.add_parser("collect")
     collect_parser.add_argument("--manifest", required=True)
     collect_parser.add_argument("--fragments-dir", required=True)
