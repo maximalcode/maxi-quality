@@ -114,17 +114,43 @@ runs:
         # write is best-effort so an unavailable temp path can never turn the
         # dead-code command into a new prerequisite or change its verdict.
         scope_record() {
-          local name="$1" state="$2" outcome="$3" rc="$4" reason="$5" reason_code="$6" log="$7"
-          shift 7
+          local name="$1" state="$2" outcome="$3" rc="$4" reason="$5" reason_code="$6" log="$7" workdir="$8"
+          shift 8
           [[ -n "${SCOPE_TOOLS_FILE:-}" ]] || return 0
           local args=("$SCRIPTS/workflow_scope.py" tool --file "$SCOPE_TOOLS_FILE"
             --name "$name" --state "$state" --outcome "$outcome" --exit-code "$rc"
-            --reason "$reason" --reason-code "$reason_code" --working-directory "$PWD")
+            --reason "$reason" --reason-code "$reason_code" --working-directory "$workdir")
           if [[ -n "$log" && -f "$log" ]]; then
             args+=(--diagnostic-file "$log")
           fi
+          if [[ -n "${CAPTURE_ISSUE:-}" ]]; then
+            args+=(--collection-issue "$CAPTURE_ISSUE")
+          fi
           args+=(--argv "$@")
           python3 "${args[@]}" >/dev/null 2>&1 || true
+          CAPTURE_ISSUE=""
+        }
+
+        # Capture stderr through a pipeline while preserving stdout for the
+        # analyzer's JSON output. A failed log write drains the remaining pipe
+        # input, so it cannot SIGPIPE the command or replace its return code;
+        # PIPESTATUS keeps the command and observer statuses separate.
+        capture_stderr() {
+          local log="$1"; shift
+          CAPTURE_ISSUE=""
+          if [[ -z "$log" || "$log" == /dev/null ]]; then
+            CAPTURE_ISSUE="stderr capture unavailable; command output was not recorded"
+            "$@"
+            return $?
+          fi
+          exec 3>&1
+          { "$@" 2>&1 1>&3; } | (tee "$log" >&2 || { tee_rc=$?; cat >&2; exit "$tee_rc"; })
+          local statuses=("${PIPESTATUS[@]}")
+          exec 3>&-
+          if [[ "${statuses[1]:-0}" -ne 0 ]]; then
+            CAPTURE_ISSUE="stderr capture sink failed with exit ${statuses[1]}"
+          fi
+          return "${statuses[0]}"
         }
 
         # `${arr[@]:+"${arr[@]}"}` throughout rather than a bare `"${arr[@]}"`:
@@ -184,11 +210,11 @@ runs:
         # is only whether it stops the build, never whether it is visible.
         missing() {
           if [[ "$MODE" == "require" ]]; then
-            scope_record "$TOOL" skipped failure 1 "$1" unavailable /dev/null
+            scope_record "$TOOL" skipped failure 1 "$1" unavailable /dev/null "$PWD"
             echo "::error::$1"
             exit 1
           fi
-          scope_record "$TOOL" skipped success 0 "$1" unavailable /dev/null
+          scope_record "$TOOL" skipped success 0 "$1" unavailable /dev/null "$PWD"
           echo "::warning::$1 The dead-code gate did NOT run here — a green build below says nothing about dead code in this package. Set dead-code: require to turn this warning into a failure once adoption is done."
           exit 0
         }
@@ -207,7 +233,7 @@ runs:
           # ignore it.
           have=$("$KNIP" --version)
           if [[ "$(printf '%s\n%s\n' "$KNIP_MIN" "$have" | sort -V | head -1)" != "$KNIP_MIN" ]]; then
-            scope_record knip skipped failure 1 "knip version $have is below the required $KNIP_MIN" invalid /dev/null "$KNIP" --version
+            scope_record knip skipped failure 1 "knip version $have is below the required $KNIP_MIN" invalid /dev/null "$PWD" "$KNIP" --version
             echo "::error::knip $have is older than the required $KNIP_MIN. 5.64.3 shipped a false positive on signature-only types (#51); a known-wrong analyzer is worse than none."
             exit 1
           fi
@@ -233,7 +259,7 @@ runs:
             found=1
           fi
           if [[ "$found" -eq 0 ]]; then
-            scope_record knip skipped failure 1 "knip configuration is missing" invalid /dev/null "$KNIP"
+            scope_record knip skipped failure 1 "knip configuration is missing" invalid /dev/null "$PWD" "$KNIP"
             echo "::error::no knip config in $DIR. knip's verdicts are only as good as the entry points you declare, and a zero-config run on a non-default layout reports your layout rather than your defects. scripts/adopt.sh writes a knip.json stub; fill in the real entry points."
             exit 1
           fi
@@ -248,8 +274,8 @@ runs:
           # not fail a library build.
           knip_log="$RUNNER_TEMP/mq-knip.log"
           knip_rc=0
-          "$KNIP" --reporter json --no-exit-code > "$RUNNER_TEMP/mq-knip.json" 2>"$knip_log" || knip_rc=$?
-          scope_record knip run "$([[ "$knip_rc" -eq 0 ]] && echo success || echo failure)" "$knip_rc" "knip command boundary executed" command "$knip_log" "$KNIP" --reporter json --no-exit-code
+          capture_stderr "$knip_log" "$KNIP" --reporter json --no-exit-code > "$RUNNER_TEMP/mq-knip.json" || knip_rc=$?
+          scope_record knip run "$([[ "$knip_rc" -eq 0 ]] && echo success || echo failure)" "$knip_rc" "knip command boundary executed" command "$knip_log" "$PWD" "$KNIP" --reporter json --no-exit-code
           [[ "$knip_rc" -eq 0 ]] || exit "$knip_rc"
           python3 "$SCRIPTS/deadcode-gate.py" --tool knip \
             --input "$RUNNER_TEMP/mq-knip.json" \
@@ -283,8 +309,16 @@ runs:
           if [[ ! -s "$RUNNER_TEMP/mq-deptry-targets.tsv" ]]; then
             # Not clean. Nothing was examined, and those must never render the
             # same way — that is #1, #43 and #70 in one sentence.
-            scope_record deptry skipped failure 1 "deptry package enumeration produced no applicable inputs" not_applicable /dev/null "${DEPTRY[@]}"
-            missing "no package under $DIR declares dependencies deptry can read (a pyproject.toml with [project] or [tool.poetry], or a requirements.txt)."
+            no_applicable_rc=0
+            no_applicable_outcome=success
+            if [[ "$MODE" == "require" ]]; then no_applicable_rc=1; no_applicable_outcome=failure; fi
+            scope_record deptry not_applicable "$no_applicable_outcome" "$no_applicable_rc" "deptry package enumeration produced no applicable inputs" not_applicable /dev/null "$PWD" "${DEPTRY[@]}"
+            if [[ "$MODE" == "require" ]]; then
+              echo "::error::no package under $DIR declares dependencies deptry can read (a pyproject.toml with [project] or [tool.poetry], or a requirements.txt)."
+              exit 1
+            fi
+            echo "::warning::no package under $DIR declares dependencies deptry can read (a pyproject.toml with [project] or [tool.poetry], or a requirements.txt). The dead-code gate did NOT run here."
+            exit 0
           fi
 
           while IFS=$'\t' read -r pkg roots excludes; do
@@ -312,9 +346,16 @@ runs:
             # finding, and which findings gate is deadcode-gate.py's call.
             deptry_log="$RUNNER_TEMP/mq-deptry-$(printf '%s' "$pkg" | tr '/ ' '__').log"
             deptry_rc=0
-            (cd "$full" && "${DEPTRY[@]}" ${ARGS[@]:+"${ARGS[@]}"} \
-              --json-output "$RUNNER_TEMP/mq-deptry.json") 2>"$deptry_log" || deptry_rc=$?
-            scope_record "deptry:$full" run "$([[ "$deptry_rc" -eq 0 ]] && echo success || echo failure)" "$deptry_rc" "deptry package command boundary executed" command "$deptry_log" "${DEPTRY[@]}" ${ARGS[@]:+"${ARGS[@]}"} --json-output "$RUNNER_TEMP/mq-deptry.json"
+            old_pwd="$PWD"
+            if cd "$full"; then
+              capture_stderr "$deptry_log" "${DEPTRY[@]}" ${ARGS[@]:+"${ARGS[@]}"} \
+                --json-output "$RUNNER_TEMP/mq-deptry.json" || deptry_rc=$?
+              cd "$old_pwd"
+            else
+              deptry_rc=$?
+              CAPTURE_ISSUE="package working directory unavailable: $full"
+            fi
+            scope_record "deptry:$full" run "$([[ "$deptry_rc" -eq 0 ]] && echo success || echo failure)" "$deptry_rc" "deptry package command boundary executed" command "$deptry_log" "$full" "${DEPTRY[@]}" ${ARGS[@]:+"${ARGS[@]}"} --json-output "$RUNNER_TEMP/mq-deptry.json"
             python3 "$SCRIPTS/deadcode-gate.py" --tool deptry \
               --input "$RUNNER_TEMP/mq-deptry.json" \
               --package-dir "$full" \
