@@ -554,6 +554,7 @@ def _display_scope(scope: dict, scope_error: str | None) -> list[str]:
     if scope_error or scope.get("status") != "available":
         lines.append(f"Scope evidence unavailable: {_one_line(scope_error or scope.get('reason', 'unknown'))}.")
         return lines + [""]
+    tools = scope.get("tools") if isinstance(scope.get("tools"), dict) else {}
     lines += [
         f"Outcome: **{scope.get('outcome', 'unknown')}**; collection: **{scope.get('collection', 'unknown')}**.",
         f"Complete evidence artifact: [{scope.get('artifact', 'layer2-scope.json')}]({scope['artifact_link']})." if scope.get("artifact_link") else f"Complete evidence artifact: `{scope.get('artifact', 'layer2-scope.json')}`.",
@@ -561,7 +562,9 @@ def _display_scope(scope: dict, scope_error: str | None) -> list[str]:
         "| Tool | State | Outcome | Examined | Unparsed | Policy-excluded |",
         "|---|---|---|---:|---:|---:|",
     ]
-    for name, record in sorted(scope.get("tools", {}).items()):
+    for name, record in sorted(tools.items()):
+        if not isinstance(record, dict):
+            record = {}
         def cell(key: str) -> str:
             measurement = record.get("measurements", {}).get(key, {})
             if measurement.get("status") == "known":
@@ -578,7 +581,7 @@ def _display_scope(scope: dict, scope_error: str | None) -> list[str]:
         diagnostic = record.get("diagnostic")
         if diagnostic:
             lines.append(f"| ↳ diagnostic |  |  | {_one_line(diagnostic)} |  |  |")
-    if "semgrep" in scope.get("tools", {}):
+    if "semgrep" in tools:
         lines += [
             "",
             "Semgrep `examined` is scanner-reported attempted target scope; `unparsed` is an overlapping analysis-gap count.",

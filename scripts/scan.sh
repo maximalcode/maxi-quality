@@ -173,6 +173,12 @@ scope_record() {
   python3 "$BASELINE/scripts/layer2_scope.py" record \
     --out "$SCOPE_OUT" "$@" || warn "scope record failed for ${1:-tool}"
 }
+scope_capture_issue() {
+  [[ -n "$SCOPE_OUT" ]] || return 0
+  python3 "$BASELINE/scripts/layer2_scope.py" diagnostic \
+    --out "$SCOPE_OUT" --section collection --stream combined \
+    --source "$1" --log "$2" || warn "scope capture diagnostic failed"
+}
 scope_finish() {
   local rc=$?
   if [[ -n "$SCOPE_OUT" && -f "$SCOPE_OUT" ]]; then
@@ -466,6 +472,9 @@ _semgrep_exec() {
   local -a semgrep_status=("${PIPESTATUS[@]}")
   set -e
   rc=${semgrep_status[0]:-1}
+  if (( ${semgrep_status[1]:-0} != 0 )); then
+    scope_capture_issue "semgrep diagnostic capture incomplete (tee exit ${semgrep_status[1]})" "$semgrep_log"
+  fi
 
   if [[ -n "$staged" && -f "$staged" ]]; then
     mv "$staged" "$json_host"
@@ -616,6 +625,9 @@ run_gitleaks() {
   local -a gitleaks_status=("${PIPESTATUS[@]}")
   set -e
   rc=${gitleaks_status[0]:-1}
+  if (( ${gitleaks_status[1]:-0} != 0 )); then
+    scope_capture_issue "gitleaks diagnostic capture incomplete (tee exit ${gitleaks_status[1]})" "$gitleaks_log"
+  fi
   record_result gitleaks "$rc"
   if (( rc == 0 )); then
     scope_record --tool gitleaks --state run --outcome success \
@@ -682,6 +694,9 @@ run_osv() {
   local -a osv_status=("${PIPESTATUS[@]}")
   set -e
   rc=${osv_status[0]:-1}
+  if (( ${osv_status[1]:-0} != 0 )); then
+    scope_capture_issue "osv diagnostic capture incomplete (tee exit ${osv_status[1]})" "$osv_log"
+  fi
   # osv keeps its own three-way result: 128 means "no lockfiles found", which
   # is neither clean nor a finding, so record_result would mislabel it.
   case "$rc" in
@@ -727,6 +742,9 @@ run_osv() {
     local -a license_status=("${PIPESTATUS[@]}")
     set -e
     lrc=${license_status[0]:-1}
+    if (( ${license_status[1]:-0} != 0 )); then
+      scope_capture_issue "license diagnostic capture incomplete (tee exit ${license_status[1]})" "$license_log"
+    fi
     case "$lrc" in
       0)
         record_status licenses "clean (allowlist: $LICENSES)"
@@ -786,6 +804,9 @@ run_osv() {
     set -e
     src=${sbom_status[0]:-1}
     tee_rc=${sbom_status[1]:-1}
+    if (( tee_rc != 0 )); then
+      scope_capture_issue "sbom diagnostic capture incomplete (tee exit $tee_rc)" "$sbom_log"
+    fi
     if [[ -n "$staged" && -f "$staged" ]]; then
       mkdir -p "$(dirname "$SBOM_OUT")"
       mv "$staged" "$SBOM_OUT"
