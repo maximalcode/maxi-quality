@@ -141,9 +141,9 @@ def validate_tool_record(record: dict[str, Any]) -> list[str]:
         issues.append("command must be a list of strings")
     if "working_directory" in record and record["working_directory"] is not None and not isinstance(record["working_directory"], str):
         issues.append("working_directory must be a string or null")
-    if "state" in record and record["state"] not in VALID_STATES:
+    if "state" in record and (not isinstance(record["state"], str) or record["state"] not in VALID_STATES):
         issues.append(f"state must be one of {sorted(VALID_STATES)}")
-    if "outcome" in record and record["outcome"] not in VALID_OUTCOMES:
+    if "outcome" in record and (not isinstance(record["outcome"], str) or record["outcome"] not in VALID_OUTCOMES):
         issues.append(f"outcome must be one of {sorted(VALID_OUTCOMES)}")
     if "reason" in record and not isinstance(record["reason"], str):
         issues.append("reason must be a string")
@@ -166,11 +166,16 @@ def validate_tool_record(record: dict[str, Any]) -> list[str]:
             for field in ("status", "count", "unit", "method", "reason"):
                 if field not in value:
                     issues.append(f"measurement {name} is missing {field}")
-            if value.get("status") not in VALID_MEASUREMENT_STATES:
+            status = value.get("status")
+            if not isinstance(status, str) or status not in VALID_MEASUREMENT_STATES:
                 issues.append(f"measurement {name} status is invalid")
             count = value.get("count")
             if count is not None and (isinstance(count, bool) or not isinstance(count, int) or count < 0):
                 issues.append(f"measurement {name} count must be a non-negative integer or null")
+            if status == "known" and count is None:
+                issues.append(f"measurement {name} known status requires a numeric count")
+            if isinstance(status, str) and status in {"unknown", "not_applicable"} and count is not None:
+                issues.append(f"measurement {name} {status} status requires a null count")
             for field in ("unit", "method", "reason"):
                 if field in value and not isinstance(value[field], str):
                     issues.append(f"measurement {name} {field} must be a string")
@@ -179,7 +184,8 @@ def validate_tool_record(record: dict[str, Any]) -> list[str]:
         if not isinstance(collection, dict):
             issues.append("collection must be an object")
         else:
-            if collection.get("status") not in {"complete", "partial", "unknown"}:
+            collection_status = collection.get("status")
+            if not isinstance(collection_status, str) or collection_status not in {"complete", "partial", "unknown"}:
                 issues.append("collection status is invalid")
             if not isinstance(collection.get("issues"), list) or not all(isinstance(value, str) for value in collection["issues"]):
                 issues.append("collection issues must be a list of strings")
