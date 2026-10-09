@@ -325,6 +325,30 @@ print(f"OK: native SBOM count boundary {mode}")
 PY
 done
 
+# A diagnostic sink failure must still drain the scanner stream and preserve
+# the scanner's successful verdict. The scan waits for that fallback drain
+# before reading the scope log.
+mkdir -p "$WORK/sbom/tee-fail-bin" "$WORK/sbom/tee-fail"
+cat >"$WORK/sbom/tee-fail-bin/tee" <<'SH'
+#!/usr/bin/env bash
+exit 99
+SH
+chmod +x "$WORK/sbom/tee-fail-bin/tee"
+rc=0
+SBOM_MODE=known PATH="$WORK/sbom/tee-fail-bin:$WORK/sbom/bin:/usr/bin:/bin" \
+  bash "$ROOT/scripts/scan.sh" samples/policy/exclude --skip semgrep --skip gitleaks \
+    --sbom "$WORK/sbom/tee-fail/out.json" \
+    --scope-out "$WORK/sbom/tee-fail/scope.json" >"$WORK/sbom/tee-fail/log" 2>&1 || rc=$?
+[[ $rc == 0 ]]
+python3 - "$WORK/sbom/tee-fail/scope.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+tool = d["tools"]["sbom"]
+assert tool["outcome"] == "success" and tool["exit_code"] == 0
+assert any("diagnostic unavailable" in issue for issue in d["collection"]["issues"])
+print("OK: SBOM diagnostic sink failure preserves scanner verdict")
+PY
+
 # A malformed or missing artifact is a collection error, not a clean summary.
 rc=0
 python3 "$ROOT/scripts/layer2_scope.py" summary --out "$WORK/no-such.json" >/dev/null 2>&1 || rc=$?

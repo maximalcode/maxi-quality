@@ -311,13 +311,21 @@ def _compact_scope(scope: dict | None, scope_error: str | None) -> dict:
             tool_compact["mode"] = mode
         if keep_effective:
             tool_compact["effective"] = keep_effective
-        known_measurements = {
+        compact_measurements = {
             key: _compact_measurement(measurements.get(key))
             for key in ("examined", "unparsed", "policy_excluded")
-            if isinstance(measurements.get(key), dict) and measurements[key].get("status") == "known"
+            if isinstance(measurements.get(key), dict)
+            and measurements[key].get("status") == "known"
         }
-        if known_measurements:
-            tool_compact["measurements"] = known_measurements
+        if compact_measurements:
+            tool_compact["measurements"] = compact_measurements
+        not_applicable = [
+            key for key in ("examined", "unparsed", "policy_excluded")
+            if isinstance(measurements.get(key), dict)
+            and measurements[key].get("status") == "not_applicable"
+        ]
+        if not_applicable:
+            tool_compact["not_applicable"] = not_applicable
         native = record.get("native") if isinstance(record.get("native"), dict) else {}
         component_count = native.get("component_count") if isinstance(native.get("component_count"), dict) else None
         if component_count and component_count.get("status") == "known":
@@ -473,15 +481,19 @@ def _comparison(current: dict, previous: dict | None) -> dict:
         return {"status": "unavailable", "reason": "current or predecessor is incomplete/unknown"}
     reasons = []
     numeric = []
-    current_scope, previous_scope = current.get("scope", {}), previous.get("scope", {})
+    current_scope = current.get("scope") if isinstance(current.get("scope"), dict) else {}
+    previous_scope = previous.get("scope") if isinstance(previous.get("scope"), dict) else {}
     if current_scope.get("status") != "available" or previous_scope.get("status") != "available":
         reasons.append("scope evidence unavailable")
     if current.get("outcome") != "success" or previous.get("outcome") != "success":
         reasons.append("incomplete attempt is not a stable baseline")
     if current.get("identity", {}).get("mode") != previous.get("identity", {}).get("mode"):
         reasons.append("scan mode changed")
-    for name in sorted(set(current_scope.get("tools", {})) | set(previous_scope.get("tools", {}))):
-        now_tool, old_tool = current_scope.get("tools", {}).get(name, {}), previous_scope.get("tools", {}).get(name, {})
+    current_tools = current_scope.get("tools") if isinstance(current_scope.get("tools"), dict) else {}
+    previous_tools = previous_scope.get("tools") if isinstance(previous_scope.get("tools"), dict) else {}
+    for name in sorted(set(current_tools) | set(previous_tools)):
+        now_tool = current_tools.get(name) if isinstance(current_tools.get(name), dict) else {}
+        old_tool = previous_tools.get(name) if isinstance(previous_tools.get(name), dict) else {}
         for label in ("requested", "state", "outcome", "mode", "effective"):
             if now_tool.get(label) != old_tool.get(label):
                 reasons.append(f"{name} {label} changed")
@@ -501,14 +513,38 @@ def _comparison(current: dict, previous: dict | None) -> dict:
             ):
                 reasons.append(f"{name} configuration fingerprint unavailable")
         for key in ("examined", "unparsed", "policy_excluded"):
-            now_m, old_m = now_tool.get("measurements", {}).get(key, {}), old_tool.get("measurements", {}).get(key, {})
+            now_measurements = now_tool.get("measurements") if isinstance(now_tool.get("measurements"), dict) else {}
+            old_measurements = old_tool.get("measurements") if isinstance(old_tool.get("measurements"), dict) else {}
+            now_m = now_measurements.get(key) if isinstance(now_measurements.get(key), dict) else {}
+            old_m = old_measurements.get(key) if isinstance(old_measurements.get(key), dict) else {}
+            if not now_m and key in now_tool.get("not_applicable", []):
+                now_m = {"status": "not_applicable"}
+            if not old_m and key in old_tool.get("not_applicable", []):
+                old_m = {"status": "not_applicable"}
             if now_m.get("status") == "known" and old_m.get("status") == "known":
                 if now_m.get("unit") != old_m.get("unit") or now_m.get("method") != old_m.get("method"):
                     reasons.append(f"{name} {key} units/method changed")
                 else:
-                    numeric.append((name, key, now_m.get("count", 0) - old_m.get("count", 0), now_m.get("unit", "unknown")))
+                    change = now_m.get("count", 0) - old_m.get("count", 0)
+                    numeric.append((name, key, change, now_m.get("unit", "unknown")))
+                    if key == "examined" and change < 0:
+                        reasons.append(f"{name} examined scope smaller")
+                    elif key in {"unparsed", "policy_excluded"} and change > 0:
+                        label = "analysis gaps" if key == "unparsed" else "observed policy exclusions"
+                        reasons.append(f"{name} more {label}")
             elif now_m.get("status") != old_m.get("status"):
                 reasons.append(f"{name} {key} availability changed")
+        now_native_data = now_tool.get("native") if isinstance(now_tool.get("native"), dict) else {}
+        old_native_data = old_tool.get("native") if isinstance(old_tool.get("native"), dict) else {}
+        now_native = now_native_data.get("component_count") if isinstance(now_native_data.get("component_count"), dict) else {}
+        old_native = old_native_data.get("component_count") if isinstance(old_native_data.get("component_count"), dict) else {}
+        if now_native.get("status") == "known" and old_native.get("status") == "known":
+            if now_native.get("unit") != old_native.get("unit") or now_native.get("method") != old_native.get("method"):
+                reasons.append(f"{name} native component units/method changed")
+            else:
+                numeric.append((name, "native component_count", now_native.get("count", 0) - old_native.get("count", 0), now_native.get("unit", "unknown")))
+        elif now_native.get("status") != old_native.get("status"):
+            reasons.append(f"{name} native component count availability changed")
     finding_delta = current["findings"] - previous["findings"]
     return {"status": "qualified" if reasons else "stable", "finding_delta": finding_delta, "scope_deltas": numeric, "reasons": reasons}
 
@@ -530,6 +566,10 @@ def _display_scope(scope: dict, scope_error: str | None) -> list[str]:
             measurement = record.get("measurements", {}).get(key, {})
             if measurement.get("status") == "known":
                 return f"{measurement.get('count')} `{measurement.get('unit', 'unknown')}`"
+            if measurement.get("status") == "not_applicable":
+                return "not applicable"
+            if key in record.get("not_applicable", []):
+                return "not applicable"
             return f"unknown ({_one_line(measurement.get('reason', 'unavailable'), 70)})"
         lines.append(f"| {name} | {record.get('state', 'unknown')} | {record.get('outcome', 'unknown')} | {cell('examined')} | {cell('unparsed')} | {cell('policy_excluded')} |")
         native = record.get("native", {}).get("component_count", {}) if isinstance(record.get("native"), dict) else {}
@@ -538,6 +578,11 @@ def _display_scope(scope: dict, scope_error: str | None) -> list[str]:
         diagnostic = record.get("diagnostic")
         if diagnostic:
             lines.append(f"| ↳ diagnostic |  |  | {_one_line(diagnostic)} |  |  |")
+    if "semgrep" in scope.get("tools", {}):
+        lines += [
+            "",
+            "Semgrep `examined` is scanner-reported attempted target scope; `unparsed` is an overlapping analysis-gap count.",
+        ]
     if scope.get("diagnostic"):
         lines += ["", f"Analysis diagnostic: {_one_line(scope['diagnostic'])}"]
     return lines + [""]
@@ -552,6 +597,34 @@ def _artifact_link(repository: str, identity: dict, artifact: str) -> str | None
     if "/" not in repository or not run_id or run_id == "unknown":
         return None
     return f"https://github.com/{repository}/actions/runs/{run_id}/artifacts"
+
+
+def _presentation(
+    counts: collections.Counter,
+    gitleaks: str,
+    osv: str,
+    licenses: str,
+    sbom: tuple[int, collections.Counter[str]] | None,
+    unparsed: list[str] | None,
+    scan_error: str | None,
+) -> dict:
+    """Retain the newest report view so an older completion cannot mix runs."""
+    result = {
+        "counts": {str(rule): int(count) for rule, count in counts.items()},
+        "gitleaks": _one_line(gitleaks, 180),
+        "osv": _one_line(osv, 180),
+        "licenses": _one_line(licenses, 180),
+        "unparsed": [_one_line(path, 180) for path in (unparsed or [])[:MAX_UNPARSED_ROWS]],
+        "unparsed_total": len(unparsed or []),
+        "scan_error": _one_line(scan_error, MAX_DIAGNOSTIC_EXCERPT) if scan_error else "",
+    }
+    if sbom:
+        components, license_counts = sbom
+        result["sbom"] = {
+            "components": int(components),
+            "licenses": {str(name): int(count) for name, count in license_counts.items()},
+        }
+    return result
 
 
 def build(counts, date, gitleaks, osv, previous, target, licenses="not run",
@@ -573,6 +646,7 @@ def build(counts, date, gitleaks, osv, previous, target, licenses="not run",
         "findings": None if scan_error else total, "largest": top_txt,
         "outcome": entry_outcome,
         "scope": _compact_scope(scope, scope_error),
+        "presentation": _presentation(counts, gitleaks, osv, licenses, sbom, unparsed, scan_error),
     }
     link = _artifact_link(target, identity, entry["scope"].get("artifact", "layer2-scope.json"))
     if link:
@@ -583,12 +657,35 @@ def build(counts, date, gitleaks, osv, previous, target, licenses="not run",
     retained.sort(key=_sort_key)
     retained = retained[-MAX_HISTORY:]
     current = retained[-1]
+    # One rich presentation is enough: it is only needed for the current entry.
+    # Keeping it on every row would let a realistic 52-entry body grow without
+    # bound, while dropping it from the newest row would mix an older completion
+    # with the current run's tool statuses and parse-gap paths.
+    for item in retained:
+        if item.get("id") != current.get("id"):
+            item.pop("presentation", None)
     predecessor = retained[-2] if len(retained) > 1 else None
     comparison = _comparison(current, predecessor)
     rendering_current = current.get("id") == entry.get("id")
     display_identity = current.get("identity", identity)
-    display_error = scan_error if rendering_current else ("previous attempt failed/incomplete" if current.get("findings") is None else None)
-    display_total = total if rendering_current else (current.get("findings") or 0)
+    current_presentation = current.get("presentation", {})
+    display_error = current_presentation.get("scan_error") or (
+        "previous attempt failed/incomplete" if current.get("findings") is None else None
+    )
+    display_total = current.get("findings") or 0
+    display_gitleaks = current_presentation.get("gitleaks", "unknown")
+    display_osv = current_presentation.get("osv", "unknown")
+    display_licenses = current_presentation.get("licenses", "unknown")
+    display_counts = collections.Counter(current_presentation.get("counts", {}))
+    display_unparsed = current_presentation.get("unparsed", [])
+    display_sbom = current_presentation.get("sbom")
+    if not current_presentation and rendering_current:
+        display_gitleaks, display_osv, display_licenses = gitleaks, osv, licenses
+        display_counts = counts
+        display_unparsed = unparsed or []
+        display_sbom = (
+            {"components": sbom[0], "licenses": dict(sbom[1])} if sbom else None
+        )
     display_scope = _display_scope_data(scope, scope_error) if rendering_current else current.get("scope", {"status": "unknown", "reason": "scope unavailable"})
     if rendering_current and link:
         display_scope["artifact_link"] = link
@@ -608,7 +705,7 @@ def build(counts, date, gitleaks, osv, previous, target, licenses="not run",
 
     if display_error:
         lines += [
-            f"> ⚠️ **The Semgrep scan for {date} ERRORED and produced no usable "
+            f"> ⚠️ **The Semgrep scan for {display_identity.get('started_at', date)} ERRORED and produced no usable "
             f"result: {_one_line(display_error)}**",
             ">",
             "> This attempt is retained as failed/incomplete. It is not a zero-finding baseline.",
@@ -622,18 +719,18 @@ def build(counts, date, gitleaks, osv, previous, target, licenses="not run",
         "| Tool | Result |",
         "|---|---|",
         f"| Semgrep | {semgrep_cell} |",
-        f"| Gitleaks | {gitleaks} |",
-        f"| OSV-Scanner | {osv} |",
-        f"| Licenses | {licenses} |",
+        f"| Gitleaks | {display_gitleaks} |",
+        f"| OSV-Scanner | {display_osv} |",
+        f"| Licenses | {display_licenses} |",
         "",
     ]
 
     if display_error:
         # NOT "No Semgrep findings." — that sentence is the bug in prose form.
         lines.append("No Semgrep breakdown: the scan did not complete.")
-    elif rendering_current and counts:
+    elif display_counts:
         lines += ["### Semgrep by rule", "", "| Rule | Count |", "|---|---:|"]
-        lines += [f"| `{rule}` | {n} |" for rule, n in counts.most_common()]
+        lines += [f"| `{rule}` | {n} |" for rule, n in display_counts.most_common()]
     elif display_total:
         lines.append(f"Semgrep findings retained from the current run: **{display_total}**.")
     else:
@@ -644,26 +741,26 @@ def build(counts, date, gitleaks, osv, previous, target, licenses="not run",
     # this, an unparseable file blanked the report as ERRORED; the fix must not
     # swing to the other extreme and simply not mention it, because a file
     # nothing ran against is not a file with no findings.
-    if unparsed:
+    if display_unparsed:
         lines += [
             "### Not scanned",
             "",
-            f"{len(unparsed)} file(s) Semgrep could not parse. **No rule ran "
-            "against them**, so they contribute 0 to every number above — that "
-            "is missing coverage, not a clean result.",
+            f"{current_presentation.get('unparsed_total', len(display_unparsed))} file(s) Semgrep reported with analysis gaps. "
+            "These paths overlap the scanner-reported attempted target scope; "
+            "the gap evidence is not a claim that no rule ran against every path.",
             "",
             "| File |",
             "|---|",
         ]
-        lines += [f"| `{p}` |" for p in unparsed[:MAX_UNPARSED_ROWS]]
-        if len(unparsed) > MAX_UNPARSED_ROWS:
+        lines += [f"| `{p}` |" for p in display_unparsed[:MAX_UNPARSED_ROWS]]
+        if current_presentation.get("unparsed_total", len(display_unparsed)) > MAX_UNPARSED_ROWS:
             # Said out loud, because a truncated list that does not say it was
             # truncated reads as the whole list.
-            lines.append(f"| …and {len(unparsed) - MAX_UNPARSED_ROWS} more |")
+            lines.append(f"| …and {current_presentation['unparsed_total'] - MAX_UNPARSED_ROWS} more |")
         lines.append("")
 
-    if sbom:
-        n_components, license_counts = sbom
+    if display_sbom:
+        n_components, license_counts = display_sbom["components"], collections.Counter(display_sbom["licenses"])
         unknown = license_counts.get("UNKNOWN", 0)
         lines += [
             "## Dependencies",
@@ -685,21 +782,20 @@ def build(counts, date, gitleaks, osv, previous, target, licenses="not run",
         lines.append("")
 
     lines += _display_scope(display_scope, None if rendering_current else display_scope.get("reason"))
-    if rendering_current:
-        lines += ["### Comparison with previous run", ""]
-        if comparison.get("status") == "unavailable":
-            lines.append(f"Comparison unavailable: {comparison['reason']}.")
-        else:
-            finding_text = f"{comparison.get('finding_delta', 0):+d} findings"
-            if comparison.get("status") == "qualified":
-                finding_text += " — qualified because checking conditions or scope changed"
-            lines.append(f"Findings: {finding_text}.")
-            for name, key, change, unit in comparison.get("scope_deltas", []):
-                if change:
-                    lines.append(f"{name} {key}: {change:+d} `{unit}`.")
-            if comparison.get("reasons"):
-                lines.append("Conditions: " + "; ".join(comparison["reasons"]) + ".")
-        lines.append("")
+    lines += ["### Comparison with previous run", ""]
+    if comparison.get("status") == "unavailable":
+        lines.append(f"Comparison unavailable: {comparison['reason']}.")
+    else:
+        finding_text = f"{comparison.get('finding_delta', 0):+d} findings"
+        if comparison.get("status") == "qualified":
+            finding_text += " — qualified because checking conditions or scope changed"
+        lines.append(f"Findings: {finding_text}.")
+        for name, key, change, unit in comparison.get("scope_deltas", []):
+            if change:
+                lines.append(f"{name} {key}: {change:+d} `{unit}`.")
+        if comparison.get("reasons"):
+            lines.append("Conditions: " + "; ".join(comparison["reasons"]) + ".")
+    lines.append("")
 
     lines += [
         HISTORY_DATA_START,
@@ -746,10 +842,13 @@ def main() -> int:
         try:
             with open(args.previous_body) as fh:
                 body = fh.read()
-        except OSError:
-            # First run, or the file was not produced. Not an error: it just
-            # means there is no history yet.
-            body = None
+        except OSError as exc:
+            # An explicitly supplied previous body is the standing issue's
+            # durable history. Treating a read failure as a fresh issue would
+            # allow the action to erase it; a genuinely new issue omits this
+            # option entirely.
+            print(f"error: cannot read previous report body: {exc}", file=sys.stderr)
+            return 3
 
     scope, scope_error = load_scope(args.scope)
     if scope is not None:

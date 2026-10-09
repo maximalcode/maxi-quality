@@ -42,6 +42,30 @@ render() {
   python3 "$ROOT/scripts/quality-report.py" "${args[@]}" >"$out"
 }
 
+qualify_scope() {
+  local path=$1 examined=$2 unparsed=$3 policy=$4 native=$5
+  python3 - "$path" "$examined" "$unparsed" "$policy" "$native" <<'PY'
+import json, sys
+path, examined, unparsed, policy, native = sys.argv[1:]
+d = json.load(open(path))
+semgrep = d["tools"]["semgrep"]
+semgrep["effective"] = {
+    "tool": "semgrep", "version": "1.172.0", "diagnostic_mode": "verbose",
+    "comparison": {"status": "complete"},
+    "config_fingerprint": "fixture-config", "content_fingerprint": "fixture-rules",
+}
+for key, count in (("examined", examined), ("unparsed", unparsed), ("policy_excluded", policy)):
+    semgrep["measurements"][key] = {
+        "status": "known", "count": int(count), "unit": "target_path", "method": "fixture evidence",
+    }
+sbom = d["tools"]["sbom"]
+sbom["native"] = {"component_count": {
+    "status": "known", "count": int(native), "unit": "dependency_component", "method": "fixture inventory",
+}}
+json.dump(d, open(path, "w"))
+PY
+}
+
 S1=$(scope run-one 1 2026-01-01T10:00:00Z)
 python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
   --date 2026-01-01 --run-id run-one --run-attempt 1 \
@@ -55,6 +79,57 @@ grep -q '| run-one | 1 |' "$WORK/two.md"
 # Reprocessing the same identity replaces one entry rather than appending it.
 render "$WORK/repeat.md" "$WORK/two.md" run-one 2 2026-01-01T11:00:00Z "$S2"
 [[ $(grep -c '^| run-one |' "$WORK/repeat.md") == 2 ]]
+
+# Preserve the newest run's complete presentation when an older completion is
+# inserted between it and its prior predecessor. Tool statuses, rule counts,
+# parse-gap paths and dependency inventory must not be taken from the older run.
+cat >"$WORK/findings-old.json" <<'JSON'
+{"results":[{"check_id":"a.no-clock"}],"errors":[],"paths":{"scanned":["src/old.ts"]},"version":"1.172.0"}
+JSON
+SNEW=$(scope run-new 1 2026-01-01T11:00:00Z)
+python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
+  --date 2026-01-01 --run-id run-new --run-attempt 1 \
+  --started-at 2026-01-01T11:00:00Z --scope "$SNEW" \
+  --gitleaks newer --osv newer --licenses 'new licenses' \
+  --previous-body "$WORK/one.md" >"$WORK/newest.md"
+grep -q '## Current — 2026-01-01T11:00:00Z (run-new/1)' "$WORK/newest.md"
+grep -q '| Gitleaks | newer |' "$WORK/newest.md"
+grep -q "| \`no-clock\` | 2 |" "$WORK/newest.md"
+grep -q 'Findings: +0 findings' "$WORK/newest.md"
+SMID=$(scope run-between 1 2026-01-01T10:30:00Z)
+python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings-old.json" \
+  --date 2026-01-01 --run-id run-between --run-attempt 1 \
+  --started-at 2026-01-01T10:30:00Z --scope "$SMID" \
+  --gitleaks older --osv older --licenses 'old licenses' \
+  --previous-body "$WORK/newest.md" >"$WORK/inserted.md"
+grep -q '## Current — 2026-01-01T11:00:00Z (run-new/1)' "$WORK/inserted.md"
+grep -q '| Gitleaks | newer |' "$WORK/inserted.md"
+grep -q "| \`no-clock\` | 2 |" "$WORK/inserted.md"
+grep -q 'Findings: +1 findings' "$WORK/inserted.md"
+if grep -q '| Gitleaks | older |' "$WORK/inserted.md"; then
+  echo "older completion mixed its tool presentation into the current run" >&2
+  exit 1
+fi
+
+# Complete comparison metadata qualifies directional scope changes even when
+# finding deltas are shown: smaller examined scope, more gaps/exclusions, and a
+# compatible native dependency inventory delta are all rendered explicitly.
+SBASE=$(scope run-base 1 2026-01-02T09:00:00Z)
+qualify_scope "$SBASE" 10 0 0 4
+python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings-old.json" \
+  --date 2026-01-02 --run-id run-base --run-attempt 1 \
+  --started-at 2026-01-02T09:00:00Z --scope "$SBASE" >"$WORK/base.md"
+SQUAL=$(scope run-qualified 1 2026-01-02T10:00:00Z)
+qualify_scope "$SQUAL" 8 2 1 5
+python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
+  --date 2026-01-02 --run-id run-qualified --run-attempt 1 \
+  --started-at 2026-01-02T10:00:00Z --scope "$SQUAL" \
+  --previous-body "$WORK/base.md" >"$WORK/qualified.md"
+grep -q "semgrep examined: -2 \`target_path\`" "$WORK/qualified.md"
+grep -q "semgrep unparsed: +2 \`target_path\`" "$WORK/qualified.md"
+grep -q "semgrep policy_excluded: +1 \`target_path\`" "$WORK/qualified.md"
+grep -q "sbom native component_count: +1 \`dependency_component\`" "$WORK/qualified.md"
+grep -q 'smaller\|more analysis gaps\|more observed policy exclusions' "$WORK/qualified.md"
 
 # An older completion is inserted chronologically but cannot replace the newest
 # current findings/scope. Its insertion does change the current predecessor.
@@ -71,6 +146,18 @@ printf '{"kind":"layer2-scope","schema_version":1,"identity":{},"tools":[],"summ
 render "$WORK/malformed-scope.md" "$WORK/old.md" run-malformed 1 2026-01-01T12:30:00Z "$WORK/malformed-scope.json"
 grep -q 'Scope evidence unavailable' "$WORK/malformed-scope.md"
 grep -q '| run-malformed | 1 |' "$WORK/malformed-scope.md"
+
+# An explicit previous-body read failure refuses output instead of treating the
+# standing issue as a new report with empty history.
+set +e
+python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
+  --date 2026-01-01 --run-id unreadable --run-attempt 1 \
+  --started-at 2026-01-01T12:45:00Z --previous-body "$WORK/does-not-exist.md" \
+  >"$WORK/unreadable.md"
+unreadable_rc=$?
+set -e
+[[ $unreadable_rc == 3 ]]
+[[ ! -s "$WORK/unreadable.md" ]]
 
 # A valid failed scope plus a missing success-only findings handoff is a failed
 # attempt, not a clean zero. The renderer still emits a body for the action.
@@ -114,6 +201,7 @@ state=${FAKE_GH_STATE:?}
 if [[ "$1 $2" == "issue list" ]]; then
   [[ -s "$state" ]] && printf '7\n' || true
 elif [[ "$1 $2" == "issue view" ]]; then
+  [[ -z "${FAKE_GH_VIEW_FAIL:-}" ]] || exit 1
   cat "$state"
 elif [[ "$1 $2" == "issue edit" ]]; then
   for ((i=1; i<=$#; i++)); do
@@ -176,6 +264,23 @@ run_action "$WORK/findings.json" "$S1" action-foreign
 grep -q '| action-foreign | 1 |' "$WORK/issue.md"
 grep -q 'scope identity does not match' "$WORK/issue.md"
 
+# A failure while reading the standing issue stops before rendering or writing;
+# the existing body remains byte-for-byte intact.
+cp "$WORK/issue.md" "$WORK/issue-before-view-failure.md"
+set +e
+PATH="$WORK/bin:$PATH" FAKE_GH_STATE="$WORK/issue.md" FAKE_GH_VIEW_FAIL=1 \
+  GH_TOKEN=test GITHUB_ACTION_PATH="$ROOT/actions/report-issue" \
+  GITHUB_REPOSITORY=demo/repo RUNNER_TEMP="$WORK" GITHUB_OUTPUT="$WORK/action.out" \
+  GITHUB_STEP_SUMMARY="$WORK/summary.md" JSON="$WORK/findings.json" \
+  SCOPE="$S1" RUN_ID=action-view-failure RUN_ATTEMPT=1 INVOCATION_ID=action-view-failure \
+  STARTED_AT=2026-01-04T10:00:00Z COMMIT=abc123 REF=refs/heads/develop \
+  LABEL=quality-report TITLE='Quality backlog' GITLEAKS=clean OSV=clean LICENSES='not run' SBOM='' \
+  bash "$WORK/action-run.sh"
+view_rc=$?
+set -e
+[[ $view_rc != 0 ]]
+cmp -s "$WORK/issue-before-view-failure.md" "$WORK/issue.md"
+
 # 52 entries means 52 attempts, including same-day runs, and old rows fall off.
 body="$WORK/one.md"
 for i in $(seq 2 54); do
@@ -201,7 +306,7 @@ done
 [[ $(grep -c '^| cap-' "$body") == 52 ]]
 body_size=$(wc -c < "$body")
 [[ "$body_size" -lt 65536 ]]
-echo "compact 52-entry report body: ${body_size} characters (local conservative budget 65536)"
+echo "compact 52-entry report body: ${body_size} bytes (local conservative budget 65536 bytes)"
 if grep -q '| run-one | 1 |' "$body"; then
   echo "retention did not evict the oldest entry" >&2
   exit 1
