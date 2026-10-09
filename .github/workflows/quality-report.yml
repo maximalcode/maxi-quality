@@ -85,8 +85,10 @@ jobs:
       # who forks this baseline and keeps their copy private.
       - name: Full scan
         id: scan
+        continue-on-error: true
         uses: maximalcode/maxi-quality/actions/layer2@613a26c952d3a5b224b15e7268b182826c1e53b2
         with:
+          producer: report
           # A FULL scan, never changed-only: the backlog IS the point here.
           # no-fail because a report must not fail merely because findings
           # exist — failing on findings is quality.yml's job, not this one's.
@@ -107,6 +109,7 @@ jobs:
 
       - name: Write the standing issue
         id: write
+        if: always()
         uses: maximalcode/maxi-quality/actions/report-issue@613a26c952d3a5b224b15e7268b182826c1e53b2
         with:
           json: ${{ runner.temp }}/semgrep.json

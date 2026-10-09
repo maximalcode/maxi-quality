@@ -1039,6 +1039,7 @@ jobs:
       # tag cannot change the action revision selected by this workflow.
       - uses: maximalcode/maxi-quality/actions/layer2@613a26c952d3a5b224b15e7268b182826c1e53b2
         with:
+          producer: gate
           changed-only: ${{ inputs.changed-only }}
           licenses: ${{ inputs.licenses }}
           annotate: ${{ inputs.annotate }}

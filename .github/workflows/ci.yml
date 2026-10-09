@@ -4124,6 +4124,7 @@ jobs:
         continue-on-error: true
         with:
           json-out: ${{ runner.temp }}/layer2.json
+          producer: gate
       - name: The scan must have FAILED, with exactly the expected finding set
         shell: bash
         env:
@@ -4159,6 +4160,33 @@ jobs:
       - name: changed-only preserves history and filters PR merge baselines
         shell: bash
         run: bash samples/layer2-changed-only/run.sh
+
+      - name: scope evidence covers scanner and collection failure paths
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: bash samples/layer2-scope/run.sh
+
+      - name: scope evidence keeps the verdict and all Layer 2 invocations
+        shell: bash
+        env:
+          SCOPE: ${{ steps.scan.outputs.scope }}
+        run: |
+          set -Eeuo pipefail
+          test -s "$SCOPE"
+          python3 - "$SCOPE" <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          assert d["schema_version"] == 1
+          assert d["kind"] == "layer2-scope"
+          assert d["identity"]["producer"] == "gate"
+          assert d["analysis"]["outcome"] == "failure"
+          assert set(d["tools"]) == {"semgrep", "gitleaks", "osv", "licenses", "sbom"}
+          assert all(set(r["measurements"]) == {"examined", "unparsed", "policy_excluded"}
+                     for r in d["tools"].values())
+          assert all(m["count"] is None for r in d["tools"].values()
+                     for m in r["measurements"].values())
+          print("OK: Layer 2 scope contract and failure evidence are present")
+          PY
 
   # A consumer's FILENAMES reach quality.yml's matrix, and a matrix value that
   # is interpolated into a run body is code. This job proves the safe form is

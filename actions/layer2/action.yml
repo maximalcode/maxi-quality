@@ -25,6 +25,11 @@ inputs:
   target:
     description: 'Directory to scan (the consumer checkout).'
     default: ${{ github.workspace }}
+  producer:
+    description: >-
+      Evidence producer identity. `gate` is used by quality.yml and `report` by
+      quality-report.yml; it keeps artifacts from the two own runs distinct.
+    default: 'gate'
   changed-only:
     description: >-
       New-code-only mode: pass a base ref (e.g. "origin/main") to report only
@@ -129,10 +134,51 @@ outputs:
   sbom:
     description: 'SBOM status line, including the component count.'
     value: ${{ steps.scan.outputs.sbom }}
+  scope:
+    description: 'Path to the versioned Layer 2 scope evidence artifact.'
+    value: ${{ steps.scope.outputs.path }}
 
 runs:
   using: composite
   steps:
+    - name: Initialize Layer 2 scope evidence
+      id: scope
+      if: always()
+      continue-on-error: true
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target }}
+        PRODUCER: ${{ inputs.producer }}
+        SCOPE_OUT: ${{ runner.temp }}/maxi-quality-layer2-scope.json
+        LICENSES: ${{ inputs.licenses }}
+        SBOM_OUT: ${{ inputs.sbom-out }}
+        CHANGED_ONLY: ${{ inputs.changed-only }}
+      run: |
+        set -Eeuo pipefail
+        SCOPE_SCRIPT="${GITHUB_ACTION_PATH}/../../scripts/layer2_scope.py"
+        commit=$(git -C "$TARGET" rev-parse HEAD 2>/dev/null || echo unknown)
+        ref=$(git -C "$TARGET" symbolic-ref --quiet --short HEAD 2>/dev/null || echo unknown)
+        mode=full
+        [[ -n "$CHANGED_ONLY" ]] && mode=changed-only
+        # The scope file is one invocation fragment. A random token is safer
+        # than guessing a matrix environment variable: GitHub does not expose
+        # one standard GITHUB_MATRIX value, and two calls in one job otherwise
+        # share every identity field and overwrite each other's artifact.
+        fragment_id=$(python3 -c 'import uuid; print(uuid.uuid4().hex[:16])')
+        args=(init --out "$SCOPE_OUT" --producer "$PRODUCER"
+          --workflow "${GITHUB_WORKFLOW:-local}"
+          --invocation-id "${LAYER2_INVOCATION_ID:-${GITHUB_RUN_ID:-local}}" --run-id "${GITHUB_RUN_ID:-local}"
+          --run-attempt "${GITHUB_RUN_ATTEMPT:-1}" --job "${GITHUB_JOB:-layer2}"
+          --fragment-id "$fragment_id" --commit "$commit" --ref "$ref" --mode "$mode"
+          --licenses-requested "$([[ -n "$LICENSES" ]] && echo true || echo false)"
+          --sbom-requested "$([[ -n "$SBOM_OUT" ]] && echo true || echo false)")
+        if [[ -n "$CHANGED_ONLY" ]]; then
+          args+=(--baseline-ref "$CHANGED_ONLY")
+        fi
+        python3 "$SCOPE_SCRIPT" "${args[@]}"
+        echo "path=$SCOPE_OUT" >> "$GITHUB_OUTPUT"
+        echo "fragment_id=$fragment_id" >> "$GITHUB_OUTPUT"
+
     # EVERY input reaches the shell through `env:`, never through `${{ }}`
     # interpolated into the script body.
     #
@@ -144,6 +190,8 @@ runs:
     # baseline that gates other people's supply chains should not model the
     # pattern it exists to catch. `env:` passes values as values.
     - name: Install pinned tools
+      id: install
+      continue-on-error: true
       shell: bash
       env:
         SEMGREP_VERSION: ${{ inputs.semgrep-version }}
@@ -153,6 +201,7 @@ runs:
         OSV_SHA256: ${{ inputs.osv-scanner-sha256 }}
       run: |
         set -Eeuo pipefail
+        exec > >(tee "$RUNNER_TEMP/layer2-setup.log") 2>&1
         echo "::group::Install PyYAML"
         # scripts/policy.py reads the consumer's .maxi-quality.yml with it.
         # Installed unconditionally rather than only when a policy file exists:
@@ -296,6 +345,7 @@ runs:
 
     - name: Layer 2 scan
       id: scan
+      if: always() && steps.install.outcome == 'success'
       shell: bash
       env:
         TARGET: ${{ inputs.target }}
@@ -307,9 +357,36 @@ runs:
         ANNOTATE: ${{ inputs.annotate }}
         MAX_ANNOTATIONS: ${{ inputs.max-annotations }}
         WORKSPACE: ${{ github.workspace }}
+        SCOPE_OUT: ${{ runner.temp }}/maxi-quality-layer2-scope.json
+        LAYER2_PRODUCER: ${{ inputs.producer }}
+        LAYER2_FRAGMENT_ID: ${{ steps.scope.outputs.fragment_id }}
       run: |
         set -Eeuo pipefail
-        python3 "${GITHUB_ACTION_PATH}/../../scripts/check-quality-lock.py" "$TARGET"
+        SCOPE_OUT="${SCOPE_OUT:-${RUNNER_TEMP}/maxi-quality-layer2-scope.json}"
+        preflight_rc=0
+        python3 "${GITHUB_ACTION_PATH}/../../scripts/check-quality-lock.py" "$TARGET" || preflight_rc=$?
+        if (( preflight_rc != 0 )); then
+          scope_script="${GITHUB_ACTION_PATH}/../../scripts/layer2_scope.py"
+          for tool in semgrep gitleaks osv; do
+            python3 "$scope_script" record --out "$SCOPE_OUT" --tool "$tool" \
+              --state skipped --outcome unknown --reason-code setup_failure \
+              --reason "quality lock setup failed before scanner invocation" --exit-code "$preflight_rc" || true
+          done
+          for tool in licenses sbom; do
+            python3 "$scope_script" record --out "$SCOPE_OUT" --tool "$tool" \
+              --state skipped --outcome unknown --reason-code blocked \
+              --reason "quality lock setup failed before optional invocation" --exit-code "$preflight_rc" || true
+          done
+          python3 "$scope_script" finalize --out "$SCOPE_OUT" \
+            --analysis-outcome failure --analysis-exit-code "$preflight_rc" \
+            --collection-status complete || true
+          : > "$RUNNER_TEMP/scan.log"
+          {
+            echo 'semgrep=not run'; echo 'gitleaks=not run'; echo 'osv=not run'
+            echo 'licenses=not run'; echo 'sbom=not run'
+          } >> "$GITHUB_OUTPUT"
+          exit "$preflight_rc"
+        fi
         ARGS=(--require-tools)
         if [[ -n "$JSON_OUT" ]]; then
           ARGS+=(--json-out "$JSON_OUT")
@@ -317,6 +394,7 @@ runs:
         if [[ -n "$SBOM_OUT" ]]; then
           ARGS+=(--sbom "$SBOM_OUT")
         fi
+        ARGS+=(--scope-out "$SCOPE_OUT")
         if [[ -n "$LICENSES" ]]; then
           ARGS+=(--licenses "$LICENSES")
         fi
@@ -378,4 +456,85 @@ runs:
           echo "licenses=$(status licenses)"
           echo "sbom=$(status sbom)"
         } >> "$GITHUB_OUTPUT"
+        if (( preflight_rc != 0 && rc == 0 )); then
+          rc=$preflight_rc
+        fi
         exit "$rc"
+
+    - name: Finalize scope after tool setup failure
+      if: always() && steps.install.outcome != 'success'
+      continue-on-error: true
+      shell: bash
+      env:
+        SCOPE_OUT: ${{ runner.temp }}/maxi-quality-layer2-scope.json
+        SETUP_LOG: ${{ runner.temp }}/layer2-setup.log
+      run: |
+        set -Eeuo pipefail
+        scope_script="${GITHUB_ACTION_PATH}/../../scripts/layer2_scope.py"
+        for tool in semgrep gitleaks osv; do
+          python3 "$scope_script" record --out "$SCOPE_OUT" --tool "$tool" \
+            --state skipped --outcome unknown --reason-code setup_failure \
+            --reason "tool setup failed before scanner invocation" --exit-code 1 || true
+        done
+        for tool in licenses sbom; do
+          python3 "$scope_script" record --out "$SCOPE_OUT" --tool "$tool" \
+            --state skipped --outcome unknown --reason-code blocked \
+            --reason "tool setup failed before optional invocation" --exit-code 1 || true
+        done
+        python3 "$scope_script" finalize --out "$SCOPE_OUT" \
+          --analysis-outcome failure --analysis-exit-code 1 --collection-status complete || true
+
+    - name: Retain setup diagnostics in scope evidence
+      if: always()
+      continue-on-error: true
+      shell: bash
+      env:
+        SCOPE_OUT: ${{ runner.temp }}/maxi-quality-layer2-scope.json
+        SETUP_LOG: ${{ runner.temp }}/layer2-setup.log
+      run: |
+        set -Eeuo pipefail
+        if [[ -s "$SCOPE_OUT" && -s "$SETUP_LOG" ]]; then
+          python3 "${GITHUB_ACTION_PATH}/../../scripts/layer2_scope.py" diagnostic \
+            --out "$SCOPE_OUT" --section analysis --stream combined \
+            --source setup --log "$SETUP_LOG"
+        fi
+
+    - name: Publish Layer 2 scope artifact
+      if: always()
+      continue-on-error: true
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: maxi-quality-layer2-${{ inputs.producer }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ steps.scope.outputs.fragment_id }}
+        path: ${{ runner.temp }}/maxi-quality-layer2-scope.json
+        if-no-files-found: warn
+
+    - name: Publish Layer 2 scope summary
+      if: always()
+      continue-on-error: true
+      shell: bash
+      env:
+        SCOPE_OUT: ${{ runner.temp }}/maxi-quality-layer2-scope.json
+      run: |
+        set -Eeuo pipefail
+        if [[ -s "$SCOPE_OUT" ]]; then
+          python3 "${GITHUB_ACTION_PATH}/../../scripts/layer2_scope.py" summary --out "$SCOPE_OUT" >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo 'Layer 2 scope: unavailable (scope artifact was not produced)' >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - name: Preserve Layer 2 analysis verdict
+      if: always()
+      shell: bash
+      env:
+        INSTALL_OUTCOME: ${{ steps.install.outcome }}
+        SCAN_OUTCOME: ${{ steps.scan.outcome }}
+      run: |
+        set -Eeuo pipefail
+        if [[ "$INSTALL_OUTCOME" != success ]]; then
+          echo "::error::Layer 2 tool setup failed (outcome: $INSTALL_OUTCOME). Scope evidence was still attempted."
+          exit 1
+        fi
+        if [[ "$SCAN_OUTCOME" != success ]]; then
+          echo "::error::Layer 2 scan failed (outcome: $SCAN_OUTCOME). Scope evidence was still attempted."
+          exit 1
+        fi

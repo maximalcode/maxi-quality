@@ -21,6 +21,8 @@
 #   --sbom FILE            Write a CycloneDX 1.6 SBOM of every resolved
 #                          dependency to FILE. Never gates — an inventory is not
 #                          a finding.
+#   --scope-out FILE       Write the versioned Layer 2 scope artifact for this
+#                          run. It is finalized on ordinary early exits too.
 #   --licenses LIST        Fail on any dependency whose license is not in this
 #                          comma-separated SPDX allowlist. Off by default: a
 #                          license policy is a per-repo decision, and a default
@@ -91,6 +93,7 @@ MAX_ANNOTATIONS=50
 ANNOTATE_PREFIX=""
 JSON_OUT=""
 SBOM_OUT=""
+SCOPE_OUT=""
 LICENSES=""
 REQUIRE_TOOLS=0
 SKIP_SEMGREP=0
@@ -112,6 +115,9 @@ while [[ $# -gt 0 ]]; do
     --sbom)
       [[ $# -gt 1 ]] || die "--sbom needs a file path"
       SBOM_OUT="$2"; shift ;;
+    --scope-out)
+      [[ $# -gt 1 ]] || die "--scope-out needs a file path"
+      SCOPE_OUT="$2"; shift ;;
     --licenses)
       [[ $# -gt 1 ]] || die "--licenses needs an SPDX allowlist, e.g. MIT,Apache-2.0"
       LICENSES="$2"; shift ;;
@@ -157,7 +163,37 @@ TARGET="$(cd "$TARGET" && pwd)"
 # --json-out still writes wherever the caller asked, this is just where the run
 # assembles them.
 WORKDIR="$(mktemp -d)"
-trap 'rm -rf "$WORKDIR"' EXIT
+
+# Scope collection is deliberately additive. The scan's exit code is captured
+# before finalization and returned unchanged even when the evidence writer has
+# a filesystem or JSON problem.
+SCOPE_LOG="$WORKDIR/scan.log"
+scope_record() {
+  [[ -n "$SCOPE_OUT" ]] || return 0
+  python3 "$BASELINE/scripts/layer2_scope.py" record \
+    --out "$SCOPE_OUT" "$@" || warn "scope record failed for ${1:-tool}"
+}
+scope_finish() {
+  local rc=$?
+  if [[ -n "$SCOPE_OUT" && -f "$SCOPE_OUT" ]]; then
+    local outcome=success
+    if (( rc != 0 )); then
+      outcome=failure
+    elif (( FINDINGS )); then
+      outcome=failure
+    elif (( UNAVAILABLE )); then
+      outcome=unknown
+    fi
+    local -a finish_args=(--out "$SCOPE_OUT" --analysis-outcome "$outcome" \
+      --analysis-exit-code "$rc" --collection-status complete)
+    [[ -f "$SCOPE_LOG" ]] && finish_args+=(--log "$SCOPE_LOG")
+    python3 "$BASELINE/scripts/layer2_scope.py" finalize \
+      "${finish_args[@]}" || warn "scope finalization failed"
+  fi
+  rm -rf "$WORKDIR"
+  return "$rc"
+}
+trap scope_finish EXIT
 
 # --- output helpers ----------------------------------------------------------
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }
@@ -179,6 +215,29 @@ docker_ok() { have docker && docker info >/dev/null 2>&1; }
 # actions/layer2 — that reads these lines with `s/^  NAME \{1,\}//p` and needs at
 # least one space after the label.
 record_status() { record "$(printf '%-11s%s' "$1" "$2")"; }
+
+if [[ -n "$SCOPE_OUT" ]]; then
+  scope_mode=full
+  [[ "$CHANGED_ONLY" == 1 ]] && scope_mode=changed-only
+  scope_commit="$(git -C "$TARGET" rev-parse HEAD 2>/dev/null || echo unknown)"
+  scope_ref="$(git -C "$TARGET" symbolic-ref --quiet --short HEAD 2>/dev/null || git -C "$TARGET" describe --tags --exact-match 2>/dev/null || echo unknown)"
+  scope_baseline=()
+  (( CHANGED_ONLY )) && scope_baseline=(--baseline-ref "$BASE_REF")
+  python3 "$BASELINE/scripts/layer2_scope.py" init \
+    --out "$SCOPE_OUT" \
+    --producer "${LAYER2_PRODUCER:-gate}" \
+    --workflow "${GITHUB_WORKFLOW:-local}" \
+    --invocation-id "${LAYER2_INVOCATION_ID:-${GITHUB_RUN_ID:-local}}" \
+    --run-id "${GITHUB_RUN_ID:-local}" \
+    --run-attempt "${GITHUB_RUN_ATTEMPT:-1}" \
+    --job "${GITHUB_JOB:-layer2}" \
+    --fragment-id "${LAYER2_FRAGMENT_ID:-${LAYER2_PRODUCER:-gate}:${GITHUB_ACTION:-layer2}:${TARGET}}" \
+    --commit "$scope_commit" --ref "$scope_ref" --mode "$scope_mode" \
+    ${scope_baseline[@]+"${scope_baseline[@]}"} \
+    --licenses-requested "$([[ -n "$LICENSES" ]] && echo true || echo false)" \
+    --sbom-requested "$([[ -n "$SBOM_OUT" ]] && echo true || echo false)" \
+    || warn "scope initialization failed"
+fi
 
 # --- tool resolution ---------------------------------------------------------
 #
@@ -265,7 +324,11 @@ run_semgrep() {
   resolve_tool semgrep semgrep "semgrep==$SEMGREP_PIN" \
     "returntocorp/semgrep:$SEMGREP_PIN" semgrep \
     "install it (\`brew install semgrep\`), or provide uvx or docker" \
-    -v "$BASELINE:/baseline:ro" || return 0
+    -v "$BASELINE:/baseline:ro" || {
+      scope_record --tool semgrep --state skipped --outcome unknown --reason-code unavailable \
+        --reason "Semgrep binary unavailable" --exit-code 127
+      return 0
+    }
 
   # The uvx and docker paths are pinned above. A NATIVE binary on PATH is
   # whatever the machine has, and that cannot be fixed from here — but it can
@@ -273,7 +336,7 @@ run_semgrep() {
   # brew is one patch ahead would just get the script abandoned.
   if [[ "${RESOLVED_CMD[0]}" == "semgrep" ]]; then
     local have_ver
-    have_ver="$(semgrep --version 2>/dev/null | tr -d '[:space:]')"
+    have_ver="$(semgrep --version 2>/dev/null | tr -d '[:space:]' || true)"
     if [[ -n "$have_ver" && "$have_ver" != "$SEMGREP_PIN" ]]; then
       warn "semgrep $have_ver is on PATH but this baseline is pinned to $SEMGREP_PIN."
       warn "findings and PARSE ERRORS can both differ between versions — if a result"
@@ -300,10 +363,15 @@ run_semgrep() {
   # reported as a clean scan, and it must not be recoverable into "carry on with
   # the defaults" — that would apply a policy the consumer did not write.
   POLICY_JSON="$WORKDIR/policy.json"
-  python3 "$BASELINE/scripts/policy.py" resolve \
+  local policy_log="$WORKDIR/policy.log"
+  if ! python3 "$BASELINE/scripts/policy.py" resolve \
     --target "$TARGET" --baseline "$BASELINE" \
     --baseline-path "$baseline_path" --out "$POLICY_JSON" \
-    || die "the policy in $TARGET/.maxi-quality.yml is not usable (see above)"
+    2>"$policy_log"; then
+    scope_record --tool semgrep --state skipped --outcome failure --reason-code blocked \
+      --reason "policy setup failed" --exit-code 3 --log "$policy_log"
+    die "the policy in $TARGET/.maxi-quality.yml is not usable (see above)"
+  fi
 
   local -a cfg=()
   local line
@@ -349,7 +417,7 @@ _semgrep_exec() {
   fi
   extra+=(--json-output="$json_arg")
 
-  local rc=0
+  local rc=0 semgrep_log="$WORKDIR/semgrep.log"
   # THE `cd` IS LOAD-BEARING, and its absence was a silent no-op gate.
   #
   # `--baseline-commit` resolves the ref against the git repo of semgrep's
@@ -372,16 +440,35 @@ _semgrep_exec() {
   # target that does not exist. Those must not be reported as findings.
   # ${a[@]+"${a[@]}"} is the bash 3.2 (macOS system bash) safe way to expand a
   # possibly-empty array under `set -u`.
-  ( cd "$TARGET" && "$@" --metrics=off --disable-version-check ${extra[@]+"${extra[@]}"} ) || rc=$?
+  ( cd "$TARGET" && "$@" --metrics=off --disable-version-check ${extra[@]+"${extra[@]}"} ) \
+    > >(tee "$semgrep_log") 2>&1 || rc=$?
 
   if [[ -n "$staged" && -f "$staged" ]]; then
     mv "$staged" "$json_host"
+  fi
+
+  local -a result_issue=()
+  if [[ ! -s "$json_host" ]]; then
+    result_issue=(--collection-issue "Semgrep result JSON missing")
+  elif ! python3 - "$json_host" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as fh:
+    json.load(fh)
+PY
+  then
+    result_issue=(--collection-issue "Semgrep result JSON malformed")
   fi
 
   if (( rc != 0 )); then
     # semgrep itself failed. Not a finding, and emphatically not a pass.
     record_status semgrep "ERROR (semgrep exit $rc)"
     FINDINGS=1
+    scope_record --tool semgrep --state run --outcome failure \
+      --reason "Semgrep exited before producing a usable result" --exit-code "$rc" \
+      --mode "$([[ "$CHANGED_ONLY" == 1 ]] && echo changed-only || echo full)" \
+      --baseline-ref "$([[ "$CHANGED_ONLY" == 1 ]] && echo "$BASE_REF" || true)" \
+      --log "$semgrep_log" --log "$json_host" ${result_issue[@]+"${result_issue[@]}"}
     return 0
   fi
 
@@ -421,13 +508,34 @@ _semgrep_exec() {
   fi
 
   case "$crc" in
-    0) record_status semgrep "clean$suffix" ;;
-    1) record_status semgrep "FINDINGS$suffix"; FINDINGS=1 ;;
+    0)
+      record_status semgrep "clean$suffix"
+      scope_record --tool semgrep --state run --outcome success \
+        --reason "Semgrep completed" --exit-code 0 \
+        --mode "$([[ "$CHANGED_ONLY" == 1 ]] && echo changed-only || echo full)" \
+        --baseline-ref "$([[ "$CHANGED_ONLY" == 1 ]] && echo "$BASE_REF" || true)" \
+        --log "$semgrep_log" --log "$json_host" ${result_issue[@]+"${result_issue[@]}"}
+      ;;
+    1)
+      record_status semgrep "FINDINGS$suffix"; FINDINGS=1
+      scope_record --tool semgrep --state run --outcome failure \
+        --reason "Semgrep completed with findings" --exit-code 1 \
+        --mode "$([[ "$CHANGED_ONLY" == 1 ]] && echo changed-only || echo full)" \
+        --baseline-ref "$([[ "$CHANGED_ONLY" == 1 ]] && echo "$BASE_REF" || true)" \
+        --log "$semgrep_log" --log "$json_host" ${result_issue[@]+"${result_issue[@]}"}
+      ;;
     # Exit 2 is a broken mechanism: unreadable results, a semgrep error that is
     # not a per-file parse failure, every file unparseable, or a disabled rule
     # that was not actually disabled. Each one means the verdict is unknown,
     # and an unknown verdict is a failure here rather than a pass.
-    *) record_status semgrep "ERROR (policy exit $crc)"; FINDINGS=1 ;;
+    *)
+      record_status semgrep "ERROR (policy exit $crc)"; FINDINGS=1
+      scope_record --tool semgrep --state run --outcome failure \
+        --reason "Semgrep result classification failed" --exit-code "$crc" \
+        --mode "$([[ "$CHANGED_ONLY" == 1 ]] && echo changed-only || echo full)" \
+        --baseline-ref "$([[ "$CHANGED_ONLY" == 1 ]] && echo "$BASE_REF" || true)" \
+        --log "$semgrep_log" --log "$json_host" ${result_issue[@]+"${result_issue[@]}"}
+      ;;
   esac
   return 0
 }
@@ -435,7 +543,11 @@ _semgrep_exec() {
 # --- 2. Gitleaks -------------------------------------------------------------
 run_gitleaks() {
   resolve_tool gitleaks gitleaks - ghcr.io/gitleaks/gitleaks:latest - \
-    "install it (\`brew install gitleaks\`) or start docker" || return 0
+    "install it (\`brew install gitleaks\`) or start docker" || {
+      scope_record --tool gitleaks --state skipped --outcome unknown --reason-code unavailable \
+        --reason "Gitleaks binary unavailable" --exit-code 127
+      return 0
+    }
   local root="$RESOLVED_ROOT"
 
   local -a extra=()
@@ -449,28 +561,53 @@ run_gitleaks() {
   # Decide history-vs-worktree scan FIRST, so --log-opts is only ever added on
   # the path where it is meaningful.
   local subcmd="git"
+  local history_mode="history" fallback=""
   if ! git -C "$TARGET" rev-parse HEAD >/dev/null 2>&1; then
     warn "gitleaks: no commits found; scanning the working tree instead of history"
     subcmd="dir"
+    history_mode="worktree"
+    fallback="no commits; history unavailable"
   elif (( CHANGED_ONLY )); then
     if git -C "$TARGET" rev-parse --verify --quiet "$BASE_REF" >/dev/null; then
       extra+=(--log-opts "$BASE_REF..HEAD")
       info "gitleaks: commits since $BASE_REF only"
     else
       warn "gitleaks: ref '$BASE_REF' not found; scanning full history instead"
+      fallback="baseline '$BASE_REF' unavailable; full history fallback"
     fi
   fi
 
-  local rc=0
-  "${RESOLVED_CMD[@]}" "$subcmd" "$root" --no-banner --redact ${extra[@]+"${extra[@]}"} || rc=$?
+  local rc=0 gitleaks_log="$WORKDIR/gitleaks.log"
+  "${RESOLVED_CMD[@]}" "$subcmd" "$root" --no-banner --redact ${extra[@]+"${extra[@]}"} \
+    > >(tee "$gitleaks_log") 2>&1 || rc=$?
   record_result gitleaks "$rc"
+  if (( rc == 0 )); then
+    scope_record --tool gitleaks --state run --outcome success \
+      --reason "Gitleaks completed" --exit-code 0 --mode "$history_mode" \
+      --baseline-ref "$([[ "$CHANGED_ONLY" == 1 ]] && echo "$BASE_REF" || true)" \
+      --fallback "$fallback" --log "$gitleaks_log"
+  else
+    scope_record --tool gitleaks --state run --outcome failure \
+      --reason "Gitleaks exited with an error or findings" --exit-code "$rc" \
+      --mode "$history_mode" \
+      --baseline-ref "$([[ "$CHANGED_ONLY" == 1 ]] && echo "$BASE_REF" || true)" \
+      --fallback "$fallback" --log "$gitleaks_log"
+  fi
   return 0
 }
 
 # --- 3. OSV-Scanner ----------------------------------------------------------
 run_osv() {
   resolve_tool osv osv-scanner - ghcr.io/google/osv-scanner:latest - \
-    "install it (\`brew install osv-scanner\`) or start docker" || return 0
+    "install it (\`brew install osv-scanner\`) or start docker" || {
+      scope_record --tool osv --state skipped --outcome unknown --reason-code unavailable \
+        --reason "OSV-Scanner binary unavailable" --exit-code 127
+      [[ -n "$LICENSES" ]] && scope_record --tool licenses --state skipped --outcome unknown --reason-code blocked \
+        --reason "OSV-Scanner unavailable before license invocation" --exit-code 127
+      [[ -n "$SBOM_OUT" ]] && scope_record --tool sbom --state skipped --outcome unknown --reason-code blocked \
+        --reason "OSV-Scanner unavailable before SBOM invocation" --exit-code 127
+      return 0
+    }
   local root="$RESOLVED_ROOT"
 
   # OSV has no changed-only mode: a vulnerable dependency is vulnerable
@@ -502,14 +639,36 @@ run_osv() {
   # vs 7 on the same project), and it has the same answer: it is the consumer's
   # call, made with `mvn dependency:tree` or a lockfile-equivalent of their own,
   # not something this script decides silently by being slow and flaky instead.
-  local rc=0
-  "${RESOLVED_CMD[@]}" scan source --recursive --no-resolve "$root" || rc=$?
+  local rc=0 osv_log="$WORKDIR/osv.log"
+  "${RESOLVED_CMD[@]}" scan source --recursive --no-resolve "$root" \
+    > >(tee "$osv_log") 2>&1 || rc=$?
   # osv keeps its own three-way result: 128 means "no lockfiles found", which
   # is neither clean nor a finding, so record_result would mislabel it.
   case "$rc" in
-    0)   record_status osv "clean" ;;
-    128) record_status osv "no lockfiles found"; warn "osv-scanner found nothing to scan" ;;
-    *)   record_status osv "FINDINGS (exit $rc)"; FINDINGS=1 ;;
+    0)
+      record_status osv "clean"
+      scope_record --tool osv --state run --outcome success \
+        --reason "OSV-Scanner completed" --exit-code 0 --mode "source-recursive" \
+        --resolution "no-resolve" --log "$osv_log"
+      ;;
+    128)
+      record_status osv "no lockfiles found"; warn "osv-scanner found nothing to scan"
+      scope_record --tool osv --state run --outcome success \
+        --reason "OSV-Scanner found no dependency inputs" --exit-code 128 \
+        --mode "source-recursive" --resolution "no-resolve" --log "$osv_log"
+      ;;
+    *)
+      record_status osv "FINDINGS (exit $rc)"; FINDINGS=1
+      osv_reason="OSV-Scanner reported findings or an unclassified scanner error"
+      if (( rc == 127 || rc >= 129 )); then
+        osv_reason="OSV-Scanner reported an operational error"
+      elif (( rc == 1 )); then
+        osv_reason="OSV-Scanner reported findings"
+      fi
+      scope_record --tool osv --state run --outcome failure \
+        --reason "$osv_reason" --exit-code "$rc" \
+        --mode "source-recursive" --resolution "no-resolve" --log "$osv_log"
+      ;;
   esac
 
   # --- licenses and SBOM, both optional, both separate osv invocations -------
@@ -521,12 +680,28 @@ run_osv() {
   # need different people and different fixes.
   if [[ -n "$LICENSES" ]]; then
     bold "── Licenses ──"
-    local lrc=0
-    "${RESOLVED_CMD[@]}" scan source --recursive --licenses="$LICENSES" "$root" || lrc=$?
+    local lrc=0 license_log="$WORKDIR/licenses.log"
+    "${RESOLVED_CMD[@]}" scan source --recursive --licenses="$LICENSES" "$root" \
+      > >(tee "$license_log") 2>&1 || lrc=$?
     case "$lrc" in
-      0)   record_status licenses "clean (allowlist: $LICENSES)" ;;
-      128) record_status licenses "no lockfiles found" ;;
-      *)   record_status licenses "VIOLATIONS (exit $lrc)"; FINDINGS=1 ;;
+      0)
+        record_status licenses "clean (allowlist: $LICENSES)"
+        scope_record --tool licenses --state run --outcome success \
+          --reason "License invocation completed" --exit-code 0 --mode "source-recursive" \
+          --resolution "resolver-enabled" --log "$license_log"
+        ;;
+      128)
+        record_status licenses "no lockfiles found"
+        scope_record --tool licenses --state run --outcome success \
+          --reason "License invocation found no dependency inputs" --exit-code 128 \
+          --mode "source-recursive" --resolution "resolver-enabled" --log "$license_log"
+        ;;
+      *)
+        record_status licenses "VIOLATIONS (exit $lrc)"; FINDINGS=1
+        scope_record --tool licenses --state run --outcome failure \
+          --reason "License allowlist reported violations or an error" --exit-code "$lrc" \
+          --mode "source-recursive" --resolution "resolver-enabled" --log "$license_log"
+        ;;
     esac
     echo
   fi
@@ -553,9 +728,9 @@ run_osv() {
     # back with `"licenses": []` — the key is present and empty, which is how
     # this was nearly shipped as "104 components, all UNKNOWN". An SBOM without
     # licence data is the half of the artifact nobody needs.
-    local src=0
+    local src=0 sbom_log="$WORKDIR/sbom.log"
     "${RESOLVED_CMD[@]}" scan source --recursive --all-packages --licenses \
-      --format=cyclonedx-1-6 --output-file="$out" "$root" >/dev/null 2>&1 || src=$?
+      --format=cyclonedx-1-6 --output-file="$out" "$root" > >(tee "$sbom_log") 2>&1 || src=$?
     if [[ -n "$staged" && -f "$staged" ]]; then
       mkdir -p "$(dirname "$SBOM_OUT")"
       mv "$staged" "$SBOM_OUT"
@@ -565,12 +740,18 @@ run_osv() {
       n=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("components",[])))' \
             "$SBOM_OUT" 2>/dev/null || echo '?')
       record_status sbom "$n components -> $SBOM_OUT"
+      scope_record --tool sbom --state run --outcome success \
+        --reason "SBOM invocation completed" --exit-code "$src" --mode "source-recursive" \
+        --resolution "resolver-enabled" --log "$sbom_log"
       info "SBOM written to $SBOM_OUT ($n components)"
     else
       # Never a gate failure: an SBOM is an artifact, not a finding. But it must
       # not be silently absent either — the report reads this file.
       record_status sbom "NOT WRITTEN (osv exit $src)"
       warn "SBOM was requested but osv-scanner produced no file (exit $src)"
+      scope_record --tool sbom --state run --outcome failure \
+        --reason "SBOM invocation produced no artifact" --exit-code "$src" \
+        --mode "source-recursive" --resolution "resolver-enabled" --log "$sbom_log"
     fi
     echo
   fi
@@ -584,13 +765,32 @@ info "target:   $TARGET"
 echo
 
 if (( ! SKIP_SEMGREP )); then bold "── Semgrep ──"; run_semgrep; echo
-else record_status semgrep "skipped (--skip)"; fi
+else
+  record_status semgrep "skipped (--skip)"
+  scope_record --tool semgrep --state skipped --outcome unknown \
+    --reason-code not_applicable \
+    --reason "explicit --skip semgrep" --exit-code 0
+fi
 
 if (( ! SKIP_GITLEAKS )); then bold "── Gitleaks ──"; run_gitleaks; echo
-else record_status gitleaks "skipped (--skip)"; fi
+else
+  record_status gitleaks "skipped (--skip)"
+  scope_record --tool gitleaks --state skipped --outcome unknown \
+    --reason-code not_applicable \
+    --reason "explicit --skip gitleaks" --exit-code 0
+fi
 
 if (( ! SKIP_OSV )); then bold "── OSV-Scanner ──"; run_osv; echo
-else record_status osv "skipped (--skip)"; fi
+else
+  record_status osv "skipped (--skip)"
+  scope_record --tool osv --state skipped --outcome unknown \
+    --reason-code not_applicable \
+    --reason "explicit --skip osv" --exit-code 0
+  [[ -n "$LICENSES" ]] && scope_record --tool licenses --state skipped --outcome unknown --reason-code blocked \
+    --reason "OSV-Scanner explicitly skipped before license invocation" --exit-code 0
+  [[ -n "$SBOM_OUT" ]] && scope_record --tool sbom --state skipped --outcome unknown --reason-code blocked \
+    --reason "OSV-Scanner explicitly skipped before SBOM invocation" --exit-code 0
+fi
 
 # --- summary -----------------------------------------------------------------
 bold "── Summary ──"
