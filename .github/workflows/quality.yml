@@ -245,14 +245,28 @@ jobs:
       has_python: ${{ steps.scan.outputs.has_python }}
       has_rust: ${{ steps.scan.outputs.has_rust }}
       has_java: ${{ steps.scan.outputs.has_java }}
+      scope_invocation_id: ${{ steps.scope-token.outputs.invocation_id }}
+      scope_expected_jobs: ${{ steps.scope-expected.outputs.expected_jobs }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Mint this reusable workflow invocation identity
+        id: scope-token
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -u
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import uuid
+          print("invocation_id=quality-" + uuid.uuid4().hex)
+          PY
       - id: scan
         shell: bash
         env:
           LANGS: ${{ inputs.languages }}
         run: |
           set -Eeuo pipefail
+          exec > >(tee "${RUNNER_TEMP}/maxi-quality-detect.log") 2>&1
           # 'none' is handled EXPLICITLY, not left to fall through the match.
           # It would work either way today — "none" happens to match no language
           # — but that is an accident of string comparison, and the first person
@@ -684,6 +698,7 @@ jobs:
       - name: Prepare whole-workflow scope expectations
         id: scope-expected
         if: always()
+        continue-on-error: true
         shell: bash
         env:
           TS_DIRS: ${{ steps.scan.outputs.ts_dirs }}
@@ -721,13 +736,13 @@ jobs:
 
       - name: Initialize whole-workflow scope
         if: always()
-        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2
+        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2 # v1
         with:
           mode: init
           root: ${{ github.workspace }}
           languages: ${{ inputs.languages }}
           workflow: ${{ github.workflow }}
-          invocation-id: ${{ github.run_id }}
+          invocation-id: ${{ steps.scope-token.outputs.invocation_id }}
           run-id: ${{ github.run_id }}
           run-attempt: ${{ github.run_attempt }}
           commit: ${{ github.sha }}
@@ -736,19 +751,21 @@ jobs:
           baseline-ref: ${{ inputs.changed-only }}
           expected-jobs: ${{ steps.scope-expected.outputs.expected_jobs }}
           coverage-state: ${{ inputs.coverage-report != '' && 'selected' || 'not_applicable' }}
-          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}
+          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.scope-token.outputs.invocation_id }}
 
       - name: Record detector scope fragment
         if: always()
-        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2
+        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2 # v1
         with:
           mode: fragment
           logical-job: detect
+          invocation-id: ${{ steps.scope-token.outputs.invocation_id }}
           state: run
           outcome: ${{ steps.scan.outcome }}
           reason: detector boundary outcome
           reason-code: detector
-          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}
+          diagnostic-file: ${{ runner.temp }}/maxi-quality-detect.log
+          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.scope-token.outputs.invocation_id }}
 
   typescript:
     needs: detect
@@ -804,17 +821,18 @@ jobs:
 
       - name: Record TypeScript workflow scope fragment
         if: always()
-        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2
+        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2 # v1
         with:
           mode: fragment
           logical-job: typescript
+          invocation-id: ${{ needs.detect.outputs.scope_invocation_id }}
           language: ts
           leg: ${{ matrix.dir }}
           state: run
           outcome: ${{ job.status }}
           reason: TypeScript matrix leg boundary
           reason-code: matrix-leg
-          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}
+          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.detect.outputs.scope_invocation_id }}
 
   dotnet:
     needs: detect
@@ -857,17 +875,18 @@ jobs:
 
       - name: Record .NET workflow scope fragment
         if: always()
-        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2
+        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2 # v1
         with:
           mode: fragment
           logical-job: dotnet
+          invocation-id: ${{ needs.detect.outputs.scope_invocation_id }}
           language: dotnet
           leg: ${{ matrix.target }}
           state: run
           outcome: ${{ job.status }}
           reason: .NET matrix leg boundary
           reason-code: matrix-leg
-          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}
+          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.detect.outputs.scope_invocation_id }}
 
   python:
     needs: detect
@@ -970,17 +989,18 @@ jobs:
 
       - name: Record Python workflow scope fragment
         if: always()
-        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2
+        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2 # v1
         with:
           mode: fragment
           logical-job: python
+          invocation-id: ${{ needs.detect.outputs.scope_invocation_id }}
           language: python
           leg: ${{ matrix.dir }}
           state: run
           outcome: ${{ job.status }}
           reason: Python matrix leg boundary
           reason-code: matrix-leg
-          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}
+          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.detect.outputs.scope_invocation_id }}
 
   # Rust rides the reusable workflow like every other language (#70). It used to
   # be a job scripts/adopt.sh stamped into the CONSUMER's workflow file, on the
@@ -1074,17 +1094,18 @@ jobs:
 
       - name: Record Rust workflow scope fragment
         if: always()
-        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2
+        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2 # v1
         with:
           mode: fragment
           logical-job: rust
+          invocation-id: ${{ needs.detect.outputs.scope_invocation_id }}
           language: rust
           leg: ${{ matrix.dir }}
           state: run
           outcome: ${{ job.status }}
           reason: Rust matrix leg boundary
           reason-code: matrix-leg
-          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}
+          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.detect.outputs.scope_invocation_id }}
 
   # Java rides the reusable workflow like every other language. The pins live
   # HERE rather than in a job adopt.sh stamps into the consumer's file, which is
@@ -1158,19 +1179,22 @@ jobs:
 
       - name: Record Java workflow scope fragment
         if: always()
-        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2
+        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2 # v1
         with:
           mode: fragment
           logical-job: java
+          invocation-id: ${{ needs.detect.outputs.scope_invocation_id }}
           language: java
           leg: ${{ matrix.dir }}
           state: run
           outcome: ${{ job.status }}
           reason: Java matrix leg boundary
           reason-code: matrix-leg
-          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}
+          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.detect.outputs.scope_invocation_id }}
 
   layer2:
+    needs: detect
+    if: '!cancelled()'
     runs-on: ${{ inputs.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1180,6 +1204,8 @@ jobs:
       # Release finalization pins this action to release-payload.sha. A moved
       # tag cannot change the action revision selected by this workflow.
       - uses: maximalcode/maxi-quality/actions/layer2@613a26c952d3a5b224b15e7268b182826c1e53b2
+        env:
+          LAYER2_INVOCATION_ID: layer2-${{ needs.detect.outputs.scope_invocation_id }}
         with:
           producer: gate
           changed-only: ${{ inputs.changed-only }}
@@ -1189,15 +1215,16 @@ jobs:
 
       - name: Record Layer 2 workflow scope fragment
         if: always()
-        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2
+        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2 # v1
         with:
           mode: fragment
           logical-job: layer2
+          invocation-id: ${{ needs.detect.outputs.scope_invocation_id }}
           state: run
           outcome: ${{ job.status }}
           reason: Layer 2 composite action boundary
           reason-code: layer2-boundary
-          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}
+          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.detect.outputs.scope_invocation_id }}
 
   # Coverage — off unless `coverage-report:` names an artifact (#75, #124).
   #
@@ -1212,7 +1239,8 @@ jobs:
   # still appear, and every already-adopted consumer would grow a new box in
   # their PR checks the morning this ships.
   coverage:
-    if: inputs.coverage-report != ''
+    needs: detect
+    if: "!cancelled() && inputs.coverage-report != ''"
     runs-on: ${{ inputs.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1338,15 +1366,16 @@ jobs:
 
       - name: Record coverage workflow scope fragment
         if: always()
-        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2
+        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2 # v1
         with:
           mode: fragment
           logical-job: coverage
+          invocation-id: ${{ needs.detect.outputs.scope_invocation_id }}
           state: run
           outcome: ${{ job.status }}
           reason: optional coverage processing boundary
           reason-code: coverage
-          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}
+          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.detect.outputs.scope_invocation_id }}
 
   # Scope is a reporting handoff. It directly needs every producer so a
   # failed or skipped matrix leg is reconciled and so finalization does not
@@ -1358,12 +1387,22 @@ jobs:
     steps:
       - name: Publish whole-workflow scope
         if: always()
-        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2
+        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2 # v1
         with:
           mode: collect
           producer: gate
           workflow: ${{ github.workflow }}
-          invocation-id: ${{ github.run_id }}
+          invocation-id: ${{ needs.detect.outputs.scope_invocation_id }}
           run-id: ${{ github.run_id }}
           run-attempt: ${{ github.run_attempt }}
-          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}
+          commit: ${{ github.sha }}
+          ref: ${{ github.ref }}
+          languages: ${{ inputs.languages }}
+          mode-name: ${{ inputs.changed-only != '' && 'changed-only' || 'full' }}
+          baseline-ref: ${{ inputs.changed-only }}
+          expected-jobs: ${{ needs.detect.outputs.scope_expected_jobs }}
+          job-outcomes: ${{ toJSON(needs) }}
+          coverage-state: ${{ inputs.coverage-report != '' && 'selected' || 'not_applicable' }}
+          layer2-invocation-id: layer2-${{ needs.detect.outputs.scope_invocation_id }}
+          cancellation: ${{ job.status == 'cancelled' && 'cancelled' || '' }}
+          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.detect.outputs.scope_invocation_id }}
