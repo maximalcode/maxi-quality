@@ -48,6 +48,8 @@ SUMMARY_LINE_LIMIT = 240
 SUMMARY_MAX_LINES = 200
 VALID_STATES = {"run", "skipped", "not_applicable", "unknown"}
 VALID_OUTCOMES = {"success", "failure", "cancelled", "unknown"}
+VALID_MEASUREMENT_STATES = {"known", "unknown", "not_applicable"}
+TOOL_MEASUREMENTS = ("examined", "unparsed", "policy_excluded")
 
 
 def now() -> str:
@@ -128,6 +130,62 @@ def unknown_measurements(reason: str = "job scope is not instrumented") -> dict[
     return {name: measurement(reason=reason) for name in ("examined", "unparsed", "policy_excluded")}
 
 
+def validate_tool_record(record: dict[str, Any]) -> list[str]:
+    """Return semantic contract violations for one JSON tool record."""
+    issues: list[str] = []
+    required = ("name", "command", "working_directory", "state", "outcome", "reason", "reason_code", "exit_code", "diagnostics", "measurements")
+    issues.extend(f"missing {field}" for field in required if field not in record)
+    if "name" in record and (not isinstance(record["name"], str) or not record["name"]):
+        issues.append("name must be a non-empty string")
+    if "command" in record and (not isinstance(record["command"], list) or not all(isinstance(value, str) for value in record["command"])):
+        issues.append("command must be a list of strings")
+    if "working_directory" in record and record["working_directory"] is not None and not isinstance(record["working_directory"], str):
+        issues.append("working_directory must be a string or null")
+    if "state" in record and record["state"] not in VALID_STATES:
+        issues.append(f"state must be one of {sorted(VALID_STATES)}")
+    if "outcome" in record and record["outcome"] not in VALID_OUTCOMES:
+        issues.append(f"outcome must be one of {sorted(VALID_OUTCOMES)}")
+    if "reason" in record and not isinstance(record["reason"], str):
+        issues.append("reason must be a string")
+    if "reason_code" in record and record["reason_code"] is not None and not isinstance(record["reason_code"], str):
+        issues.append("reason_code must be a string or null")
+    exit_code = record.get("exit_code")
+    if exit_code is not None and (isinstance(exit_code, bool) or not isinstance(exit_code, int) or not 0 <= exit_code <= 255):
+        issues.append("exit_code must be an integer from 0 through 255 or null")
+    if "diagnostics" in record and (not isinstance(record["diagnostics"], list) or not all(isinstance(value, str) for value in record["diagnostics"])):
+        issues.append("diagnostics must be a list of strings")
+    measurements = record.get("measurements")
+    if not isinstance(measurements, dict):
+        issues.append("measurements must be an object")
+    else:
+        for name in TOOL_MEASUREMENTS:
+            value = measurements.get(name)
+            if not isinstance(value, dict):
+                issues.append(f"measurement {name} must be an object")
+                continue
+            for field in ("status", "count", "unit", "method", "reason"):
+                if field not in value:
+                    issues.append(f"measurement {name} is missing {field}")
+            if value.get("status") not in VALID_MEASUREMENT_STATES:
+                issues.append(f"measurement {name} status is invalid")
+            count = value.get("count")
+            if count is not None and (isinstance(count, bool) or not isinstance(count, int) or count < 0):
+                issues.append(f"measurement {name} count must be a non-negative integer or null")
+            for field in ("unit", "method", "reason"):
+                if field in value and not isinstance(value[field], str):
+                    issues.append(f"measurement {name} {field} must be a string")
+    collection = record.get("collection")
+    if collection is not None:
+        if not isinstance(collection, dict):
+            issues.append("collection must be an object")
+        else:
+            if collection.get("status") not in {"complete", "partial", "unknown"}:
+                issues.append("collection status is invalid")
+            if not isinstance(collection.get("issues"), list) or not all(isinstance(value, str) for value in collection["issues"]):
+                issues.append("collection issues must be a list of strings")
+    return issues
+
+
 def read_tools(path: pathlib.Path) -> tuple[list[dict[str, Any]], str | None]:
     """Read command records and preserve missing/malformed evidence as an issue."""
     try:
@@ -138,7 +196,30 @@ def read_tools(path: pathlib.Path) -> tuple[list[dict[str, Any]], str | None]:
         return [], f"malformed tool record file {path}: {exc}"
     if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
         return [], f"malformed tool record file {path}: expected a list of objects"
-    return value, None
+    records: list[dict[str, Any]] = []
+    issues: list[str] = []
+    for index, item in enumerate(value):
+        violations = validate_tool_record(item)
+        if not violations:
+            records.append(item)
+            continue
+        name = item.get("name") if isinstance(item.get("name"), str) and item.get("name") else f"unknown-tool-{index}"
+        issue = f"invalid tool record {name}: {'; '.join(violations)}"
+        issues.append(issue)
+        records.append({
+            "name": name,
+            "command": [],
+            "working_directory": None,
+            "state": "unknown",
+            "outcome": "unknown",
+            "reason": "execution is unknown because the tool record is invalid",
+            "reason_code": "invalid_tool_record",
+            "exit_code": None,
+            "diagnostics": [],
+            "measurements": unknown_measurements("tool record was semantically invalid"),
+            "collection": {"status": "partial", "issues": [issue]},
+        })
+    return records, "; ".join(issues) if issues else None
 
 
 def tool_record(args: argparse.Namespace) -> None:

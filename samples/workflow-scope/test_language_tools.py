@@ -349,6 +349,33 @@ class LanguageToolFixtures(unittest.TestCase):
             self.assertTrue(any("malformed tool record file" in issue for issue in data["tool_collection"]["issues"]))
             self.assertEqual(data["tools"][0]["reason_code"], "missing_tool_record")
 
+    def test_semantically_invalid_tool_records_become_unknown_at_fragment_collector_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tools = root / "tools.json"
+            tools.write_text(json.dumps([
+                {"name": "lint", "command": ["ruff", "check", "."], "working_directory": ".", "state": "run", "outcome": "bogus", "reason": "bad outcome", "reason_code": "command", "exit_code": 0, "diagnostics": [], "measurements": {}},
+                {"name": "mypy", "command": ["mypy", "."], "working_directory": ".", "state": "run", "outcome": "success", "reason": "command boundary executed", "reason_code": "command", "exit_code": 0, "diagnostics": [], "measurements": {"examined": {"status": "unknown", "count": None, "unit": "source_path", "method": "boundary", "reason": "not measured"}, "unparsed": {"status": "unknown", "count": None, "unit": "source_path", "method": "boundary", "reason": "not measured"}, "policy_excluded": {"status": "unknown", "count": None, "unit": "source_path", "method": "boundary", "reason": "not measured"}}},
+            ]) + "\n")
+            fragment = root / "fragment.json"
+            result = subprocess.run([sys.executable, str(HELPER), "fragment", "--out", str(fragment), "--tools-file", str(tools), "--producer", "gate", "--workflow", "quality", "--invocation-id", "inv", "--run-id", "run", "--run-attempt", "1", "--logical-job", "python", "--language", "python", "--leg", "pkg", "--expected-tool", "lint|skipped|unknown|blocked|lint boundary", "--expected-tool", "mypy|skipped|unknown|blocked|mypy boundary"], text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            fragments = root / "fragments"; fragments.mkdir(); (fragments / "fragment.json").write_text(fragment.read_text())
+            manifest = root / "manifest.json"
+            result = subprocess.run([sys.executable, str(HELPER), "init", "--out", str(manifest), "--root", str(root), "--languages", "python", "--invocation-id", "inv", "--run-id", "run", "--run-attempt", "1", "--expected-job", "python|python|pkg"], text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            collected = root / "collected.json"
+            result = subprocess.run([sys.executable, str(HELPER), "collect", "--manifest", str(manifest), "--fragments-dir", str(fragments), "--out", str(collected), "--invocation-id", "inv", "--run-id", "run", "--run-attempt", "1"], text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            job = json.loads(collected.read_text())["jobs"][0]
+            self.assertEqual(job["tools"][0]["name"], "lint")
+            self.assertEqual((job["tools"][0]["state"], job["tools"][0]["outcome"]), ("unknown", "unknown"))
+            self.assertEqual(job["tools"][1]["name"], "mypy")
+            self.assertEqual(job["tools"][1]["outcome"], "success")
+            self.assertEqual(job["tool_collection"]["status"], "partial")
+            self.assertTrue(any("outcome" in issue for issue in job["tool_collection"]["issues"]))
+            self.assertTrue(any("python|pkg" in issue for issue in json.loads(collected.read_text())["collection"]["issues"]))
+
     def test_helper_fragment_and_collector_work_from_an_adopter_without_scripts(self) -> None:
         scope_action = yaml.safe_load((ROOT / "actions" / "workflow-scope" / "action.yml").read_text(encoding="utf-8"))
         helper_body = next(step["run"] for step in scope_action["runs"]["steps"] if step.get("name") == "Prepare workflow scope helper")
