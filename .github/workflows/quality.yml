@@ -266,7 +266,7 @@ jobs:
           LANGS: ${{ inputs.languages }}
         run: |
           set -Eeuo pipefail
-          exec > >(tee "${RUNNER_TEMP}/maxi-quality-detect.log") 2>&1
+          exec > >(tee "${RUNNER_TEMP:-/tmp}/maxi-quality-detect.log") 2>&1
           # 'none' is handled EXPLICITLY, not left to fall through the match.
           # It would work either way today — "none" happens to match no language
           # — but that is an accident of string comparison, and the first person
@@ -737,6 +737,7 @@ jobs:
       - name: Initialize whole-workflow scope
         if: always()
         uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2 # v1
+        continue-on-error: true
         with:
           mode: init
           root: ${{ github.workspace }}
@@ -756,12 +757,13 @@ jobs:
       - name: Record detector scope fragment
         if: always()
         uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2 # v1
+        continue-on-error: true
         with:
           mode: fragment
           logical-job: detect
           invocation-id: ${{ steps.scope-token.outputs.invocation_id }}
-          state: run
-          outcome: ${{ steps.scan.outcome }}
+          state: ${{ steps.scan.outcome == 'skipped' && 'skipped' || 'run' }}
+          outcome: ${{ steps.scan.outcome == 'skipped' && job.status || steps.scan.outcome }}
           reason: detector boundary outcome
           reason-code: detector
           diagnostic-file: ${{ runner.temp }}/maxi-quality-detect.log
@@ -822,6 +824,7 @@ jobs:
       - name: Record TypeScript workflow scope fragment
         if: always()
         uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2 # v1
+        continue-on-error: true
         with:
           mode: fragment
           logical-job: typescript
@@ -876,6 +879,7 @@ jobs:
       - name: Record .NET workflow scope fragment
         if: always()
         uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2 # v1
+        continue-on-error: true
         with:
           mode: fragment
           logical-job: dotnet
@@ -990,6 +994,7 @@ jobs:
       - name: Record Python workflow scope fragment
         if: always()
         uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2 # v1
+        continue-on-error: true
         with:
           mode: fragment
           logical-job: python
@@ -1095,6 +1100,7 @@ jobs:
       - name: Record Rust workflow scope fragment
         if: always()
         uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2 # v1
+        continue-on-error: true
         with:
           mode: fragment
           logical-job: rust
@@ -1180,6 +1186,7 @@ jobs:
       - name: Record Java workflow scope fragment
         if: always()
         uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2 # v1
+        continue-on-error: true
         with:
           mode: fragment
           logical-job: java
@@ -1216,6 +1223,7 @@ jobs:
       - name: Record Layer 2 workflow scope fragment
         if: always()
         uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2 # v1
+        continue-on-error: true
         with:
           mode: fragment
           logical-job: layer2
@@ -1367,6 +1375,7 @@ jobs:
       - name: Record coverage workflow scope fragment
         if: always()
         uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2 # v1
+        continue-on-error: true
         with:
           mode: fragment
           logical-job: coverage
@@ -1389,6 +1398,7 @@ jobs:
       - name: Publish whole-workflow scope
         if: always()
         uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2 # v1
+        continue-on-error: true
         with:
           mode: collect
           producer: gate

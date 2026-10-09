@@ -212,7 +212,7 @@ class WorkflowScopeTests(unittest.TestCase):
             self.assertTrue(detector_log.exists())
             self.assertIn("supported lockfile", detector_log.read_text())
             quality_body = WORKFLOW.read_text(encoding="utf-8")
-            self.assertIn('exec > >(tee "${RUNNER_TEMP}/maxi-quality-detect.log") 2>&1', quality_body)
+            self.assertIn('exec > >(tee "${RUNNER_TEMP:-/tmp}/maxi-quality-detect.log") 2>&1', quality_body)
             self.assertIn("diagnostic-file: ${{ runner.temp }}/maxi-quality-detect.log", quality_body)
             scope = root / "scope.json"
             self.assertEqual(run_helper("init", "--out", str(scope), "--root", str(root), "--languages", "ts", "--workflow", "quality", "--invocation-id", "i", "--run-id", "r", "--run-attempt", "1", "--commit", "c", "--ref", "r", "--expected-job", "detect||", "--expected-job", "layer2||").returncode, 0)
@@ -228,6 +228,25 @@ class WorkflowScopeTests(unittest.TestCase):
             self.assertEqual(data["detection"]["outcome"], "failure")
             self.assertIn("supported lockfile", data["detection"]["diagnostics"][0])
             self.assertEqual(data["languages"]["ts"]["state"], "selected")
+
+    def test_action_diagnostic_file_preserves_terminal_newline_and_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            diagnostic = root / "diagnostic.log"
+            diagnostic.write_text("failure [details](https://example.invalid)|\n", encoding="utf-8")
+            env = {
+                **os.environ,
+                "OUT": str(root / "fragment.json"), "PRODUCER": "gate", "WORKFLOW": "quality",
+                "INVOCATION": "i", "RUN_ID": "r", "RUN_ATTEMPT": "1", "LOGICAL_JOB": "detect",
+                "LANGUAGE": "", "LEG": "", "STATE": "run", "OUTCOME": "failure", "REASON": "detector",
+                "REASON_CODE": "detector", "DIAGNOSTIC": "", "DIAGNOSTIC_FILE": str(diagnostic),
+                "ARTIFACT_PREFIX": "safe", "GITHUB_ACTION_PATH": str(ROOT / "actions/workflow-scope"),
+                "GITHUB_OUTPUT": str(root / "output"),
+            }
+            result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", extract_action_body("Write workflow scope fragment")], env=env, text=True, capture_output=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            fragment = json.loads((root / "fragment.json").read_text())
+            self.assertEqual(fragment["diagnostics"][0], "failure [details](https://example.invalid)|\n")
 
     def test_attempt_filter_keeps_old_fragment_out_of_current_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -301,6 +320,45 @@ class WorkflowScopeTests(unittest.TestCase):
             self.assertEqual(skipped["state"], "skipped")
             self.assertEqual(skipped["reason_code"], "dependency_skipped")
 
+    def test_complete_ts_only_run_ignores_known_napplicable_rows_and_keeps_layer2(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text('{}\n')
+            (root / "package-lock.json").write_text('{}\n')
+            (root / "pyproject.toml").write_text("[project]\nname='deselected'\nversion='0'\n")
+            manifest = root / "manifest.json"
+            expected = ["detect||", "typescript|ts|packages/a", "layer2||"]
+            self.assertEqual(run_helper(
+                "init", "--out", str(manifest), "--root", str(root), "--languages", "ts", "--workflow", "quality",
+                "--invocation-id", "i", "--run-id", "r", "--run-attempt", "1", "--commit", "c", "--ref", "r",
+                "--coverage-state", "not_applicable", *sum((["--expected-job", item] for item in expected), []),
+            ).returncode, 0)
+            fragments = root / "fragments"
+            fragments.mkdir()
+            for index, (logical, language, leg) in enumerate((("detect", "", ""), ("typescript", "ts", "packages/a"), ("layer2", "", ""))):
+                self.assertEqual(run_helper(
+                    "fragment", "--out", str(fragments / f"{index}.json"), "--logical-job", logical,
+                    "--language", language, "--leg", leg, "--invocation-id", "i", "--run-id", "r",
+                    "--run-attempt", "1", "--state", "run", "--outcome", "success", "--reason", "ok",
+                ).returncode, 0)
+            layer2 = root / "layer2.json"
+            self.assertEqual(subprocess.run([
+                sys.executable, str(ROOT / "scripts/layer2_scope.py"), "init", "--out", str(layer2),
+                "--producer", "gate", "--workflow", "quality", "--invocation-id", "l2", "--run-id", "r",
+                "--run-attempt", "1", "--job", "layer2", "--commit", "c", "--ref", "r", "--mode", "full",
+            ], capture_output=True, text=True).returncode, 0)
+            out = root / "out.json"
+            self.assertEqual(run_helper(
+                "collect", "--manifest", str(manifest), "--fragments-dir", str(fragments), "--out", str(out),
+                "--layer2-dir", str(root), "--layer2-invocation-id", "l2",
+            ).returncode, 0)
+            data = json.loads(out.read_text())
+            self.assertEqual(data["collection"]["status"], "complete")
+            self.assertEqual(data["analysis"]["outcome"], "success")
+            self.assertEqual(data["coverage"]["state"], "not_applicable")
+            self.assertEqual(data["languages"]["python"]["state"], "skipped")
+            self.assertEqual(len(data["layer2"]), 1)
+
     def test_presence_uses_language_boundaries_and_detector_selection_verbatim(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -333,12 +391,18 @@ class WorkflowScopeTests(unittest.TestCase):
                 "--commit", "c", "--ref", "r", "--expected-job", "detect| |",
             ).returncode, 0)
             (fragments / "wrong-root.json").write_text("[]\n")
+            (fragments / "bad-outcome.json").write_text(json.dumps({
+                "schema_version": 1, "kind": "workflow-scope-fragment",
+                "identity": {"producer": "gate", "workflow": "quality", "invocation_id": "local", "run_id": "local", "run_attempt": "1", "logical_job": "detect", "leg": ""},
+                "state": "run", "outcome": "banana",
+            }))
             out = root / "out.json"
             result = run_helper("collect", "--manifest", str(manifest), "--fragments-dir", str(fragments), "--out", str(out))
             self.assertEqual(result.returncode, 0, result.stderr)
             data = json.loads(out.read_text())
             self.assertEqual(data["collection"]["status"], "partial")
             self.assertTrue(any("unsupported workflow scope contract" in issue for issue in data["collection"]["issues"]))
+            self.assertTrue(any("outcome is invalid" in issue for issue in data["collection"]["issues"]))
 
     def test_summary_escapes_bounded_lines_and_cancellation_is_data(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -378,8 +442,12 @@ class WorkflowScopeTests(unittest.TestCase):
         self.assertNotIn("actions/workflow-scope@v1", body)
         self.assertIn("mode: collect", body)
         self.assertIn("if: always()", body)
+        for line_number, line in enumerate(body.splitlines()):
+            if "actions/workflow-scope@" in line:
+                self.assertEqual(body.splitlines()[line_number + 1].strip(), "continue-on-error: true")
         self.assertIn("job-outcomes: ${{ toJSON(needs) }}", body)
         self.assertIn("if: '!cancelled()'", body)
+        self.assertIn("steps.scan.outcome == 'skipped'", body)
 
         action = yaml.safe_load((ROOT / "actions" / "workflow-scope" / "action.yml").read_text(encoding="utf-8"))
         for step in action["runs"]["steps"]:
@@ -405,7 +473,10 @@ class WorkflowScopeTests(unittest.TestCase):
                 path = inputs / f"artifact-{index}" / "maxi-quality-workflow-scope-fragment.json"
                 path.parent.mkdir()
                 reason = outcome if outcome == "success" else "bad\nreason `" + ("x" * 500)
-                self.assertEqual(run_helper("fragment", "--out", str(path), "--logical-job", "typescript", "--language", "ts", "--leg", leg, "--invocation-id", "invocation", "--run-id", "run", "--run-attempt", "1", "--state", "run", "--outcome", outcome, "--reason", reason).returncode, 0)
+                fragment_args = ["fragment", "--out", str(path), "--logical-job", "typescript", "--language", "ts", "--leg", leg, "--invocation-id", "invocation", "--run-id", "run", "--run-attempt", "1", "--state", "run", "--outcome", outcome, "--reason", reason]
+                if outcome == "failure":
+                    fragment_args += ["--diagnostic", reason]
+                self.assertEqual(run_helper(*fragment_args).returncode, 0)
             env = {
                 **os.environ,
                 "INPUT_ROOT": str(inputs),
@@ -442,6 +513,7 @@ class WorkflowScopeTests(unittest.TestCase):
             self.assertTrue(any("\\n" in line and "..." in line for line in summary_lines))
             self.assertTrue(all(len(line) <= 240 for line in summary_lines))
             self.assertTrue(any(line.startswith("Evidence artifact:") for line in summary_lines))
+            self.assertTrue(any(line.startswith("Diagnostic ") for line in summary_lines))
             self.assertIn("bad\\nreason", json.dumps(data))
 
     def test_fragment_transport_name_is_safe_for_matrix_paths(self) -> None:
@@ -479,6 +551,7 @@ class WorkflowScopeTests(unittest.TestCase):
             foreign = json.loads(layer2.read_text())
             foreign["identity"]["invocation_id"] = "other-layer2"
             (inputs / "layer2-artifact" / "foreign.json").write_text(json.dumps(foreign))
+            (inputs / "layer2-artifact" / "malformed.json").write_text("[]\n")
             env = {
                 **os.environ,
                 "INPUT_ROOT": str(inputs),
@@ -498,6 +571,7 @@ class WorkflowScopeTests(unittest.TestCase):
             self.assertIn("semgrep", data["layer2"][0]["tools"])
             self.assertEqual(data["jobs"][0]["scope"][0]["identity"]["invocation_id"], "layer2-invocation")
             self.assertTrue(any("foreign Layer 2" in issue for issue in data["collection"]["issues"]))
+            self.assertTrue(any("malformed Layer 2" in issue for issue in data["collection"]["issues"]))
 
     def test_real_collector_action_falls_back_on_missing_or_invalid_current_manifest(self) -> None:
         for invalid in (False, True):

@@ -29,6 +29,7 @@ LANGUAGE_NAMES = {
     "rust": "Rust",
     "java": "Java",
 }
+JOB_NAMES = {"ts": "typescript", "dotnet": "dotnet", "python": "python", "rust": "rust", "java": "java"}
 MARKERS = {
     "ts": ("package.json",),
     "dotnet": ("*.sln", "*.slnx", "*.csproj"),
@@ -44,6 +45,9 @@ PRUNE = {
     "java": {"node_modules", "target", ".git", ".venv", "build"},
 }
 SUMMARY_LINE_LIMIT = 240
+SUMMARY_MAX_LINES = 200
+VALID_STATES = {"run", "skipped", "not_applicable", "unknown"}
+VALID_OUTCOMES = {"success", "failure", "cancelled", "unknown"}
 
 
 def now() -> str:
@@ -61,6 +65,15 @@ def read(path: pathlib.Path) -> dict[str, Any]:
         raise ValueError(f"workflow scope identity is not an object in {path}")
     if value.get("kind") == "workflow-scope" and not isinstance(value.get("expected_jobs", []), list):
         raise ValueError(f"workflow scope expected_jobs is not a list in {path}")
+    if value.get("kind") == "workflow-scope-fragment":
+        identity = value["identity"]
+        required = ("producer", "workflow", "invocation_id", "run_id", "run_attempt", "logical_job", "leg")
+        if any(field not in identity for field in required):
+            raise ValueError(f"workflow scope fragment identity is incomplete in {path}")
+        if value.get("state") not in VALID_STATES:
+            raise ValueError(f"workflow scope fragment state is invalid in {path}")
+        if value.get("outcome") not in VALID_OUTCOMES:
+            raise ValueError(f"workflow scope fragment outcome is invalid in {path}")
     return value
 
 
@@ -161,7 +174,7 @@ def missing_job(args: argparse.Namespace, item: dict[str, Any], reason: str = "n
         return {
             **item,
             "state": "skipped",
-            "outcome": "skipped",
+            "outcome": "unknown",
             "reason": "needs result proves this job was skipped",
             "reason_code": "dependency_skipped",
             "measurements": unknown_measurements("job was skipped; no analysis was attempted"),
@@ -202,14 +215,21 @@ def build_document(args: argparse.Namespace, observe_presence: bool = True) -> d
         key = f"{language}|"
         if key in expected_keys or any(item.get("language") == language for item in expected):
             continue
+        logical_job = JOB_NAMES[language]
         if observed["state"] == "absent":
-            expected.append({"logical_job": language, "language": language, "leg": "", "expected_state": "not_applicable", "expected_reason": "language marker absent"})
+            expected.append({"logical_job": logical_job, "language": language, "leg": "", "expected_state": "not_applicable", "expected_reason": "language marker absent"})
         elif observed["state"] == "present" and not selected(args.languages, language):
-            expected.append({"logical_job": language, "language": language, "leg": "", "expected_state": "skipped", "expected_reason": "language present but deselected", "expected_reason_code": "deselected"})
+            expected.append({"logical_job": logical_job, "language": language, "leg": "", "expected_state": "skipped", "expected_reason": "language present but deselected", "expected_reason_code": "deselected"})
         elif observed["state"] == "unknown":
-            expected.append({"logical_job": language, "language": language, "leg": "", "expected_state": "unknown", "expected_reason": "language discovery incomplete"})
+            expected.append({"logical_job": logical_job, "language": language, "leg": "", "expected_state": "unknown", "expected_reason": "language discovery incomplete"})
         elif observed["state"] == "present":
-            expected.append({"logical_job": language, "language": language, "leg": "", "expected_state": "unknown", "expected_reason": "selected language has no current target list"})
+            expected.append({"logical_job": logical_job, "language": language, "leg": "", "expected_state": "unknown", "expected_reason": "selected language has no current target list"})
+    if args.coverage_state in {"not_applicable", "selected"} and not any(item["logical_job"] == "coverage" for item in expected):
+        expected.append({
+            "logical_job": "coverage", "language": "", "leg": "",
+            "expected_state": "not_applicable" if args.coverage_state == "not_applicable" else "unknown",
+            "expected_reason": "coverage is disabled" if args.coverage_state == "not_applicable" else "coverage state was not provided",
+        })
     document = {
         "schema_version": SCHEMA_VERSION,
         "kind": "workflow-scope",
@@ -258,6 +278,12 @@ def fragment(args: argparse.Namespace) -> None:
         "language": args.language,
         "leg": args.leg,
     }
+    diagnostics = list(args.diagnostic or [])
+    if args.diagnostic_file:
+        try:
+            diagnostics.append(pathlib.Path(args.diagnostic_file).read_text(encoding="utf-8", errors="replace"))
+        except OSError as exc:
+            diagnostics.append(f"cannot read diagnostic file {args.diagnostic_file}: {exc}")
     value: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "kind": "workflow-scope-fragment",
@@ -266,7 +292,7 @@ def fragment(args: argparse.Namespace) -> None:
         "outcome": args.outcome,
         "reason": args.reason,
         "reason_code": args.reason_code,
-        "diagnostics": args.diagnostic or [],
+        "diagnostics": diagnostics,
         "measurements": unknown_measurements(),
     }
     write(pathlib.Path(args.out), value)
@@ -304,6 +330,9 @@ def layer2_records(directory: pathlib.Path, identity: dict[str, Any], invocation
             continue
         if value.get("kind") != "layer2-scope":
             continue
+        if value.get("schema_version") != SCHEMA_VERSION:
+            issues.append(f"malformed Layer 2 scope {path.name}: unsupported schema")
+            continue
         value_identity = value.get("identity", {})
         if not isinstance(value_identity, dict):
             issues.append(f"malformed Layer 2 scope {path.name}: identity is not an object")
@@ -329,6 +358,18 @@ def collect(args: argparse.Namespace) -> None:
     except ValueError as exc:
         document = build_document(args, observe_presence=False)
         manifest_issue = f"current-attempt manifest unavailable: {exc}"
+    else:
+        if args.invocation_id != "unknown" or args.run_id != "unknown":
+            expected_identity = {
+                "producer": args.producer,
+                "workflow": args.workflow,
+                "invocation_id": args.invocation_id,
+                "run_id": args.run_id,
+                "run_attempt": str(args.run_attempt),
+            }
+            if any(str(document["identity"].get(field, "")) != str(value) for field, value in expected_identity.items()):
+                document = build_document(args, observe_presence=False)
+                manifest_issue = "current-attempt manifest identity does not match collector identity"
     identity = document["identity"]
     expected = document.get("expected_jobs", [])
     received: dict[str, dict[str, Any]] = {}
@@ -357,7 +398,8 @@ def collect(args: argparse.Namespace) -> None:
         key = f"{item['logical_job']}|{item.get('leg', '')}"
         fragment_value = received.get(key)
         if fragment_value is None:
-            missing.append(key)
+            if item.get("expected_state") not in {"not_applicable", "skipped"} and needs_outcomes(args).get(item["logical_job"]) != "skipped":
+                missing.append(key)
             state = item.get("expected_state", "unknown")
             reason = item.get("expected_reason", "no fragment for this current attempt; execution is unknown")
             reason_code = item.get("expected_reason_code", "missing_fragment")
@@ -399,7 +441,15 @@ def collect(args: argparse.Namespace) -> None:
             layer2_job["state"] = "unknown" if layer2_job["state"] == "run" else layer2_job["state"]
             layer2_job["reason"] = "Layer 2 scope artifact is unavailable for this invocation and attempt"
             layer2_job["reason_code"] = "missing_layer2_scope"
-    outcomes = [str(job.get("outcome", "unknown")) for job in jobs if job.get("logical_job") != "coverage"]
+            layer2_key = f"{layer2_job['logical_job']}|{layer2_job.get('leg', '')}"
+            if layer2_key not in missing:
+                missing.append(layer2_key)
+            issues.append("missing Layer 2 scope artifact for this invocation and attempt")
+    outcomes = [
+        str(job.get("outcome", "unknown"))
+        for job in jobs
+        if job.get("logical_job") != "coverage" and job.get("expected_state") not in {"not_applicable", "skipped"}
+    ]
     if "failure" in outcomes:
         document["analysis"] = {"state": "complete", "outcome": "failure", "reason": "one or more analysis boundaries failed"}
     elif "cancelled" in outcomes:
@@ -424,13 +474,16 @@ def render_lines(document: dict[str, Any]) -> list[str]:
     identity = document["identity"]
     def safe(value: Any) -> str:
         text = html.escape(str(value), quote=False).replace("\r", "\\r").replace("\n", "\\n")
-        text = text.replace("`", "\\`")
+        text = text.replace("\\", "\\\\")
+        for token in ("`", "[", "]", "(", ")", "|", "#"):
+            text = text.replace(token, "\\" + token)
         return text if len(text) <= SUMMARY_LINE_LIMIT else text[: SUMMARY_LINE_LIMIT - 3] + "..."
 
     lines = [
         f"Evidence artifact: {safe(document.get('summary', {}).get('artifact', 'workflow-scope.json'))}",
         f"Workflow scope: {safe(identity['workflow'])} run {safe(identity['run_id'])} attempt {safe(identity['run_attempt'])}",
         f"Collection: {safe(document['collection']['status'])} ({safe(document['collection']['received'])}/{safe(document['collection']['expected'])} current-attempt fragments)",
+        f"Analysis: {safe(document.get('analysis', {}).get('outcome', 'unknown'))}",
     ]
     if identity.get("cancellation"):
         lines.append(f"Cancellation metadata: {safe(identity['cancellation'])}")
@@ -440,11 +493,17 @@ def render_lines(document: dict[str, Any]) -> list[str]:
     for job in document.get("jobs", []):
         leg = f" [{safe(job['leg'])}]" if job.get("leg") else ""
         lines.append(f"Job {safe(job['logical_job'])}{leg}: {safe(job['state'])}/{safe(job['outcome'])} — {safe(job['reason'])}")
+        for diagnostic in job.get("diagnostics", []):
+            lines.append(f"Diagnostic {safe(job['logical_job'])}{leg}: {safe(diagnostic)}")
     for issue in document["collection"].get("issues", []):
         lines.append(f"Collection issue: {safe(issue)}")
     if document["collection"].get("missing"):
         lines.append("Missing current-attempt records remain unknown: " + safe(", ".join(document["collection"]["missing"])))
-    return [line if len(line) <= SUMMARY_LINE_LIMIT else line[: SUMMARY_LINE_LIMIT - 3] + "..." for line in lines]
+    lines = [line if len(line) <= SUMMARY_LINE_LIMIT else line[: SUMMARY_LINE_LIMIT - 3] + "..." for line in lines]
+    if len(lines) > SUMMARY_MAX_LINES:
+        omitted = len(lines) - SUMMARY_MAX_LINES + 1
+        lines = lines[: SUMMARY_MAX_LINES - 1] + [f"... {omitted} additional summary lines omitted; see the evidence artifact"]
+    return lines
 
 
 def summary(args: argparse.Namespace) -> None:
@@ -483,6 +542,7 @@ def parser() -> argparse.ArgumentParser:
     for name, default in (("producer", "gate"), ("workflow", "quality"), ("invocation-id", "local"), ("run-id", "local"), ("run-attempt", "1"), ("logical-job", "unknown"), ("language", ""), ("leg", ""), ("state", "unknown"), ("outcome", "unknown"), ("reason", ""), ("reason-code", "")):
         fragment_parser.add_argument("--" + name, default=default)
     fragment_parser.add_argument("--diagnostic", action="append")
+    fragment_parser.add_argument("--diagnostic-file", default="")
     fragment_parser.set_defaults(func=fragment)
     collect_parser = sub.add_parser("collect")
     collect_parser.add_argument("--manifest", required=True)

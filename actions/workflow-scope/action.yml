@@ -164,7 +164,7 @@ runs:
           --reason "$REASON" --reason-code "$REASON_CODE")
         [[ -n "$DIAGNOSTIC" ]] && args+=(--diagnostic "$DIAGNOSTIC")
         if [[ -n "$DIAGNOSTIC_FILE" && -f "$DIAGNOSTIC_FILE" ]]; then
-          args+=(--diagnostic "$(cat "$DIAGNOSTIC_FILE")")
+          args+=(--diagnostic-file "$DIAGNOSTIC_FILE")
         fi
         python3 "$script" "${args[@]}"
         transport=$(python3 -c 'import hashlib, os; print(hashlib.sha256((os.environ["ARTIFACT_PREFIX"] + "\0" + os.environ["LOGICAL_JOB"] + "\0" + os.environ["LEG"]).encode()).hexdigest()[:16])')
