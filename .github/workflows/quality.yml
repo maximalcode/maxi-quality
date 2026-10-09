@@ -678,6 +678,78 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "detected: ts=$ts_dirs dotnet=$dotnet_targets python=$python_dirs rust=$rust_dirs java=$java_dirs"
 
+      # Presence is an additive observation at the same discovery boundary.
+      # It runs after the detector so a detector failure still leaves a
+      # manifest, while the manifest remains independent of language selection.
+      - name: Prepare whole-workflow scope expectations
+        id: scope-expected
+        if: always()
+        shell: bash
+        env:
+          TS_DIRS: ${{ steps.scan.outputs.ts_dirs }}
+          DOTNET_TARGETS: ${{ steps.scan.outputs.dotnet_targets }}
+          PYTHON_DIRS: ${{ steps.scan.outputs.python_dirs }}
+          RUST_DIRS: ${{ steps.scan.outputs.rust_dirs }}
+          JAVA_DIRS: ${{ steps.scan.outputs.java_dirs }}
+          COVERAGE_REPORT: ${{ inputs.coverage-report }}
+        run: |
+          set -u
+          python3 - <<'PY'
+          import json, os
+
+          expected = [
+              {"logical_job": "detect", "language": "", "leg": ""},
+              {"logical_job": "layer2", "language": "", "leg": ""},
+          ]
+          for job, language, env_name in (
+              ("typescript", "ts", "TS_DIRS"),
+              ("dotnet", "dotnet", "DOTNET_TARGETS"),
+              ("python", "python", "PYTHON_DIRS"),
+              ("rust", "rust", "RUST_DIRS"),
+              ("java", "java", "JAVA_DIRS"),
+          ):
+              try:
+                  legs = json.loads(os.environ.get(env_name, "[]") or "[]")
+              except json.JSONDecodeError:
+                  legs = []
+              expected.extend({"logical_job": job, "language": language, "leg": str(leg)} for leg in legs)
+          if os.environ.get("COVERAGE_REPORT"):
+              expected.append({"logical_job": "coverage", "language": "", "leg": ""})
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print("expected_jobs=" + json.dumps(expected, separators=(",", ":")), file=output)
+          PY
+
+      - name: Initialize whole-workflow scope
+        if: always()
+        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2
+        with:
+          mode: init
+          root: ${{ github.workspace }}
+          languages: ${{ inputs.languages }}
+          workflow: ${{ github.workflow }}
+          invocation-id: ${{ github.run_id }}
+          run-id: ${{ github.run_id }}
+          run-attempt: ${{ github.run_attempt }}
+          commit: ${{ github.sha }}
+          ref: ${{ github.ref }}
+          mode-name: ${{ inputs.changed-only != '' && 'changed-only' || 'full' }}
+          baseline-ref: ${{ inputs.changed-only }}
+          expected-jobs: ${{ steps.scope-expected.outputs.expected_jobs }}
+          coverage-state: ${{ inputs.coverage-report != '' && 'selected' || 'not_applicable' }}
+          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Record detector scope fragment
+        if: always()
+        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2
+        with:
+          mode: fragment
+          logical-job: detect
+          state: run
+          outcome: ${{ steps.scan.outcome }}
+          reason: detector boundary outcome
+          reason-code: detector
+          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}
+
   typescript:
     needs: detect
     if: needs.detect.outputs.has_ts == 'true'
@@ -730,6 +802,20 @@ jobs:
           gate-exports: ${{ inputs.dead-code-exports }}
           changed-only: ${{ inputs.changed-only }}
 
+      - name: Record TypeScript workflow scope fragment
+        if: always()
+        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2
+        with:
+          mode: fragment
+          logical-job: typescript
+          language: ts
+          leg: ${{ matrix.dir }}
+          state: run
+          outcome: ${{ job.status }}
+          reason: TypeScript matrix leg boundary
+          reason-code: matrix-leg
+          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}
+
   dotnet:
     needs: detect
     if: needs.detect.outputs.has_dotnet == 'true'
@@ -768,6 +854,20 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: dotnet build "$TARGET"
+
+      - name: Record .NET workflow scope fragment
+        if: always()
+        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2
+        with:
+          mode: fragment
+          logical-job: dotnet
+          language: dotnet
+          leg: ${{ matrix.target }}
+          state: run
+          outcome: ${{ job.status }}
+          reason: .NET matrix leg boundary
+          reason-code: matrix-leg
+          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}
 
   python:
     needs: detect
@@ -868,6 +968,20 @@ jobs:
           mode: ${{ inputs.dead-code }}
           changed-only: ${{ inputs.changed-only }}
 
+      - name: Record Python workflow scope fragment
+        if: always()
+        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2
+        with:
+          mode: fragment
+          logical-job: python
+          language: python
+          leg: ${{ matrix.dir }}
+          state: run
+          outcome: ${{ job.status }}
+          reason: Python matrix leg boundary
+          reason-code: matrix-leg
+          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}
+
   # Rust rides the reusable workflow like every other language (#70). It used to
   # be a job scripts/adopt.sh stamped into the CONSUMER's workflow file, on the
   # argument that the toolchain bump should be visible in the consumer's own
@@ -958,6 +1072,20 @@ jobs:
           # cargo-deny reads the whole workspace graph already.
           cargo deny check advisories bans
 
+      - name: Record Rust workflow scope fragment
+        if: always()
+        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2
+        with:
+          mode: fragment
+          logical-job: rust
+          language: rust
+          leg: ${{ matrix.dir }}
+          state: run
+          outcome: ${{ job.status }}
+          reason: Rust matrix leg boundary
+          reason-code: matrix-leg
+          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}
+
   # Java rides the reusable workflow like every other language. The pins live
   # HERE rather than in a job adopt.sh stamps into the consumer's file, which is
   # #70's decision applied to a fifth language: a scaffolded job only moves when
@@ -1028,6 +1156,20 @@ jobs:
         working-directory: ${{ matrix.dir }}
         run: mvn -B --no-transfer-progress spotless:check
 
+      - name: Record Java workflow scope fragment
+        if: always()
+        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2
+        with:
+          mode: fragment
+          logical-job: java
+          language: java
+          leg: ${{ matrix.dir }}
+          state: run
+          outcome: ${{ job.status }}
+          reason: Java matrix leg boundary
+          reason-code: matrix-leg
+          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}
+
   layer2:
     runs-on: ${{ inputs.runner }}
     steps:
@@ -1044,6 +1186,18 @@ jobs:
           licenses: ${{ inputs.licenses }}
           annotate: ${{ inputs.annotate }}
           max-annotations: ${{ inputs.max-annotations }}
+
+      - name: Record Layer 2 workflow scope fragment
+        if: always()
+        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2
+        with:
+          mode: fragment
+          logical-job: layer2
+          state: run
+          outcome: ${{ job.status }}
+          reason: Layer 2 composite action boundary
+          reason-code: layer2-boundary
+          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}
 
   # Coverage — off unless `coverage-report:` names an artifact (#75, #124).
   #
@@ -1181,3 +1335,35 @@ jobs:
             cat "$FLOOR_FILE"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record coverage workflow scope fragment
+        if: always()
+        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2
+        with:
+          mode: fragment
+          logical-job: coverage
+          state: run
+          outcome: ${{ job.status }}
+          reason: optional coverage processing boundary
+          reason-code: coverage
+          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}
+
+  # Scope is a reporting handoff. It directly needs every producer so a
+  # failed or skipped matrix leg is reconciled and so finalization does not
+  # depend on success-only outputs or another runner's temporary directory.
+  workflow-scope:
+    needs: [detect, typescript, dotnet, python, rust, java, layer2, coverage]
+    if: always()
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - name: Publish whole-workflow scope
+        if: always()
+        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2
+        with:
+          mode: collect
+          producer: gate
+          workflow: ${{ github.workflow }}
+          invocation-id: ${{ github.run_id }}
+          run-id: ${{ github.run_id }}
+          run-attempt: ${{ github.run_attempt }}
+          artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}
