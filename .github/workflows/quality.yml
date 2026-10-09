@@ -779,14 +779,62 @@ jobs:
         dir: ${{ fromJSON(needs.detect.outputs.ts_dirs) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Prepare workflow scope command recorder
+        id: scope-helper
+        if: always()
+        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2 # v1
+        continue-on-error: true
+        with:
+          mode: helper
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: ${{ inputs.node-version }}
       - name: Install and lint
         shell: bash
         working-directory: ${{ matrix.dir }}
+        env:
+          SCOPE_HELPER: ${{ steps.scope-helper.outputs.helper_path }}
+          SCOPE_TOOLS_FILE: ${{ runner.temp }}/maxi-quality-tools.json
         run: |
           set -Eeuo pipefail
+          record_scope() {
+            local name="$1" rc="$2" log="$3"; shift 3
+            [[ -n "${SCOPE_HELPER:-}" && -f "$SCOPE_HELPER" && -n "${SCOPE_TOOLS_FILE:-}" ]] || return 0
+            local args=("$SCOPE_HELPER" tool --file "$SCOPE_TOOLS_FILE"
+              --name "$name" --state run --outcome "$([[ "$rc" -eq 0 ]] && echo success || echo failure)"
+              --exit-code "$rc" --reason "command boundary executed" --reason-code command
+              --working-directory "$PWD")
+            if [[ -n "$log" && "$log" != /dev/null && -f "$log" ]]; then args+=(--diagnostic-file "$log"); fi
+            if [[ -n "${SCOPE_CAPTURE_ISSUE:-}" ]]; then args+=(--collection-issue "$SCOPE_CAPTURE_ISSUE"); fi
+            args+=(--argv "$@")
+            python3 "${args[@]}" >/dev/null 2>&1 || true
+          }
+          scope_run() {
+            local name="$1"; shift
+            local log=/dev/null
+            if [[ -n "${RUNNER_TEMP:-}" && -d "$RUNNER_TEMP" && -w "$RUNNER_TEMP" ]]; then
+              log="$RUNNER_TEMP/mq-scope-${name//[^A-Za-z0-9_.:-]/_}.log"
+              : > "$log" 2>/dev/null || log=/dev/null
+            fi
+            local rc=0
+            set +e
+            scope_capture "$log" "$@"; rc=$?
+            set -e
+            record_scope "$name" "$rc" "$log" "$@"
+            return "$rc"
+          }
+          scope_capture() {
+            local log="$1"; shift
+            SCOPE_CAPTURE_ISSUE=""
+            if [[ "$log" != /dev/null ]]; then
+              set +e
+              "$@" 2>&1 | (tee "$log" || { tee_rc=$?; cat; exit "$tee_rc"; })
+              local statuses=("${PIPESTATUS[@]}")
+              if [[ "${statuses[1]:-0}" -ne 0 ]]; then SCOPE_CAPTURE_ISSUE="capture sink failed with exit ${statuses[1]}"; fi
+              return "${statuses[0]}"
+            fi
+            "$@"
+          }
           if [[ -f pnpm-lock.yaml ]]; then
             # corepack reads the pinned "packageManager" field; a pnpm repo
             # without one fails here on purpose — pin it, don't guess it.
@@ -794,12 +842,12 @@ jobs:
               echo '::error::pnpm-lock.yaml found but package.json has no "packageManager" field. Pin it (e.g. "pnpm@11.10.0") so CI and local installs agree.'
               exit 1
             fi
-            corepack enable
-            pnpm install --frozen-lockfile
-            pnpm run lint
+            scope_run setup-corepack corepack enable
+            scope_run install pnpm install --frozen-lockfile
+            scope_run lint pnpm run lint
           else
-            npm ci
-            npm run lint
+            scope_run install npm ci
+            scope_run lint npm run lint
           fi
 
       # The gate that answers "should this code exist?" — every step above it
@@ -814,6 +862,9 @@ jobs:
       - name: Dead code and unused dependencies (knip)
         if: inputs.dead-code != 'off'
         uses: maximalcode/maxi-quality/actions/deadcode@613a26c952d3a5b224b15e7268b182826c1e53b2
+        env:
+          SCOPE_HELPER: ${{ steps.scope-helper.outputs.helper_path }}
+          SCOPE_TOOLS_FILE: ${{ runner.temp }}/maxi-quality-tools.json
         with:
           tool: knip
           dir: ${{ matrix.dir }}
@@ -835,6 +886,13 @@ jobs:
           outcome: ${{ job.status }}
           reason: TypeScript matrix leg boundary
           reason-code: matrix-leg
+          tools-file: ${{ runner.temp }}/maxi-quality-tools.json
+          expected-tools: |-
+            install|skipped|unknown|blocked|install step was not reached
+            lint|skipped|unknown|blocked|lint step was not reached
+            knip|skipped|unknown|blocked|dead-code step was not reached
+          dead-code-mode: ${{ inputs.dead-code }}
+          job-outcome: ${{ job.status }}
           artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.detect.outputs.scope_invocation_id }}
 
   dotnet:
@@ -847,6 +905,13 @@ jobs:
         target: ${{ fromJSON(needs.detect.outputs.dotnet_targets) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Prepare workflow scope command recorder
+        id: scope-helper
+        if: always()
+        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2 # v1
+        continue-on-error: true
+        with:
+          mode: helper
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           dotnet-version: ${{ inputs.dotnet-version }}
@@ -874,7 +939,40 @@ jobs:
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
-        run: dotnet build "$TARGET"
+          SCOPE_HELPER: ${{ steps.scope-helper.outputs.helper_path }}
+          SCOPE_TOOLS_FILE: ${{ runner.temp }}/maxi-quality-tools.json
+        run: |
+          set -Eeuo pipefail
+          scope_capture() {
+            local log="$1"; shift
+            SCOPE_CAPTURE_ISSUE=""
+            if [[ "$log" != /dev/null ]]; then
+              set +e
+              "$@" 2>&1 | (tee "$log" || { tee_rc=$?; cat; exit "$tee_rc"; })
+              local statuses=("${PIPESTATUS[@]}")
+              if [[ "${statuses[1]:-0}" -ne 0 ]]; then SCOPE_CAPTURE_ISSUE="capture sink failed with exit ${statuses[1]}"; fi
+              return "${statuses[0]}"
+            fi
+            "$@"
+          }
+          log=/dev/null
+          if [[ -n "${RUNNER_TEMP:-}" && -d "$RUNNER_TEMP" && -w "$RUNNER_TEMP" ]]; then
+            log="$RUNNER_TEMP/mq-scope-build.log"
+            : > "$log" 2>/dev/null || log=/dev/null
+          fi
+          rc=0
+          set +e
+          scope_capture "$log" dotnet build "$TARGET"; rc=$?
+          set -e
+          args=("${SCOPE_HELPER:-}" tool --file "${SCOPE_TOOLS_FILE:-$RUNNER_TEMP/maxi-quality-tools.json}"
+            --name build --state run --outcome "$([[ "$rc" -eq 0 ]] && echo success || echo failure)"
+            --exit-code "$rc" --reason "dotnet build command boundary executed" --reason-code command
+            --working-directory "$PWD")
+          if [[ "$log" != /dev/null && -f "$log" ]]; then args+=(--diagnostic-file "$log"); fi
+          if [[ -n "${SCOPE_CAPTURE_ISSUE:-}" ]]; then args+=(--collection-issue "$SCOPE_CAPTURE_ISSUE"); fi
+          args+=(--argv dotnet build "$TARGET")
+          python3 "${args[@]}" >/dev/null 2>&1 || true
+          exit "$rc"
 
       - name: Record .NET workflow scope fragment
         if: always()
@@ -890,6 +988,13 @@ jobs:
           outcome: ${{ job.status }}
           reason: .NET matrix leg boundary
           reason-code: matrix-leg
+          tools-file: ${{ runner.temp }}/maxi-quality-tools.json
+          expected-tools: |-
+            build|skipped|unknown|blocked|build step was not reached
+            roslyn|unknown|unknown|opaque|Roslyn execution is nested inside dotnet build
+            sonar-analyzer|unknown|unknown|opaque|SonarAnalyzer.CSharp execution is nested inside dotnet build
+            roslynator|unknown|unknown|opaque|Roslynator execution is nested inside dotnet build
+          job-outcome: ${{ job.status }}
           artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.detect.outputs.scope_invocation_id }}
 
   python:
@@ -902,6 +1007,13 @@ jobs:
         dir: ${{ fromJSON(needs.detect.outputs.python_dirs) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Prepare workflow scope command recorder
+        id: scope-helper
+        if: always()
+        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2 # v1
+        continue-on-error: true
+        with:
+          mode: helper
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: ${{ inputs.python-version }}
@@ -946,18 +1058,80 @@ jobs:
         if: steps.mode.outputs.tool == 'uv'
         shell: bash
         working-directory: ${{ matrix.dir }}
+        env:
+          SCOPE_HELPER: ${{ steps.scope-helper.outputs.helper_path }}
+          SCOPE_TOOLS_FILE: ${{ runner.temp }}/maxi-quality-tools.json
         run: |
           set -Eeuo pipefail
-          uv sync --frozen --all-extras --dev
-          uv run ruff check .
-          uv run mypy .
+          scope_run() {
+            local name="$1"; shift
+            local log=/dev/null
+            if [[ -n "${RUNNER_TEMP:-}" && -d "$RUNNER_TEMP" && -w "$RUNNER_TEMP" ]]; then
+              log="$RUNNER_TEMP/mq-scope-${name}.log"; : > "$log" 2>/dev/null || log=/dev/null
+            fi
+            local rc=0; set +e
+            scope_capture "$log" "$@"; rc=$?; set -e
+            args=("${SCOPE_HELPER:-}" tool --file "${SCOPE_TOOLS_FILE:-$RUNNER_TEMP/maxi-quality-tools.json}"
+              --name "$name" --state run --outcome "$([[ "$rc" -eq 0 ]] && echo success || echo failure)"
+              --exit-code "$rc" --reason "Python command boundary executed" --reason-code command --working-directory "$PWD")
+            if [[ "$log" != /dev/null && -f "$log" ]]; then args+=(--diagnostic-file "$log"); fi
+            if [[ -n "${SCOPE_CAPTURE_ISSUE:-}" ]]; then args+=(--collection-issue "$SCOPE_CAPTURE_ISSUE"); fi
+            args+=(--argv "$@"); python3 "${args[@]}" >/dev/null 2>&1 || true
+            return "$rc"
+          }
+          scope_capture() {
+            local log="$1"; shift
+            SCOPE_CAPTURE_ISSUE=""
+            if [[ "$log" != /dev/null ]]; then
+              set +e
+              "$@" 2>&1 | (tee "$log" || { tee_rc=$?; cat; exit "$tee_rc"; })
+              local statuses=("${PIPESTATUS[@]}")
+              if [[ "${statuses[1]:-0}" -ne 0 ]]; then SCOPE_CAPTURE_ISSUE="capture sink failed with exit ${statuses[1]}"; fi
+              return "${statuses[0]}"
+            fi
+            "$@"
+          }
+          scope_run setup uv sync --frozen --all-extras --dev
+          scope_run ruff uv run ruff check .
+          scope_run mypy uv run mypy .
 
       - name: Lint and type-check (pip)
         if: steps.mode.outputs.tool == 'pip'
         shell: bash
         working-directory: ${{ matrix.dir }}
+        env:
+          SCOPE_HELPER: ${{ steps.scope-helper.outputs.helper_path }}
+          SCOPE_TOOLS_FILE: ${{ runner.temp }}/maxi-quality-tools.json
         run: |
           set -Eeuo pipefail
+          scope_run() {
+            local name="$1"; shift
+            local log=/dev/null
+            if [[ -n "${RUNNER_TEMP:-}" && -d "$RUNNER_TEMP" && -w "$RUNNER_TEMP" ]]; then
+              log="$RUNNER_TEMP/mq-scope-${name}.log"; : > "$log" 2>/dev/null || log=/dev/null
+            fi
+            local rc=0; set +e
+            scope_capture "$log" "$@"; rc=$?; set -e
+            args=("${SCOPE_HELPER:-}" tool --file "${SCOPE_TOOLS_FILE:-$RUNNER_TEMP/maxi-quality-tools.json}"
+              --name "$name" --state run --outcome "$([[ "$rc" -eq 0 ]] && echo success || echo failure)"
+              --exit-code "$rc" --reason "Python command boundary executed" --reason-code command --working-directory "$PWD")
+            if [[ "$log" != /dev/null && -f "$log" ]]; then args+=(--diagnostic-file "$log"); fi
+            if [[ -n "${SCOPE_CAPTURE_ISSUE:-}" ]]; then args+=(--collection-issue "$SCOPE_CAPTURE_ISSUE"); fi
+            args+=(--argv "$@"); python3 "${args[@]}" >/dev/null 2>&1 || true
+            return "$rc"
+          }
+          scope_capture() {
+            local log="$1"; shift
+            SCOPE_CAPTURE_ISSUE=""
+            if [[ "$log" != /dev/null ]]; then
+              set +e
+              "$@" 2>&1 | (tee "$log" || { tee_rc=$?; cat; exit "$tee_rc"; })
+              local statuses=("${PIPESTATUS[@]}")
+              if [[ "${statuses[1]:-0}" -ne 0 ]]; then SCOPE_CAPTURE_ISSUE="capture sink failed with exit ${statuses[1]}"; fi
+              return "${statuses[0]}"
+            fi
+            "$@"
+          }
           # Written as if-blocks, NOT `[[ -f x ]] && pip install x`.
           #
           # The precise rule, measured: under `set -e` a false `[[ ]] && cmd`
@@ -968,13 +1142,13 @@ jobs:
           # still the right shape here, because the last of these lines IS the
           # last statement when requirements-dev.txt is absent.
           if [[ -f requirements.txt ]]; then
-            pip install -r requirements.txt
+            scope_run setup pip install -r requirements.txt
           fi
           if [[ -f requirements-dev.txt ]]; then
-            pip install -r requirements-dev.txt
+            scope_run setup pip install -r requirements-dev.txt
           fi
-          ruff check .
-          mypy .
+          scope_run ruff ruff check .
+          scope_run mypy mypy .
 
       # deptry's half of #97. Note what the action does with `dir`: it treats it
       # as a scan ROOT and enumerates the packages under it, because the matrix
@@ -985,6 +1159,9 @@ jobs:
       - name: Unused and undeclared dependencies (deptry)
         if: inputs.dead-code != 'off'
         uses: maximalcode/maxi-quality/actions/deadcode@613a26c952d3a5b224b15e7268b182826c1e53b2
+        env:
+          SCOPE_HELPER: ${{ steps.scope-helper.outputs.helper_path }}
+          SCOPE_TOOLS_FILE: ${{ runner.temp }}/maxi-quality-tools.json
         with:
           tool: deptry
           dir: ${{ matrix.dir }}
@@ -1005,6 +1182,14 @@ jobs:
           outcome: ${{ job.status }}
           reason: Python matrix leg boundary
           reason-code: matrix-leg
+          tools-file: ${{ runner.temp }}/maxi-quality-tools.json
+          expected-tools: |-
+            setup|skipped|unknown|blocked|Python setup step was not reached
+            ruff|skipped|unknown|blocked|Ruff step was not reached
+            mypy|skipped|unknown|blocked|mypy step was not reached
+            deptry|skipped|unknown|blocked|deptry action was not reached
+          dead-code-mode: ${{ inputs.dead-code }}
+          job-outcome: ${{ job.status }}
           artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.detect.outputs.scope_invocation_id }}
 
   # Rust rides the reusable workflow like every other language (#70). It used to
@@ -1029,6 +1214,13 @@ jobs:
         dir: ${{ fromJSON(needs.detect.outputs.rust_dirs) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Prepare workflow scope command recorder
+        id: scope-helper
+        if: always()
+        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2 # v1
+        continue-on-error: true
+        with:
+          mode: helper
       # Self-hosted runners install rustup per-user into ~/.cargo/bin, and the
       # runner's non-login service shell does not have that on PATH — so the
       # toolchain step below dies with `rustup: command not found` even on a
@@ -1074,8 +1266,39 @@ jobs:
       - name: Format, lint and audit
         shell: bash
         working-directory: ${{ matrix.dir }}
+        env:
+          SCOPE_HELPER: ${{ steps.scope-helper.outputs.helper_path }}
+          SCOPE_TOOLS_FILE: ${{ runner.temp }}/maxi-quality-tools.json
         run: |
           set -Eeuo pipefail
+          scope_run() {
+            local name="$1"; shift
+            local log=/dev/null
+            if [[ -n "${RUNNER_TEMP:-}" && -d "$RUNNER_TEMP" && -w "$RUNNER_TEMP" ]]; then
+              log="$RUNNER_TEMP/mq-scope-${name}.log"; : > "$log" 2>/dev/null || log=/dev/null
+            fi
+            local rc=0; set +e
+            scope_capture "$log" "$@"; rc=$?; set -e
+            args=("${SCOPE_HELPER:-}" tool --file "${SCOPE_TOOLS_FILE:-$RUNNER_TEMP/maxi-quality-tools.json}"
+              --name "$name" --state run --outcome "$([[ "$rc" -eq 0 ]] && echo success || echo failure)"
+              --exit-code "$rc" --reason "Rust command boundary executed" --reason-code command --working-directory "$PWD")
+            if [[ "$log" != /dev/null && -f "$log" ]]; then args+=(--diagnostic-file "$log"); fi
+            if [[ -n "${SCOPE_CAPTURE_ISSUE:-}" ]]; then args+=(--collection-issue "$SCOPE_CAPTURE_ISSUE"); fi
+            args+=(--argv "$@"); python3 "${args[@]}" >/dev/null 2>&1 || true
+            return "$rc"
+          }
+          scope_capture() {
+            local log="$1"; shift
+            SCOPE_CAPTURE_ISSUE=""
+            if [[ "$log" != /dev/null ]]; then
+              set +e
+              "$@" 2>&1 | (tee "$log" || { tee_rc=$?; cat; exit "$tee_rc"; })
+              local statuses=("${PIPESTATUS[@]}")
+              if [[ "${statuses[1]:-0}" -ne 0 ]]; then SCOPE_CAPTURE_ISSUE="capture sink failed with exit ${statuses[1]}"; fi
+              return "${statuses[0]}"
+            fi
+            "$@"
+          }
           # --all / --workspace on BOTH, and they are load-bearing rather than
           # belt-and-braces. Without a package selection flag cargo operates on
           # `default-members`, which defaults to the ROOT PACKAGE ALONE whenever
@@ -1086,16 +1309,16 @@ jobs:
           # having never opened a single member crate. That is #70's own bug,
           # one directory down, and detection cannot see it because the members
           # are genuinely covered by the root's lockfile.
-          cargo fmt --all --check
+          scope_run fmt cargo fmt --all --check
           # -Dwarnings HERE and not in the manifest: a contributor's local
           # `cargo check` should warn them, not wall them mid-refactor. CI is
           # the gate. --locked is why detection refuses a crate with no
           # lockfile: without one this line cannot run at all.
-          RUSTFLAGS=-Dwarnings cargo clippy --workspace --all-targets --locked
+          scope_run clippy env RUSTFLAGS=-Dwarnings cargo clippy --workspace --all-targets --locked
           # advisories covers what cargo-audit would (the same RustSec feed);
           # add 'licenses' once deny.toml's allowlist holds your policy.
           # cargo-deny reads the whole workspace graph already.
-          cargo deny check advisories bans
+          scope_run cargo-deny cargo deny check advisories bans
 
       - name: Record Rust workflow scope fragment
         if: always()
@@ -1111,6 +1334,12 @@ jobs:
           outcome: ${{ job.status }}
           reason: Rust matrix leg boundary
           reason-code: matrix-leg
+          tools-file: ${{ runner.temp }}/maxi-quality-tools.json
+          expected-tools: |-
+            fmt|skipped|unknown|blocked|format step was not reached
+            clippy|skipped|unknown|blocked|Clippy step was not reached
+            cargo-deny|skipped|unknown|blocked|cargo-deny step was not reached
+          job-outcome: ${{ job.status }}
           artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.detect.outputs.scope_invocation_id }}
 
   # Java rides the reusable workflow like every other language. The pins live
@@ -1136,6 +1365,13 @@ jobs:
         dir: ${{ fromJSON(needs.detect.outputs.java_dirs) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Prepare workflow scope command recorder
+        id: scope-helper
+        if: always()
+        uses: maximalcode/maxi-quality/actions/workflow-scope@613a26c952d3a5b224b15e7268b182826c1e53b2 # v1
+        continue-on-error: true
+        with:
+          mode: helper
       - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
         with:
           distribution: temurin
@@ -1155,10 +1391,26 @@ jobs:
       - name: Compile with Error Prone and NullAway
         shell: bash
         working-directory: ${{ matrix.dir }}
+        env:
+          SCOPE_HELPER: ${{ steps.scope-helper.outputs.helper_path }}
+          SCOPE_TOOLS_FILE: ${{ runner.temp }}/maxi-quality-tools.json
         run: |
           set -uo pipefail
           rc=0; out=$(mvn -B --no-transfer-progress test-compile 2>&1) || rc=$?
           echo "$out"
+          log=/dev/null
+          if [[ -n "${RUNNER_TEMP:-}" && -d "$RUNNER_TEMP" && -w "$RUNNER_TEMP" ]]; then
+            log="$RUNNER_TEMP/mq-scope-test-compile.log"
+            printf '%s\n' "$out" > "$log" 2>/dev/null || log=/dev/null
+          fi
+          args=("${SCOPE_HELPER:-}" tool --file "${SCOPE_TOOLS_FILE:-$RUNNER_TEMP/maxi-quality-tools.json}"
+            --name test-compile --state run --outcome "$([[ "$rc" -eq 0 ]] && echo success || echo failure)"
+            --exit-code "$rc" --reason "Maven test-compile command boundary executed" --reason-code command
+            --working-directory "$PWD")
+          if [[ "$log" != /dev/null && -f "$log" ]]; then args+=(--diagnostic-file "$log"); else args+=(--diagnostic "$out"); fi
+          if [[ -n "${SCOPE_CAPTURE_ISSUE:-}" ]]; then args+=(--collection-issue "$SCOPE_CAPTURE_ISSUE"); fi
+          args+=(--argv mvn -B --no-transfer-progress test-compile)
+          python3 "${args[@]}" >/dev/null 2>&1 || true
           # THE HALF-REPORT WARNING, and it is the reason this step is a script
           # rather than one `run: mvn` line. When javac's own -Xlint produces a
           # warning AND -Werror is set, the compile ends before Error Prone
@@ -1169,6 +1421,16 @@ jobs:
           # have added. Measured 2026-08-09; configs/java/pom-lints.xml carries
           # the detail and samples/java-lint pins it.
           if [[ $rc -ne 0 ]] && grep -q 'warnings found and -Werror specified' <<<"$out"; then
+            for nested in error-prone nullaway; do
+              nested_args=("${SCOPE_HELPER:-}" tool --file "${SCOPE_TOOLS_FILE:-$RUNNER_TEMP/maxi-quality-tools.json}"
+                --name "$nested" --state skipped --outcome failure --exit-code "$rc"
+                --reason "javac -Werror stopped before nested analyzer execution"
+                --reason-code blocked --working-directory "$PWD")
+              if [[ "$log" != /dev/null && -f "$log" ]]; then nested_args+=(--diagnostic-file "$log"); else nested_args+=(--diagnostic "$out"); fi
+              if [[ -n "${SCOPE_CAPTURE_ISSUE:-}" ]]; then nested_args+=(--collection-issue "$SCOPE_CAPTURE_ISSUE"); fi
+              nested_args+=(--argv mvn -B --no-transfer-progress test-compile)
+              python3 "${nested_args[@]}" >/dev/null 2>&1 || true
+            done
             echo '::warning::javac -Xlint warnings ended this compile before the Error Prone pass ran, so the findings above are NOT the complete list. Fix the lint warnings and re-run to see what the analyzer adds.'
           fi
           exit $rc
@@ -1181,7 +1443,38 @@ jobs:
       - name: Everything the formatter owns must already be formatted
         shell: bash
         working-directory: ${{ matrix.dir }}
-        run: mvn -B --no-transfer-progress spotless:check
+        env:
+          SCOPE_HELPER: ${{ steps.scope-helper.outputs.helper_path }}
+          SCOPE_TOOLS_FILE: ${{ runner.temp }}/maxi-quality-tools.json
+        run: |
+          set -Eeuo pipefail
+          scope_capture() {
+            local log="$1"; shift
+            SCOPE_CAPTURE_ISSUE=""
+            if [[ "$log" != /dev/null ]]; then
+              set +e
+              "$@" 2>&1 | (tee "$log" || { tee_rc=$?; cat; exit "$tee_rc"; })
+              local statuses=("${PIPESTATUS[@]}")
+              if [[ "${statuses[1]:-0}" -ne 0 ]]; then SCOPE_CAPTURE_ISSUE="capture sink failed with exit ${statuses[1]}"; fi
+              return "${statuses[0]}"
+            fi
+            "$@"
+          }
+          log=/dev/null
+          if [[ -n "${RUNNER_TEMP:-}" && -d "$RUNNER_TEMP" && -w "$RUNNER_TEMP" ]]; then
+            log="$RUNNER_TEMP/mq-scope-spotless.log"; : > "$log" 2>/dev/null || log=/dev/null
+          fi
+          rc=0; set +e
+          scope_capture "$log" mvn -B --no-transfer-progress spotless:check; rc=$?; set -e
+          args=("${SCOPE_HELPER:-}" tool --file "${SCOPE_TOOLS_FILE:-$RUNNER_TEMP/maxi-quality-tools.json}"
+            --name spotless --state run --outcome "$([[ "$rc" -eq 0 ]] && echo success || echo failure)"
+            --exit-code "$rc" --reason "Maven Spotless command boundary executed" --reason-code command
+            --working-directory "$PWD")
+          if [[ "$log" != /dev/null && -f "$log" ]]; then args+=(--diagnostic-file "$log"); fi
+          if [[ -n "${SCOPE_CAPTURE_ISSUE:-}" ]]; then args+=(--collection-issue "$SCOPE_CAPTURE_ISSUE"); fi
+          args+=(--argv mvn -B --no-transfer-progress spotless:check)
+          python3 "${args[@]}" >/dev/null 2>&1 || true
+          exit "$rc"
 
       - name: Record Java workflow scope fragment
         if: always()
@@ -1197,6 +1490,13 @@ jobs:
           outcome: ${{ job.status }}
           reason: Java matrix leg boundary
           reason-code: matrix-leg
+          tools-file: ${{ runner.temp }}/maxi-quality-tools.json
+          expected-tools: |-
+            test-compile|skipped|unknown|blocked|compile step was not reached
+            error-prone|unknown|unknown|opaque|Error Prone execution is nested inside Maven javac
+            nullaway|unknown|unknown|opaque|NullAway execution is nested inside Maven javac
+            spotless|skipped|unknown|blocked|formatter step was not reached
+          job-outcome: ${{ job.status }}
           artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.detect.outputs.scope_invocation_id }}
 
   layer2:

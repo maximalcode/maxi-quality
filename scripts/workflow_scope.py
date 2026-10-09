@@ -48,6 +48,8 @@ SUMMARY_LINE_LIMIT = 240
 SUMMARY_MAX_LINES = 200
 VALID_STATES = {"run", "skipped", "not_applicable", "unknown"}
 VALID_OUTCOMES = {"success", "failure", "cancelled", "unknown"}
+VALID_MEASUREMENT_STATES = {"known", "unknown", "not_applicable"}
+TOOL_MEASUREMENTS = ("examined", "unparsed", "policy_excluded")
 
 
 def now() -> str:
@@ -126,6 +128,170 @@ def measurement(status: str = "unknown", reason: str = "job scope is not instrum
 
 def unknown_measurements(reason: str = "job scope is not instrumented") -> dict[str, Any]:
     return {name: measurement(reason=reason) for name in ("examined", "unparsed", "policy_excluded")}
+
+
+def validate_tool_record(record: dict[str, Any]) -> list[str]:
+    """Return semantic contract violations for one JSON tool record."""
+    issues: list[str] = []
+    required = ("name", "command", "working_directory", "state", "outcome", "reason", "reason_code", "exit_code", "diagnostics", "measurements")
+    issues.extend(f"missing {field}" for field in required if field not in record)
+    if "name" in record and (not isinstance(record["name"], str) or not record["name"]):
+        issues.append("name must be a non-empty string")
+    if "command" in record and (not isinstance(record["command"], list) or not all(isinstance(value, str) for value in record["command"])):
+        issues.append("command must be a list of strings")
+    if "working_directory" in record and record["working_directory"] is not None and not isinstance(record["working_directory"], str):
+        issues.append("working_directory must be a string or null")
+    if "state" in record and record["state"] not in VALID_STATES:
+        issues.append(f"state must be one of {sorted(VALID_STATES)}")
+    if "outcome" in record and record["outcome"] not in VALID_OUTCOMES:
+        issues.append(f"outcome must be one of {sorted(VALID_OUTCOMES)}")
+    if "reason" in record and not isinstance(record["reason"], str):
+        issues.append("reason must be a string")
+    if "reason_code" in record and record["reason_code"] is not None and not isinstance(record["reason_code"], str):
+        issues.append("reason_code must be a string or null")
+    exit_code = record.get("exit_code")
+    if exit_code is not None and (isinstance(exit_code, bool) or not isinstance(exit_code, int) or not 0 <= exit_code <= 255):
+        issues.append("exit_code must be an integer from 0 through 255 or null")
+    if "diagnostics" in record and (not isinstance(record["diagnostics"], list) or not all(isinstance(value, str) for value in record["diagnostics"])):
+        issues.append("diagnostics must be a list of strings")
+    measurements = record.get("measurements")
+    if not isinstance(measurements, dict):
+        issues.append("measurements must be an object")
+    else:
+        for name in TOOL_MEASUREMENTS:
+            value = measurements.get(name)
+            if not isinstance(value, dict):
+                issues.append(f"measurement {name} must be an object")
+                continue
+            for field in ("status", "count", "unit", "method", "reason"):
+                if field not in value:
+                    issues.append(f"measurement {name} is missing {field}")
+            if value.get("status") not in VALID_MEASUREMENT_STATES:
+                issues.append(f"measurement {name} status is invalid")
+            count = value.get("count")
+            if count is not None and (isinstance(count, bool) or not isinstance(count, int) or count < 0):
+                issues.append(f"measurement {name} count must be a non-negative integer or null")
+            for field in ("unit", "method", "reason"):
+                if field in value and not isinstance(value[field], str):
+                    issues.append(f"measurement {name} {field} must be a string")
+    collection = record.get("collection")
+    if collection is not None:
+        if not isinstance(collection, dict):
+            issues.append("collection must be an object")
+        else:
+            if collection.get("status") not in {"complete", "partial", "unknown"}:
+                issues.append("collection status is invalid")
+            if not isinstance(collection.get("issues"), list) or not all(isinstance(value, str) for value in collection["issues"]):
+                issues.append("collection issues must be a list of strings")
+    return issues
+
+
+def read_tools(path: pathlib.Path) -> tuple[list[dict[str, Any]], str | None]:
+    """Read command records and preserve missing/malformed evidence as an issue."""
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        return [], f"tool record file unavailable: {path}: {exc}"
+    except json.JSONDecodeError as exc:
+        return [], f"malformed tool record file {path}: {exc}"
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        return [], f"malformed tool record file {path}: expected a list of objects"
+    records: list[dict[str, Any]] = []
+    issues: list[str] = []
+    for index, item in enumerate(value):
+        violations = validate_tool_record(item)
+        if not violations:
+            records.append(item)
+            continue
+        name = item.get("name") if isinstance(item.get("name"), str) and item.get("name") else f"unknown-tool-{index}"
+        issue = f"invalid tool record {name}: {'; '.join(violations)}"
+        issues.append(issue)
+        records.append({
+            "name": name,
+            "command": [],
+            "working_directory": None,
+            "state": "unknown",
+            "outcome": "unknown",
+            "reason": "execution is unknown because the tool record is invalid",
+            "reason_code": "invalid_tool_record",
+            "exit_code": None,
+            "diagnostics": [],
+            "measurements": unknown_measurements("tool record was semantically invalid"),
+            "collection": {"status": "partial", "issues": [issue]},
+        })
+    return records, "; ".join(issues) if issues else None
+
+
+def tool_record(args: argparse.Namespace) -> None:
+    """Append one command-boundary record without owning the command verdict."""
+    path = pathlib.Path(args.file)
+    existing_issue = None
+    if path.exists():
+        records, existing_issue = read_tools(path)
+    else:
+        records = []
+    diagnostics = list(args.diagnostic or [])
+    if args.diagnostic_file:
+        try:
+            diagnostics.append(pathlib.Path(args.diagnostic_file).read_text(encoding="utf-8", errors="replace"))
+        except OSError as exc:
+            diagnostics.append(f"cannot read diagnostic file {args.diagnostic_file}: {exc}")
+    try:
+        exit_code = int(args.exit_code) if args.exit_code != "" else None
+    except ValueError:
+        exit_code = None
+    record: dict[str, Any] = {
+        "name": args.name,
+        "command": list(args.argv or []),
+        "working_directory": args.working_directory or None,
+        "state": args.state,
+        "outcome": args.outcome,
+        "reason": args.reason,
+        "reason_code": args.reason_code or None,
+        "exit_code": exit_code,
+        "diagnostics": diagnostics,
+        "measurements": unknown_measurements("measurement is not available at this command boundary"),
+    }
+    collection_issues = [issue for issue in (existing_issue, args.collection_issue) if issue]
+    if collection_issues:
+        record["collection"] = {"status": "partial", "issues": collection_issues}
+    records.append(record)
+    write(path, records)
+
+
+def expected_tool_record(spec: str, dead_code_mode: str, blocked: bool = False) -> dict[str, Any]:
+    bits = spec.split("|", 4)
+    name = bits[0]
+    state = bits[1] if len(bits) > 1 and bits[1] else "unknown"
+    outcome = bits[2] if len(bits) > 2 and bits[2] else "unknown"
+    reason_code = bits[3] if len(bits) > 3 and bits[3] else "missing_tool_record"
+    reason = bits[4] if len(bits) > 4 and bits[4] else "command execution is unknown because no boundary record was received"
+    if blocked:
+        state, outcome, reason_code, reason = "skipped", "unknown", "blocked", "command was prevented by an earlier recorded failure"
+    elif reason_code == "opaque":
+        # Known nested analyzers stay readable without pretending that the
+        # enclosing build proved their execution. Their identity and opaque
+        # boundary reason are part of the expected-tool contract.
+        state = state or "unknown"
+        outcome = outcome or "unknown"
+        reason_code = "opaque"
+        reason = reason or "execution is nested inside an opaque build command"
+    else:
+        state, outcome, reason_code, reason = "unknown", "unknown", "missing_tool_record", "command execution is unknown because no boundary record was received"
+    if dead_code_mode == "off" and name in {"knip", "deptry"}:
+        state, outcome, reason_code, reason = "skipped", "success", "disabled", "dead-code check is disabled"
+    return {
+        "name": name,
+        "command": [],
+        "working_directory": None,
+        "state": state,
+        "outcome": outcome,
+        "reason": reason,
+        "reason_code": reason_code,
+        "exit_code": None,
+        "diagnostics": [],
+        "measurements": unknown_measurements("command boundary was not reached"),
+    }
 
 
 def expected_jobs(args: argparse.Namespace) -> list[dict[str, str]]:
@@ -284,6 +450,7 @@ def fragment(args: argparse.Namespace) -> None:
             diagnostics.append(pathlib.Path(args.diagnostic_file).read_text(encoding="utf-8", errors="replace"))
         except OSError as exc:
             diagnostics.append(f"cannot read diagnostic file {args.diagnostic_file}: {exc}")
+    tools, tools_issue = read_tools(pathlib.Path(args.tools_file)) if args.tools_file else ([], None)
     value: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "kind": "workflow-scope-fragment",
@@ -294,7 +461,40 @@ def fragment(args: argparse.Namespace) -> None:
         "reason_code": args.reason_code,
         "diagnostics": diagnostics,
         "measurements": unknown_measurements(),
+        "tools": tools,
+        "tool_collection": {
+            "status": "partial" if tools_issue else "complete",
+            "issues": [tools_issue] if tools_issue else [],
+        },
     }
+    observed = {str(item.get("name")) for item in value["tools"] if item.get("name")}
+    failure_seen = False
+    previous_names: set[str] = set()
+    missing_records: list[str] = []
+    for spec in args.expected_tool or []:
+        spec_bits = spec.split("|", 4)
+        expected_name = spec_bits[0]
+        opaque = len(spec_bits) > 3 and spec_bits[3] == "opaque"
+        matching = [item for item in value["tools"] if str(item.get("name")) == expected_name or str(item.get("name", "")).startswith(expected_name + ":")]
+        prior = [item for item in value["tools"] if str(item.get("name")) in previous_names or any(str(item.get("name", "")).startswith(name + ":") for name in previous_names)]
+        if any(item.get("outcome") == "failure" for item in matching + prior):
+            failure_seen = True
+        expected = expected_tool_record(
+            spec,
+            args.dead_code_mode,
+            blocked=failure_seen and not opaque,
+        )
+        seen = expected["name"] in observed or any(name.startswith(expected["name"] + ":") for name in observed)
+        if not seen:
+            value["tools"].append(expected)
+            if expected["reason_code"] == "missing_tool_record":
+                missing_records.append(expected_name)
+        previous_names.add(expected_name)
+    if missing_records:
+        value["tool_collection"]["status"] = "partial"
+        value["tool_collection"]["issues"].extend(
+            f"missing command boundary record for {name}" for name in missing_records
+        )
     write(pathlib.Path(args.out), value)
 
 
@@ -413,7 +613,14 @@ def collect(args: argparse.Namespace) -> None:
                 "reason_code": fragment_value.get("reason_code"),
                 "diagnostics": fragment_value.get("diagnostics", []),
                 "measurements": fragment_value.get("measurements", unknown_measurements()),
+                "tools": fragment_value.get("tools", []),
+                "tool_collection": fragment_value.get("tool_collection", {"status": "unknown", "issues": []}),
             })
+            for issue in jobs[-1].get("tool_collection", {}).get("issues", []):
+                issues.append(f"{key}: {issue}")
+            for tool in jobs[-1].get("tools", []):
+                for issue in tool.get("collection", {}).get("issues", []) if isinstance(tool.get("collection"), dict) else []:
+                    issues.append(f"{key}/{tool.get('name', 'unknown')}: {issue}")
     document["jobs"] = jobs
     detect = next((job for job in jobs if job["logical_job"] == "detect" and not job.get("leg")), None)
     if detect:
@@ -495,6 +702,16 @@ def render_lines(document: dict[str, Any]) -> list[str]:
         lines.append(f"Job {safe(job['logical_job'])}{leg}: {safe(job['state'])}/{safe(job['outcome'])} — {safe(job['reason'])}")
         for diagnostic in job.get("diagnostics", []):
             lines.append(f"Diagnostic {safe(job['logical_job'])}{leg}: {safe(diagnostic)}")
+        for tool in job.get("tools", []):
+            tool_leg = f"{safe(tool.get('name', 'unknown'))}{leg}"
+            lines.append(
+                f"Tool {tool_leg}: {safe(tool.get('state', 'unknown'))}/{safe(tool.get('outcome', 'unknown'))}"
+                f" rc={safe(tool.get('exit_code'))} — {safe(tool.get('reason', ''))}"
+            )
+            for diagnostic in tool.get("diagnostics", []):
+                lines.append(f"Tool diagnostic {tool_leg}: {safe(diagnostic)}")
+            for issue in tool.get("collection", {}).get("issues", []) if isinstance(tool.get("collection"), dict) else []:
+                lines.append(f"Tool collection issue {tool_leg}: {safe(issue)}")
     for issue in document["collection"].get("issues", []):
         lines.append(f"Collection issue: {safe(issue)}")
     if document["collection"].get("missing"):
@@ -543,7 +760,25 @@ def parser() -> argparse.ArgumentParser:
         fragment_parser.add_argument("--" + name, default=default)
     fragment_parser.add_argument("--diagnostic", action="append")
     fragment_parser.add_argument("--diagnostic-file", default="")
+    fragment_parser.add_argument("--tools-file", default="")
+    fragment_parser.add_argument("--expected-tool", action="append")
+    fragment_parser.add_argument("--dead-code-mode", default="auto")
+    fragment_parser.add_argument("--job-outcome", default="unknown")
     fragment_parser.set_defaults(func=fragment)
+    tool_parser = sub.add_parser("tool")
+    tool_parser.add_argument("--file", required=True)
+    tool_parser.add_argument("--name", required=True)
+    tool_parser.add_argument("--state", default="run", choices=sorted(VALID_STATES))
+    tool_parser.add_argument("--outcome", default="unknown", choices=sorted(VALID_OUTCOMES))
+    tool_parser.add_argument("--reason", default="command boundary executed")
+    tool_parser.add_argument("--reason-code", default="command")
+    tool_parser.add_argument("--exit-code", default="")
+    tool_parser.add_argument("--diagnostic", action="append")
+    tool_parser.add_argument("--diagnostic-file", default="")
+    tool_parser.add_argument("--working-directory", default="")
+    tool_parser.add_argument("--collection-issue", default="")
+    tool_parser.add_argument("--argv", nargs=argparse.REMAINDER, default=[])
+    tool_parser.set_defaults(func=tool_record)
     collect_parser = sub.add_parser("collect")
     collect_parser.add_argument("--manifest", required=True)
     collect_parser.add_argument("--fragments-dir", required=True)
