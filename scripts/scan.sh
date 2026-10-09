@@ -757,20 +757,38 @@ run_osv() {
     # this was nearly shipped as "104 components, all UNKNOWN". An SBOM without
     # licence data is the half of the artifact nobody needs.
     local src=0 sbom_log="$WORKDIR/sbom.log"
+    # Keep tee in the foreground so the complete native output is present
+    # before scope_record reads it. PIPESTATUS preserves the scanner's real
+    # verdict; a diagnostic sink failure does not turn an otherwise successful
+    # SBOM command into a new gate condition.
     "${RESOLVED_CMD[@]}" scan source --recursive --all-packages --licenses \
-      --format=cyclonedx-1-6 --output-file="$out" "$root" > >(tee "$sbom_log") 2>&1 || src=$?
+      --format=cyclonedx-1-6 --output-file="$out" "$root" 2>&1 | tee "$sbom_log" || src=${PIPESTATUS[0]}
     if [[ -n "$staged" && -f "$staged" ]]; then
       mkdir -p "$(dirname "$SBOM_OUT")"
       mv "$staged" "$SBOM_OUT"
     fi
     if [[ -f "$SBOM_OUT" ]]; then
       local n
-      n=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("components",[])))' \
-            "$SBOM_OUT" 2>/dev/null || echo '?')
+      n=$(python3 - "$SBOM_OUT" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    document = json.load(fh)
+components = document.get("components") if isinstance(document, dict) else None
+if not isinstance(components, list):
+    raise ValueError("CycloneDX components is not a list")
+print(len(components))
+PY
+      ) || n='?'
       record_status sbom "$n components -> $SBOM_OUT"
-      scope_record --tool sbom --state run --outcome success \
+      sbom_outcome=success
+      (( src == 0 )) || sbom_outcome=failure
+      native_count=()
+      [[ "$n" =~ ^[0-9]+$ ]] && native_count=(--native-component-count "$n")
+      scope_record --tool sbom --state run --outcome "$sbom_outcome" \
         --reason "SBOM invocation completed" --exit-code "$src" --mode "source-recursive" \
-        --resolution "resolver-enabled" --log "$sbom_log"
+        --resolution "resolver-enabled" ${native_count[@]+"${native_count[@]}"} --log "$sbom_log"
       info "SBOM written to $SBOM_OUT ($n components)"
     else
       # Never a gate failure: an SBOM is an artifact, not a finding. But it must

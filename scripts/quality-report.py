@@ -41,14 +41,23 @@ from __future__ import annotations
 
 import argparse
 import collections
+import datetime as dt
 import json
 import re
 import sys
 
 MARKER = "<!-- maxi-quality:report -->"
 HISTORY_HEADING = "## History"
-# A row looks like: | 2026-08-01 | 68 | no-ambient-clock (63) |
-HISTORY_ROW = re.compile(r"^\|\s*(\d{4}-\d{2}-\d{2})\s*\|.*\|$", re.M)
+HISTORY_DATA_START = "<!-- maxi-quality:history-v2 -->"
+HISTORY_DATA_END = "<!-- /maxi-quality:history-v2 -->"
+# Legacy rows look like: | 2026-08-01 | 68 | no-ambient-clock (63) |
+LEGACY_HISTORY_ROW = re.compile(r"^\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*([^|]+)\|\s*([^|]+)\|$", re.M)
+# v2 rows are deliberately plain Markdown so a damaged hidden metadata block
+# can still be recovered without inventing a fresh history.
+HISTORY_ROW = re.compile(
+    r"^\|\s*([^|]+)\|\s*([^|]+)\|\s*([^|]+)\|\s*([^|]+)\|\s*([^|]+)\|$",
+    re.M,
+)
 # Keep the table readable rather than unbounded; the issue is a dashboard, not
 # an audit log. Old rows fall off the bottom.
 MAX_HISTORY = 52
@@ -58,6 +67,8 @@ MAX_HISTORY = 52
 # rather than silent — an unlabelled cut reads as "that was all of them", which
 # is the same failure shape as every gate bug here.
 MAX_UNPARSED_ROWS = 20
+MAX_DIAGNOSTIC_EXCERPT = 220
+MAX_HISTORY_REASON = 140
 
 
 def load_sbom(path: str | None) -> tuple[int, collections.Counter[str]] | None:
@@ -178,35 +189,409 @@ def load_findings(path: str) -> tuple[collections.Counter[str], str | None, list
     return counts, None, unparsed
 
 
-def previous_history(body: str | None) -> dict[str, str]:
-    """Pull the existing history rows out of the last issue body, keyed by date.
+def _one_line(value: object, limit: int = MAX_HISTORY_REASON) -> str:
+    text = " ".join(str(value or "").split()).replace("|", "\\|")
+    return text if len(text) <= limit else text[: limit - 3] + "..."
 
-    The issue body IS the persistence layer, so this is the read half of it. A
-    parse failure must never wipe history — on anything unexpected we return
-    what we could find rather than starting over.
 
-    Returns a date -> row mapping rather than a list, which fixes two bugs that
-    a real consumer run surfaced:
+def _parse_time(value: object, fallback: str = "") -> str:
+    """Return a sortable UTC timestamp, preserving unknown as an empty value."""
+    if not isinstance(value, str) or not value:
+        return fallback
+    candidate = value.replace("Z", "+00:00")
+    try:
+        parsed = dt.datetime.fromisoformat(candidate)
+    except ValueError:
+        return fallback
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
-      - The rendered table is NEWEST-FIRST, so the rows come back in reverse
-        chronological order. Treating that list as chronological and reversing
-        it again scrambled everything from the third run onward: four runs
-        rendered 22, 08, 01, 15. Keying by date and sorting removes the
-        assumption entirely.
-      - Two runs on the same day appended two identical rows. The history is a
-        daily series; one row per date, last write wins.
-    """
+
+def _scope_excerpt(value: object) -> str:
+    if isinstance(value, list):
+        values = []
+        for item in value:
+            if isinstance(item, dict):
+                values.append(str(item.get("text", "")))
+            else:
+                values.append(str(item))
+        value = " ".join(values)
+    return _one_line(value, MAX_DIAGNOSTIC_EXCERPT)
+
+
+def _compact_value(value: object, depth: int = 0) -> object:
+    """Bound nested scope metadata before copying it into the issue body."""
+    if depth > 2:
+        return _one_line(value, 90)
+    if isinstance(value, dict):
+        return {str(key): _compact_value(value[key], depth + 1) for key in list(value)[:10]}
+    if isinstance(value, list):
+        return [_compact_value(item, depth + 1) for item in value[:10]]
+    if isinstance(value, str):
+        return _one_line(value, 120)
+    return value
+
+
+def load_scope(path: str | None) -> tuple[dict | None, str | None]:
+    """Read the same-run Layer 2 artifact without making scope collection gating."""
+    if not path:
+        return None, "scope artifact was not handed to the report"
+    try:
+        with open(path, encoding="utf-8") as fh:
+            scope = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, f"scope artifact unavailable: {exc}"
+    if not isinstance(scope, dict) or scope.get("kind") != "layer2-scope" or scope.get("schema_version") != 1:
+        return None, "scope artifact has unsupported or malformed contract"
+    identity = scope.get("identity")
+    tools = scope.get("tools")
+    if not isinstance(identity, dict) or not isinstance(tools, dict):
+        return None, "scope artifact is missing identity or tools"
+    return scope, None
+
+
+def _compact_measurement(measurement: object) -> dict:
+    if not isinstance(measurement, dict):
+        return {"status": "unknown", "count": None, "unit": "unknown", "method": "unknown", "reason": "measurement unavailable"}
+    status = measurement.get("status") if measurement.get("status") in {"known", "unknown", "not_applicable"} else "unknown"
+    count = measurement.get("count") if status == "known" and isinstance(measurement.get("count"), int) and measurement.get("count") >= 0 else None
+    result = {
+        "status": status,
+        "count": count,
+        "unit": _one_line(measurement.get("unit", "unknown"), 40),
+    }
+    if status == "known":
+        result["method"] = _one_line(measurement.get("method", "unknown"), 60)
+    return result
+
+
+def _compact_scope(scope: dict | None, scope_error: str | None) -> dict:
+    if scope is None:
+        return {"status": "unknown", "reason": _one_line(scope_error or "scope unavailable")}
+    analysis = scope.get("analysis") if isinstance(scope.get("analysis"), dict) else {}
+    collection = scope.get("collection") if isinstance(scope.get("collection"), dict) else {}
+    compact = {
+        "status": "available",
+        "outcome": analysis.get("outcome", "unknown"),
+        "exit_code": analysis.get("exit_code"),
+        "collection": collection.get("status", "unknown"),
+        "tools": {},
+        "artifact": (scope.get("summary") if isinstance(scope.get("summary"), dict) else {}).get("artifact", "layer2-scope.json"),
+    }
+    analysis_excerpt = _scope_excerpt(analysis.get("diagnostics"))
+    if analysis_excerpt:
+        compact["diagnostic"] = analysis_excerpt
+    for name, record in (scope.get("tools") or {}).items():
+        if not isinstance(record, dict):
+            compact["tools"][name] = {"state": "unknown", "outcome": "unknown", "reason": "malformed"}
+            continue
+        effective = record.get("effective") if isinstance(record.get("effective"), dict) else {}
+        keep_effective = {}
+        for key in ("tool", "version", "diagnostic_mode", "comparison", "content_fingerprint", "config_fingerprint", "ignore_sources", "unknown_sources"):
+            if key in effective:
+                value = effective[key]
+                if key in {"ignore_sources", "unknown_sources"} and isinstance(value, list):
+                    value = [_one_line(item, 100) for item in value[:12]]
+                else:
+                    value = _compact_value(value)
+                keep_effective[key] = value
+        measurements = record.get("measurements") if isinstance(record.get("measurements"), dict) else {}
+        tool_compact = {}
+        if record.get("requested", False) is False:
+            tool_compact["requested"] = False
+        if record.get("state", "unknown") != "unknown":
+            tool_compact["state"] = record.get("state")
+        if record.get("outcome", "unknown") != "unknown":
+            tool_compact["outcome"] = record.get("outcome")
+        if record.get("reason_code") and record.get("reason_code") != "requested":
+            tool_compact["reason_code"] = record["reason_code"]
+        mode = _compact_value(record.get("mode")) if isinstance(record.get("mode"), dict) else {}
+        if mode:
+            tool_compact["mode"] = mode
+        if keep_effective:
+            tool_compact["effective"] = keep_effective
+        known_measurements = {
+            key: _compact_measurement(measurements.get(key))
+            for key in ("examined", "unparsed", "policy_excluded")
+            if isinstance(measurements.get(key), dict) and measurements[key].get("status") == "known"
+        }
+        if known_measurements:
+            tool_compact["measurements"] = known_measurements
+        native = record.get("native") if isinstance(record.get("native"), dict) else {}
+        component_count = native.get("component_count") if isinstance(native.get("component_count"), dict) else None
+        if component_count and component_count.get("status") == "known":
+            tool_compact["native"] = {
+                "component_count": {
+                    "status": "known",
+                    "count": component_count.get("count"),
+                    "unit": _one_line(component_count.get("unit", "dependency_component"), 40),
+                    "method": _one_line(component_count.get("method", "native SBOM evidence"), 60),
+                }
+            }
+        compact["tools"][name] = tool_compact
+        diagnostic = _scope_excerpt(record.get("diagnostics"))
+        if diagnostic:
+            compact["tools"][name]["diagnostic"] = diagnostic
+    return compact
+
+
+def _display_scope_data(scope: dict | None, scope_error: str | None) -> dict:
+    """Keep full bounded reasons for the current run while history stays compact."""
+    compact = _compact_scope(scope, scope_error)
+    if scope is None:
+        return compact
+    for name, record in (scope.get("tools") or {}).items():
+        if not isinstance(record, dict):
+            continue
+        current = compact["tools"].setdefault(name, {})
+        current.update({
+            "requested": bool(record.get("requested", False)),
+            "state": record.get("state", "unknown"),
+            "outcome": record.get("outcome", "unknown"),
+            "reason": _one_line(record.get("reason", "tool evidence unavailable")),
+            "measurements": {},
+        })
+        measurements = record.get("measurements") if isinstance(record.get("measurements"), dict) else {}
+        for key in ("examined", "unparsed", "policy_excluded"):
+            measurement = measurements.get(key, {}) if isinstance(measurements.get(key, {}), dict) else {}
+            current["measurements"][key] = _compact_measurement(measurement)
+            current["measurements"][key]["reason"] = _one_line(measurement.get("reason", "measurement unavailable"), 150)
+        native = record.get("native") if isinstance(record.get("native"), dict) else {}
+        component_count = native.get("component_count") if isinstance(native.get("component_count"), dict) else None
+        if component_count:
+            current["native"] = {"component_count": _compact_measurement(component_count)}
+        current["diagnostic"] = _scope_excerpt(record.get("diagnostics"))
+    current_analysis = scope.get("analysis") if isinstance(scope.get("analysis"), dict) else {}
+    if current_analysis.get("diagnostics"):
+        compact["diagnostic"] = _scope_excerpt(current_analysis.get("diagnostics"))
+    return compact
+
+
+def _scope_identity(scope: dict | None, args: argparse.Namespace) -> dict:
+    identity = scope.get("identity", {}) if isinstance(scope, dict) else {}
+    return {
+        "producer": identity.get("producer", "report"),
+        "run_id": str(identity.get("run_id", args.run_id or "unknown")),
+        "run_attempt": str(identity.get("run_attempt", args.run_attempt or "unknown")),
+        "started_at": _parse_time(identity.get("started_at"), _parse_time(args.started_at, "")),
+        "commit": _one_line(identity.get("commit", args.commit or "unknown"), 80),
+        "ref": _one_line(identity.get("ref", args.ref or "unknown"), 120),
+        "mode": _one_line(identity.get("mode", args.mode or "full"), 60),
+        "baseline_ref": _one_line(identity.get("baseline_ref", args.baseline_ref or ""), 120),
+    }
+
+
+def _entry_id(identity: dict, date: str) -> str:
+    run_id, attempt = identity.get("run_id"), identity.get("run_attempt")
+    if run_id and attempt and run_id != "unknown" and attempt != "unknown":
+        return f"{run_id}/{attempt}"
+    return f"legacy:{date}"
+
+
+def _legacy_entry(date: str, result: str, largest: str, ordinal: int) -> dict:
+    result = result.strip()
+    findings = int(result) if result.isdigit() else None
+    return {
+        "id": f"legacy:{date}:{ordinal}",
+        "legacy": True,
+        "identity": {"run_id": "legacy", "run_attempt": "unknown", "started_at": f"{date}T00:00:00Z", "mode": "unknown", "commit": "unknown", "ref": "unknown", "producer": "report"},
+        "findings": findings,
+        "largest": _one_line(largest, 100),
+        "outcome": "failure" if findings is None else "success",
+        "scope": {"status": "unknown", "reason": "legacy history row has no own-run scope"},
+    }
+
+
+def _parse_history_rows(body: str) -> list[dict]:
     if not body or HISTORY_HEADING not in body:
-        return {}
+        raise ValueError("previous report has no history table")
     tail = body.split(HISTORY_HEADING, 1)[1]
-    return {m.group(1): m.group(0) for m in HISTORY_ROW.finditer(tail)}
+    entries = []
+    for ordinal, match in enumerate(HISTORY_ROW.finditer(tail)):
+        run, attempt, started, outcome, findings = [part.strip() for part in match.groups()]
+        if run in {"Run", "---"} or attempt in {"Attempt", "---"}:
+            continue
+        parsed_findings = int(findings) if findings.isdigit() else None
+        entries.append({
+            "id": f"{run}/{attempt}", "legacy": False,
+            "identity": {"run_id": run, "run_attempt": attempt, "started_at": _parse_time(started, ""), "mode": "unknown", "commit": "unknown", "ref": "unknown", "producer": "report"},
+            "findings": parsed_findings, "largest": "—", "outcome": outcome.lower(),
+            "scope": {"status": "unknown", "reason": "compact metadata unavailable"},
+        })
+    if entries:
+        return entries
+    for ordinal, match in enumerate(LEGACY_HISTORY_ROW.finditer(tail)):
+        entries.append(_legacy_entry(match.group(1), match.group(2), match.group(3), ordinal))
+    if not entries:
+        raise ValueError("previous report history table is malformed")
+    return entries
+
+
+def previous_history(body: str | None) -> list[dict]:
+    """Recover compact history, retaining rows when optional scope metadata is bad."""
+    if not body:
+        return []
+    marker_entries = None
+    if HISTORY_DATA_START in body:
+        start = body.index(HISTORY_DATA_START) + len(HISTORY_DATA_START)
+        end = body.find(HISTORY_DATA_END, start)
+        if end >= 0:
+            raw = body[start:end].strip()
+            try:
+                value = json.loads(raw)
+                if isinstance(value, list):
+                    marker_entries = [entry for entry in value if isinstance(entry, dict) and entry.get("id")]
+            except json.JSONDecodeError:
+                marker_entries = None
+    try:
+        rows = _parse_history_rows(body)
+    except ValueError:
+        if marker_entries:
+            return marker_entries
+        raise
+    if not marker_entries:
+        return rows
+    by_id = {entry.get("id"): entry for entry in marker_entries}
+    # The table is the recoverable presentation. If a hidden scope block was
+    # truncated, retain its finding row and explicitly degrade scope.
+    for row in rows:
+        by_id.setdefault(row["id"], row)
+    return list(by_id.values())
+
+
+def _sort_key(entry: dict) -> tuple[str, str]:
+    identity = entry.get("identity", {})
+    started = _parse_time(identity.get("started_at"), "0000-00-00T00:00:00Z")
+    return started, str(entry.get("id", ""))
+
+
+def _comparison(current: dict, previous: dict | None) -> dict:
+    if previous is None:
+        return {"status": "unavailable", "reason": "no chronological predecessor"}
+    if current.get("findings") is None or previous.get("findings") is None:
+        return {"status": "unavailable", "reason": "current or predecessor is incomplete/unknown"}
+    reasons = []
+    numeric = []
+    current_scope, previous_scope = current.get("scope", {}), previous.get("scope", {})
+    if current_scope.get("status") != "available" or previous_scope.get("status") != "available":
+        reasons.append("scope evidence unavailable")
+    if current.get("outcome") != "success" or previous.get("outcome") != "success":
+        reasons.append("incomplete attempt is not a stable baseline")
+    if current.get("identity", {}).get("mode") != previous.get("identity", {}).get("mode"):
+        reasons.append("scan mode changed")
+    for name in sorted(set(current_scope.get("tools", {})) | set(previous_scope.get("tools", {}))):
+        now_tool, old_tool = current_scope.get("tools", {}).get(name, {}), previous_scope.get("tools", {}).get(name, {})
+        for label in ("requested", "state", "outcome", "mode", "effective"):
+            if now_tool.get(label) != old_tool.get(label):
+                reasons.append(f"{name} {label} changed")
+        effective = now_tool.get("effective") or {}
+        old_effective = old_tool.get("effective") or {}
+        if not effective or not old_effective:
+            reasons.append(f"{name} comparison metadata unavailable")
+        else:
+            comparison_meta = effective.get("comparison")
+            old_comparison_meta = old_effective.get("comparison")
+            if (isinstance(comparison_meta, dict) and comparison_meta.get("status") != "complete") or (
+                isinstance(old_comparison_meta, dict) and old_comparison_meta.get("status") != "complete"
+            ):
+                reasons.append(f"{name} comparison metadata incomplete")
+            if not any(key in effective for key in ("config_fingerprint", "content_fingerprint")) or not any(
+                key in old_effective for key in ("config_fingerprint", "content_fingerprint")
+            ):
+                reasons.append(f"{name} configuration fingerprint unavailable")
+        for key in ("examined", "unparsed", "policy_excluded"):
+            now_m, old_m = now_tool.get("measurements", {}).get(key, {}), old_tool.get("measurements", {}).get(key, {})
+            if now_m.get("status") == "known" and old_m.get("status") == "known":
+                if now_m.get("unit") != old_m.get("unit") or now_m.get("method") != old_m.get("method"):
+                    reasons.append(f"{name} {key} units/method changed")
+                else:
+                    numeric.append((name, key, now_m.get("count", 0) - old_m.get("count", 0), now_m.get("unit", "unknown")))
+            elif now_m.get("status") != old_m.get("status"):
+                reasons.append(f"{name} {key} availability changed")
+    finding_delta = current["findings"] - previous["findings"]
+    return {"status": "qualified" if reasons else "stable", "finding_delta": finding_delta, "scope_deltas": numeric, "reasons": reasons}
+
+
+def _display_scope(scope: dict, scope_error: str | None) -> list[str]:
+    lines = ["### Analysis scope", ""]
+    if scope_error or scope.get("status") != "available":
+        lines.append(f"Scope evidence unavailable: {_one_line(scope_error or scope.get('reason', 'unknown'))}.")
+        return lines + [""]
+    lines += [
+        f"Outcome: **{scope.get('outcome', 'unknown')}**; collection: **{scope.get('collection', 'unknown')}**.",
+        f"Complete evidence artifact: [{scope.get('artifact', 'layer2-scope.json')}]({scope['artifact_link']})." if scope.get("artifact_link") else f"Complete evidence artifact: `{scope.get('artifact', 'layer2-scope.json')}`.",
+        "",
+        "| Tool | State | Outcome | Examined | Unparsed | Policy-excluded |",
+        "|---|---|---|---:|---:|---:|",
+    ]
+    for name, record in sorted(scope.get("tools", {}).items()):
+        def cell(key: str) -> str:
+            measurement = record.get("measurements", {}).get(key, {})
+            if measurement.get("status") == "known":
+                return f"{measurement.get('count')} `{measurement.get('unit', 'unknown')}`"
+            return f"unknown ({_one_line(measurement.get('reason', 'unavailable'), 70)})"
+        lines.append(f"| {name} | {record.get('state', 'unknown')} | {record.get('outcome', 'unknown')} | {cell('examined')} | {cell('unparsed')} | {cell('policy_excluded')} |")
+        native = record.get("native", {}).get("component_count", {}) if isinstance(record.get("native"), dict) else {}
+        if native.get("status") == "known":
+            lines.append(f"| ↳ native inventory |  |  | {native.get('count')} `{native.get('unit', 'dependency_component')}` |  |  |")
+        diagnostic = record.get("diagnostic")
+        if diagnostic:
+            lines.append(f"| ↳ diagnostic |  |  | {_one_line(diagnostic)} |  |  |")
+    if scope.get("diagnostic"):
+        lines += ["", f"Analysis diagnostic: {_one_line(scope['diagnostic'])}"]
+    return lines + [""]
+
+
+def _history_payload(entries: list[dict]) -> str:
+    return json.dumps(entries, sort_keys=True, separators=(",", ":"))
+
+
+def _artifact_link(repository: str, identity: dict, artifact: str) -> str | None:
+    run_id = str(identity.get("run_id", ""))
+    if "/" not in repository or not run_id or run_id == "unknown":
+        return None
+    return f"https://github.com/{repository}/actions/runs/{run_id}/artifacts"
 
 
 def build(counts, date, gitleaks, osv, previous, target, licenses="not run",
-          sbom=None, scan_error=None, unparsed=None) -> str:
+          sbom=None, scan_error=None, unparsed=None, *, scope=None, scope_error=None,
+          args=None) -> str:
     total = sum(counts.values())
     top = counts.most_common(1)[0] if counts else None
     top_txt = f"{top[0]} ({top[1]})" if top else "—"
+    args = args or argparse.Namespace(run_id="unknown", run_attempt="unknown", started_at="", commit="unknown", ref="unknown", mode="full", baseline_ref="")
+    identity = _scope_identity(scope, args)
+    if not identity.get("started_at"):
+        identity["started_at"] = _parse_time(args.started_at, f"{date}T00:00:00Z")
+    scope_analysis = scope.get("analysis", {}) if isinstance(scope, dict) else {}
+    entry_outcome = "failure" if scan_error or scope_analysis.get("outcome") in {"failure", "cancelled"} else (
+        "incomplete" if scope is not None and scope_analysis.get("outcome") not in {"success", "failure", "cancelled"} else "success"
+    )
+    entry = {
+        "id": _entry_id(identity, date), "legacy": False, "identity": identity,
+        "findings": None if scan_error else total, "largest": top_txt,
+        "outcome": entry_outcome,
+        "scope": _compact_scope(scope, scope_error),
+    }
+    link = _artifact_link(target, identity, entry["scope"].get("artifact", "layer2-scope.json"))
+    if link:
+        entry["scope"]["artifact_link"] = link
+
+    retained = [old for old in (previous or []) if old.get("id") != entry.get("id")]
+    retained.append(entry)
+    retained.sort(key=_sort_key)
+    retained = retained[-MAX_HISTORY:]
+    current = retained[-1]
+    predecessor = retained[-2] if len(retained) > 1 else None
+    comparison = _comparison(current, predecessor)
+    rendering_current = current.get("id") == entry.get("id")
+    display_identity = current.get("identity", identity)
+    display_error = scan_error if rendering_current else ("previous attempt failed/incomplete" if current.get("findings") is None else None)
+    display_total = total if rendering_current else (current.get("findings") or 0)
+    display_scope = _display_scope_data(scope, scope_error) if rendering_current else current.get("scope", {"status": "unknown", "reason": "scope unavailable"})
+    if rendering_current and link:
+        display_scope["artifact_link"] = link
 
     lines = [
         MARKER,
@@ -216,26 +601,23 @@ def build(counts, date, gitleaks, osv, previous, target, licenses="not run",
         "(https://github.com/maximalcode/maxi-quality) baseline. "
         "**Updated in place — do not close.**",
         "",
-        "PRs are gated on *new* findings only (the ratchet). This is the other "
-        "half: everything already here. A number that stops falling is the "
-        "signal worth acting on.",
+        "PRs are gated on *new* findings only (the ratchet). This report shows "
+        "the current full Layer 2 run and its scope beside the findings.",
         "",
     ]
 
-    if scan_error:
+    if display_error:
         lines += [
             f"> ⚠️ **The Semgrep scan for {date} ERRORED and produced no usable "
-            f"result: {scan_error}**",
+            f"result: {_one_line(display_error)}**",
             ">",
-            "> Nothing was measured. This is not a clean repo — it is a repo "
-            "nobody looked at. The history table below still holds the last runs "
-            "that worked; fix the scan and re-run before reading a trend into it.",
+            "> This attempt is retained as failed/incomplete. It is not a zero-finding baseline.",
             "",
         ]
 
-    semgrep_cell = f"**ERRORED** — {scan_error}" if scan_error else f"**{total}** findings"
+    semgrep_cell = f"**ERRORED** — {_one_line(display_error)}" if display_error else f"**{display_total}** findings"
     lines += [
-        f"## Current — {date}",
+        f"## Current — {display_identity.get('started_at', date)} ({display_identity.get('run_id', 'unknown')}/{display_identity.get('run_attempt', 'unknown')})",
         "",
         "| Tool | Result |",
         "|---|---|",
@@ -246,14 +628,16 @@ def build(counts, date, gitleaks, osv, previous, target, licenses="not run",
         "",
     ]
 
-    if scan_error:
+    if display_error:
         # NOT "No Semgrep findings." — that sentence is the bug in prose form.
-        lines.append("No Semgrep breakdown: the scan did not complete. ")
-    elif counts:
+        lines.append("No Semgrep breakdown: the scan did not complete.")
+    elif rendering_current and counts:
         lines += ["### Semgrep by rule", "", "| Rule | Count |", "|---|---:|"]
         lines += [f"| `{rule}` | {n} |" for rule, n in counts.most_common()]
+    elif display_total:
+        lines.append(f"Semgrep findings retained from the current run: **{display_total}**.")
     else:
-        lines.append("No Semgrep findings. ")
+        lines.append("No Semgrep findings.")
     lines.append("")
 
     # #43 — the number that used to be invisible in both directions. Before
@@ -300,28 +684,39 @@ def build(counts, date, gitleaks, osv, previous, target, licenses="not run",
             ]
         lines.append("")
 
-    # Sort by the ISO date rather than trusting the order rows arrived in —
-    # they are read back from a newest-first table, and every ordering bug here
-    # has come from assuming otherwise.
-    history = dict(previous)
-    # An errored run gets a row, and the row says so. Skipping it would hide the
-    # outage; writing `0` would record it as the best week the repo ever had and
-    # then preserve that forever, since this table is the only store there is.
-    history[date] = (
-        f"| {date} | ERRORED | — |" if scan_error
-        else f"| {date} | {total} | {top_txt} |"
-    )
-    rows = [history[d] for d in sorted(history)][-MAX_HISTORY:]
-    rows.reverse()  # newest first, which is what a reader wants on top
+    lines += _display_scope(display_scope, None if rendering_current else display_scope.get("reason"))
+    if rendering_current:
+        lines += ["### Comparison with previous run", ""]
+        if comparison.get("status") == "unavailable":
+            lines.append(f"Comparison unavailable: {comparison['reason']}.")
+        else:
+            finding_text = f"{comparison.get('finding_delta', 0):+d} findings"
+            if comparison.get("status") == "qualified":
+                finding_text += " — qualified because checking conditions or scope changed"
+            lines.append(f"Findings: {finding_text}.")
+            for name, key, change, unit in comparison.get("scope_deltas", []):
+                if change:
+                    lines.append(f"{name} {key}: {change:+d} `{unit}`.")
+            if comparison.get("reasons"):
+                lines.append("Conditions: " + "; ".join(comparison["reasons"]) + ".")
+        lines.append("")
 
     lines += [
+        HISTORY_DATA_START,
+        _history_payload(retained),
+        HISTORY_DATA_END,
         HISTORY_HEADING,
         "",
-        "| Date | Semgrep total | Largest rule |",
-        "|---|---:|---|",
-        *rows,
+        "Retention is the latest 52 execution entries, not 52 calendar days.",
         "",
+        "| Run | Attempt | Started | Outcome | Findings |",
+        "|---|---|---|---|---:|",
     ]
+    for item in reversed(retained):
+        item_identity = item.get("identity", {})
+        findings = item.get("findings")
+        lines.append(f"| {item_identity.get('run_id', 'legacy')} | {item_identity.get('run_attempt', 'unknown')} | {item_identity.get('started_at') or 'unknown'} | {_one_line(item.get('outcome', 'unknown'), 30)} | {findings if findings is not None else 'ERRORED'} |")
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -329,6 +724,15 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", required=True, help="Semgrep --json-out file")
     ap.add_argument("--date", required=True)
+    ap.add_argument("--scope", help="same-run layer2-scope.json artifact")
+    ap.add_argument("--run-id", default="")
+    ap.add_argument("--run-attempt", default="")
+    ap.add_argument("--invocation-id", default="")
+    ap.add_argument("--started-at", default="")
+    ap.add_argument("--commit", default="")
+    ap.add_argument("--ref", default="")
+    ap.add_argument("--mode", default="full")
+    ap.add_argument("--baseline-ref", default="")
     ap.add_argument("--target", default="repository")
     ap.add_argument("--gitleaks", default="not run")
     ap.add_argument("--osv", default="not run")
@@ -347,13 +751,46 @@ def main() -> int:
             # means there is no history yet.
             body = None
 
+    scope, scope_error = load_scope(args.scope)
+    if scope is not None:
+        scope_identity = scope.get("identity", {})
+        expected_run = args.run_id or ""
+        expected_attempt = args.run_attempt or ""
+        expected_invocation = args.invocation_id or ""
+        expected_commit = args.commit or ""
+        invalid_scope = (
+            scope_identity.get("producer") != "report"
+            or scope_identity.get("mode") != "full"
+            or (expected_run and str(scope_identity.get("run_id")) != str(expected_run))
+            or (expected_attempt and str(scope_identity.get("run_attempt")) != str(expected_attempt))
+            or (expected_invocation and str(scope_identity.get("invocation_id")) != str(expected_invocation))
+            or (expected_commit and str(scope_identity.get("commit")) != str(expected_commit))
+        )
+        if invalid_scope:
+            scope = None
+            scope_error = "scope identity does not match this report run/attempt/producer/mode/commit"
     try:
         counts, scan_error, unparsed = load_findings(args.json)
     except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        # A valid own-run scope can prove that the scanner/setup failed before
+        # its normal JSON handoff. Keep that attempt in history as failed,
+        # while an absent or malformed scope retains the old refusal boundary.
+        if scope is not None and scope.get("analysis", {}).get("outcome") in {"failure", "cancelled"}:
+            counts, scan_error, unparsed = collections.Counter(), "scanner result unavailable; scope records a failed/incomplete attempt", []
+        else:
+            print(f"error: cannot read Semgrep results from {args.json}: {exc}", file=sys.stderr)
+            return 3
+    if scope is not None:
+        scope_analysis = scope.get("analysis") if isinstance(scope.get("analysis"), dict) else {}
+        if scope_analysis.get("outcome") in {"failure", "cancelled"} and scan_error is None:
+            scan_error = "scope records a failed/incomplete Layer 2 attempt"
+    try:
+        prior = previous_history(body)
+    except ValueError as exc:
         # Nothing is printed on this path, deliberately: the caller writes
         # stdout over the standing issue, and an empty body would erase the
         # history this script exists to keep.
-        print(f"error: cannot read Semgrep results from {args.json}: {exc}", file=sys.stderr)
+        print(f"error: cannot read previous report history: {exc}", file=sys.stderr)
         return 3
 
     print(
@@ -362,12 +799,15 @@ def main() -> int:
             args.date,
             args.gitleaks,
             args.osv,
-            previous_history(body),
+            prior,
             args.target,
             args.licenses,
             load_sbom(args.sbom),
             scan_error,
             unparsed,
+            scope=scope,
+            scope_error=scope_error,
+            args=args,
         )
     )
     if scan_error:
