@@ -108,6 +108,7 @@ def tool_record(name: str, *, requested: bool, reason: str) -> dict[str, Any]:
         "effective": {},
         "exit_code": None,
         "measurements": measurements,
+        "native": {},
         "diagnostics": [],
     }
 
@@ -281,6 +282,21 @@ def cmd_record(args: argparse.Namespace) -> int:
         )
     for issue in args.collection_issue:
         doc["collection"]["issues"].append(issue)
+    if args.native_component_count is not None:
+        if args.native_component_count < 0:
+            doc["collection"]["issues"].append("native SBOM component count was negative")
+        else:
+            record["native"]["component_count"] = known_measurement(
+                args.native_component_count,
+                unit="dependency_component",
+                method="CycloneDX components emitted by osv-scanner",
+                reason="native SBOM component inventory",
+            )
+    elif args.tool == "sbom":
+        record["native"]["component_count"] = unknown_measurement(
+            "CycloneDX component list was unavailable or malformed",
+            unit="dependency_component",
+        )
     write_doc(args.out, doc)
     return 0
 
@@ -772,6 +788,7 @@ def parser() -> argparse.ArgumentParser:
     record.add_argument("--stream", default="combined")
     record.add_argument("--diagnostic", default="")
     record.add_argument("--collection-issue", action="append", default=[])
+    record.add_argument("--native-component-count", type=int)
     record.set_defaults(func=cmd_record)
 
     measure = sub.add_parser("measure-semgrep")

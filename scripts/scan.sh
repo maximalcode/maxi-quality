@@ -460,8 +460,12 @@ _semgrep_exec() {
   # target that does not exist. Those must not be reported as findings.
   # ${a[@]+"${a[@]}"} is the bash 3.2 (macOS system bash) safe way to expand a
   # possibly-empty array under `set -u`.
-  ( cd "$TARGET" && "$@" --metrics=off --disable-version-check ${extra[@]+"${extra[@]}"} ) \
-    > >(tee "$semgrep_log") 2>&1 || rc=$?
+  set +e
+  ( cd "$TARGET" && "$@" --metrics=off --disable-version-check ${extra[@]+"${extra[@]}"} ) 2>&1 | \
+    (tee "$semgrep_log" || { capture_rc=$?; cat; exit "$capture_rc"; })
+  local -a semgrep_status=("${PIPESTATUS[@]}")
+  set -e
+  rc=${semgrep_status[0]:-1}
 
   if [[ -n "$staged" && -f "$staged" ]]; then
     mv "$staged" "$json_host"
@@ -606,8 +610,12 @@ run_gitleaks() {
   fi
 
   local rc=0 gitleaks_log="$WORKDIR/gitleaks.log"
+  set +e
   "${RESOLVED_CMD[@]}" "$subcmd" "$root" --no-banner --redact ${extra[@]+"${extra[@]}"} \
-    > >(tee "$gitleaks_log") 2>&1 || rc=$?
+    2>&1 | (tee "$gitleaks_log" || { capture_rc=$?; cat; exit "$capture_rc"; })
+  local -a gitleaks_status=("${PIPESTATUS[@]}")
+  set -e
+  rc=${gitleaks_status[0]:-1}
   record_result gitleaks "$rc"
   if (( rc == 0 )); then
     scope_record --tool gitleaks --state run --outcome success \
@@ -668,8 +676,12 @@ run_osv() {
   # call, made with `mvn dependency:tree` or a lockfile-equivalent of their own,
   # not something this script decides silently by being slow and flaky instead.
   local rc=0 osv_log="$WORKDIR/osv.log"
+  set +e
   "${RESOLVED_CMD[@]}" scan source --recursive --no-resolve "$root" \
-    > >(tee "$osv_log") 2>&1 || rc=$?
+    2>&1 | (tee "$osv_log" || { capture_rc=$?; cat; exit "$capture_rc"; })
+  local -a osv_status=("${PIPESTATUS[@]}")
+  set -e
+  rc=${osv_status[0]:-1}
   # osv keeps its own three-way result: 128 means "no lockfiles found", which
   # is neither clean nor a finding, so record_result would mislabel it.
   case "$rc" in
@@ -709,8 +721,12 @@ run_osv() {
   if [[ -n "$LICENSES" ]]; then
     bold "── Licenses ──"
     local lrc=0 license_log="$WORKDIR/licenses.log"
+    set +e
     "${RESOLVED_CMD[@]}" scan source --recursive --licenses="$LICENSES" "$root" \
-      > >(tee "$license_log") 2>&1 || lrc=$?
+      2>&1 | (tee "$license_log" || { capture_rc=$?; cat; exit "$capture_rc"; })
+    local -a license_status=("${PIPESTATUS[@]}")
+    set -e
+    lrc=${license_status[0]:-1}
     case "$lrc" in
       0)
         record_status licenses "clean (allowlist: $LICENSES)"
@@ -757,20 +773,45 @@ run_osv() {
     # this was nearly shipped as "104 components, all UNKNOWN". An SBOM without
     # licence data is the half of the artifact nobody needs.
     local src=0 sbom_log="$WORKDIR/sbom.log"
+    # Drain through a foreground tee before scope_record reads the log. If the
+    # diagnostic sink fails, the fallback cat consumes the remainder so the
+    # scanner is not killed by SIGPIPE. PIPESTATUS keeps the scanner's verdict
+    # separate from the non-gating collection failure.
+    local tee_rc=0
+    set +e
     "${RESOLVED_CMD[@]}" scan source --recursive --all-packages --licenses \
-      --format=cyclonedx-1-6 --output-file="$out" "$root" > >(tee "$sbom_log") 2>&1 || src=$?
+      --format=cyclonedx-1-6 --output-file="$out" "$root" 2>&1 | \
+      (tee "$sbom_log" || { tee_rc=$?; cat; exit "$tee_rc"; })
+    local -a sbom_status=("${PIPESTATUS[@]}")
+    set -e
+    src=${sbom_status[0]:-1}
+    tee_rc=${sbom_status[1]:-1}
     if [[ -n "$staged" && -f "$staged" ]]; then
       mkdir -p "$(dirname "$SBOM_OUT")"
       mv "$staged" "$SBOM_OUT"
     fi
     if [[ -f "$SBOM_OUT" ]]; then
       local n
-      n=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("components",[])))' \
-            "$SBOM_OUT" 2>/dev/null || echo '?')
+      n=$(python3 - "$SBOM_OUT" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    document = json.load(fh)
+components = document.get("components") if isinstance(document, dict) else None
+if not isinstance(components, list):
+    raise ValueError("CycloneDX components is not a list")
+print(len(components))
+PY
+      ) || n='?'
       record_status sbom "$n components -> $SBOM_OUT"
-      scope_record --tool sbom --state run --outcome success \
+      sbom_outcome=success
+      (( src == 0 )) || sbom_outcome=failure
+      native_count=()
+      [[ "$n" =~ ^[0-9]+$ ]] && native_count=(--native-component-count "$n")
+      scope_record --tool sbom --state run --outcome "$sbom_outcome" \
         --reason "SBOM invocation completed" --exit-code "$src" --mode "source-recursive" \
-        --resolution "resolver-enabled" --log "$sbom_log"
+        --resolution "resolver-enabled" ${native_count[@]+"${native_count[@]}"} --log "$sbom_log"
       info "SBOM written to $SBOM_OUT ($n components)"
     else
       # Never a gate failure: an SBOM is an artifact, not a finding. But it must

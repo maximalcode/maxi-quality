@@ -278,6 +278,77 @@ print(f"OK: {mode} Semgrep result evidence")
 PY
 done
 
+# Native SBOM component evidence is a separate dependency-component unit. The
+# boundary fixture covers a valid list, malformed component payload, and a
+# nonzero SBOM command after it still wrote a partial artifact.
+mkdir -p "$WORK/sbom/bin"
+cat >"$WORK/sbom/bin/osv-scanner" <<'SH'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+if [[ "${1:-}" == --version ]]; then echo 'osv-scanner 2.5.0'; exit 0; fi
+if [[ "${*}" == *--all-packages* ]]; then
+  output=''
+  for arg in "$@"; do [[ "$arg" == --output-file=* ]] && output="${arg#--output-file=}"; done
+  case "${SBOM_MODE:-known}" in
+    known|partial) printf '{"components":[{},{}]}' >"$output" ;;
+    malformed) printf '{"components":{}}' >"$output" ;;
+  esac
+  [[ "${SBOM_MODE:-known}" == partial ]] && exit 9
+  exit 0
+fi
+exit 128
+SH
+chmod +x "$WORK/sbom/bin/osv-scanner"
+for sbom_mode in known malformed partial; do
+  mkdir "$WORK/sbom/$sbom_mode"
+  rc=0
+  SBOM_MODE="$sbom_mode" PATH="$WORK/sbom/bin:/usr/bin:/bin" \
+    bash "$ROOT/scripts/scan.sh" samples/policy/exclude --skip semgrep --skip gitleaks \
+      --sbom "$WORK/sbom/$sbom_mode/out.json" \
+      --scope-out "$WORK/sbom/$sbom_mode/scope.json" >"$WORK/sbom/$sbom_mode/log" 2>&1 || rc=$?
+  python3 - "$WORK/sbom/$sbom_mode/scope.json" "$sbom_mode" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+mode = sys.argv[2]
+tool = d["tools"]["sbom"]
+native = tool["native"]["component_count"]
+if mode == "known":
+    assert native["status"] == "known" and native["count"] == 2
+    assert tool["outcome"] == "success"
+elif mode == "malformed":
+    assert native["status"] == "unknown" and native["count"] is None
+    assert tool["outcome"] == "success"
+else:
+    assert native["status"] == "known" and native["count"] == 2
+    assert tool["outcome"] == "failure" and tool["exit_code"] == 9
+print(f"OK: native SBOM count boundary {mode}")
+PY
+done
+
+# A diagnostic sink failure must still drain the scanner stream and preserve
+# the scanner's successful verdict. The scan waits for that fallback drain
+# before reading the scope log.
+mkdir -p "$WORK/sbom/tee-fail-bin" "$WORK/sbom/tee-fail"
+cat >"$WORK/sbom/tee-fail-bin/tee" <<'SH'
+#!/usr/bin/env bash
+exit 99
+SH
+chmod +x "$WORK/sbom/tee-fail-bin/tee"
+rc=0
+SBOM_MODE=known PATH="$WORK/sbom/tee-fail-bin:$WORK/sbom/bin:/usr/bin:/bin" \
+  bash "$ROOT/scripts/scan.sh" samples/policy/exclude --skip semgrep --skip gitleaks \
+    --sbom "$WORK/sbom/tee-fail/out.json" \
+    --scope-out "$WORK/sbom/tee-fail/scope.json" >"$WORK/sbom/tee-fail/log" 2>&1 || rc=$?
+[[ $rc == 0 ]]
+python3 - "$WORK/sbom/tee-fail/scope.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+tool = d["tools"]["sbom"]
+assert tool["outcome"] == "success" and tool["exit_code"] == 0
+assert any("diagnostic unavailable" in issue for issue in d["collection"]["issues"])
+print("OK: SBOM diagnostic sink failure preserves scanner verdict")
+PY
+
 # A malformed or missing artifact is a collection error, not a clean summary.
 rc=0
 python3 "$ROOT/scripts/layer2_scope.py" summary --out "$WORK/no-such.json" >/dev/null 2>&1 || rc=$?

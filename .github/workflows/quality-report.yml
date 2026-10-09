@@ -68,6 +68,9 @@ on:
 
 jobs:
   report:
+    concurrency:
+      group: maxi-quality-report-${{ github.repository }}-${{ inputs.label }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     outputs:
       issue: ${{ steps.write.outputs.issue }}
@@ -76,6 +79,14 @@ jobs:
         with:
           # Gitleaks scans history, not just the tree.
           fetch-depth: 0
+
+      # Capture identity before setup and scanning. If a later success-only
+      # output is missing, the report still orders this attempt by execution
+      # time rather than by the time its issue write happens.
+      - name: Capture report execution identity
+        id: report_identity
+        shell: bash
+        run: echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       # NO checkout of maxi-quality here. The first version of this workflow did
       # exactly that and died with "Repository not found" on every consumer,
@@ -119,6 +130,13 @@ jobs:
           gitleaks: ${{ steps.scan.outputs.gitleaks }}
           osv: ${{ steps.scan.outputs.osv }}
           licenses: ${{ steps.scan.outputs.licenses }}
+          scope: ${{ steps.scan.outputs.scope }}
+          run-id: ${{ github.run_id }}
+          run-attempt: ${{ github.run_attempt }}
+          invocation-id: ${{ github.run_id }}
+          started-at: ${{ steps.report_identity.outputs.started_at }}
+          commit: ${{ github.sha }}
+          ref: ${{ github.ref }}
 
       # The issue holds the SUMMARY (counts per licence); this is the artifact
       # an auditor actually asks for. Uploaded even if the issue write failed —
