@@ -331,6 +331,7 @@ done
 mkdir -p "$WORK/sbom/tee-fail-bin" "$WORK/sbom/tee-fail"
 cat >"$WORK/sbom/tee-fail-bin/tee" <<'SH'
 #!/usr/bin/env bash
+printf 'captured prefix only\n' > "$1"
 exit 99
 SH
 chmod +x "$WORK/sbom/tee-fail-bin/tee"
@@ -345,7 +346,8 @@ import json, sys
 d = json.load(open(sys.argv[1]))
 tool = d["tools"]["sbom"]
 assert tool["outcome"] == "success" and tool["exit_code"] == 0
-assert any("diagnostic unavailable" in issue for issue in d["collection"]["issues"])
+assert any("capture incomplete" in issue for issue in d["collection"]["issues"])
+assert any("captured prefix only" in issue for issue in d["collection"]["issues"])
 print("OK: SBOM diagnostic sink failure preserves scanner verdict")
 PY
 

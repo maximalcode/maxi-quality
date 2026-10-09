@@ -1599,11 +1599,13 @@ jobs:
           # scrambled everything in the middle. Three runs rendered
           # 15, 01, 08 — correct count, correct top row, wrong table. Caught by
           # the acceptance canary, not by this job.
-          dates() { grep -oE '^\| ci-[^|]+' "$1" | sed 's/^| //' | tr '\n' ' '; }
+          dates() {
+            grep -oE '^\| ci-[^|]+' "$1" | sed 's/^| //' | awk '{$1=$1}1' | paste -sd' ' -
+          }
           expect() {
             local got; got="$(dates "$1")"
-            if [[ "$got" != "$2 " ]]; then
-              echo "::error::history is [$got], expected [$2 ] — $3"
+            if [[ "$got" != "$2" ]]; then
+              echo "::error::history is [$got], expected [$2] — $3"
               sed -n '/## History/,$p' "$1"
               exit 1
             fi
@@ -1639,7 +1641,9 @@ jobs:
           set -Eeuo pipefail
           out=$(python3 scripts/quality-report.py --json /tmp/findings.json \
                   --date 2026-03-01 --run-id ci-sbom-good --run-attempt 1 \
-                  --started-at 2026-03-01T10:00:00Z --sbom samples/sbom/cyclonedx.json)
+                  --started-at 2026-03-01T10:00:00Z --sbom samples/sbom/cyclonedx.json \
+                  --previous-body /tmp/b3.md)
+          printf '%s\n' "$out" > /tmp/b-sbom.md
           echo "$out"
           grep -q '^6 resolved components' <<<"$out" || {
             echo '::error::component count wrong'; exit 1; }
@@ -1698,7 +1702,7 @@ jobs:
           {"results": [], "errors": [{"type": "PartialParsing", "message": "rule x failed to parse"}],
            "paths": {"scanned": ["a.ts"]}}
           JSON
-          rc=0; body=$(gen /tmp/errored.json 2026-04-01 /tmp/b3.md) || rc=$?
+          rc=0; body=$(gen /tmp/errored.json 2026-04-01 /tmp/b-sbom.md) || rc=$?
           [[ "$rc" == "2" ]] || { echo "::error::an errored scan exited $rc, expected 2"; exit 1; }
           grep -q 'ERRORED' <<<"$body" || {
             echo '::error::an errored scan did not render as ERRORED'; echo "$body"; exit 1; }
