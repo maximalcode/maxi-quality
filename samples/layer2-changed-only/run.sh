@@ -67,7 +67,12 @@ assert d["schema_version"] == 1
 assert d["kind"] == "layer2-scope"
 assert d["identity"]["producer"] == "gate"
 assert set(d["tools"]) == {"semgrep", "gitleaks", "osv", "licenses", "sbom"}
-assert all(m["count"] is None for t in d["tools"].values() for m in t["measurements"].values())
+for name, tool in d["tools"].items():
+    if name == "semgrep" and tool["state"] == "run":
+        assert all(m["status"] == "known" and m["count"] is not None
+                   for m in tool["measurements"].values())
+    else:
+        assert all(m["count"] is None for m in tool["measurements"].values())
 print(f"{sys.argv[1]}: scope={d['analysis']['outcome']}/{d['collection']['status']}")
 PY
 }

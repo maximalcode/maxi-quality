@@ -384,12 +384,32 @@ run_semgrep() {
   _semgrep_exec "${RESOLVED_CMD[@]}" ${cfg[@]+"${cfg[@]}"} "$path"
 }
 
+scope_measure_semgrep() {
+  [[ -n "$SCOPE_OUT" ]] || return 0
+  local mode=full baseline=()
+  if (( CHANGED_ONLY )); then
+    mode=changed-only
+    baseline=(--baseline-ref "$BASE_REF")
+  fi
+  python3 "$BASELINE/scripts/layer2_scope.py" measure-semgrep \
+    --out "$SCOPE_OUT" --results "$WORKDIR/semgrep.json" \
+    --scan-root "$TARGET" --scanner-root "${RESOLVED_ROOT:-$TARGET}" \
+    --baseline-root "$BASELINE" \
+    --policy "$POLICY_JSON" --mode "$mode" \
+    ${baseline[@]+"${baseline[@]}"} || warn "Semgrep measurement failed"
+}
+
 _semgrep_exec() {
   local -a extra=()
   if (( CHANGED_ONLY )); then
     extra+=(--baseline-commit "$BASE_REF")
     info "semgrep: new-code-only against $BASE_REF"
   fi
+
+  # Semgrep only serializes whole-target skip evidence in verbose mode. This
+  # does not alter findings or target selection; it makes the scanner's own
+  # policy attribution available to the scope artifact.
+  extra+=(--verbose)
 
   # THE RESULTS ARE ALWAYS WRITTEN AS JSON, and the verdict always comes from
   # them — not from semgrep's exit code.
@@ -468,7 +488,9 @@ PY
       --reason "Semgrep exited before producing a usable result" --exit-code "$rc" \
       --mode "$([[ "$CHANGED_ONLY" == 1 ]] && echo changed-only || echo full)" \
       --baseline-ref "$([[ "$CHANGED_ONLY" == 1 ]] && echo "$BASE_REF" || true)" \
-      --log "$semgrep_log" --log "$json_host" ${result_issue[@]+"${result_issue[@]}"}
+      --log "$semgrep_log" --log "$json_host" --effective-json "$POLICY_JSON" \
+      ${result_issue[@]+"${result_issue[@]}"}
+    scope_measure_semgrep
     return 0
   fi
 
@@ -514,7 +536,9 @@ PY
         --reason "Semgrep completed" --exit-code 0 \
         --mode "$([[ "$CHANGED_ONLY" == 1 ]] && echo changed-only || echo full)" \
         --baseline-ref "$([[ "$CHANGED_ONLY" == 1 ]] && echo "$BASE_REF" || true)" \
-        --log "$semgrep_log" --log "$json_host" ${result_issue[@]+"${result_issue[@]}"}
+        --log "$semgrep_log" --log "$json_host" --effective-json "$POLICY_JSON" \
+        ${result_issue[@]+"${result_issue[@]}"}
+      scope_measure_semgrep
       ;;
     1)
       record_status semgrep "FINDINGS$suffix"; FINDINGS=1
@@ -522,7 +546,9 @@ PY
         --reason "Semgrep completed with findings" --exit-code 1 \
         --mode "$([[ "$CHANGED_ONLY" == 1 ]] && echo changed-only || echo full)" \
         --baseline-ref "$([[ "$CHANGED_ONLY" == 1 ]] && echo "$BASE_REF" || true)" \
-        --log "$semgrep_log" --log "$json_host" ${result_issue[@]+"${result_issue[@]}"}
+        --log "$semgrep_log" --log "$json_host" --effective-json "$POLICY_JSON" \
+        ${result_issue[@]+"${result_issue[@]}"}
+      scope_measure_semgrep
       ;;
     # Exit 2 is a broken mechanism: unreadable results, a semgrep error that is
     # not a per-file parse failure, every file unparseable, or a disabled rule
@@ -534,7 +560,9 @@ PY
         --reason "Semgrep result classification failed" --exit-code "$crc" \
         --mode "$([[ "$CHANGED_ONLY" == 1 ]] && echo changed-only || echo full)" \
         --baseline-ref "$([[ "$CHANGED_ONLY" == 1 ]] && echo "$BASE_REF" || true)" \
-        --log "$semgrep_log" --log "$json_host" ${result_issue[@]+"${result_issue[@]}"}
+        --log "$semgrep_log" --log "$json_host" --effective-json "$POLICY_JSON" \
+        ${result_issue[@]+"${result_issue[@]}"}
+      scope_measure_semgrep
       ;;
   esac
   return 0

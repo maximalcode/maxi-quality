@@ -63,6 +63,7 @@ class Layer2ScopeContractTests(unittest.TestCase):
                 self.assertIn(name, data["tools"])
                 expected_state = "unknown" if name in {"semgrep", "gitleaks", "osv"} else "not_applicable"
                 self.assertEqual(data["tools"][name]["state"], expected_state)
+                self.assertIn("effective", data["tools"][name])
                 for measurement in data["tools"][name]["measurements"].values():
                     expected_status = "unknown" if expected_state == "unknown" else "not_applicable"
                     self.assertEqual(measurement["status"], expected_status)
@@ -153,6 +154,75 @@ class Layer2ScopeContractTests(unittest.TestCase):
             self.assertEqual(second.returncode, 0, second.stderr)
             data = json.loads(out.read_text())
             self.assertEqual(data["identity"]["run_id"], "b")
+
+    def test_semgrep_measurements_normalize_deduplicate_and_keep_units(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "target"
+            root.mkdir()
+            (root / "src").mkdir()
+            (root / "src" / "a.ts").write_text("export const a = 1;\n")
+            result = Path(tmp) / "semgrep.json"
+            result.write_text(json.dumps({
+                "version": "1.172.0",
+                "results": [],
+                "errors": [
+                    {"type": ["PartialParsing", {}], "path": "src/a.ts"},
+                    {"type": "Timeout", "path": "/repo/src/a.ts"},
+                ],
+                "paths": {
+                    "scanned": ["src/../src/a.ts", "/repo/src/a.ts"],
+                    "skipped": [
+                        {"path": "legacy", "reason": "cli_exclude_flags_match"},
+                        {"path": "/repo/legacy", "reason": "cli_exclude_flags_match"},
+                        {"path": "ignored.ts", "reason": "semgrepignore_patterns_match"},
+                    ],
+                },
+            }))
+            out = Path(tmp) / "scope.json"
+            init = self.run_scope(
+                "init", "--out", str(out), "--producer", "gate", "--workflow", "quality",
+                "--invocation-id", "measure", "--run-id", "measure", "--run-attempt", "1",
+                "--job", "layer2", "--commit", "abc", "--ref", "main", "--mode", "full",
+            )
+            self.assertEqual(init.returncode, 0, init.stderr)
+            measured = self.run_scope(
+                "measure-semgrep", "--out", str(out), "--results", str(result),
+                "--scan-root", str(root), "--scanner-root", "/repo", "--mode", "full",
+            )
+            self.assertEqual(measured.returncode, 0, measured.stderr)
+            data = json.loads(out.read_text())
+            measurements = data["tools"]["semgrep"]["measurements"]
+            self.assertEqual(measurements["examined"]["count"], 1)
+            self.assertEqual(measurements["unparsed"]["count"], 1)
+            self.assertEqual(measurements["policy_excluded"]["count"], 1)
+            self.assertTrue(all(item["unit"] == "target_path" for item in measurements.values()))
+
+    def test_semgrep_measurements_unknown_when_skip_evidence_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "target"
+            root.mkdir()
+            result = Path(tmp) / "semgrep.json"
+            result.write_text(json.dumps({
+                "version": "1.172.0", "results": [], "errors": [],
+                "paths": {"scanned": []},
+            }))
+            out = Path(tmp) / "scope.json"
+            init = self.run_scope(
+                "init", "--out", str(out), "--producer", "gate", "--workflow", "quality",
+                "--invocation-id", "missing", "--run-id", "missing", "--run-attempt", "1",
+                "--job", "layer2", "--commit", "abc", "--ref", "main", "--mode", "full",
+            )
+            self.assertEqual(init.returncode, 0, init.stderr)
+            measured = self.run_scope(
+                "measure-semgrep", "--out", str(out), "--results", str(result),
+                "--scan-root", str(root), "--mode", "full",
+            )
+            self.assertEqual(measured.returncode, 0, measured.stderr)
+            data = json.loads(out.read_text())
+            policy = data["tools"]["semgrep"]["measurements"]["policy_excluded"]
+            self.assertIsNone(policy["count"])
+            self.assertEqual(policy["status"], "unknown")
+            self.assertIn("verbose skip metadata", policy["reason"])
 
     def test_action_wires_independent_all_outcome_publication(self) -> None:
         action = yaml.safe_load((ROOT / "actions" / "layer2" / "action.yml").read_text())

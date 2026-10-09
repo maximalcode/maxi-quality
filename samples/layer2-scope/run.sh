@@ -4,7 +4,15 @@ set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+cleanup() {
+  local rc=$?
+  if [[ -f "$WORK/policy-disabled.yml" ]]; then
+    mv "$WORK/policy-disabled.yml" samples/policy/exclude/.maxi-quality.yml
+  fi
+  rm -rf "$WORK"
+  return "$rc"
+}
+trap cleanup EXIT
 
 scope_check() {
   local path="$1" expected="$2"
@@ -49,6 +57,16 @@ d = json.load(open(sys.argv[1]))
 assert d["tools"]["semgrep"]["state"] == "run"
 assert d["tools"]["semgrep"]["outcome"] == "failure"
 assert d["tools"]["semgrep"]["diagnostics"]
+measurements = d["tools"]["semgrep"]["measurements"]
+assert measurements["examined"]["status"] == "known"
+assert measurements["examined"]["count"] == 12
+assert measurements["unparsed"]["status"] == "known"
+assert measurements["unparsed"]["count"] == 0
+assert measurements["policy_excluded"]["status"] == "known"
+assert measurements["policy_excluded"]["count"] == 0
+assert any("attempted=12 target_path" in line and
+           "unparsed (overlapping)=0 target_path" in line
+           for line in d["summary"]["lines"])
 PY
 
 # --no-fail changes the process exit for report mode, but it does not relabel a
@@ -57,6 +75,53 @@ mkdir "$WORK/no-fail"
 ./scripts/scan.sh samples/semgrep --skip gitleaks --skip osv --no-fail \
   --scope-out "$WORK/no-fail/scope.json" >"$WORK/no-fail/log" 2>&1
 scope_check "$WORK/no-fail/scope.json" failure
+
+# A real policy fixture proves both sides of the directory exclusion. The
+# policy-on scan exposes one selected target and one whole directory path from
+# Semgrep's verbose skip list; removing the policy makes both files attempted.
+mkdir "$WORK/policy-measure"
+rc=0
+./scripts/scan.sh samples/policy/exclude --skip gitleaks --skip osv \
+  --scope-out "$WORK/policy-measure/on.json" >"$WORK/policy-measure/on.log" 2>&1 || rc=$?
+[[ "$rc" == 1 ]] || { echo "expected policy-on findings exit 1, got $rc" >&2; exit 1; }
+python3 - "$WORK/policy-measure/on.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+m = d["tools"]["semgrep"]["measurements"]
+assert m["examined"]["count"] == 1
+assert m["policy_excluded"]["count"] == 1
+assert m["policy_excluded"]["unit"] == "target_path"
+PY
+mv samples/policy/exclude/.maxi-quality.yml "$WORK/policy-disabled.yml"
+rc=0
+./scripts/scan.sh samples/policy/exclude --skip gitleaks --skip osv \
+  --scope-out "$WORK/policy-measure/off.json" >"$WORK/policy-measure/off.log" 2>&1 || rc=$?
+[[ "$rc" == 1 ]] || { echo "expected policy-off findings exit 1, got $rc" >&2; exit 1; }
+python3 - "$WORK/policy-measure/off.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+m = d["tools"]["semgrep"]["measurements"]
+assert m["examined"]["count"] == 2
+assert m["policy_excluded"]["count"] == 0
+PY
+
+# Semgrep's own ignore mechanism is a separate observed skip reason. It must
+# not be reclassified as a project policy exclusion just because a directory
+# disappeared from the selected target list.
+mkdir "$WORK/default-ignore"
+rc=0
+./scripts/scan.sh samples/layer2-scope/default-ignore --skip gitleaks --skip osv \
+  --scope-out "$WORK/default-ignore/scope.json" >"$WORK/default-ignore/log" 2>&1 || rc=$?
+[[ "$rc" == 1 ]] || { echo "expected default-ignore findings exit 1, got $rc" >&2; exit 1; }
+python3 - "$WORK/default-ignore/scope.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+m = d["tools"]["semgrep"]["measurements"]
+assert m["examined"]["count"] == 1
+assert m["policy_excluded"]["count"] == 0
+raw = "\n".join(item["text"] for item in d["tools"]["semgrep"]["diagnostics"])
+assert "semgrepignore_patterns_match" in raw
+PY
 
 # Missing tool/setup evidence: a restricted PATH makes all three resolvers
 # unavailable while the scope writer remains available from /usr/bin/python3.

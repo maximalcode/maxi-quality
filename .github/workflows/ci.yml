@@ -4183,8 +4183,12 @@ jobs:
           assert set(d["tools"]) == {"semgrep", "gitleaks", "osv", "licenses", "sbom"}
           assert all(set(r["measurements"]) == {"examined", "unparsed", "policy_excluded"}
                      for r in d["tools"].values())
-          assert all(m["count"] is None for r in d["tools"].values()
-                     for m in r["measurements"].values())
+          for name, tool in d["tools"].items():
+              if name == "semgrep" and tool["state"] == "run":
+                  assert all(m["status"] == "known" and m["count"] is not None
+                             for m in tool["measurements"].values())
+              else:
+                  assert all(m["count"] is None for m in tool["measurements"].values())
           print("OK: Layer 2 scope contract and failure evidence are present")
           PY
 
@@ -4793,6 +4797,54 @@ jobs:
           restore groups
 
           echo 'OK: every policy knob is load-bearing in both directions'
+
+      - name: Semgrep scope evidence separates policy and ignore controls
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          backup="$RUNNER_TEMP/exclude-policy.yml"
+          restore() {
+            if [[ -f "$backup" ]]; then
+              mv "$backup" samples/policy/exclude/.maxi-quality.yml
+            fi
+          }
+          trap restore EXIT
+          rc=0
+          ./scripts/scan.sh samples/policy/exclude --skip gitleaks --skip osv \
+            --scope-out "$RUNNER_TEMP/policy-on.json" >/dev/null 2>&1 || rc=$?
+          [[ "$rc" == 1 ]] || { echo "::error::policy-on scan exited $rc"; exit 1; }
+          python3 - "$RUNNER_TEMP/policy-on.json" <<'PY'
+          import json, sys
+          measurements = json.load(open(sys.argv[1]))["tools"]["semgrep"]["measurements"]
+          assert measurements["examined"]["count"] == 1
+          assert measurements["policy_excluded"]["count"] == 1
+          assert measurements["policy_excluded"]["unit"] == "target_path"
+          PY
+          mv samples/policy/exclude/.maxi-quality.yml "$backup"
+          rc=0
+          ./scripts/scan.sh samples/policy/exclude --skip gitleaks --skip osv \
+            --scope-out "$RUNNER_TEMP/policy-off.json" >/dev/null 2>&1 || rc=$?
+          [[ "$rc" == 1 ]] || { echo "::error::policy-off scan exited $rc"; exit 1; }
+          python3 - "$RUNNER_TEMP/policy-off.json" <<'PY'
+          import json, sys
+          measurements = json.load(open(sys.argv[1]))["tools"]["semgrep"]["measurements"]
+          assert measurements["examined"]["count"] == 2
+          assert measurements["policy_excluded"]["count"] == 0
+          PY
+          rc=0
+          ./scripts/scan.sh samples/layer2-scope/default-ignore --skip gitleaks --skip osv \
+            --scope-out "$RUNNER_TEMP/default-ignore.json" >/dev/null 2>&1 || rc=$?
+          [[ "$rc" == 1 ]] || { echo "::error::default-ignore scan exited $rc"; exit 1; }
+          python3 - "$RUNNER_TEMP/default-ignore.json" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1]))
+          measurements = data["tools"]["semgrep"]["measurements"]
+          assert measurements["examined"]["count"] == 1
+          assert measurements["policy_excluded"]["count"] == 0
+          raw = "\n".join(item["text"] for item in data["tools"]["semgrep"]["diagnostics"])
+          assert "semgrepignore_patterns_match" in raw
+          PY
+          echo 'OK: attempted, policy-excluded and default-ignore scope evidence are distinct'
 
       - name: The resolved policy matches its snapshot
         shell: bash
