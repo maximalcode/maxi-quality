@@ -16,6 +16,7 @@ import html
 import json
 import os
 import pathlib
+import re
 import sys
 from typing import Any
 
@@ -228,6 +229,220 @@ def read_tools(path: pathlib.Path) -> tuple[list[dict[str, Any]], str | None]:
     return records, "; ".join(issues) if issues else None
 
 
+def _rust_target_from_config(working_directory: str | None) -> tuple[str | None, str | None]:
+    """Read Cargo's effective target declaration when the command exposed it."""
+    if not working_directory:
+        return None, None
+    directory = pathlib.Path(working_directory)
+    if not directory.is_dir():
+        return None, None
+    for base in (directory, *directory.parents):
+        for filename in ("config.toml", "config"):
+            path = base / ".cargo" / filename
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            in_build = False
+            for line in text.splitlines():
+                section = re.match(r"\s*\[([^]]+)\]\s*$", line)
+                if section:
+                    in_build = section.group(1).strip() == "build"
+                    continue
+                if in_build:
+                    match = re.match(r"\s*target\s*=\s*[\"']([^\"']+)[\"']", line)
+                    if match:
+                        return match.group(1), str(path)
+    return None, None
+
+
+def _rust_requested(argv: list[str], working_directory: str | None) -> dict[str, Any]:
+    """Describe requested Cargo configuration without claiming it executed."""
+    try:
+        cargo_index = argv.index("cargo")
+    except ValueError:
+        cargo_index = 0
+    cargo_args = argv[cargo_index + 1 :]
+    cli_target = None
+    for index, value in enumerate(cargo_args):
+        if value == "--target" and index + 1 < len(cargo_args):
+            cli_target = cargo_args[index + 1]
+        elif value.startswith("--target="):
+            cli_target = value.split("=", 1)[1]
+    features: list[str] = []
+    for index, value in enumerate(cargo_args):
+        if value == "--features" and index + 1 < len(cargo_args):
+            features.extend(part for part in cargo_args[index + 1].split(",") if part)
+        elif value.startswith("--features="):
+            features.extend(part for part in value.split("=", 1)[1].split(",") if part)
+    config_target, config_path = _rust_target_from_config(working_directory)
+    env_target = os.environ.get("CARGO_BUILD_TARGET") or None
+    platform_target = cli_target or env_target or config_target
+    platform_source = "cli" if cli_target else "environment" if env_target else "cargo-config" if config_target else "unavailable"
+    platform_reason = (
+        "effective target requested by the cargo command"
+        if cli_target
+        else "effective target requested by CARGO_BUILD_TARGET"
+        if env_target
+        else f"effective target declared by {config_path}"
+        if config_path
+        else "Cargo compiler-artifact messages do not include a platform triple and no target override was observed"
+    )
+    return {
+        "workspace": "--workspace" in cargo_args,
+        "all_targets": "--all-targets" in cargo_args,
+        "locked": "--locked" in cargo_args,
+        "warnings": next((value.split("=", 1)[1] for value in argv[:cargo_index] if value.startswith("RUSTFLAGS=")), None),
+        "features": features,
+        "feature_selection": "explicit" if features or "--all-features" in cargo_args else "default",
+        "target": {"cli": cli_target, "env": env_target, "config": config_target},
+        "platform": {
+            "status": "known" if platform_target else "unknown",
+            "target": platform_target,
+            "source": platform_source,
+            "reason": platform_reason,
+        },
+    }
+
+
+def _rust_artifact(value: dict[str, Any]) -> dict[str, Any]:
+    target = value.get("target") if isinstance(value.get("target"), dict) else {}
+    profile = value.get("profile") if isinstance(value.get("profile"), dict) else {}
+    fresh = value.get("fresh") if isinstance(value.get("fresh"), bool) else None
+    return {
+        "package_id": value.get("package_id") if isinstance(value.get("package_id"), str) else None,
+        "manifest_path": value.get("manifest_path") if isinstance(value.get("manifest_path"), str) else None,
+        "target": {
+            "kind": target.get("kind") if isinstance(target.get("kind"), list) else [],
+            "name": target.get("name") if isinstance(target.get("name"), str) else None,
+            "required_features": target.get("required-features") if isinstance(target.get("required-features"), list) else None,
+            "crate_types": target.get("crate_types") if isinstance(target.get("crate_types"), list) else [],
+            "src_path": target.get("src_path") if isinstance(target.get("src_path"), str) else None,
+        },
+        "features": value.get("features") if isinstance(value.get("features"), list) else [],
+        "profile": {
+            "test": profile.get("test") if isinstance(profile.get("test"), bool) else None,
+            "opt_level": profile.get("opt_level") if isinstance(profile.get("opt_level"), str) else None,
+            "debuginfo": profile.get("debuginfo"),
+            "debug_assertions": profile.get("debug_assertions") if isinstance(profile.get("debug_assertions"), bool) else None,
+            "overflow_checks": profile.get("overflow_checks") if isinstance(profile.get("overflow_checks"), bool) else None,
+        },
+        "filenames": value.get("filenames") if isinstance(value.get("filenames"), list) else [],
+        "fresh": fresh,
+        "freshness": "fresh" if fresh is True else "processed" if fresh is False else "unknown",
+    }
+
+
+def _rust_platform_from_artifacts(
+    artifacts: list[dict[str, Any]], working_directory: str | None, requested: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Use an explicit target-directory path as platform evidence when available."""
+    requested_target = requested.get("target") if isinstance(requested.get("target"), str) else None
+    if requested.get("status") != "known" or not requested_target or not working_directory:
+        return None
+    target_root = pathlib.Path(os.environ.get("CARGO_TARGET_DIR", pathlib.Path(working_directory) / "target"))
+    if not target_root.is_absolute():
+        target_root = pathlib.Path(working_directory) / target_root
+    try:
+        target_root = target_root.resolve()
+    except OSError:
+        return None
+    candidates: list[str] = []
+    for artifact in artifacts:
+        for filename in artifact.get("filenames", []):
+            if not isinstance(filename, str):
+                continue
+            try:
+                relative = pathlib.Path(filename).resolve().relative_to(target_root)
+            except (OSError, ValueError):
+                continue
+            parts = relative.parts
+            if len(parts) >= 3 and parts[0] not in {"debug", "release"} and parts[1] in {"debug", "release"}:
+                candidates.append(parts[0])
+            else:
+                return None
+    if candidates and all(candidate == requested_target for candidate in candidates):
+        return {
+            "status": "known",
+            "target": requested_target,
+            "source": "artifact-path",
+            "reason": "Cargo compiler-artifact filenames contain the requested platform component under the default target root",
+        }
+    return None
+
+
+def rust_evidence(path: pathlib.Path, argv: list[str], working_directory: str | None) -> tuple[dict[str, Any], list[str]]:
+    """Extract Cargo JSON evidence from the completed Clippy capture."""
+    requested = _rust_requested(argv, working_directory)
+    evidence: dict[str, Any] = {
+        "format": "cargo-json",
+        "requested": requested,
+        "observed": {
+            "artifacts": [],
+            "compiler_messages": [],
+            "build_finished": None,
+            "platform": {
+                "status": "unknown",
+                "target": None,
+                "source": "unavailable",
+                "reason": "no completed compiler artifact has established an effective platform target",
+            },
+            "unparsed_lines": 0,
+        },
+        "collection": {"status": "complete", "issues": []},
+    }
+    issues: list[str] = []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        reason = f"Rust structured output unavailable: {path}: {exc}"
+        evidence["collection"] = {"status": "partial", "issues": [reason]}
+        evidence["observed"]["reason"] = reason
+        return evidence, [reason]
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            evidence["observed"]["unparsed_lines"] += 1
+            continue
+        if not isinstance(value, dict):
+            evidence["observed"]["unparsed_lines"] += 1
+            continue
+        reason = value.get("reason")
+        if reason == "compiler-artifact":
+            evidence["observed"]["artifacts"].append(_rust_artifact(value))
+        elif reason == "compiler-message":
+            message = value.get("message") if isinstance(value.get("message"), dict) else {}
+            target = value.get("target") if isinstance(value.get("target"), dict) else message.get("target") if isinstance(message.get("target"), dict) else {}
+            evidence["observed"]["compiler_messages"].append({
+                "package_id": value.get("package_id") if isinstance(value.get("package_id"), str) else None,
+                "manifest_path": value.get("manifest_path") if isinstance(value.get("manifest_path"), str) else None,
+                "target": {
+                    "kind": target.get("kind") if isinstance(target.get("kind"), list) else [],
+                    "name": target.get("name") if isinstance(target.get("name"), str) else None,
+                },
+                "level": message.get("level") if isinstance(message.get("level"), str) else None,
+                "message": message.get("message") if isinstance(message.get("message"), str) else None,
+                "rendered": message.get("rendered") if isinstance(message.get("rendered"), str) else None,
+            })
+        elif reason == "build-finished":
+            success = value.get("success")
+            if isinstance(success, bool):
+                evidence["observed"]["build_finished"] = {"success": success}
+            else:
+                issues.append(f"invalid Cargo build-finished success at line {line_number}")
+    if not evidence["observed"]["artifacts"] and evidence["observed"]["build_finished"] is None:
+        issues.append("Cargo JSON contained no compiler-artifact or build-finished evidence")
+    platform = _rust_platform_from_artifacts(evidence["observed"]["artifacts"], working_directory, requested["platform"])
+    if platform:
+        evidence["observed"]["platform"] = platform
+    if issues:
+        evidence["collection"] = {"status": "partial", "issues": issues}
+    return evidence, issues
+
+
 def tool_record(args: argparse.Namespace) -> None:
     """Append one command-boundary record without owning the command verdict."""
     path = pathlib.Path(args.file)
@@ -259,6 +474,15 @@ def tool_record(args: argparse.Namespace) -> None:
         "measurements": unknown_measurements("measurement is not available at this command boundary"),
     }
     collection_issues = [issue for issue in (existing_issue, args.collection_issue) if issue]
+    if args.rust_evidence_file:
+        rust, rust_issues = rust_evidence(pathlib.Path(args.rust_evidence_file), list(args.argv or []), args.working_directory or None)
+        record["rust"] = rust
+        collection_issues.extend(rust_issues)
+        if args.rust_render_diagnostics:
+            for message in rust["observed"]["compiler_messages"]:
+                rendered = message.get("rendered")
+                if isinstance(rendered, str) and rendered:
+                    print(rendered, file=sys.stderr, end="" if rendered.endswith("\n") else "\n")
     if collection_issues:
         record["collection"] = {"status": "partial", "issues": collection_issues}
     records.append(record)
@@ -716,6 +940,28 @@ def render_lines(document: dict[str, Any]) -> list[str]:
             )
             for diagnostic in tool.get("diagnostics", []):
                 lines.append(f"Tool diagnostic {tool_leg}: {safe(diagnostic)}")
+            rust = tool.get("rust")
+            if tool.get("name") == "clippy" and isinstance(rust, dict):
+                requested = rust.get("requested", {})
+                observed = rust.get("observed", {})
+                platform = observed.get("platform", {}) if isinstance(observed, dict) else {}
+                lines.append(
+                    f"Rust scope {tool_leg}: {safe(len(observed.get('artifacts', [])))} observed artifacts, "
+                    f"features={safe(requested.get('features', []))}, "
+                    f"platform={safe(platform.get('target', 'unknown'))}"
+                )
+                for artifact in observed.get("artifacts", []):
+                    target = artifact.get("target", {})
+                    lines.append(
+                        f"Rust artifact {tool_leg}: {safe(artifact.get('package_id'))} / "
+                        f"{safe(target.get('name'))} ({safe(target.get('kind'))}) "
+                        f"features={safe(artifact.get('features'))} fresh={safe(artifact.get('fresh'))}"
+                    )
+                finished = observed.get("build_finished")
+                if isinstance(finished, dict):
+                    lines.append(f"Rust completion {tool_leg}: success={safe(finished.get('success'))}")
+                for issue in rust.get("collection", {}).get("issues", []) if isinstance(rust.get("collection"), dict) else []:
+                    lines.append(f"Rust collection issue {tool_leg}: {safe(issue)}")
             for issue in tool.get("collection", {}).get("issues", []) if isinstance(tool.get("collection"), dict) else []:
                 lines.append(f"Tool collection issue {tool_leg}: {safe(issue)}")
     for issue in document["collection"].get("issues", []):
@@ -783,6 +1029,8 @@ def parser() -> argparse.ArgumentParser:
     tool_parser.add_argument("--diagnostic-file", default="")
     tool_parser.add_argument("--working-directory", default="")
     tool_parser.add_argument("--collection-issue", default="")
+    tool_parser.add_argument("--rust-evidence-file", default="")
+    tool_parser.add_argument("--rust-render-diagnostics", action="store_true")
     tool_parser.add_argument("--argv", nargs=argparse.REMAINDER, default=[])
     tool_parser.set_defaults(func=tool_record)
     collect_parser = sub.add_parser("collect")

@@ -1283,8 +1283,10 @@ jobs:
               --name "$name" --state run --outcome "$([[ "$rc" -eq 0 ]] && echo success || echo failure)"
               --exit-code "$rc" --reason "Rust command boundary executed" --reason-code command --working-directory "$PWD")
             if [[ "$log" != /dev/null && -f "$log" ]]; then args+=(--diagnostic-file "$log"); fi
+            if [[ "$name" == clippy && "$log" != /dev/null && -f "$log" ]]; then args+=(--rust-evidence-file "$log" --rust-render-diagnostics); fi
             if [[ -n "${SCOPE_CAPTURE_ISSUE:-}" ]]; then args+=(--collection-issue "$SCOPE_CAPTURE_ISSUE"); fi
-            args+=(--argv "$@"); python3 "${args[@]}" >/dev/null 2>&1 || true
+            args+=(--argv "$@");
+            if [[ "$name" == clippy ]]; then python3 "${args[@]}" 2>&1 || true; else python3 "${args[@]}" >/dev/null 2>&1 || true; fi
             return "$rc"
           }
           scope_capture() {
@@ -1314,7 +1316,7 @@ jobs:
           # `cargo check` should warn them, not wall them mid-refactor. CI is
           # the gate. --locked is why detection refuses a crate with no
           # lockfile: without one this line cannot run at all.
-          scope_run clippy env RUSTFLAGS=-Dwarnings cargo clippy --workspace --all-targets --locked
+          scope_run clippy env RUSTFLAGS=-Dwarnings cargo clippy --workspace --all-targets --locked --message-format=json
           # advisories covers what cargo-audit would (the same RustSec feed);
           # add 'licenses' once deny.toml's allowlist holds your policy.
           # cargo-deny reads the whole workspace graph already.
