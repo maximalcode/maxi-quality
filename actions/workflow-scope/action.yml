@@ -156,7 +156,7 @@ runs:
     - name: Upload workflow scope manifest
       if: always() && inputs.mode == 'init'
       continue-on-error: true
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a0 # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: ${{ steps.initialize.outputs.artifact_name }}
         path: ${{ runner.temp }}/maxi-quality-workflow-scope-manifest.json
@@ -215,7 +215,7 @@ runs:
     - name: Upload workflow scope fragment
       if: always() && inputs.mode == 'fragment'
       continue-on-error: true
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a0 # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: ${{ steps.fragment.outputs.artifact_name }}
         path: ${{ runner.temp }}/maxi-quality-workflow-scope-fragment.json
@@ -303,7 +303,7 @@ runs:
     - name: Upload whole workflow scope
       if: always() && inputs.mode == 'collect'
       continue-on-error: true
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a0 # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: ${{ inputs.artifact-prefix }}-final
         path: ${{ runner.temp }}/maxi-quality-workflow-scope.json

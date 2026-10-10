@@ -376,6 +376,12 @@ run_semgrep() {
     2>"$policy_log"; then
     scope_record --tool semgrep --state skipped --outcome failure --reason-code blocked \
       --reason "policy setup failed" --exit-code 3 --log "$policy_log"
+    # The resolver's complete diagnostic was captured before the scope record
+    # so the temporary file can be removed safely on EXIT. Replay it here to
+    # preserve the existing CLI error contract for callers without --scope-out.
+    if [[ -s "$policy_log" ]]; then
+      cat "$policy_log" >&2
+    fi
     die "the policy in $TARGET/.maxi-quality.yml is not usable (see above)"
   fi
 
@@ -618,6 +624,33 @@ run_gitleaks() {
     fi
   fi
 
+  local gitleaks_version=""
+  gitleaks_version="$("${RESOLVED_CMD[@]}" --version 2>/dev/null || true)"
+  gitleaks_version="${gitleaks_version%%$'\n'*}"
+  [[ -n "$gitleaks_version" ]] || gitleaks_version="unknown"
+  local gitleaks_effective="$WORKDIR/gitleaks-effective.json"
+  python3 - "$gitleaks_effective" "$gitleaks_version" "$history_mode" "$fallback" "${TARGET}/.gitleaks.toml" "${TARGET}/gitleaks.toml" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+out, version, mode, fallback, *config_paths = sys.argv[1:]
+config = None
+for raw in config_paths:
+    path = pathlib.Path(raw)
+    if path.is_file():
+        config = hashlib.sha256(path.read_bytes()).hexdigest()
+        break
+payload = {"tool": "gitleaks", "version": version, "mode": mode,
+           "fallback": fallback or "none", "config_fingerprint": config or "none"}
+payload["comparison"] = {"status": "complete"}
+payload["content_fingerprint"] = hashlib.sha256(
+    json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+).hexdigest()
+json.dump(payload, open(out, "w", encoding="utf-8"), sort_keys=True)
+PY
+
   local rc=0 gitleaks_log="$WORKDIR/gitleaks.log"
   set +e
   "${RESOLVED_CMD[@]}" "$subcmd" "$root" --no-banner --redact ${extra[@]+"${extra[@]}"} \
@@ -633,13 +666,13 @@ run_gitleaks() {
     scope_record --tool gitleaks --state run --outcome success \
       --reason "Gitleaks completed" --exit-code 0 --mode "$history_mode" \
       --baseline-ref "$([[ "$CHANGED_ONLY" == 1 ]] && echo "$BASE_REF" || true)" \
-      --fallback "$fallback" --log "$gitleaks_log"
+      --fallback "$fallback" --log "$gitleaks_log" --effective-json "$gitleaks_effective"
   else
     scope_record --tool gitleaks --state run --outcome failure \
       --reason "Gitleaks exited with an error or findings" --exit-code "$rc" \
       --mode "$history_mode" \
       --baseline-ref "$([[ "$CHANGED_ONLY" == 1 ]] && echo "$BASE_REF" || true)" \
-      --fallback "$fallback" --log "$gitleaks_log"
+      --fallback "$fallback" --log "$gitleaks_log" --effective-json "$gitleaks_effective"
   fi
   return 0
 }
@@ -657,6 +690,34 @@ run_osv() {
       return 0
     }
   local root="$RESOLVED_ROOT"
+
+  local osv_version=""
+  osv_version="$("${RESOLVED_CMD[@]}" --version 2>/dev/null || true)"
+  osv_version="${osv_version%%$'\n'*}"
+  [[ -n "$osv_version" ]] || osv_version="unknown"
+  local osv_effective="$WORKDIR/osv-effective.json"
+  local licenses_effective="$WORKDIR/licenses-effective.json"
+  local sbom_effective="$WORKDIR/sbom-effective.json"
+  python3 - "$osv_effective" "$licenses_effective" "$sbom_effective" "$osv_version" "$LICENSES" <<'PY'
+import hashlib
+import json
+import sys
+
+osv_path, license_path, sbom_path, version, allowlist = sys.argv[1:]
+base = {"tool": "osv-scanner", "version": version, "mode": "source-recursive",
+        "resolution": "no-resolve", "comparison": {"status": "complete"}}
+def write(path, payload):
+    payload = dict(payload)
+    payload["content_fingerprint"] = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    json.dump(payload, open(path, "w", encoding="utf-8"), sort_keys=True)
+write(osv_path, base)
+write(license_path, {**base, "resolution": "resolver-enabled",
+                      "license_allowlist": [item.strip() for item in allowlist.split(",") if item.strip()]})
+write(sbom_path, {**base, "resolution": "resolver-enabled", "format": "cyclonedx-1-6",
+                  "all_packages": True, "license_metadata": True})
+PY
 
   # OSV has no changed-only mode: a vulnerable dependency is vulnerable
   # regardless of which commit introduced it.
@@ -704,13 +765,13 @@ run_osv() {
       record_status osv "clean"
       scope_record --tool osv --state run --outcome success \
         --reason "OSV-Scanner completed" --exit-code 0 --mode "source-recursive" \
-        --resolution "no-resolve" --log "$osv_log"
+        --resolution "no-resolve" --log "$osv_log" --effective-json "$osv_effective"
       ;;
     128)
       record_status osv "no lockfiles found"; warn "osv-scanner found nothing to scan"
       scope_record --tool osv --state run --outcome success \
         --reason "OSV-Scanner found no dependency inputs" --exit-code 128 \
-        --mode "source-recursive" --resolution "no-resolve" --log "$osv_log"
+        --mode "source-recursive" --resolution "no-resolve" --log "$osv_log" --effective-json "$osv_effective"
       ;;
     *)
       record_status osv "FINDINGS (exit $rc)"; FINDINGS=1
@@ -722,7 +783,7 @@ run_osv() {
       fi
       scope_record --tool osv --state run --outcome failure \
         --reason "$osv_reason" --exit-code "$rc" \
-        --mode "source-recursive" --resolution "no-resolve" --log "$osv_log"
+        --mode "source-recursive" --resolution "no-resolve" --log "$osv_log" --effective-json "$osv_effective"
       ;;
   esac
 
@@ -750,19 +811,19 @@ run_osv() {
         record_status licenses "clean (allowlist: $LICENSES)"
         scope_record --tool licenses --state run --outcome success \
           --reason "License invocation completed" --exit-code 0 --mode "source-recursive" \
-          --resolution "resolver-enabled" --log "$license_log"
+          --resolution "resolver-enabled" --log "$license_log" --effective-json "$licenses_effective"
         ;;
       128)
         record_status licenses "no lockfiles found"
         scope_record --tool licenses --state run --outcome success \
           --reason "License invocation found no dependency inputs" --exit-code 128 \
-          --mode "source-recursive" --resolution "resolver-enabled" --log "$license_log"
+          --mode "source-recursive" --resolution "resolver-enabled" --log "$license_log" --effective-json "$licenses_effective"
         ;;
       *)
         record_status licenses "VIOLATIONS (exit $lrc)"; FINDINGS=1
         scope_record --tool licenses --state run --outcome failure \
           --reason "License allowlist reported violations or an error" --exit-code "$lrc" \
-          --mode "source-recursive" --resolution "resolver-enabled" --log "$license_log"
+          --mode "source-recursive" --resolution "resolver-enabled" --log "$license_log" --effective-json "$licenses_effective"
         ;;
     esac
     echo
@@ -832,7 +893,7 @@ PY
       [[ "$n" =~ ^[0-9]+$ ]] && native_count=(--native-component-count "$n")
       scope_record --tool sbom --state run --outcome "$sbom_outcome" \
         --reason "SBOM invocation completed" --exit-code "$src" --mode "source-recursive" \
-        --resolution "resolver-enabled" ${native_count[@]+"${native_count[@]}"} --log "$sbom_log"
+        --resolution "resolver-enabled" ${native_count[@]+"${native_count[@]}"} --log "$sbom_log" --effective-json "$sbom_effective"
       info "SBOM written to $SBOM_OUT ($n components)"
     else
       # Never a gate failure: an SBOM is an artifact, not a finding. But it must
@@ -841,7 +902,7 @@ PY
       warn "SBOM was requested but osv-scanner produced no file (exit $src)"
       scope_record --tool sbom --state run --outcome failure \
         --reason "SBOM invocation produced no artifact" --exit-code "$src" \
-        --mode "source-recursive" --resolution "resolver-enabled" --log "$sbom_log"
+        --mode "source-recursive" --resolution "resolver-enabled" --log "$sbom_log" --effective-json "$sbom_effective"
     fi
     echo
   fi

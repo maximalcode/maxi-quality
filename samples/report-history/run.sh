@@ -71,6 +71,70 @@ python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
   --date 2026-01-01 --run-id run-one --run-attempt 1 \
   --started-at 2026-01-01T10:00:00Z --scope "$S1" >"$WORK/one.md"
 
+# A finding is an analysis failure for the scanner, but it is still valid
+# finding data for the report. Exercise the actual producer shape rather than
+# synthesizing a successful scope around finding JSON.
+SFIND="$WORK/producer-findings-scope.json"
+cp "$S1" "$SFIND"
+python3 - "$SFIND" <<'PY'
+import json, sys
+path = sys.argv[1]
+doc = json.load(open(path, encoding="utf-8"))
+doc["analysis"].update(outcome="failure", exit_code=1)
+doc["tools"]["semgrep"].update(outcome="failure", exit_code=1, reason="Semgrep completed with findings")
+json.dump(doc, open(path, "w", encoding="utf-8"))
+PY
+set +e
+python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
+  --date 2026-01-01 --run-id run-one --run-attempt 1 \
+  --started-at 2026-01-01T10:00:00Z --scope "$SFIND" >"$WORK/producer-findings.md"
+producer_rc=$?
+set -e
+[[ $producer_rc == 0 ]]
+grep -q '| Semgrep | \*\*2\*\* findings |' "$WORK/producer-findings.md"
+if grep -q 'ERRORED' "$WORK/producer-findings.md"; then
+  echo "normal producer findings were rendered as an operational error" >&2
+  exit 1
+fi
+
+# A real scanner boundary failure still controls the report exit and visible
+# ERRORED state when a stale or partial JSON happens to be readable.
+SOP=$(scope operational 1 2026-01-01T10:30:00Z)
+python3 - "$SOP" <<'PY'
+import json, sys
+path = sys.argv[1]
+doc = json.load(open(path, encoding="utf-8"))
+doc["analysis"].update(outcome="failure", exit_code=9)
+doc["tools"]["semgrep"].update(outcome="failure", exit_code=9, reason="Semgrep result classification failed")
+json.dump(doc, open(path, "w", encoding="utf-8"))
+PY
+set +e
+python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
+  --date 2026-01-01 --run-id operational --run-attempt 1 \
+  --started-at 2026-01-01T10:30:00Z --scope "$SOP" >"$WORK/operational.md"
+operational_rc=$?
+set -e
+[[ $operational_rc == 2 ]]
+grep -q 'ERRORED' "$WORK/operational.md"
+
+# Excerpts are Markdown table cells. Keep hostile diagnostic syntax visible
+# and bounded while the complete raw value remains in the scope artifact.
+python3 - "$SFIND" <<'PY'
+import json, sys
+path = sys.argv[1]
+doc = json.load(open(path, encoding="utf-8"))
+doc["tools"]["semgrep"]["diagnostics"] = [{"stream": "combined", "source": "fixture", "text": "<!-- hidden error --> **not literal** [details](https://example.invalid)|\nsecond line " + "x" * 260}]
+json.dump(doc, open(path, "w", encoding="utf-8"))
+PY
+python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
+  --date 2026-01-01 --run-id run-one --run-attempt 1 \
+  --started-at 2026-01-01T10:00:00Z --scope "$SFIND" >"$WORK/escaped-diagnostic.md"
+grep -q '&lt;!-- hidden error --&gt;' "$WORK/escaped-diagnostic.md"
+grep -Fq '\*\*not literal\*\*' "$WORK/escaped-diagnostic.md"
+grep -Fq '\[details\]\(https://example.invalid\)' "$WORK/escaped-diagnostic.md"
+grep -Fq '\|' "$WORK/escaped-diagnostic.md"
+grep -q '\.\.\.' "$WORK/escaped-diagnostic.md"
+
 # JSON-valid but semantically malformed retained scope metadata must degrade to
 # unavailable comparison while preserving the visible finding row.
 python3 - "$WORK/one.md" "$WORK/malformed-history.md" <<'PY'
@@ -189,6 +253,24 @@ grep -q "semgrep unparsed: +2 \`target_path\`" "$WORK/qualified.md"
 grep -q "semgrep policy_excluded: +1 \`target_path\`" "$WORK/qualified.md"
 grep -q "sbom native component_count: +1 \`dependency_component\`" "$WORK/qualified.md"
 grep -q 'smaller\|more analysis gaps\|more observed policy exclusions' "$WORK/qualified.md"
+
+# Equal finding counts still reveal changed effective scanner conditions.
+SALT=$(scope run-altered 1 2026-01-02T11:00:00Z)
+qualify_scope "$SALT" 8 2 1 5
+python3 - "$SALT" <<'PY'
+import json, sys
+path = sys.argv[1]
+doc = json.load(open(path, encoding="utf-8"))
+doc["tools"]["semgrep"]["effective"]["version"] = "1.173.0"
+doc["tools"]["semgrep"]["effective"]["config_fingerprint"] = "altered-config"
+json.dump(doc, open(path, "w", encoding="utf-8"))
+PY
+python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
+  --date 2026-01-02 --run-id run-altered --run-attempt 1 \
+  --started-at 2026-01-02T11:00:00Z --scope "$SALT" \
+  --previous-body "$WORK/qualified.md" >"$WORK/altered.md"
+grep -q 'Findings: +0 findings' "$WORK/altered.md"
+grep -q 'semgrep effective changed' "$WORK/altered.md"
 
 # An older completion is inserted chronologically but cannot replace the newest
 # current findings/scope. Its insertion does change the current predecessor.

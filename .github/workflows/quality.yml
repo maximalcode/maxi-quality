@@ -266,7 +266,10 @@ jobs:
           LANGS: ${{ inputs.languages }}
         run: |
           set -Eeuo pipefail
-          exec > >(tee "${RUNNER_TEMP:-/tmp}/maxi-quality-detect.log") 2>&1
+          # Drain a failed capture sink so detector output cannot SIGPIPE the
+          # shell. Capture failure is visible but remains non-gating scope
+          # collection; the detector's own result is preserved.
+          exec > >(tee "${RUNNER_TEMP:-/tmp}/maxi-quality-detect.log" || { tee_rc=$?; cat; printf '::warning::detector log capture failed (tee exit %s)\n' "$tee_rc" >&2; }) 2>&1
           # 'none' is handled EXPLICITLY, not left to fall through the match.
           # It would work either way today — "none" happens to match no language
           # — but that is an accident of string comparison, and the first person

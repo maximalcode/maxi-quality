@@ -163,6 +163,14 @@ assert all(d["tools"][name]["state"] == "unknown" for name in ("gitleaks", "osv"
 assert all(not d["tools"][name]["diagnostics"] for name in ("gitleaks", "osv"))
 PY
 
+# The same resolver diagnostic must remain visible for callers that do not ask
+# for scope output. The scope file is an additive handoff, not a replacement
+# for the scanner's established CLI error.
+rc=0
+./scripts/scan.sh samples/policy/invalid/unknown-key >"$WORK/policy/no-scope.log" 2>&1 || rc=$?
+[[ "$rc" == 3 ]] || { echo "expected invalid-policy exit 3 without scope, got $rc" >&2; exit 1; }
+grep -q "unknown.*rules" "$WORK/policy/no-scope.log"
+
 # Setup failure path: execute the production finalizer body extracted from the
 # composite action. No scanner command is reached; every requested tool is
 # explicitly blocked and the setup log is retained as analysis evidence.
@@ -315,6 +323,8 @@ native = tool["native"]["component_count"]
 if mode == "known":
     assert native["status"] == "known" and native["count"] == 2
     assert tool["outcome"] == "success"
+    assert tool["effective"]["version"] == "osv-scanner 2.5.0"
+    assert tool["effective"]["format"] == "cyclonedx-1-6"
 elif mode == "malformed":
     assert native["status"] == "unknown" and native["count"] is None
     assert tool["outcome"] == "success"
@@ -324,6 +334,24 @@ else:
 print(f"OK: native SBOM count boundary {mode}")
 PY
 done
+
+# License checks retain the exact requested allowlist and scanner version, even
+# when the dependency count/outcome is unchanged.
+mkdir "$WORK/licenses"
+rc=0
+PATH="$WORK/sbom/bin:/usr/bin:/bin" bash "$ROOT/scripts/scan.sh" samples/policy/exclude \
+  --skip semgrep --skip gitleaks --licenses 'MIT, Apache-2.0' \
+  --scope-out "$WORK/licenses/scope.json" >"$WORK/licenses/log" 2>&1 || rc=$?
+[[ "$rc" == 0 ]] || { echo "expected license fixture exit 0, got $rc" >&2; exit 1; }
+python3 - "$WORK/licenses/scope.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+effective = d["tools"]["licenses"]["effective"]
+assert effective["version"] == "osv-scanner 2.5.0"
+assert effective["license_allowlist"] == ["MIT", "Apache-2.0"]
+assert effective["content_fingerprint"]
+PY
+echo "OK: license allowlist and scanner version metadata"
 
 # A diagnostic sink failure must still drain the scanner stream and preserve
 # the scanner's successful verdict. The scan waits for that fallback drain

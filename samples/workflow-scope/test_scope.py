@@ -106,6 +106,27 @@ class WorkflowScopeTests(unittest.TestCase):
             self.assertEqual(data["languages"]["dotnet"]["state"], "not_applicable")
             self.assertEqual(data["languages"]["ts"]["state"], "selected")
 
+    def test_detector_capture_sink_failure_preserves_detector_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text('{"name":"fixture"}\n')
+            (root / "yarn.lock").write_text("# unsupported lockfile\n")
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            (fake_bin / "tee").write_text("#!/usr/bin/env bash\nexit 99\n")
+            (fake_bin / "tee").chmod(0o755)
+            env = {
+                **os.environ,
+                "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                "LANGS": "ts",
+                "GITHUB_OUTPUT": str(root / "detect.out"),
+                "RUNNER_TEMP": str(root),
+            }
+            result = subprocess.run(["bash", "-c", extract_detector_body()], cwd=root, env=env, text=True, capture_output=True, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotEqual(result.returncode, -13)
+            self.assertIn("supported lockfile", result.stdout + result.stderr)
+
     def test_collector_reconciles_legs_without_turning_missing_into_zero_or_never_ran(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -212,7 +233,7 @@ class WorkflowScopeTests(unittest.TestCase):
             self.assertTrue(detector_log.exists())
             self.assertIn("supported lockfile", detector_log.read_text())
             quality_body = WORKFLOW.read_text(encoding="utf-8")
-            self.assertIn('exec > >(tee "${RUNNER_TEMP:-/tmp}/maxi-quality-detect.log") 2>&1', quality_body)
+            self.assertIn('exec > >(tee "${RUNNER_TEMP:-/tmp}/maxi-quality-detect.log" ||', quality_body)
             self.assertIn("diagnostic-file: ${{ runner.temp }}/maxi-quality-detect.log", quality_body)
             scope = root / "scope.json"
             self.assertEqual(run_helper("init", "--out", str(scope), "--root", str(root), "--languages", "ts", "--workflow", "quality", "--invocation-id", "i", "--run-id", "r", "--run-attempt", "1", "--commit", "c", "--ref", "r", "--expected-job", "detect||", "--expected-job", "layer2||").returncode, 0)
@@ -450,6 +471,10 @@ class WorkflowScopeTests(unittest.TestCase):
         self.assertIn("steps.scan.outcome == 'skipped'", body)
 
         action = yaml.safe_load((ROOT / "actions" / "workflow-scope" / "action.yml").read_text(encoding="utf-8"))
+        for step in action["runs"]["steps"]:
+            uses = step.get("uses", "")
+            if uses.startswith("actions/upload-artifact@"):
+                self.assertEqual(uses.split("@", 1)[1].split()[0], "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a")
         for step in action["runs"]["steps"]:
             if step["name"] in {
                 "Initialize workflow scope",

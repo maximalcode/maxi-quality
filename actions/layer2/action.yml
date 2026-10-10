@@ -201,7 +201,10 @@ runs:
         OSV_SHA256: ${{ inputs.osv-scanner-sha256 }}
       run: |
         set -Eeuo pipefail
-        exec > >(tee "$RUNNER_TEMP/layer2-setup.log") 2>&1
+        # A failed log sink must be drained so it cannot SIGPIPE the setup
+        # command. The warning is collection-only; the install step's outcome
+        # remains the tool setup verdict.
+        exec > >(tee "$RUNNER_TEMP/layer2-setup.log" || { tee_rc=$?; cat; printf '::warning::Layer 2 setup log capture failed (tee exit %s)\n' "$tee_rc" >&2; }) 2>&1
         echo "::group::Install PyYAML"
         # scripts/policy.py reads the consumer's .maxi-quality.yml with it.
         # Installed unconditionally rather than only when a policy file exists:

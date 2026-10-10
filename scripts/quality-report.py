@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import collections
 import datetime as dt
+import html
 import json
 import re
 import sys
@@ -209,6 +210,21 @@ def _parse_time(value: object, fallback: str = "") -> str:
     return parsed.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _markdown_excerpt(value: object, limit: int = MAX_DIAGNOSTIC_EXCERPT) -> str:
+    """Return a bounded diagnostic excerpt that remains literal in Markdown."""
+    text = " ".join(str(value or "").split())
+    if len(text) > limit:
+        text = text[: limit - 3] + "..."
+    # HTML escaping keeps comments/tags inert. Backslash escapes keep Markdown
+    # emphasis, code spans, links, images, headings and table delimiters
+    # literal. Truncate before escaping so the visible limit describes the
+    # emitted diagnostic rather than entity-expanded markup.
+    text = html.escape(text, quote=False)
+    for token in ("\\", "`", "*", "_", "[", "]", "(", ")", "#", ">", "|"):
+        text = text.replace(token, "\\" + token)
+    return text
+
+
 def _scope_excerpt(value: object) -> str:
     if isinstance(value, list):
         values = []
@@ -218,7 +234,36 @@ def _scope_excerpt(value: object) -> str:
             else:
                 values.append(str(item))
         value = " ".join(values)
-    return _one_line(value, MAX_DIAGNOSTIC_EXCERPT)
+    return _markdown_excerpt(value)
+
+
+def _scope_has_operational_error(scope: dict) -> bool:
+    """Distinguish a scanner finding outcome from a broken scanner boundary."""
+    analysis = scope.get("analysis") if isinstance(scope.get("analysis"), dict) else {}
+    outcome = analysis.get("outcome")
+    if outcome not in {"failure", "cancelled"}:
+        return False
+    if outcome == "cancelled":
+        return True
+    tools = scope.get("tools") if isinstance(scope.get("tools"), dict) else {}
+    saw_failure = False
+    for record in tools.values():
+        if not isinstance(record, dict) or record.get("outcome") != "failure":
+            continue
+        saw_failure = True
+        reason = str(record.get("reason") or "").lower()
+        exit_code = record.get("exit_code")
+        # Scanner exit 1 is the established finding result for all Layer 2
+        # tools. Other exit codes and setup/classification reasons mean the
+        # report cannot know what the scan covered and must stay ERRORED.
+        finding_reason = any(
+            marker in reason
+            for marker in ("completed with findings", "reported findings", "reported violations")
+        )
+        if exit_code == 1 or finding_reason:
+            continue
+        return True
+    return not saw_failure
 
 
 def _compact_value(value: object, depth: int = 0) -> object:
@@ -399,7 +444,7 @@ def _compact_scope(scope: dict | None, scope_error: str | None) -> dict:
             continue
         effective = record.get("effective") if isinstance(record.get("effective"), dict) else {}
         keep_effective = {}
-        for key in ("tool", "version", "diagnostic_mode", "comparison", "content_fingerprint", "config_fingerprint", "ignore_sources", "unknown_sources"):
+        for key in ("tool", "version", "diagnostic_mode", "mode", "resolution", "fallback", "license_allowlist", "format", "all_packages", "license_metadata", "comparison", "content_fingerprint", "config_fingerprint", "ignore_sources", "unknown_sources"):
             if key in effective:
                 value = effective[key]
                 if key in {"ignore_sources", "unknown_sources"} and isinstance(value, list):
@@ -711,14 +756,14 @@ def _display_scope(scope: dict, scope_error: str | None) -> list[str]:
             lines.append(f"| ↳ native inventory |  |  | {native.get('count')} `{native.get('unit', 'dependency_component')}` |  |  |")
         diagnostic = record.get("diagnostic")
         if diagnostic:
-            lines.append(f"| ↳ diagnostic |  |  | {_one_line(diagnostic)} |  |  |")
+            lines.append(f"| ↳ diagnostic |  |  | {diagnostic} |  |  |")
     if "semgrep" in tools:
         lines += [
             "",
             "Semgrep `examined` is scanner-reported attempted target scope; `unparsed` is an overlapping analysis-gap count.",
         ]
     if scope.get("diagnostic"):
-        lines += ["", f"Analysis diagnostic: {_one_line(scope['diagnostic'])}"]
+        lines += ["", f"Analysis diagnostic: {scope['diagnostic']}"]
     return lines + [""]
 
 
@@ -1091,10 +1136,9 @@ def main() -> int:
             print(f"error: cannot read Semgrep results from {args.json}: {exc}", file=sys.stderr)
             return 3
     if scope is not None:
-        scope_analysis = scope.get("analysis") if isinstance(scope.get("analysis"), dict) else {}
-        scope_outcome = scope_analysis.get("outcome") if isinstance(scope_analysis.get("outcome"), str) else "unknown"
-        if scope_outcome in {"failure", "cancelled"} and scan_error is None:
-            scan_error = "scope records a failed/incomplete Layer 2 attempt"
+        if scan_error is None and _scope_has_operational_error(scope):
+            semgrep = scope.get("tools", {}).get("semgrep", {})
+            scan_error = str(semgrep.get("reason") or "scope records a failed/incomplete Layer 2 attempt")
     try:
         prior = previous_history(body)
     except ValueError as exc:
