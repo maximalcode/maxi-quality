@@ -328,6 +328,8 @@ if mode == "known":
     assert tool["outcome"] == "success"
     assert tool["effective"]["version"] == "osv-scanner 2.5.0"
     assert tool["effective"]["format"] == "cyclonedx-1-6"
+    assert tool["effective"]["comparison"]["status"] == "incomplete"
+    assert "osv-scanner.toml configuration" in tool["effective"]["unknown_sources"]
 elif mode == "unknown":
     assert native["status"] == "known" and native["count"] == 2
     assert tool["effective"]["version"] == "unknown"

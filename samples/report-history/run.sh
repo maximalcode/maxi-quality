@@ -145,6 +145,31 @@ set -e
 [[ $mixed_rc == 2 ]]
 grep -q 'ERRORED' "$WORK/mixed.md"
 
+MIXED_FINDING_SCOPE="$WORK/mixed-finding-scope.json"
+cp "$SFIND" "$MIXED_FINDING_SCOPE"
+python3 - "$MIXED_FINDING_SCOPE" <<'PY'
+import json, sys
+path = sys.argv[1]
+doc = json.load(open(path, encoding="utf-8"))
+doc["tools"]["licenses"].update(
+    state="run", outcome="failure", exit_code=1,
+    reason="License allowlist reported violations or an error",
+)
+json.dump(doc, open(path, "w", encoding="utf-8"))
+PY
+set +e
+python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
+  --date 2026-01-01 --run-id run-one --run-attempt 1 \
+  --started-at 2026-01-01T10:00:00Z --scope "$MIXED_FINDING_SCOPE" >"$WORK/mixed-finding.md"
+mixed_finding_rc=$?
+set -e
+[[ $mixed_finding_rc == 0 ]]
+grep -q '| Semgrep | \*\*2\*\* findings |' "$WORK/mixed-finding.md"
+if grep -q 'ERRORED' "$WORK/mixed-finding.md"; then
+  echo "native license findings were rendered as an operational error" >&2
+  exit 1
+fi
+
 # Two actual producer-shaped findings runs remain comparable even though both
 # analysis outcomes are failure: the failure is the findings verdict, not an
 # incomplete scanner attempt.

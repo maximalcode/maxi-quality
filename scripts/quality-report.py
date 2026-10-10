@@ -237,6 +237,35 @@ def _scope_excerpt(value: object) -> str:
     return _markdown_excerpt(value)
 
 
+def _scope_failure_is_finding(name: object, record: dict) -> bool:
+    """Recognize only documented native exit-1 finding boundaries."""
+    exit_code = record.get("exit_code")
+    if not isinstance(exit_code, int) or isinstance(exit_code, bool) or exit_code != 1:
+        return False
+    if name in {"gitleaks", "osv", "licenses"}:
+        return True
+    reason = record.get("reason")
+    return (
+        name == "semgrep"
+        and isinstance(reason, str)
+        and reason.strip().lower() == "semgrep completed with findings"
+    )
+
+
+def _scope_operational_reason(scope: dict) -> str:
+    """Return the first operational failure's diagnostic for report errors."""
+    tools = scope.get("tools") if isinstance(scope.get("tools"), dict) else {}
+    for name, record in tools.items():
+        if not isinstance(record, dict) or record.get("outcome") != "failure":
+            continue
+        if not _scope_failure_is_finding(name, record):
+            reason = record.get("reason")
+            if isinstance(reason, str) and reason.strip():
+                return reason.strip()
+            return f"Layer 2 {name} operation failed"
+    return "scope records a failed/incomplete Layer 2 attempt"
+
+
 def _scope_has_operational_error(scope: dict) -> bool:
     """Distinguish a scanner finding outcome from a broken scanner boundary."""
     analysis = scope.get("analysis") if isinstance(scope.get("analysis"), dict) else {}
@@ -251,23 +280,8 @@ def _scope_has_operational_error(scope: dict) -> bool:
         if not isinstance(record, dict) or record.get("outcome") != "failure":
             continue
         saw_failure = True
-        exit_code = record.get("exit_code")
-        # These are the only native exit-1 finding boundaries. Semgrep's
-        # finding result is its policy-classifier reason; its scanner/setup
-        # failure uses a different reason even when the process returned 1.
-        # License records deliberately remain operationally ambiguous: an
-        # arbitrary reason must never turn a broken handoff into a green report.
-        reason = record.get("reason")
-        semgrep_finding = (
-            name == "semgrep"
-            and isinstance(reason, str)
-            and reason.strip().lower() == "semgrep completed with findings"
-            and exit_code == 1
-        )
-        native_finding = name in {"gitleaks", "osv"} and exit_code == 1
-        if semgrep_finding or native_finding:
-            continue
-        return True
+        if not _scope_failure_is_finding(name, record):
+            return True
     return not saw_failure
 
 
@@ -1153,9 +1167,7 @@ def main() -> int:
             return 3
     if scope is not None:
         if scan_error is None and _scope_has_operational_error(scope):
-            tools = scope.get("tools") if isinstance(scope.get("tools"), dict) else {}
-            semgrep = tools.get("semgrep") if isinstance(tools.get("semgrep"), dict) else {}
-            scan_error = str(semgrep.get("reason") or "scope records a failed/incomplete Layer 2 attempt")
+            scan_error = _scope_operational_reason(scope)
     try:
         prior = previous_history(body)
     except ValueError as exc:

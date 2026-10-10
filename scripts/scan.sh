@@ -625,7 +625,7 @@ run_gitleaks() {
   fi
 
   local gitleaks_version=""
-  gitleaks_version="$("${RESOLVED_CMD[@]}" --version 2>/dev/null || true)"
+  gitleaks_version="$("${RESOLVED_CMD[@]}" version 2>/dev/null || true)"
   gitleaks_version="${gitleaks_version%%$'\n'*}"
   [[ -n "$gitleaks_version" ]] || gitleaks_version="unknown"
   local gitleaks_effective="$WORKDIR/gitleaks-effective.json"
@@ -660,7 +660,7 @@ json.dump(payload, open(out, "w", encoding="utf-8"), sort_keys=True)
 PY
   then
     warn "gitleaks effective metadata unavailable; scope comparison is incomplete"
-    rm -f "$gitleaks_effective"
+    rm -f "$gitleaks_effective" || warn "could not remove incomplete gitleaks metadata"
     gitleaks_effective=""
     gitleaks_metadata_issue=(--collection-issue "effective metadata unavailable for gitleaks")
   fi
@@ -726,12 +726,14 @@ import sys
 
 osv_path, license_path, sbom_path, version, allowlist = sys.argv[1:]
 base = {"tool": "osv-scanner", "version": version, "mode": "source-recursive",
-        "resolution": "no-resolve"}
+        "resolution": "no-resolve",
+        "unknown_sources": ["osv-scanner.toml configuration", "global Git ignore configuration"]}
 if version == "unknown":
-    base["unknown_sources"] = ["osv-scanner version"]
-    base["comparison"] = {"status": "incomplete", "reason": "scanner version unavailable"}
-else:
-    base["comparison"] = {"status": "complete"}
+    base["unknown_sources"].append("osv-scanner version")
+base["comparison"] = {
+    "status": "incomplete",
+    "reason": "effective osv-scanner configuration and ignore inputs are not observable",
+}
 def write(path, payload):
     payload = dict(payload)
     payload["content_fingerprint"] = hashlib.sha256(
@@ -746,7 +748,8 @@ write(sbom_path, {**base, "resolution": "resolver-enabled", "format": "cyclonedx
 PY
   then
     warn "OSV effective metadata unavailable; scope comparison is incomplete"
-    rm -f "$osv_effective" "$licenses_effective" "$sbom_effective"
+    rm -f "$osv_effective" "$licenses_effective" "$sbom_effective" \
+      || warn "could not remove incomplete OSV metadata"
     osv_effective=""
     licenses_effective=""
     sbom_effective=""
