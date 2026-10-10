@@ -159,8 +159,26 @@ assert semgrep["outcome"] == "failure"
 assert semgrep["reason_code"] == "blocked"
 diagnostics = "\n".join(item["text"] for item in semgrep["diagnostics"])
 assert "unknown" in diagnostics and "rules" in diagnostics
-assert all(d["tools"][name]["state"] == "unknown" for name in ("gitleaks", "osv"))
+assert all(d["tools"][name]["state"] == "skipped" for name in ("gitleaks", "osv"))
+assert all(d["tools"][name]["reason_code"] == "blocked" for name in ("gitleaks", "osv"))
 assert all(not d["tools"][name]["diagnostics"] for name in ("gitleaks", "osv"))
+PY
+
+# Explicitly disabled scanner inputs retain not-applicable status even when a
+# policy failure blocks the rest of the requested setup. Requested downstream
+# license/SBOM artifacts are blocked with explicit evidence.
+rc=0
+./scripts/scan.sh samples/policy/invalid/unknown-key --skip gitleaks --skip osv \
+  --licenses MIT --sbom "$WORK/policy/disabled-sbom.json" \
+  --scope-out "$WORK/policy/disabled.json" >"$WORK/policy/disabled.log" 2>&1 || rc=$?
+[[ "$rc" == 3 ]] || { echo "expected invalid-policy exit 3 with optional skips, got $rc" >&2; exit 1; }
+python3 - "$WORK/policy/disabled.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert all(d["tools"][name]["state"] == "skipped" for name in ("gitleaks", "osv"))
+assert all(d["tools"][name]["reason_code"] == "not_applicable" for name in ("gitleaks", "osv"))
+assert all(d["tools"][name]["state"] == "skipped" for name in ("licenses", "sbom"))
+assert all(d["tools"][name]["reason_code"] == "blocked" for name in ("licenses", "sbom"))
 PY
 
 # The same resolver diagnostic must remain visible for callers that do not ask

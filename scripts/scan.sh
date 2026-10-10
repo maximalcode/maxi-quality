@@ -376,6 +376,28 @@ run_semgrep() {
     2>"$policy_log"; then
     scope_record --tool semgrep --state skipped --outcome failure --reason-code blocked \
       --reason "policy setup failed" --exit-code 3 --log "$policy_log"
+    if (( SKIP_GITLEAKS )); then
+      scope_record --tool gitleaks --state skipped --outcome unknown --reason-code not_applicable \
+        --reason "explicit --skip gitleaks" --exit-code 0
+    else
+      scope_record --tool gitleaks --state skipped --outcome unknown --reason-code blocked \
+        --reason "policy setup failed before Gitleaks invocation" --exit-code 3
+    fi
+    if (( SKIP_OSV )); then
+      scope_record --tool osv --state skipped --outcome unknown --reason-code not_applicable \
+        --reason "explicit --skip osv" --exit-code 0
+      [[ -n "$LICENSES" ]] && scope_record --tool licenses --state skipped --outcome unknown --reason-code blocked \
+        --reason "OSV-Scanner explicitly skipped before license invocation" --exit-code 0
+      [[ -n "$SBOM_OUT" ]] && scope_record --tool sbom --state skipped --outcome unknown --reason-code blocked \
+        --reason "OSV-Scanner explicitly skipped before SBOM invocation" --exit-code 0
+    else
+      scope_record --tool osv --state skipped --outcome unknown --reason-code blocked \
+        --reason "policy setup failed before OSV-Scanner invocation" --exit-code 3
+      [[ -n "$LICENSES" ]] && scope_record --tool licenses --state skipped --outcome unknown --reason-code blocked \
+        --reason "policy setup failed before license invocation" --exit-code 3
+      [[ -n "$SBOM_OUT" ]] && scope_record --tool sbom --state skipped --outcome unknown --reason-code blocked \
+        --reason "policy setup failed before SBOM invocation" --exit-code 3
+    fi
     # The resolver's complete diagnostic was captured before the scope record
     # so the temporary file can be removed safely on EXIT. Replay it here to
     # preserve the existing CLI error contract for callers without --scope-out.
