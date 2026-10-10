@@ -340,7 +340,7 @@ run_semgrep() {
   # whatever the machine has, and that cannot be fixed from here — but it can
   # stop being silent. Warn rather than fail: refusing to run because someone's
   # brew is one patch ahead would just get the script abandoned.
-  if [[ -n "$SCOPE_OUT" && "${RESOLVED_CMD[0]}" == "semgrep" ]]; then
+  if [[ "${RESOLVED_CMD[0]}" == "semgrep" ]]; then
     local have_ver
     have_ver="$(semgrep --version 2>/dev/null | tr -d '[:space:]' || true)"
     if [[ -n "$have_ver" && "$have_ver" != "$SEMGREP_PIN" ]]; then
