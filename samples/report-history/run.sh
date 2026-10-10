@@ -70,6 +70,65 @@ S1=$(scope run-one 1 2026-01-01T10:00:00Z)
 python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
   --date 2026-01-01 --run-id run-one --run-attempt 1 \
   --started-at 2026-01-01T10:00:00Z --scope "$S1" >"$WORK/one.md"
+
+# JSON-valid but semantically malformed retained scope metadata must degrade to
+# unavailable comparison while preserving the visible finding row.
+python3 - "$WORK/one.md" "$WORK/malformed-history.md" <<'PY'
+import json, sys
+source, target = sys.argv[1:]
+body = open(source, encoding="utf-8").read()
+start_marker = "<!-- maxi-quality:history-v2 -->"
+end_marker = "<!-- /maxi-quality:history-v2 -->"
+start = body.index(start_marker) + len(start_marker)
+end = body.index(end_marker, start)
+rows = json.loads(body[start:end].strip())
+if isinstance(rows, dict):
+    rows = dict(rows)
+    rows["entries"] = list(rows["entries"])
+    rows["entries"][0] = dict(rows["entries"][0])
+    rows["entries"][0]["scope"] = {"status": "available", "tools": {"semgrep": {
+        "effective": [], "measurements": {"examined": {"status": "known", "count": True}},
+        "not_applicable": None, "native": {"component_count": {"status": "known", "count": None}},
+    }}
+    }
+else:
+    rows = list(rows)
+    rows[0]["scope"] = {"status": "available", "tools": {"semgrep": {
+        "effective": [], "measurements": {"examined": {"status": "known", "count": True}},
+        "not_applicable": None, "native": {"component_count": {"status": "known", "count": None}},
+    }}
+    }
+open(target, "w", encoding="utf-8").write(
+    body[:start] + "\n" + json.dumps(rows) + "\n" + body[end:]
+)
+PY
+python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
+  --date 2026-01-01 --run-id run-two --run-attempt 1 \
+  --started-at 2026-01-01T11:30:00Z --previous-body "$WORK/malformed-history.md" \
+  >"$WORK/malformed-history-rendered.md"
+grep -q '| run-two | 1 |' "$WORK/malformed-history-rendered.md"
+grep -q 'Comparison unavailable\|Conditions:' "$WORK/malformed-history-rendered.md"
+
+# Semantically malformed optional measurements from the current scope are
+# non-gating and render as unknown rather than being treated as known counts.
+SMAL=$(scope malformed-own 1 2026-01-01T11:45:00Z)
+python3 - "$SMAL" <<'PY'
+import json, sys
+path = sys.argv[1]
+doc = json.load(open(path))
+doc["tools"]["semgrep"]["measurements"] = []
+doc["tools"]["sbom"]["native"] = {"component_count": {
+    "status": "known", "count": True, "unit": "dependency_component", "method": "malformed bool count",
+}}
+json.dump(doc, open(path, "w"))
+PY
+python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
+  --date 2026-01-01 --run-id malformed-own --run-attempt 1 \
+  --started-at 2026-01-01T11:45:00Z --scope "$SMAL" \
+  >"$WORK/malformed-own-rendered.md"
+grep -q '| malformed-own | 1 |' "$WORK/malformed-own-rendered.md"
+grep -q 'unknown' "$WORK/malformed-own-rendered.md"
+
 S2=$(scope run-one 2 2026-01-01T11:00:00Z)
 render "$WORK/two.md" "$WORK/one.md" run-one 2 2026-01-01T11:00:00Z "$S2"
 grep -q '| run-one | 2 |' "$WORK/two.md"
@@ -295,8 +354,10 @@ d = json.load(open(p))
 d["identity"]["run_id"] = run
 d["identity"]["invocation_id"] = run
 d["identity"]["started_at"] = started
+d["tools"]["semgrep"]["diagnostics"] = [{"stream": "stderr", "source": "fixture", "text": "short bounded diagnostic"}]
 json.dump(d, open(p, "w"))
 PY
+  qualify_scope "$cap_scope" $((i % 7 + 2)) $((i % 3)) $((i % 2)) 5
   python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
     --date 2026-01-02 --run-id "$run" --run-attempt 1 \
     --started-at "2026-01-02T${hour}:00:00Z" --scope "$cap_scope" \
