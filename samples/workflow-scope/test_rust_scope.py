@@ -14,6 +14,8 @@ from pathlib import Path
 
 import yaml
 
+from test_language_tools import resolve_action_output
+
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = ROOT / "scripts" / "workflow_scope.py"
@@ -37,7 +39,6 @@ class PinnedRustScope(unittest.TestCase):
         workflow = yaml.safe_load((ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8"))
         body = next(step["run"] for step in workflow["jobs"]["rust"]["steps"] if step.get("name") == "Format, lint and audit")
         action = yaml.safe_load((ROOT / "actions/workflow-scope/action.yml").read_text(encoding="utf-8"))
-        helper_body = next(step["run"] for step in action["runs"]["steps"] if step.get("name") == "Prepare workflow scope helper")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             fixture, host = copied_fixture(root)
@@ -52,17 +53,13 @@ class PinnedRustScope(unittest.TestCase):
                 "exec rustup run 1.97.1 cargo \"$@\"\n"
             )
             cargo.chmod(0o755)
-            output = runner / "helper-output"
             helper_env = {
                 **os.environ,
                 "GITHUB_ACTION_PATH": str(ROOT / "actions/workflow-scope"),
                 "RUNNER_TEMP": str(runner),
-                "GITHUB_OUTPUT": str(output),
                 "OUT": str(runner / "workflow_scope.py"),
             }
-            prepared = subprocess.run(["bash", "-c", helper_body], cwd=fixture, env=helper_env, text=True, capture_output=True)
-            self.assertEqual(prepared.returncode, 0, prepared.stderr)
-            helper = next(line.split("=", 1)[1] for line in output.read_text().splitlines() if line.startswith("helper_path="))
+            helper = resolve_action_output(action, "helper_path", env=helper_env, cwd=fixture)
             env = {
                 **helper_env,
                 "PATH": f"{bin_dir}:{os.environ['PATH']}",

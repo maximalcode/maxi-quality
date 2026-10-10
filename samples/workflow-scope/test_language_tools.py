@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -41,6 +42,27 @@ def run_body(body: str, root: Path, bin_dir: Path, tools: Path, **extra: str) ->
         **extra,
     }
     return subprocess.run(["bash", "-c", textwrap.dedent(body)], cwd=root, env=env, text=True, capture_output=True)
+
+
+def resolve_action_output(action: dict, output_name: str, *, env: dict[str, str], cwd: Path) -> str:
+    """Resolve one public composite output through its declared producer step."""
+    expression = action["outputs"][output_name]["value"]
+    match = re.fullmatch(r"\$\{\{\s*steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)\s*\}\}", expression)
+    if match is None:
+        raise AssertionError(f"unsupported public output expression: {expression!r}")
+    step_id, output_key = match.groups()
+    step = next((item for item in action["runs"]["steps"] if item.get("id") == step_id), None)
+    if step is None:
+        raise AssertionError(f"public output producer step not found: {step_id}")
+    output = cwd / f"public-output-{output_name}"
+    action_env = {**env, "GITHUB_OUTPUT": str(output)}
+    result = subprocess.run(["bash", "-c", textwrap.dedent(step["run"])], cwd=cwd, env=action_env, text=True, capture_output=True)
+    if result.returncode != 0:
+        raise AssertionError(result.stderr)
+    for line in output.read_text(encoding="utf-8").splitlines():
+        if line.startswith(f"{output_key}="):
+            return line.split("=", 1)[1]
+    raise AssertionError(f"producer step did not write public output key: {output_key}")
 
 
 class LanguageToolFixtures(unittest.TestCase):
@@ -483,7 +505,10 @@ class LanguageToolFixtures(unittest.TestCase):
 
     def test_helper_fragment_and_collector_work_from_an_adopter_without_scripts(self) -> None:
         scope_action = yaml.safe_load((ROOT / "actions" / "workflow-scope" / "action.yml").read_text(encoding="utf-8"))
-        helper_body = next(step["run"] for step in scope_action["runs"]["steps"] if step.get("name") == "Prepare workflow scope helper")
+        self.assertEqual(
+            scope_action["outputs"]["helper_path"]["value"],
+            "${{ steps.helper.outputs.helper_path }}",
+        )
         fragment_body = next(step["run"] for step in scope_action["runs"]["steps"] if step.get("name") == "Write workflow scope fragment")
         with tempfile.TemporaryDirectory() as tmp:
             adopter = Path(tmp) / "adopter"
@@ -494,14 +519,11 @@ class LanguageToolFixtures(unittest.TestCase):
             (adopter / "package-lock.json").write_text('{}\n')
             (bin_dir / "npm").write_text("#!/usr/bin/env bash\n[[ $1 == ci ]] && exit 0\nexit 0\n")
             (bin_dir / "npm").chmod(0o755)
-            output = runner / "helper-output"
-            env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "GITHUB_ACTION_PATH": str(ROOT / "actions" / "workflow-scope"), "RUNNER_TEMP": str(runner), "GITHUB_OUTPUT": str(output), "OUT": str(runner / "helper.py")}
-            result = subprocess.run(["bash", "-c", textwrap.dedent(helper_body)], cwd=adopter, env=env, text=True, capture_output=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            helper_path = next(line.split("=", 1)[1] for line in output.read_text().splitlines() if line.startswith("helper_path="))
-            self.assertTrue(Path(helper_path).is_file())
+            env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "GITHUB_ACTION_PATH": str(ROOT / "actions" / "workflow-scope"), "RUNNER_TEMP": str(runner), "GITHUB_OUTPUT": str(runner / "fragment-output"), "OUT": str(runner / "helper.py")}
+            public_helper_path = resolve_action_output(scope_action, "helper_path", env=env, cwd=adopter)
+            self.assertTrue(Path(public_helper_path).is_file())
             tools = runner / "tools.json"
-            command = run_body(quality_run_body("Install and lint"), adopter, bin_dir, tools, GITHUB_WORKSPACE=str(adopter), SCOPE_HELPER=helper_path)
+            command = run_body(quality_run_body("Install and lint"), adopter, bin_dir, tools, GITHUB_WORKSPACE=str(adopter), SCOPE_HELPER=public_helper_path)
             self.assertEqual(command.returncode, 0, command.stderr)
             manifest = runner / "manifest.json"
             init = subprocess.run([sys.executable, str(HELPER), "init", "--out", str(manifest), "--root", str(adopter), "--languages", "ts", "--invocation-id", "synthetic-invocation", "--run-id", "synthetic-run", "--run-attempt", "7", "--expected-job", "typescript|ts|pkg"], text=True, capture_output=True)
@@ -518,7 +540,10 @@ class LanguageToolFixtures(unittest.TestCase):
 
     def test_rust_command_and_fragment_use_copied_helper_without_adopter_scripts(self) -> None:
         scope_action = yaml.safe_load((ROOT / "actions" / "workflow-scope" / "action.yml").read_text(encoding="utf-8"))
-        helper_body = next(step["run"] for step in scope_action["runs"]["steps"] if step.get("name") == "Prepare workflow scope helper")
+        self.assertEqual(
+            scope_action["outputs"]["helper_path"]["value"],
+            "${{ steps.helper.outputs.helper_path }}",
+        )
         fragment_body = next(step["run"] for step in scope_action["runs"]["steps"] if step.get("name") == "Write workflow scope fragment")
         with tempfile.TemporaryDirectory() as tmp:
             adopter = Path(tmp) / "adopter"
@@ -535,13 +560,11 @@ class LanguageToolFixtures(unittest.TestCase):
                 "[[ $1 == deny ]] && exit 0\nexit 1\n"
             )
             cargo.chmod(0o755)
-            output = runner / "helper-output"
-            helper_env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "GITHUB_ACTION_PATH": str(ROOT / "actions" / "workflow-scope"), "RUNNER_TEMP": str(runner), "GITHUB_OUTPUT": str(output), "OUT": str(runner / "helper.py")}
-            result = subprocess.run(["bash", "-c", textwrap.dedent(helper_body)], cwd=adopter, env=helper_env, text=True, capture_output=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            helper_path = next(line.split("=", 1)[1] for line in output.read_text().splitlines() if line.startswith("helper_path="))
+            helper_env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "GITHUB_ACTION_PATH": str(ROOT / "actions" / "workflow-scope"), "RUNNER_TEMP": str(runner), "GITHUB_OUTPUT": str(runner / "fragment-output"), "OUT": str(runner / "helper.py")}
+            public_helper_path = resolve_action_output(scope_action, "helper_path", env=helper_env, cwd=adopter)
+            self.assertTrue(Path(public_helper_path).is_file())
             tools = runner / "tools.json"
-            command = run_body(quality_run_body("Format, lint and audit"), adopter, bin_dir, tools, GITHUB_WORKSPACE=str(adopter), SCOPE_HELPER=helper_path, CARGO_BUILD_TARGET="aarch64-apple-darwin")
+            command = run_body(quality_run_body("Format, lint and audit"), adopter, bin_dir, tools, GITHUB_WORKSPACE=str(adopter), SCOPE_HELPER=public_helper_path, CARGO_BUILD_TARGET="aarch64-apple-darwin")
             self.assertEqual(command.returncode, 0, command.stdout + command.stderr)
             records = json.loads(tools.read_text())
             self.assertIn("rust", next(item for item in records if item["name"] == "clippy"))

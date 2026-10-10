@@ -99,6 +99,11 @@ inputs:
     description: 'Unique artifact prefix for this invocation.'
     default: maxi-quality-workflow-scope
 
+outputs:
+  helper_path:
+    description: 'Runner-local path to the copied workflow scope helper.'
+    value: ${{ steps.helper.outputs.helper_path }}
+
 runs:
   using: composite
   steps:
