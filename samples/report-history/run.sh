@@ -71,6 +71,59 @@ python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
   --date 2026-01-01 --run-id run-one --run-attempt 1 \
   --started-at 2026-01-01T10:00:00Z --scope "$S1" >"$WORK/one.md"
 
+# Persistence is present in the source but absent from visible HTML text. A
+# pair of separately closed marker comments must not expose the JSON between.
+python3 - "$WORK/one.md" "$WORK/bare-one.md" "$ROOT" <<'PY'
+from html.parser import HTMLParser
+from pathlib import Path
+import json, subprocess, sys
+
+class PersistenceHTML(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.visible = []
+        self.comments = []
+    def handle_data(self, data):
+        self.visible.append(data)
+    def handle_comment(self, data):
+        self.comments.append(data)
+
+body = open(sys.argv[1], encoding="utf-8").read()
+start = body.index("<!-- maxi-quality:history-v2 -->") + len("<!-- maxi-quality:history-v2 -->")
+end = body.index("<!-- /maxi-quality:history-v2 -->", start)
+parser = PersistenceHTML()
+parser.feed(body[start:end])
+assert not "".join(parser.visible).strip(), "persistence JSON renders as visible text"
+assert any(isinstance(json.loads(comment), dict) for comment in parser.comments)
+# Simulate the previous bare-JSON format, retaining all comparison metadata.
+Path(sys.argv[2]).write_text(body[:start] + parser.comments[0] + body[end:], encoding="utf-8")
+
+# A tool-emitted value containing comment delimiters must remain exact after
+# serialization, without closing or nesting the HTML comment around it.
+work = Path(sys.argv[1]).parent
+finding = "comment--><!--nested"
+source = work / "comment-findings.json"
+source.write_text(json.dumps({"results": [{"check_id": "fixture." + finding}],
+    "errors": [], "paths": {"scanned": ["fixture.ts"]}}), encoding="utf-8")
+previous = None
+for attempt in (1, 2):
+    args = [sys.executable, str(Path(sys.argv[3]) / "scripts/quality-report.py"),
+        "--json", str(source), "--date", "2026-01-01", "--run-id", "comment-run",
+        "--run-attempt", str(attempt), "--started-at", f"2026-01-01T0{attempt}:00:00Z"]
+    if previous:
+        args += ["--previous-body", str(previous)]
+    rendered = subprocess.run(args, text=True, capture_output=True, check=True).stdout
+    content = rendered.split("<!-- maxi-quality:history-v2 -->", 1)[1].split("<!-- /maxi-quality:history-v2 -->", 1)[0]
+    encoded = PersistenceHTML()
+    encoded.feed(content)
+    assert not "".join(encoded.visible).strip(), "tool text escaped the hidden comment"
+    assert len(encoded.comments) == 1 and "--" not in encoded.comments[0]
+    assert finding in json.dumps(json.loads(encoded.comments[0])), "tool text changed during serialization"
+    assert "| comment-run | 1 |" in rendered
+    previous = work / f"comment-{attempt}.md"
+    previous.write_text(rendered, encoding="utf-8")
+PY
+
 # A finding is an analysis failure for the scanner, but it is still valid
 # finding data for the report. Exercise the actual producer shape rather than
 # synthesizing a successful scope around finding JSON.
@@ -229,6 +282,26 @@ grep -Fq '\[details\]\(https://example.invalid\)' "$WORK/escaped-diagnostic.md"
 grep -Fq '\|' "$WORK/escaped-diagnostic.md"
 grep -q '\.\.\.' "$WORK/escaped-diagnostic.md"
 
+# A legacy finding row remains visible, but its unavailable scope cannot be a
+# numeric comparison baseline for a new measured execution.
+cat >"$WORK/legacy.md" <<'MD'
+## History
+
+| Date | Findings | Top rules |
+|---|---:|---|
+| 2025-12-31 | 10 | fixture.rule (10) |
+MD
+python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
+  --date 2026-01-01 --run-id run-one --run-attempt 1 \
+  --started-at 2026-01-01T10:00:00Z --scope "$S1" \
+  --previous-body "$WORK/legacy.md" >"$WORK/from-legacy.md"
+grep -q 'Comparison unavailable:' "$WORK/from-legacy.md"
+if grep -q 'Findings: -8 findings' "$WORK/from-legacy.md"; then
+  echo "legacy scope was used as a numeric comparison baseline" >&2
+  exit 1
+fi
+grep -Fq '| legacy | unknown | 2025-12-31T00:00:00Z | success | 10 |' "$WORK/from-legacy.md"
+
 # JSON-valid but semantically malformed retained scope metadata must degrade to
 # unavailable comparison while preserving the visible finding row.
 python3 - "$WORK/one.md" "$WORK/malformed-history.md" <<'PY'
@@ -239,7 +312,10 @@ start_marker = "<!-- maxi-quality:history-v2 -->"
 end_marker = "<!-- /maxi-quality:history-v2 -->"
 start = body.index(start_marker) + len(start_marker)
 end = body.index(end_marker, start)
-rows = json.loads(body[start:end].strip())
+raw = body[start:end].strip()
+if raw.startswith("<!--") and raw.endswith("-->"):
+    raw = raw[4:-3].strip()
+rows = json.loads(raw)
 if isinstance(rows, dict):
     rows = dict(rows)
     rows["entries"] = list(rows["entries"])
@@ -260,12 +336,13 @@ open(target, "w", encoding="utf-8").write(
     body[:start] + "\n" + json.dumps(rows) + "\n" + body[end:]
 )
 PY
+SMALNEXT=$(scope run-two 1 2026-01-01T11:30:00Z)
 python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
   --date 2026-01-01 --run-id run-two --run-attempt 1 \
-  --started-at 2026-01-01T11:30:00Z --previous-body "$WORK/malformed-history.md" \
+  --started-at 2026-01-01T11:30:00Z --scope "$SMALNEXT" --previous-body "$WORK/malformed-history.md" \
   >"$WORK/malformed-history-rendered.md"
 grep -q '| run-two | 1 |' "$WORK/malformed-history-rendered.md"
-grep -q 'Comparison unavailable\|Conditions:' "$WORK/malformed-history-rendered.md"
+grep -q 'Comparison unavailable:' "$WORK/malformed-history-rendered.md"
 
 # Semantically malformed optional measurements from the current scope are
 # non-gating and render as unknown rather than being treated as known counts.
@@ -288,7 +365,8 @@ grep -q '| malformed-own | 1 |' "$WORK/malformed-own-rendered.md"
 grep -q 'unknown' "$WORK/malformed-own-rendered.md"
 
 S2=$(scope run-one 2 2026-01-01T11:00:00Z)
-render "$WORK/two.md" "$WORK/one.md" run-one 2 2026-01-01T11:00:00Z "$S2"
+render "$WORK/two.md" "$WORK/bare-one.md" run-one 2 2026-01-01T11:00:00Z "$S2"
+grep -q 'Findings: +0 findings' "$WORK/two.md"
 grep -q '| run-one | 2 |' "$WORK/two.md"
 grep -q '| run-one | 1 |' "$WORK/two.md"
 [[ $(grep -c '^| run-one |' "$WORK/two.md") == 2 ]]
