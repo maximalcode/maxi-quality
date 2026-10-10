@@ -313,6 +313,9 @@ def load_scope(path: str | None) -> tuple[dict | None, str | None]:
     tools = scope.get("tools")
     if not isinstance(identity, dict) or not isinstance(tools, dict):
         return None, "scope artifact is missing identity or tools"
+    for key in ("analysis", "collection", "summary"):
+        if key in scope and not isinstance(scope[key], dict):
+            return None, f"scope artifact {key} metadata is malformed"
     return scope, None
 
 
@@ -953,7 +956,7 @@ def build(counts, date, gitleaks, osv, previous, target, licenses="not run",
     identity = _scope_identity(scope, args)
     if not identity.get("started_at"):
         identity["started_at"] = _parse_time(args.started_at, f"{date}T00:00:00Z")
-    scope_analysis = scope.get("analysis", {}) if isinstance(scope, dict) else {}
+    scope_analysis = scope.get("analysis", {}) if isinstance(scope, dict) and isinstance(scope.get("analysis", {}), dict) else {}
     analysis_outcome = scope_analysis.get("outcome") if isinstance(scope_analysis.get("outcome"), str) else "unknown"
     entry_outcome = "failure" if scan_error or analysis_outcome in {"failure", "cancelled"} else (
         "incomplete" if scope is not None and analysis_outcome not in {"success", "failure", "cancelled"} else "success"

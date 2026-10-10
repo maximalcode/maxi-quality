@@ -62,21 +62,30 @@ def read(path: pathlib.Path) -> dict[str, Any]:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"cannot read workflow scope {path}: {exc}") from exc
-    if not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION or value.get("kind") not in {"workflow-scope", "workflow-scope-fragment"}:
+    if not isinstance(value, dict):
+        raise ValueError(f"unsupported workflow scope contract in {path}")
+    kind = value.get("kind")
+    if value.get("schema_version") != SCHEMA_VERSION or not isinstance(kind, str) or kind not in {"workflow-scope", "workflow-scope-fragment"}:
         raise ValueError(f"unsupported workflow scope contract in {path}")
     if not isinstance(value.get("identity"), dict):
         raise ValueError(f"workflow scope identity is not an object in {path}")
-    if value.get("kind") == "workflow-scope" and not isinstance(value.get("expected_jobs", []), list):
+    if kind == "workflow-scope" and not isinstance(value.get("expected_jobs", []), list):
         raise ValueError(f"workflow scope expected_jobs is not a list in {path}")
-    if value.get("kind") == "workflow-scope-fragment":
+    if kind == "workflow-scope":
+        if any(not isinstance(item, dict) or not isinstance(item.get("logical_job"), str) or not isinstance(item.get("leg", ""), str) for item in value.get("expected_jobs", [])):
+            raise ValueError(f"workflow scope expected_jobs contains a malformed job in {path}")
+    if kind == "workflow-scope-fragment":
         identity = value["identity"]
         required = ("producer", "workflow", "invocation_id", "run_id", "run_attempt", "logical_job", "leg")
         if any(field not in identity for field in required):
             raise ValueError(f"workflow scope fragment identity is incomplete in {path}")
-        if value.get("state") not in VALID_STATES:
+        if any(not isinstance(identity[field], str) for field in required):
+            raise ValueError(f"workflow scope fragment identity contains a non-string field in {path}")
+        if not isinstance(value.get("state"), str) or value.get("state") not in VALID_STATES:
             raise ValueError(f"workflow scope fragment state is invalid in {path}")
-        if value.get("outcome") not in VALID_OUTCOMES:
+        if not isinstance(value.get("outcome"), str) or value.get("outcome") not in VALID_OUTCOMES:
             raise ValueError(f"workflow scope fragment outcome is invalid in {path}")
+        normalize_fragment_containers(value, path)
     return value
 
 
@@ -193,6 +202,162 @@ def validate_tool_record(record: dict[str, Any]) -> list[str]:
     return issues
 
 
+def _unknown_tool_record(name: str, issue: str) -> dict[str, Any]:
+    return {
+        "name": name,
+        "command": [],
+        "working_directory": None,
+        "state": "unknown",
+        "outcome": "unknown",
+        "reason": "execution is unknown because the tool record is invalid",
+        "reason_code": "invalid_tool_record",
+        "exit_code": None,
+        "diagnostics": [],
+        "measurements": unknown_measurements("tool record was semantically invalid"),
+        "collection": {"status": "partial", "issues": [issue]},
+    }
+
+
+def _normalize_rust_scope(value: object, tool_name: str) -> tuple[dict[str, Any] | None, list[str]]:
+    if not isinstance(value, dict):
+        return None, [f"invalid Rust scope for {tool_name}: expected an object"]
+    result = dict(value)
+    issues: list[str] = []
+    requested = result.get("requested")
+    if not isinstance(requested, dict):
+        result["requested"] = {}
+        issues.append(f"invalid Rust requested scope for {tool_name}")
+    observed = result.get("observed")
+    if not isinstance(observed, dict):
+        result["observed"] = {"artifacts": []}
+        issues.append(f"invalid Rust observed scope for {tool_name}")
+        rust_collection = result.get("collection")
+        if isinstance(rust_collection, dict):
+            collection_issues = rust_collection.get("issues", [])
+            if not isinstance(collection_issues, list) or not all(isinstance(item, str) for item in collection_issues):
+                result["collection"] = {"status": "partial", "issues": []}
+                issues.append(f"invalid Rust collection issues for {tool_name}")
+        elif rust_collection is not None:
+            result["collection"] = {"status": "partial", "issues": [f"invalid Rust collection for {tool_name}"]}
+            issues.append(f"invalid Rust collection for {tool_name}")
+        return result, issues
+    observed_result = dict(observed)
+    artifacts = observed_result.get("artifacts", [])
+    if not isinstance(artifacts, list):
+        observed_result["artifacts"] = []
+        issues.append(f"invalid Rust artifacts for {tool_name}")
+    else:
+        safe_artifacts: list[dict[str, Any]] = []
+        for index, artifact in enumerate(artifacts):
+            if not isinstance(artifact, dict):
+                issues.append(f"invalid Rust artifact {index} for {tool_name}")
+                continue
+            safe_artifact = dict(artifact)
+            if not isinstance(safe_artifact.get("target", {}), dict):
+                safe_artifact["target"] = {}
+                issues.append(f"invalid Rust target for artifact {index} of {tool_name}")
+            safe_artifacts.append(safe_artifact)
+        observed_result["artifacts"] = safe_artifacts
+    platform = observed_result.get("platform", {})
+    if not isinstance(platform, dict):
+        observed_result["platform"] = {}
+        issues.append(f"invalid Rust platform for {tool_name}")
+    compiler_messages = observed_result.get("compiler_messages", [])
+    if not isinstance(compiler_messages, list):
+        observed_result["compiler_messages"] = []
+        issues.append(f"invalid Rust compiler messages for {tool_name}")
+    finished = observed_result.get("build_finished")
+    if finished is not None and not isinstance(finished, dict):
+        observed_result["build_finished"] = None
+        issues.append(f"invalid Rust completion for {tool_name}")
+    rust_collection = result.get("collection")
+    if rust_collection is not None:
+        if not isinstance(rust_collection, dict):
+            result["collection"] = {"status": "partial", "issues": [f"invalid Rust collection for {tool_name}"]}
+            issues.append(f"invalid Rust collection for {tool_name}")
+        else:
+            safe_collection = dict(rust_collection)
+            collection_issues = safe_collection.get("issues", [])
+            collection_status = safe_collection.get("status", "partial")
+            if not isinstance(collection_status, str) or collection_status not in {"complete", "partial", "unknown"} or not isinstance(collection_issues, list) or not all(isinstance(item, str) for item in collection_issues):
+                safe_collection["status"] = "partial"
+                safe_collection["issues"] = []
+                result["collection"] = safe_collection
+                issues.append(f"invalid Rust collection issues for {tool_name}")
+    result["observed"] = observed_result
+    return result, issues
+
+
+def _normalize_tool_records(value: object) -> tuple[list[dict[str, Any]], str | None]:
+    records: list[dict[str, Any]] = []
+    issues: list[str] = []
+    if not isinstance(value, list):
+        return [], "tools container is not a list"
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            issue = f"invalid tool record {index}: expected an object"
+            issues.append(issue)
+            records.append(_unknown_tool_record(f"unknown-tool-{index}", issue))
+            continue
+        violations = validate_tool_record(item)
+        if not violations:
+            normalized = dict(item)
+            rust_issues: list[str] = []
+            if "rust" in normalized:
+                normalized["rust"], rust_issues = _normalize_rust_scope(normalized["rust"], str(normalized.get("name", "unknown")))
+            if rust_issues:
+                issue = "; ".join(rust_issues)
+                issues.append(issue)
+                collection = normalized.get("collection")
+                if not isinstance(collection, dict):
+                    collection = {"status": "partial", "issues": []}
+                collection["status"] = "partial"
+                collection["issues"] = [item for item in collection.get("issues", []) if isinstance(item, str)] + rust_issues
+                normalized["collection"] = collection
+            records.append(normalized)
+            continue
+        name = item.get("name") if isinstance(item.get("name"), str) and item.get("name") else f"unknown-tool-{index}"
+        issue = f"invalid tool record {name}: {'; '.join(violations)}"
+        issues.append(issue)
+        records.append(_unknown_tool_record(name, issue))
+    return records, "; ".join(issues) if issues else None
+
+
+def normalize_fragment_containers(value: dict[str, Any], path: pathlib.Path) -> None:
+    """Degrade malformed optional fragment fields without losing the leg."""
+    issues: list[str] = []
+    diagnostics = value.get("diagnostics")
+    if "diagnostics" in value and (not isinstance(diagnostics, list) or not all(isinstance(item, str) for item in diagnostics)):
+        value["diagnostics"] = []
+        issues.append("fragment diagnostics container is malformed")
+    if "tools" in value:
+        tools, tools_issue = _normalize_tool_records(value["tools"])
+        value["tools"] = tools
+        if tools_issue:
+            issues.append(tools_issue)
+    else:
+        value["tools"] = []
+    tool_collection = value.get("tool_collection")
+    if "tool_collection" not in value:
+        tool_collection = {"status": "unknown", "issues": []}
+    elif not isinstance(tool_collection, dict):
+        tool_collection = {"status": "partial", "issues": ["fragment tool_collection container is malformed"]}
+    else:
+        tool_collection = dict(tool_collection)
+        status = tool_collection.get("status")
+        collection_issues = tool_collection.get("issues")
+        if not isinstance(status, str) or status not in {"complete", "partial", "unknown"}:
+            tool_collection["status"] = "partial"
+            issues.append("fragment tool_collection status is malformed")
+        if not isinstance(collection_issues, list) or not all(isinstance(item, str) for item in collection_issues):
+            tool_collection["issues"] = []
+            issues.append("fragment tool_collection issues are malformed")
+    if issues:
+        tool_collection["status"] = "partial"
+        tool_collection["issues"] = [item for item in tool_collection.get("issues", []) if isinstance(item, str)] + issues
+    value["tool_collection"] = tool_collection
+
+
 def read_tools(path: pathlib.Path) -> tuple[list[dict[str, Any]], str | None]:
     """Read command records and preserve missing/malformed evidence as an issue."""
     try:
@@ -201,32 +366,9 @@ def read_tools(path: pathlib.Path) -> tuple[list[dict[str, Any]], str | None]:
         return [], f"tool record file unavailable: {path}: {exc}"
     except json.JSONDecodeError as exc:
         return [], f"malformed tool record file {path}: {exc}"
-    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+    if not isinstance(value, list):
         return [], f"malformed tool record file {path}: expected a list of objects"
-    records: list[dict[str, Any]] = []
-    issues: list[str] = []
-    for index, item in enumerate(value):
-        violations = validate_tool_record(item)
-        if not violations:
-            records.append(item)
-            continue
-        name = item.get("name") if isinstance(item.get("name"), str) and item.get("name") else f"unknown-tool-{index}"
-        issue = f"invalid tool record {name}: {'; '.join(violations)}"
-        issues.append(issue)
-        records.append({
-            "name": name,
-            "command": [],
-            "working_directory": None,
-            "state": "unknown",
-            "outcome": "unknown",
-            "reason": "execution is unknown because the tool record is invalid",
-            "reason_code": "invalid_tool_record",
-            "exit_code": None,
-            "diagnostics": [],
-            "measurements": unknown_measurements("tool record was semantically invalid"),
-            "collection": {"status": "partial", "issues": [issue]},
-        })
-    return records, "; ".join(issues) if issues else None
+    return _normalize_tool_records(value)
 
 
 def _rust_target_from_config(working_directory: str | None) -> tuple[str | None, str | None]:
@@ -932,6 +1074,8 @@ def render_lines(document: dict[str, Any]) -> list[str]:
         lines.append(f"Job {safe(job['logical_job'])}{leg}: {safe(job['state'])}/{safe(job['outcome'])} — {safe(job['reason'])}")
         for diagnostic in job.get("diagnostics", []):
             lines.append(f"Diagnostic {safe(job['logical_job'])}{leg}: {safe(diagnostic)}")
+        for issue in job.get("tool_collection", {}).get("issues", []) if isinstance(job.get("tool_collection"), dict) else []:
+            lines.append(f"Tool collection issue {safe(job['logical_job'])}{leg}: {safe(issue)}")
         for tool in job.get("tools", []):
             tool_leg = f"{safe(tool.get('name', 'unknown'))}{leg}"
             lines.append(
