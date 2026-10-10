@@ -67,6 +67,7 @@ PY
 }
 
 S1=$(scope run-one 1 2026-01-01T10:00:00Z)
+printf '{"results":[],"errors":[],"paths":{"scanned":["src/a.ts"]}}\n' >"$WORK/clean-findings.json"
 python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
   --date 2026-01-01 --run-id run-one --run-attempt 1 \
   --started-at 2026-01-01T10:00:00Z --scope "$S1" >"$WORK/one.md"
@@ -174,9 +175,9 @@ if grep -q 'ERRORED' "$WORK/malformed-analysis.md"; then
   exit 1
 fi
 
-# A mixed run retains valid Semgrep findings while an unrelated operational
-# license failure keeps the report errored. Reason text alone is not finding
-# classification evidence.
+# A mixed run retains valid Semgrep findings while native report-tool failures
+# remain visible diagnostics without changing the report verdict. Reason text
+# alone is not finding classification evidence.
 MIXED_SCOPE="$WORK/mixed-scope.json"
 cp "$SFIND" "$MIXED_SCOPE"
 python3 - "$MIXED_SCOPE" <<'PY'
@@ -195,8 +196,48 @@ python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
   --started-at 2026-01-01T10:00:00Z --scope "$MIXED_SCOPE" >"$WORK/mixed.md"
 mixed_rc=$?
 set -e
-[[ $mixed_rc == 2 ]]
-grep -q 'ERRORED' "$WORK/mixed.md"
+[[ $mixed_rc == 0 ]]
+grep -q '| Semgrep | \*\*2\*\* findings |' "$WORK/mixed.md"
+if grep -q 'ERRORED' "$WORK/mixed.md"; then
+  echo "native license failure changed the report verdict" >&2
+  exit 1
+fi
+
+for native_tool in gitleaks osv; do
+  NATIVE_SCOPE="$WORK/native-$native_tool.json"
+  cp "$SFIND" "$NATIVE_SCOPE"
+  python3 - "$NATIVE_SCOPE" "$native_tool" <<'PY'
+import json, sys
+path, tool = sys.argv[1:]
+doc = json.load(open(path, encoding="utf-8"))
+doc["identity"].update(run_id="native-" + tool, invocation_id="native-" + tool)
+doc["tools"][tool].update(state="run", outcome="failure", exit_code=7, reason=tool + " unavailable")
+json.dump(doc, open(path, "w", encoding="utf-8"))
+PY
+  python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
+    --date 2026-01-01 --run-id "native-$native_tool" --run-attempt 1 \
+    --started-at 2026-01-01T10:00:00Z --scope "$NATIVE_SCOPE" >"$WORK/native-$native_tool.md"
+  grep -q '| Semgrep | \*\*2\*\* findings |' "$WORK/native-$native_tool.md"
+  if grep -q 'ERRORED' "$WORK/native-$native_tool.md"; then
+    echo "$native_tool failure changed the report verdict" >&2
+    exit 1
+  fi
+  CLEAN_SCOPE="$WORK/native-clean-$native_tool.json"
+  cp "$NATIVE_SCOPE" "$CLEAN_SCOPE"
+  python3 - "$CLEAN_SCOPE" "native-clean-$native_tool" <<'PY'
+import json, sys
+path, run = sys.argv[1:]
+doc = json.load(open(path, encoding="utf-8"))
+doc["identity"].update(run_id=run, invocation_id=run)
+doc["tools"]["semgrep"].update(state="run", outcome="success", exit_code=0, reason="fixture scan")
+json.dump(doc, open(path, "w", encoding="utf-8"))
+PY
+  python3 "$ROOT/scripts/quality-report.py" --json "$WORK/clean-findings.json" \
+    --date 2026-01-01 --run-id "native-clean-$native_tool" --run-attempt 1 \
+    --started-at 2026-01-01T10:00:00Z --scope "$CLEAN_SCOPE" >"$WORK/native-clean-$native_tool.md"
+  grep -q '| Semgrep | \*\*0\*\* findings |' "$WORK/native-clean-$native_tool.md"
+  grep -q "| $native_tool | run | failure |" "$WORK/native-clean-$native_tool.md"
+done
 
 MIXED_FINDING_SCOPE="$WORK/mixed-finding-scope.json"
 cp "$SFIND" "$MIXED_FINDING_SCOPE"
@@ -301,6 +342,102 @@ if grep -q 'Findings: -8 findings' "$WORK/from-legacy.md"; then
   exit 1
 fi
 grep -Fq '| legacy | unknown | 2025-12-31T00:00:00Z | success | 10 |' "$WORK/from-legacy.md"
+
+# SBOM inventory is diagnostic evidence and must remain non-gating. A failure
+# from that optional tool cannot turn a valid findings report into ERRORED,
+# either by itself or alongside a Semgrep findings verdict.
+for sbom_mode in alone_with_failure semgrep_finding; do
+  SBOM_SCOPE="$WORK/sbom-$sbom_mode.json"
+  cp "$S1" "$SBOM_SCOPE"
+  python3 - "$SBOM_SCOPE" "$sbom_mode" <<'PY'
+import json, sys
+path, mode = sys.argv[1:]
+doc = json.load(open(path, encoding="utf-8"))
+doc["identity"].update(run_id="sbom-" + mode, invocation_id="sbom-" + mode)
+doc["analysis"].update(outcome="failure", exit_code=7)
+doc["tools"]["sbom"].update(state="run", outcome="failure", exit_code=7, reason="SBOM inventory unavailable")
+if mode == "semgrep_finding":
+    doc["tools"]["semgrep"].update(outcome="failure", exit_code=1, reason="Semgrep completed with findings")
+json.dump(doc, open(path, "w", encoding="utf-8"))
+PY
+  set +e
+  python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
+    --date 2026-01-01 --run-id "sbom-$sbom_mode" --run-attempt 1 \
+    --started-at 2026-01-01T10:00:00Z --scope "$SBOM_SCOPE" >"$WORK/sbom-$sbom_mode.md"
+  sbom_rc=$?
+  set -e
+  if [[ $sbom_rc != 0 ]]; then echo "SBOM failure changed report exit: $sbom_rc" >&2; exit 1; fi
+  grep -q '| Semgrep | \*\*2\*\* findings |' "$WORK/sbom-$sbom_mode.md"
+  if grep -q 'ERRORED' "$WORK/sbom-$sbom_mode.md"; then
+    echo "SBOM-only failure became an operational report error" >&2
+    exit 1
+  fi
+  CLEAN_SCOPE="$WORK/sbom-clean-$sbom_mode.json"
+  cp "$SBOM_SCOPE" "$CLEAN_SCOPE"
+  python3 - "$CLEAN_SCOPE" "sbom-clean-$sbom_mode" <<'PY'
+import json, sys
+path, run = sys.argv[1:]
+doc = json.load(open(path, encoding="utf-8"))
+doc["identity"].update(run_id=run, invocation_id=run)
+doc["tools"]["semgrep"].update(state="run", outcome="success", exit_code=0, reason="fixture scan")
+json.dump(doc, open(path, "w", encoding="utf-8"))
+PY
+  python3 "$ROOT/scripts/quality-report.py" --json "$WORK/clean-findings.json" \
+    --date 2026-01-01 --run-id "sbom-clean-$sbom_mode" --run-attempt 1 \
+    --started-at 2026-01-01T10:00:00Z --scope "$CLEAN_SCOPE" >"$WORK/sbom-clean-$sbom_mode.md"
+  grep -q '| Semgrep | \*\*0\*\* findings |' "$WORK/sbom-clean-$sbom_mode.md"
+  grep -q '| sbom | run | failure |' "$WORK/sbom-clean-$sbom_mode.md"
+done
+
+# Legacy rows have dates but no run identity. Re-reading the rendered body
+# must preserve each date exactly once while two new executions are added, and
+# repeating the newest execution must remain idempotent.
+cat >"$WORK/legacy-two.md" <<'MD'
+## History
+
+| Date | Findings | Top rules |
+|---|---:|---|
+| 2025-12-30 | 8 | old.rule (8) |
+| 2025-12-31 | 10 | fixture.rule (10) |
+MD
+python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
+  --date 2026-01-01 --run-id legacy-new-a --run-attempt 1 \
+  --started-at 2026-01-01T10:00:00Z --previous-body "$WORK/legacy-two.md" >"$WORK/legacy-new-a.md"
+python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
+  --date 2026-01-01 --run-id legacy-new-b --run-attempt 1 \
+  --started-at 2026-01-01T11:00:00Z --previous-body "$WORK/legacy-new-a.md" >"$WORK/legacy-new-b.md"
+legacy_rows=$(grep -Ec '^\| (legacy|legacy-new-[ab]) \|' "$WORK/legacy-new-b.md")
+if [[ $legacy_rows != 4 ]]; then echo "legacy history rows duplicated: $legacy_rows" >&2; exit 1; fi
+grep -Fq '| legacy | unknown | 2025-12-30T00:00:00Z | success | 8 |' "$WORK/legacy-new-b.md"
+grep -Fq '| legacy | unknown | 2025-12-31T00:00:00Z | success | 10 |' "$WORK/legacy-new-b.md"
+python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
+  --date 2026-01-01 --run-id legacy-new-b --run-attempt 1 \
+  --started-at 2026-01-01T11:00:00Z --previous-body "$WORK/legacy-new-b.md" >"$WORK/legacy-new-b-repeat.md"
+repeat_legacy_rows=$(grep -Ec '^\| (legacy|legacy-new-[ab]) \|' "$WORK/legacy-new-b-repeat.md")
+if [[ $repeat_legacy_rows != 4 ]]; then echo "legacy history repeat changed row count: $repeat_legacy_rows" >&2; exit 1; fi
+
+for metadata_mode in absent malformed; do
+  python3 - "$WORK/legacy-new-a.md" "$WORK/legacy-new-a-$metadata_mode.md" "$metadata_mode" <<'PY'
+import sys
+source, target, mode = sys.argv[1:]
+body = open(source, encoding="utf-8").read()
+start_marker = "<!-- maxi-quality:history-v2 -->"
+end_marker = "<!-- /maxi-quality:history-v2 -->"
+start = body.index(start_marker)
+end = body.index(end_marker, start) + len(end_marker)
+replacement = "{not-json" if mode == "malformed" else ""
+open(target, "w", encoding="utf-8").write(body[:start] + start_marker + replacement + end_marker + body[end:])
+PY
+  python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
+    --date 2026-01-01 --run-id "legacy-fallback-$metadata_mode" --run-attempt 1 \
+    --started-at 2026-01-01T12:00:00Z --previous-body "$WORK/legacy-new-a-$metadata_mode.md" >"$WORK/legacy-fallback-$metadata_mode.md"
+  if [[ $(grep -Ec '^\| (legacy|legacy-new-[ab]|legacy-fallback-[a-z]+) \|' "$WORK/legacy-fallback-$metadata_mode.md") != 4 ]]; then
+    echo "legacy $metadata_mode fallback changed row count" >&2
+    exit 1
+  fi
+  grep -Fq '| legacy | unknown | 2025-12-30T00:00:00Z | success | 8 |' "$WORK/legacy-fallback-$metadata_mode.md"
+  grep -Fq '| legacy | unknown | 2025-12-31T00:00:00Z | success | 10 |' "$WORK/legacy-fallback-$metadata_mode.md"
+done
 
 # JSON-valid but semantically malformed retained scope metadata must degrade to
 # unavailable comparison while preserving the visible finding row.
