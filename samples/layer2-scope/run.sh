@@ -209,6 +209,8 @@ end = next((i for i in range(run + 1, len(lines))
 pathlib.Path(sys.argv[2]).write_text(textwrap.dedent("".join(lines[run + 1:end])))
 PY
 SCOPE_OUT="$WORK/setup/scope.json" \
+LICENSES="MIT" \
+SBOM_OUT="$WORK/setup/sbom.json" \
 GITHUB_ACTION_PATH="$ROOT/actions/layer2" \
 RUNNER_TEMP="$WORK/setup" \
 bash "$WORK/setup/finalize.sh"
