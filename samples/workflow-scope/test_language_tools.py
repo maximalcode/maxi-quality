@@ -165,6 +165,108 @@ class LanguageToolFixtures(unittest.TestCase):
             self.assertEqual([item["name"] for item in records], ["fmt", "clippy"])
             self.assertEqual(records[-1]["exit_code"], 43)
 
+    def test_actual_rust_body_records_structured_clippy_scope(self) -> None:
+        body = quality_run_body("Format, lint and audit")
+        with tempfile.TemporaryDirectory() as tmp:
+            root, bin_dir = Path(tmp), Path(tmp) / "bin"
+            bin_dir.mkdir()
+            (root / "Cargo.toml").write_text("[workspace]\nmembers=[]\n")
+            (bin_dir / "cargo").write_text(
+                "#!/usr/bin/env bash\n"
+                "if [[ $1 == fmt ]]; then exit 0; fi\n"
+                "if [[ $1 == clippy ]]; then\n"
+                "  printf '%s\\n' '{\"reason\":\"compiler-artifact\",\"package_id\":\"path+file:///fixture#scope-root@0.1.0\",\"manifest_path\":\"/fixture/Cargo.toml\",\"target\":{\"kind\":[\"lib\"],\"name\":\"scope-root\",\"required-features\":[]},\"features\":[],\"fresh\":false}'\n"
+                "  printf '%s\\n' '{\"reason\":\"build-finished\",\"success\":true}'\n"
+                "  exit 0\n"
+                "fi\n"
+                "if [[ $1 == deny ]]; then exit 0; fi\n"
+                "exit 99\n"
+            )
+            (bin_dir / "cargo").chmod(0o755)
+            tools = root / "tools.json"
+            result = run_body(
+                body,
+                root,
+                bin_dir,
+                tools,
+                CARGO_BUILD_TARGET="aarch64-apple-darwin",
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            records = json.loads(tools.read_text())
+            clippy = next(item for item in records if item["name"] == "clippy")
+            self.assertIn("--message-format=json", clippy["command"])
+            self.assertEqual(clippy["rust"]["requested"]["target"]["env"], "aarch64-apple-darwin")
+            self.assertEqual(clippy["rust"]["observed"]["artifacts"][0]["package_id"], "path+file:///fixture#scope-root@0.1.0")
+            self.assertEqual(clippy["rust"]["observed"]["artifacts"][0]["fresh"], False)
+            self.assertEqual(clippy["rust"]["observed"]["platform"]["status"], "unknown")
+            self.assertEqual(clippy["rust"]["observed"]["build_finished"], {"success": True})
+
+    def test_rust_partial_json_keeps_emitted_artifacts_and_marks_completion_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log = root / "clippy.jsonl"
+            log.write_text(
+                "\n".join([
+                    json.dumps({"reason": "compiler-artifact", "package_id": "pkg#root", "manifest_path": "/fixture/Cargo.toml", "target": {"kind": ["lib"], "name": "root"}, "features": [], "fresh": True}),
+                    json.dumps({"reason": "compiler-message", "package_id": "pkg#member", "manifest_path": "/fixture/member/Cargo.toml", "target": {"kind": ["lib"], "name": "member"}, "message": {"level": "error", "message": "type mismatch"}}),
+                    json.dumps({"reason": "build-finished", "success": False}),
+                ]) + "\n",
+                encoding="utf-8",
+            )
+            tools = root / "tools.json"
+            result = subprocess.run(
+                [sys.executable, str(HELPER), "tool", "--file", str(tools), "--name", "clippy", "--exit-code", "101", "--rust-evidence-file", str(log), "--argv", "cargo", "clippy", "--workspace", "--all-targets", "--locked", "--message-format=json"],
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            record = json.loads(tools.read_text())[0]
+            self.assertEqual(record["exit_code"], 101)
+            self.assertEqual(len(record["rust"]["observed"]["artifacts"]), 1)
+            self.assertEqual(record["rust"]["observed"]["build_finished"], {"success": False})
+            self.assertEqual(record["rust"]["observed"]["compiler_messages"][0]["target"]["name"], "member")
+
+    def test_rust_custom_target_directory_name_is_not_platform_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".cargo").mkdir()
+            (root / ".cargo/config.toml").write_text("[build]\ntarget-dir = \"target/aarch64-apple-darwin\"\n", encoding="utf-8")
+            log = root / "clippy.jsonl"
+            log.write_text(json.dumps({
+                "reason": "compiler-artifact", "package_id": "pkg#root", "manifest_path": str(root / "Cargo.toml"),
+                "target": {"kind": ["lib"], "name": "root"}, "features": [],
+                "filenames": [str(root / "target/aarch64-apple-darwin/debug/deps/libroot.rmeta")], "fresh": False,
+            }) + "\n" + json.dumps({"reason": "build-finished", "success": True}) + "\n", encoding="utf-8")
+            tools = root / "tools.json"
+            result = subprocess.run(
+                [sys.executable, str(HELPER), "tool", "--file", str(tools), "--name", "clippy", "--working-directory", str(root), "--rust-evidence-file", str(log), "--argv", "cargo", "clippy", "--workspace", "--all-targets", "--locked", "--message-format=json"],
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            rust = json.loads(tools.read_text())[0]["rust"]
+            self.assertEqual(rust["requested"]["platform"]["status"], "unknown")
+            self.assertEqual(rust["observed"]["platform"]["status"], "unknown")
+
+    def test_rust_format_failure_handoff_marks_clippy_skipped_without_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tools = root / "tools.json"
+            tools.write_text(json.dumps([{
+                "name": "fmt", "command": ["cargo", "fmt"], "working_directory": str(root), "state": "run", "outcome": "failure", "reason": "format failed", "reason_code": "command", "exit_code": 1, "diagnostics": ["format diff"], "measurements": {name: {"status": "unknown", "count": None, "unit": "source_path", "method": "boundary", "reason": "not measured"} for name in ("examined", "unparsed", "policy_excluded")},
+            }]) + "\n")
+            fragment = root / "fragment.json"
+            result = subprocess.run(
+                [sys.executable, str(HELPER), "fragment", "--out", str(fragment), "--tools-file", str(tools), "--logical-job", "rust", "--language", "rust", "--leg", "fixture", "--expected-tool", "fmt|skipped|unknown|blocked|format step was not reached", "--expected-tool", "clippy|skipped|unknown|blocked|Clippy step was not reached", "--expected-tool", "cargo-deny|skipped|unknown|blocked|audit step was not reached", "--job-outcome", "failure"],
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            records = json.loads(fragment.read_text())["tools"]
+            clippy = next(item for item in records if item["name"] == "clippy")
+            self.assertEqual((clippy["state"], clippy["reason_code"]), ("skipped", "blocked"))
+            self.assertNotIn("rust", clippy)
+
     def test_actual_java_body_keeps_partial_output_and_maven_rc(self) -> None:
         body = quality_run_body("Compile with Error Prone and NullAway")
         with tempfile.TemporaryDirectory() as tmp:
@@ -413,6 +515,51 @@ class LanguageToolFixtures(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             job = json.loads(collected.read_text())["jobs"][0]
             self.assertEqual([tool["name"] for tool in job["tools"][:2]], ["install", "lint"])
+
+    def test_rust_command_and_fragment_use_copied_helper_without_adopter_scripts(self) -> None:
+        scope_action = yaml.safe_load((ROOT / "actions" / "workflow-scope" / "action.yml").read_text(encoding="utf-8"))
+        helper_body = next(step["run"] for step in scope_action["runs"]["steps"] if step.get("name") == "Prepare workflow scope helper")
+        fragment_body = next(step["run"] for step in scope_action["runs"]["steps"] if step.get("name") == "Write workflow scope fragment")
+        with tempfile.TemporaryDirectory() as tmp:
+            adopter = Path(tmp) / "adopter"
+            runner = Path(tmp) / "runner"
+            bin_dir = adopter / "bin"
+            bin_dir.mkdir(parents=True)
+            runner.mkdir()
+            (adopter / "Cargo.toml").write_text("[workspace]\nmembers=[]\n")
+            cargo = bin_dir / "cargo"
+            cargo.write_text(
+                "#!/usr/bin/env bash\n"
+                "[[ $1 == fmt ]] && exit 0\n"
+                "[[ $1 == clippy ]] && { printf '%s\\n' '{\"reason\":\"compiler-artifact\",\"package_id\":\"pkg#fixture\",\"manifest_path\":\"/adopter/Cargo.toml\",\"target\":{\"kind\":[\"lib\"],\"name\":\"fixture\"},\"features\":[],\"fresh\":false}' '{\"reason\":\"build-finished\",\"success\":true}'; exit 0; }\n"
+                "[[ $1 == deny ]] && exit 0\nexit 1\n"
+            )
+            cargo.chmod(0o755)
+            output = runner / "helper-output"
+            helper_env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "GITHUB_ACTION_PATH": str(ROOT / "actions" / "workflow-scope"), "RUNNER_TEMP": str(runner), "GITHUB_OUTPUT": str(output), "OUT": str(runner / "helper.py")}
+            result = subprocess.run(["bash", "-c", textwrap.dedent(helper_body)], cwd=adopter, env=helper_env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            helper_path = next(line.split("=", 1)[1] for line in output.read_text().splitlines() if line.startswith("helper_path="))
+            tools = runner / "tools.json"
+            command = run_body(quality_run_body("Format, lint and audit"), adopter, bin_dir, tools, GITHUB_WORKSPACE=str(adopter), SCOPE_HELPER=helper_path, CARGO_BUILD_TARGET="aarch64-apple-darwin")
+            self.assertEqual(command.returncode, 0, command.stdout + command.stderr)
+            records = json.loads(tools.read_text())
+            self.assertIn("rust", next(item for item in records if item["name"] == "clippy"))
+            fragment = runner / "fragment.json"
+            fragment_env = {
+                **helper_env,
+                "OUT": str(fragment),
+                "PRODUCER": "gate", "WORKFLOW": "quality", "INVOCATION": "inv", "RUN_ID": "run", "RUN_ATTEMPT": "1",
+                "LOGICAL_JOB": "rust", "LANGUAGE": "rust", "LEG": "adopter", "STATE": "run", "OUTCOME": "success",
+                "REASON": "fixture", "REASON_CODE": "fixture", "DIAGNOSTIC": "", "DIAGNOSTIC_FILE": "", "TOOLS_FILE": str(tools),
+                "EXPECTED_TOOLS": "fmt|skipped|unknown|blocked|format step was not reached\nclippy|skipped|unknown|blocked|Clippy step was not reached\ncargo-deny|skipped|unknown|blocked|audit step was not reached",
+                "DEAD_CODE_MODE": "auto", "JOB_OUTCOME": "success", "ARTIFACT_PREFIX": "synthetic",
+            }
+            result = subprocess.run(["bash", "-c", textwrap.dedent(fragment_body)], cwd=adopter, env=fragment_env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            fragment_tools = json.loads(fragment.read_text())["tools"]
+            clippy = next(item for item in fragment_tools if item["name"] == "clippy")
+            self.assertEqual(clippy["rust"]["observed"]["artifacts"][0]["target"]["name"], "fixture")
 
     def test_actual_deadcode_action_records_unavailable_auto_and_require(self) -> None:
         action = yaml.safe_load(DEADCODE.read_text(encoding="utf-8"))
