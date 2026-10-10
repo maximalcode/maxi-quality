@@ -1229,6 +1229,14 @@ issue number so a caller can **assert the report actually landed** — without t
 a broken report path is indistinguishable from a clean repo, which is precisely
 how it shipped broken once.
 
+The report's [analysis scope](ANALYSIS-SCOPE.md) belongs to its independent full
+Layer 2 scan. It does not import language-job or Rust evidence from a quality
+run. History retains the latest 52 run/attempt entries, including ordinary
+failed attempts; separate runs on the same day remain distinct. Finding and
+scope changes appear together, with unavailable comparisons stated explicitly.
+Both workflows attempt their own artifacts and summaries after ordinary
+failures. Scope collection is non-gating and needs no additional configuration.
+
 ---
 
 ## SBOM and licence compliance

@@ -52,6 +52,21 @@ taste judgment, it is the one test no fixture corpus can substitute for, and it
 is what keeps the baseline from growing configs nobody exercises.
 _Avoid_: "a real consuming project" — the fused phrase this replaces.
 
+### Analysis scope
+
+**Analysis scope**:
+The extent of analysis evidenced by one run, including known omissions and
+uncertainty about what was examined.
+_Avoid_: "coverage" without qualification, which can be mistaken for test line
+coverage, or treating configured checks as evidence of execution.
+
+**Observed policy exclusion**:
+A target the analyzer explicitly reports as omitted because of the Adopter's
+path-exclusion policy. It is not a count of every target that would have been
+examined if the policy were removed.
+_Avoid_: "policy blast radius", or counting a suppressed finding as an
+excluded file.
+
 ### What is promised
 
 **Agent contract**:

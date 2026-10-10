@@ -59,6 +59,13 @@ The workflow also **outputs what it detected**, so a caller can assert detection
 actually fired. Without that, a run is green in two very different cases — the
 gate ran and passed, or every language job silently skipped.
 
+The workflow also publishes its own run/attempt analysis-scope artifact and job
+summary. Presence is recorded independently of language selection, with
+per-job, matrix-leg and actual tool-execution records. Missing evidence is
+unknown, and collection or publication cannot change the analysis verdict.
+No extra configuration is required. See [ANALYSIS-SCOPE.md](ANALYSIS-SCOPE.md)
+for artifact names, measurements and delivery limits.
+
 ---
 
 ## The dead-code gate — `actions/deadcode`
@@ -132,6 +139,7 @@ Used directly when you want the umbrella without the language jobs.
 | `target` | `${{ github.workspace }}` | Directory to scan |
 | `changed-only` | *(empty)* | Base ref; empty = full scan |
 | `json-out` | *(empty)* | Also write Semgrep's JSON results here |
+| `producer` | `gate` | Scope evidence stream: `gate` or the independent `report` run |
 | `sbom-out` | *(empty)* | Write a CycloneDX 1.6 SBOM here |
 | `licenses` | *(empty)* | SPDX allowlist; **fails** the scan on a violation |
 | `no-fail` | `false` | Report everything, exit 0. For the standing **report**. Never set it on a gate — a gate that cannot fail is not a gate |
@@ -146,6 +154,11 @@ Outputs: `semgrep`, `gitleaks`, `osv`, `licenses`, `sbom` — each the status li
 from the scan summary. They read `not run` rather than empty when absent, because
 an empty output renders as a blank cell in the report, which reads as *clean*.
 
+The `scope` output names the same-run Layer 2 JSON evidence file. The action
+also attempts an artifact upload and bounded job summary after ordinary
+failures. Collection failures do not change the analysis verdict; see
+[ANALYSIS-SCOPE.md](ANALYSIS-SCOPE.md).
+
 ---
 
 ## `scripts/scan.sh`
@@ -158,6 +171,7 @@ an empty output renders as a blank cell in the report, which reads as *clean*.
 |---|---|
 | `--changed-only [REF]` | New-code-only. Semgrep gets `--baseline-commit`, Gitleaks is limited to commits since REF. Default REF `origin/main` |
 | `--json-out FILE` | Write Semgrep's JSON results to FILE as well |
+| `--scope-out FILE` | Write own-run analysis-scope evidence and full diagnostics; collection is non-gating |
 | `--sbom FILE` | CycloneDX 1.6 SBOM. Never gates |
 | `--licenses LIST` | Fail on any dependency outside this SPDX allowlist |
 | `--no-fail` | Report everything, always exit 0 |

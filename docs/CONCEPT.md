@@ -372,6 +372,18 @@ osv-scanner. Failing rule = failing check.
 Version the baseline with tags (`@v1`) so an updated ruleset never breaks old
 projects silently — projects upgrade by bumping the tag.
 
+The analysis-scope artifact describes one workflow execution and attempt. It
+keeps detected language presence separate from selection, job and matrix-leg
+execution separate from tool execution, and analysis outcome separate from
+collection completeness. Measurements state their units and evidence; missing
+measurements are unknown, never zero. Rust records the targets, features and
+freshness evidenced by the existing Clippy invocation without expanding it.
+
+Scope collection, artifact publication and summaries are non-gating in v1.
+Ordinary failures retain available evidence; forced cancellation, runner loss
+and artifact-service failure can still prevent delivery. See
+[ANALYSIS-SCOPE.md](ANALYSIS-SCOPE.md) for the contract and its fixture evidence.
+
 ---
 
 ## 8. Adoption paths
@@ -475,6 +487,18 @@ Constraints that are not negotiable here:
 - **The workflow outputs the issue number**, so a caller can assert the report
   landed. Without that, a broken report path and a clean repo look identical —
   which is how it shipped broken once (#46).
+
+The report's scope belongs to its own full Layer 2 scan. It does not import
+Layer 1 or Rust results from a separate quality run. Findings and scope changes
+appear together, with changed checking conditions and unavailable comparisons
+stated explicitly. A smaller scan is not evidence of improved code quality.
+
+History identifies runs and attempts and retains the latest 52 entries.
+Existing daily rows keep unknown legacy scope. A failed attempt does not become
+zero findings, and an older run finishing later cannot replace the newest
+current report. Compact comparison evidence lives with the issue history so
+artifact expiration does not erase it. The accepted trade-offs are recorded in
+[ADR 0004](adr/0004-analysis-scope-belongs-to-its-run.md).
 
 ---
 
