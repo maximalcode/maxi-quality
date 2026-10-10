@@ -73,12 +73,24 @@ class PinnedRustScope(unittest.TestCase):
             }
             result = subprocess.run(["bash", "-c", body], cwd=fixture, env=env, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            records = json.loads((runner / "tools.json").read_text())
-            clippy = next(item for item in records if item["name"] == "clippy")
-            self.assertEqual(clippy["exit_code"], 0)
-            self.assertTrue(clippy["rust"]["observed"]["artifacts"])
-            self.assertEqual(clippy["rust"]["observed"]["build_finished"], {"success": True})
-            self.assertEqual(clippy["rust"]["observed"]["platform"]["target"], host)
+            first_records = json.loads((runner / "tools.json").read_text())
+            first_clippy = next(item for item in first_records if item["name"] == "clippy")
+            self.assertEqual(first_clippy["exit_code"], 0)
+            first_artifacts = first_clippy["rust"]["observed"]["artifacts"]
+            self.assertTrue(first_artifacts)
+            self.assertEqual(first_clippy["rust"]["observed"]["build_finished"], {"success": True})
+            self.assertEqual(first_clippy["rust"]["observed"]["platform"]["target"], host)
+            self.assertFalse(any(item["target"]["name"] == "gated-bin" for item in first_artifacts))
+            self.assertTrue(all(item["fresh"] is False for item in first_artifacts))
+
+            # Start a fresh record while retaining Cargo's target directory so
+            # freshness is proven through the production workflow body itself.
+            (runner / "tools.json").unlink()
+            result = subprocess.run(["bash", "-c", body], cwd=fixture, env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            rerun_records = json.loads((runner / "tools.json").read_text())
+            rerun_clippy = next(item for item in rerun_records if item["name"] == "clippy")
+            self.assertTrue(all(item["fresh"] is True for item in rerun_clippy["rust"]["observed"]["artifacts"]))
 
     def test_real_partial_failure_preserves_artifacts_and_skips_deny_in_extracted_body(self) -> None:
         workflow = yaml.safe_load((ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8"))
@@ -169,13 +181,46 @@ class PinnedRustScope(unittest.TestCase):
             self.assertTrue(all(item["fresh"] is True for item in rerun_record["observed"]["artifacts"]))
 
             feature_command = [*command, "--features", "gated"]
-            feature = subprocess.run(feature_command, cwd=fixture, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            feature = subprocess.run(
+                ["env", "RUSTFLAGS=-Dwarnings", *feature_command],
+                cwd=fixture,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
             self.assertEqual(feature.returncode, 0, feature.stdout)
             feature_log = Path(tmp) / "feature.jsonl"
             feature_log.write_text(feature.stdout, encoding="utf-8")
             feature_tools = Path(tmp) / "feature-tools.json"
             parsed = subprocess.run(
-                [sys.executable, str(HELPER), "tool", "--file", str(feature_tools), "--name", "clippy", "--working-directory", str(fixture), "--rust-evidence-file", str(feature_log), "--argv", "env", "RUSTFLAGS=-Dwarnings", "cargo", "clippy", "--workspace", "--all-targets", "--locked", "--message-format=json", "--features", "gated"],
+                [
+                    sys.executable,
+                    str(HELPER),
+                    "tool",
+                    "--file",
+                    str(feature_tools),
+                    "--name",
+                    "clippy",
+                    "--working-directory",
+                    str(fixture),
+                    "--rust-evidence-file",
+                    str(feature_log),
+                    "--argv",
+                    "env",
+                    "RUSTFLAGS=-Dwarnings",
+                    "rustup",
+                    "run",
+                    "1.97.1",
+                    "cargo",
+                    "clippy",
+                    "--workspace",
+                    "--all-targets",
+                    "--locked",
+                    "--message-format=json",
+                    "--features",
+                    "gated",
+                ],
                 text=True,
                 capture_output=True,
                 env=env,
