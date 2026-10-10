@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import collections
 import datetime as dt
+import html
 import json
 import re
 import sys
@@ -209,6 +210,21 @@ def _parse_time(value: object, fallback: str = "") -> str:
     return parsed.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _markdown_excerpt(value: object, limit: int = MAX_DIAGNOSTIC_EXCERPT) -> str:
+    """Return a bounded diagnostic excerpt that remains literal in Markdown."""
+    text = " ".join(str(value or "").split())
+    if len(text) > limit:
+        text = text[: limit - 3] + "..."
+    # HTML escaping keeps comments/tags inert. Backslash escapes keep Markdown
+    # emphasis, code spans, links, images, headings and table delimiters
+    # literal. Truncate before escaping so the visible limit describes the
+    # emitted diagnostic rather than entity-expanded markup.
+    text = html.escape(text, quote=False)
+    for token in ("\\", "`", "*", "_", "[", "]", "(", ")", "#", ">", "|"):
+        text = text.replace(token, "\\" + token)
+    return text
+
+
 def _scope_excerpt(value: object) -> str:
     if isinstance(value, list):
         values = []
@@ -218,7 +234,55 @@ def _scope_excerpt(value: object) -> str:
             else:
                 values.append(str(item))
         value = " ".join(values)
-    return _one_line(value, MAX_DIAGNOSTIC_EXCERPT)
+    return _markdown_excerpt(value)
+
+
+def _scope_failure_is_finding(name: object, record: dict) -> bool:
+    """Recognize only documented native exit-1 finding boundaries."""
+    exit_code = record.get("exit_code")
+    if not isinstance(exit_code, int) or isinstance(exit_code, bool) or exit_code != 1:
+        return False
+    if name in {"gitleaks", "osv", "licenses"}:
+        return True
+    reason = record.get("reason")
+    return (
+        name == "semgrep"
+        and isinstance(reason, str)
+        and reason.strip().lower() == "semgrep completed with findings"
+    )
+
+
+def _scope_operational_reason(scope: dict) -> str:
+    """Return the first operational failure's diagnostic for report errors."""
+    tools = scope.get("tools") if isinstance(scope.get("tools"), dict) else {}
+    for name, record in tools.items():
+        if not isinstance(record, dict) or record.get("outcome") != "failure":
+            continue
+        if not _scope_failure_is_finding(name, record):
+            reason = record.get("reason")
+            if isinstance(reason, str) and reason.strip():
+                return reason.strip()
+            return f"Layer 2 {name} operation failed"
+    return "scope records a failed/incomplete Layer 2 attempt"
+
+
+def _scope_has_operational_error(scope: dict) -> bool:
+    """Distinguish a scanner finding outcome from a broken scanner boundary."""
+    analysis = scope.get("analysis") if isinstance(scope.get("analysis"), dict) else {}
+    outcome = analysis.get("outcome")
+    if not isinstance(outcome, str) or outcome not in {"failure", "cancelled"}:
+        return False
+    if outcome == "cancelled":
+        return True
+    tools = scope.get("tools") if isinstance(scope.get("tools"), dict) else {}
+    saw_failure = False
+    for name, record in tools.items():
+        if not isinstance(record, dict) or record.get("outcome") != "failure":
+            continue
+        saw_failure = True
+        if not _scope_failure_is_finding(name, record):
+            return True
+    return not saw_failure
 
 
 def _compact_value(value: object, depth: int = 0) -> object:
@@ -279,6 +343,8 @@ def _safe_history_scope(scope: object) -> dict:
     safe = {"status": status}
     if status != "available":
         safe["reason"] = _one_line(scope.get("reason", "scope metadata unavailable"))
+    if isinstance(scope.get("operational_error"), bool):
+        safe["operational_error"] = scope["operational_error"]
     for key in ("outcome", "collection", "artifact", "artifact_link", "diagnostic"):
         value = scope.get(key)
         if isinstance(value, str):
@@ -384,6 +450,11 @@ def _compact_scope(scope: dict | None, scope_error: str | None) -> dict:
     compact = {
         "status": "available",
         "outcome": analysis.get("outcome", "unknown"),
+        # A findings-bearing analysis is recorded as failure by the producer,
+        # but complete evidence still makes it a valid comparison baseline.
+        # Retain the separate operational classification so history does not
+        # turn an ordinary finding delta into an incomplete-attempt warning.
+        "operational_error": _scope_has_operational_error(scope),
         "exit_code": analysis.get("exit_code"),
         "collection": collection.get("status", "unknown"),
         "tools": {},
@@ -399,7 +470,7 @@ def _compact_scope(scope: dict | None, scope_error: str | None) -> dict:
             continue
         effective = record.get("effective") if isinstance(record.get("effective"), dict) else {}
         keep_effective = {}
-        for key in ("tool", "version", "diagnostic_mode", "comparison", "content_fingerprint", "config_fingerprint", "ignore_sources", "unknown_sources"):
+        for key in ("tool", "version", "diagnostic_mode", "mode", "resolution", "fallback", "license_allowlist", "format", "all_packages", "license_metadata", "comparison", "content_fingerprint", "config_fingerprint", "ignore_sources", "unknown_sources"):
             if key in effective:
                 value = effective[key]
                 if key in {"ignore_sources", "unknown_sources"} and isinstance(value, list):
@@ -616,7 +687,11 @@ def _comparison(current: dict, previous: dict | None) -> dict:
     previous_scope = previous.get("scope") if isinstance(previous.get("scope"), dict) else {}
     if current_scope.get("status") != "available" or previous_scope.get("status") != "available":
         reasons.append("scope evidence unavailable")
-    if current.get("outcome") != "success" or previous.get("outcome") != "success":
+    current_operational = current_scope.get("operational_error")
+    previous_operational = previous_scope.get("operational_error")
+    if (current.get("outcome") != "success" and current_operational is not False) or (
+        previous.get("outcome") != "success" and previous_operational is not False
+    ):
         reasons.append("incomplete attempt is not a stable baseline")
     if current.get("identity", {}).get("mode") != previous.get("identity", {}).get("mode"):
         reasons.append("scan mode changed")
@@ -711,14 +786,14 @@ def _display_scope(scope: dict, scope_error: str | None) -> list[str]:
             lines.append(f"| ↳ native inventory |  |  | {native.get('count')} `{native.get('unit', 'dependency_component')}` |  |  |")
         diagnostic = record.get("diagnostic")
         if diagnostic:
-            lines.append(f"| ↳ diagnostic |  |  | {_one_line(diagnostic)} |  |  |")
+            lines.append(f"| ↳ diagnostic |  |  | {diagnostic} |  |  |")
     if "semgrep" in tools:
         lines += [
             "",
             "Semgrep `examined` is scanner-reported attempted target scope; `unparsed` is an overlapping analysis-gap count.",
         ]
     if scope.get("diagnostic"):
-        lines += ["", f"Analysis diagnostic: {_one_line(scope['diagnostic'])}"]
+        lines += ["", f"Analysis diagnostic: {scope['diagnostic']}"]
     return lines + [""]
 
 
@@ -1091,10 +1166,8 @@ def main() -> int:
             print(f"error: cannot read Semgrep results from {args.json}: {exc}", file=sys.stderr)
             return 3
     if scope is not None:
-        scope_analysis = scope.get("analysis") if isinstance(scope.get("analysis"), dict) else {}
-        scope_outcome = scope_analysis.get("outcome") if isinstance(scope_analysis.get("outcome"), str) else "unknown"
-        if scope_outcome in {"failure", "cancelled"} and scan_error is None:
-            scan_error = "scope records a failed/incomplete Layer 2 attempt"
+        if scan_error is None and _scope_has_operational_error(scope):
+            scan_error = _scope_operational_reason(scope)
     try:
         prior = previous_history(body)
     except ValueError as exc:

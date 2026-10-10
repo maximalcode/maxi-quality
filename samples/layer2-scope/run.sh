@@ -163,6 +163,14 @@ assert all(d["tools"][name]["state"] == "unknown" for name in ("gitleaks", "osv"
 assert all(not d["tools"][name]["diagnostics"] for name in ("gitleaks", "osv"))
 PY
 
+# The same resolver diagnostic must remain visible for callers that do not ask
+# for scope output. The scope file is an additive handoff, not a replacement
+# for the scanner's established CLI error.
+rc=0
+./scripts/scan.sh samples/policy/invalid/unknown-key >"$WORK/policy/no-scope.log" 2>&1 || rc=$?
+[[ "$rc" == 3 ]] || { echo "expected invalid-policy exit 3 without scope, got $rc" >&2; exit 1; }
+grep -q "unknown.*rules" "$WORK/policy/no-scope.log"
+
 # Setup failure path: execute the production finalizer body extracted from the
 # composite action. No scanner command is reached; every requested tool is
 # explicitly blocked and the setup log is retained as analysis evidence.
@@ -285,12 +293,15 @@ mkdir -p "$WORK/sbom/bin"
 cat >"$WORK/sbom/bin/osv-scanner" <<'SH'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-if [[ "${1:-}" == --version ]]; then echo 'osv-scanner 2.5.0'; exit 0; fi
+if [[ "${1:-}" == --version ]]; then
+  [[ "${SBOM_MODE:-known}" == unknown ]] && exit 1
+  echo 'osv-scanner 2.5.0'; exit 0
+fi
 if [[ "${*}" == *--all-packages* ]]; then
   output=''
   for arg in "$@"; do [[ "$arg" == --output-file=* ]] && output="${arg#--output-file=}"; done
   case "${SBOM_MODE:-known}" in
-    known|partial) printf '{"components":[{},{}]}' >"$output" ;;
+    known|unknown|partial) printf '{"components":[{},{}]}' >"$output" ;;
     malformed) printf '{"components":{}}' >"$output" ;;
   esac
   [[ "${SBOM_MODE:-known}" == partial ]] && exit 9
@@ -299,7 +310,7 @@ fi
 exit 128
 SH
 chmod +x "$WORK/sbom/bin/osv-scanner"
-for sbom_mode in known malformed partial; do
+for sbom_mode in known unknown malformed partial; do
   mkdir "$WORK/sbom/$sbom_mode"
   rc=0
   SBOM_MODE="$sbom_mode" PATH="$WORK/sbom/bin:/usr/bin:/bin" \
@@ -315,6 +326,14 @@ native = tool["native"]["component_count"]
 if mode == "known":
     assert native["status"] == "known" and native["count"] == 2
     assert tool["outcome"] == "success"
+    assert tool["effective"]["version"] == "osv-scanner 2.5.0"
+    assert tool["effective"]["format"] == "cyclonedx-1-6"
+    assert tool["effective"]["comparison"]["status"] == "incomplete"
+    assert "osv-scanner.toml configuration" in tool["effective"]["unknown_sources"]
+elif mode == "unknown":
+    assert native["status"] == "known" and native["count"] == 2
+    assert tool["effective"]["version"] == "unknown"
+    assert tool["effective"]["comparison"]["status"] == "incomplete"
 elif mode == "malformed":
     assert native["status"] == "unknown" and native["count"] is None
     assert tool["outcome"] == "success"
@@ -324,6 +343,59 @@ else:
 print(f"OK: native SBOM count boundary {mode}")
 PY
 done
+
+# License checks retain the exact requested allowlist and scanner version, even
+# when the dependency count/outcome is unchanged.
+mkdir "$WORK/licenses"
+rc=0
+PATH="$WORK/sbom/bin:/usr/bin:/bin" bash "$ROOT/scripts/scan.sh" samples/policy/exclude \
+  --skip semgrep --skip gitleaks --licenses 'MIT, Apache-2.0' \
+  --scope-out "$WORK/licenses/scope.json" >"$WORK/licenses/log" 2>&1 || rc=$?
+[[ "$rc" == 0 ]] || { echo "expected license fixture exit 0, got $rc" >&2; exit 1; }
+python3 - "$WORK/licenses/scope.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+effective = d["tools"]["licenses"]["effective"]
+assert effective["version"] == "osv-scanner 2.5.0"
+assert effective["license_allowlist"] == ["MIT", "Apache-2.0"]
+assert effective["content_fingerprint"]
+PY
+echo "OK: license allowlist and scanner version metadata"
+
+# Effective metadata is additive. A writer failure warns and marks collection
+# partial when scope is requested, while the scanner's clean verdict survives
+# both with and without the optional scope handoff.
+mkdir -p "$WORK/metadata-fault/bin" "$WORK/metadata-fault/with-scope"
+cat >"$WORK/metadata-fault/bin/python3" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-" && "${2:-}" == */osv-effective.json ]]; then
+  echo "injected metadata writer failure" >&2
+  exit 71
+fi
+exec /usr/bin/python3 "$@"
+SH
+chmod +x "$WORK/metadata-fault/bin/python3"
+rc=0
+PATH="$WORK/metadata-fault/bin:$WORK/sbom/bin:/usr/bin:/bin" \
+  bash "$ROOT/scripts/scan.sh" samples/policy/exclude --skip semgrep --skip gitleaks \
+  >"$WORK/metadata-fault/no-scope.log" 2>&1 || rc=$?
+[[ $rc == 0 ]] || { echo "metadata writer failure gated scan without scope: $rc" >&2; exit 1; }
+rc=0
+PATH="$WORK/metadata-fault/bin:$WORK/sbom/bin:/usr/bin:/bin" \
+  bash "$ROOT/scripts/scan.sh" samples/policy/exclude --skip semgrep --skip gitleaks \
+  --scope-out "$WORK/metadata-fault/with-scope/scope.json" \
+  >"$WORK/metadata-fault/with-scope/log" 2>&1 || rc=$?
+[[ $rc == 0 ]] || { echo "metadata writer failure gated scan with scope: $rc" >&2; exit 1; }
+grep -q 'effective metadata unavailable' "$WORK/metadata-fault/with-scope/log"
+python3 - "$WORK/metadata-fault/with-scope/scope.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["analysis"]["outcome"] == "success"
+assert d["collection"]["status"] == "partial"
+assert any("effective metadata unavailable" in issue for issue in d["collection"]["issues"])
+assert d["tools"]["osv"]["effective"] == {}
+print("OK: optional metadata writer failure preserves scanner verdict")
+PY
 
 # A diagnostic sink failure must still drain the scanner stream and preserve
 # the scanner's successful verdict. The scan waits for that fallback drain
