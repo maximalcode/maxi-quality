@@ -347,26 +347,31 @@ for i in $(seq 2 54); do
   hour=$(printf '%02d' $((i % 24)))
   cap_scope="$WORK/$run-scope.json"
   cp "$S1" "$cap_scope"
-  python3 - "$cap_scope" "$run" "2026-01-02T${hour}:00:00Z" <<'PY'
+  python3 - "$cap_scope" "$run" "2026-01-02T${hour}:00:00Z" "$i" <<'PY'
 import json, sys
-p, run, started = sys.argv[1:]
+p, run, started, index = sys.argv[1:]
 d = json.load(open(p))
 d["identity"]["run_id"] = run
 d["identity"]["invocation_id"] = run
 d["identity"]["started_at"] = started
-d["tools"]["semgrep"]["diagnostics"] = [{"stream": "stderr", "source": "fixture", "text": "short bounded diagnostic"}]
+for name in ("semgrep", "gitleaks", "osv", "sbom"):
+    tool = d["tools"][name]
+    tool.update(requested=True, state="run", outcome="success", reason="completed", exit_code=0)
+    tool["diagnostics"] = [{
+        "stream": "stderr", "source": "fixture",
+        "text": f"short diagnostic {index}: {name} completed",
+    }]
+semgrep = d["tools"]["semgrep"]
+semgrep["effective"].update({
+    "comparison": {"status": "complete"},
+    "config_fingerprint": __import__("hashlib").sha256(f"configuration {index}".encode()).hexdigest(),
+    "content_fingerprint": __import__("hashlib").sha256(f"rules {index}".encode()).hexdigest(),
+})
+d["tools"]["sbom"]["native"] = {"component_count": {
+    "status": "known", "count": int(index) + 5,
+    "unit": "dependency_component", "method": "CycloneDX components list",
+}}
 json.dump(d, open(p, "w"))
-PY
-  qualify_scope "$cap_scope" $((i % 7 + 2)) $((i % 3)) $((i % 2)) 5
-  python3 - "$cap_scope" "$i" <<'PY'
-import json, sys
-path, index = sys.argv[1:]
-doc = json.load(open(path))
-semgrep = doc["tools"]["semgrep"]
-semgrep["effective"]["config_fingerprint"] = f"fixture-config-{index}"
-semgrep["effective"]["content_fingerprint"] = f"fixture-rules-{index}"
-semgrep["diagnostics"] = [{"stream": "stderr", "source": "fixture", "text": f"short diagnostic {index}"}]
-json.dump(doc, open(path, "w"))
 PY
   python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
     --date 2026-01-02 --run-id "$run" --run-attempt 1 \

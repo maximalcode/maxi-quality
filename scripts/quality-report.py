@@ -389,9 +389,10 @@ def _compact_scope(scope: dict | None, scope_error: str | None) -> dict:
         "tools": {},
         "artifact": (scope.get("summary") if isinstance(scope.get("summary"), dict) else {}).get("artifact", "layer2-scope.json"),
     }
-    analysis_excerpt = _scope_excerpt(analysis.get("diagnostics"))
-    if analysis_excerpt:
-        compact["diagnostic"] = analysis_excerpt
+    # Full diagnostics remain in the run artifact, and the current entry gets
+    # a bounded excerpt in _display_scope_data. Historical entries only need
+    # structured evidence for comparison; retaining repeated excerpts makes a
+    # bounded issue body grow with the number of runs.
     for name, record in (scope.get("tools") or {}).items():
         if not isinstance(record, dict):
             compact["tools"][name] = {"state": "unknown", "outcome": "unknown", "reason": "malformed"}
@@ -448,9 +449,6 @@ def _compact_scope(scope: dict | None, scope_error: str | None) -> dict:
                 }
             }
         compact["tools"][name] = tool_compact
-        diagnostic = _scope_excerpt(record.get("diagnostics"))
-        if diagnostic:
-            compact["tools"][name]["diagnostic"] = diagnostic
     return compact
 
 
@@ -566,12 +564,18 @@ def previous_history(body: str | None) -> list[dict]:
                     ]
                 elif (
                     isinstance(value, dict)
-                    and value.get("version") == 3
+                    and value.get("version") in {3, 4}
                     and isinstance(value.get("vocab"), list)
                     and isinstance(value.get("entries"), list)
                 ):
                     vocab = value["vocab"]
-                    decoded = _decode_history_strings(value["entries"], vocab)
+                    key_vocab = value.get("keys") if value.get("version") == 4 else None
+                    if key_vocab is not None and (
+                        not isinstance(key_vocab, list)
+                        or any(not isinstance(key, str) for key in key_vocab)
+                    ):
+                        key_vocab = None
+                    decoded = _decode_history_strings(value["entries"], vocab, key_vocab)
                     marker_entries = [
                         _safe_history_entry(entry)
                         for entry in decoded
@@ -718,11 +722,22 @@ def _display_scope(scope: dict, scope_error: str | None) -> list[str]:
     return lines + [""]
 
 
-def _decode_history_strings(value: object, vocab: list[object]) -> object:
+def _decode_history_strings(value: object, vocab: list[object], key_vocab: list[object] | None = None) -> object:
     if isinstance(value, dict):
-        return {key: _decode_history_strings(item, vocab) for key, item in value.items()}
+        decoded = {}
+        for key, item in value.items():
+            decoded_key = key
+            if key_vocab is not None and isinstance(key, str):
+                if key.startswith("@@k") and re.fullmatch(r"@@k\d+", key):
+                    decoded_key = key[1:]
+                else:
+                    match = re.fullmatch(r"@k(\d+)", key)
+                    if match and int(match.group(1)) < len(key_vocab) and isinstance(key_vocab[int(match.group(1))], str):
+                        decoded_key = key_vocab[int(match.group(1))]
+            decoded[decoded_key] = _decode_history_strings(item, vocab, key_vocab)
+        return decoded
     if isinstance(value, list):
-        return [_decode_history_strings(item, vocab) for item in value]
+        return [_decode_history_strings(item, vocab, key_vocab) for item in value]
     if isinstance(value, str):
         if value.startswith("~~"):
             return value[1:]
@@ -735,10 +750,16 @@ def _decode_history_strings(value: object, vocab: list[object]) -> object:
 def _history_payload(entries: list[dict]) -> str:
     frequencies: collections.Counter[str] = collections.Counter()
     ordered: list[str] = []
+    key_frequencies: collections.Counter[str] = collections.Counter()
+    key_ordered: list[str] = []
 
     def collect(value: object) -> None:
         if isinstance(value, dict):
-            for item in value.values():
+            for key, item in value.items():
+                if isinstance(key, str):
+                    key_frequencies[key] += 1
+                    if key not in key_ordered:
+                        key_ordered.append(key)
                 collect(item)
         elif isinstance(value, list):
             for item in value:
@@ -751,10 +772,18 @@ def _history_payload(entries: list[dict]) -> str:
     collect(entries)
     vocab = [value for value in ordered if frequencies[value] > 1][:MAX_HISTORY_VOCAB]
     tokens = {value: f"~{index}" for index, value in enumerate(vocab)}
+    key_vocab = [value for value in key_ordered if key_frequencies[value] > 1]
+    key_tokens = {value: f"@k{index}" for index, value in enumerate(key_vocab)}
 
     def intern(value: object) -> object:
         if isinstance(value, dict):
-            return {key: intern(item) for key, item in value.items()}
+            compact = {}
+            for key, item in value.items():
+                compact_key = key_tokens.get(key, key) if isinstance(key, str) else key
+                if isinstance(compact_key, str) and re.fullmatch(r"@k\d+", compact_key) and compact_key not in key_tokens.values():
+                    compact_key = f"@{compact_key}"
+                compact[compact_key] = intern(item)
+            return compact
         if isinstance(value, list):
             return [intern(item) for item in value]
         if isinstance(value, str):
@@ -764,7 +793,7 @@ def _history_payload(entries: list[dict]) -> str:
                 return f"~{value}"
         return value
 
-    payload = {"version": 3, "vocab": vocab, "entries": intern(entries)}
+    payload = {"version": 4, "keys": key_vocab, "vocab": vocab, "entries": intern(entries)}
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
