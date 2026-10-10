@@ -358,6 +358,16 @@ d["tools"]["semgrep"]["diagnostics"] = [{"stream": "stderr", "source": "fixture"
 json.dump(d, open(p, "w"))
 PY
   qualify_scope "$cap_scope" $((i % 7 + 2)) $((i % 3)) $((i % 2)) 5
+  python3 - "$cap_scope" "$i" <<'PY'
+import json, sys
+path, index = sys.argv[1:]
+doc = json.load(open(path))
+semgrep = doc["tools"]["semgrep"]
+semgrep["effective"]["config_fingerprint"] = f"fixture-config-{index}"
+semgrep["effective"]["content_fingerprint"] = f"fixture-rules-{index}"
+semgrep["diagnostics"] = [{"stream": "stderr", "source": "fixture", "text": f"short diagnostic {index}"}]
+json.dump(doc, open(path, "w"))
+PY
   python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
     --date 2026-01-02 --run-id "$run" --run-attempt 1 \
     --started-at "2026-01-02T${hour}:00:00Z" --scope "$cap_scope" \
