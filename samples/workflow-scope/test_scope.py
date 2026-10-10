@@ -451,6 +451,14 @@ class WorkflowScopeTests(unittest.TestCase):
             (fragments / "malformed-kind.json").write_text(json.dumps({
                 "schema_version": 1, "kind": [], "identity": {},
             }))
+            for name, field, invalid in (("malformed-state", "state", []), ("malformed-outcome", "outcome", {})):
+                malformed = {
+                    "schema_version": 1, "kind": "workflow-scope-fragment",
+                    "identity": {"producer": "gate", "workflow": "quality", "invocation_id": "i", "run_id": "r", "run_attempt": "1", "logical_job": name, "leg": ""},
+                    "state": "run", "outcome": "success",
+                }
+                malformed[field] = invalid
+                (fragments / f"{name}.json").write_text(json.dumps(malformed))
             out = root / "out.json"
             result = run_helper("collect", "--manifest", str(manifest), "--fragments-dir", str(fragments), "--out", str(out))
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -462,7 +470,51 @@ class WorkflowScopeTests(unittest.TestCase):
             self.assertTrue(any("tools container is not a list" in issue for issue in data["collection"]["issues"]))
             self.assertTrue(any("diagnostics container is malformed" in issue for issue in data["collection"]["issues"]))
             self.assertTrue(any("unsupported workflow scope contract" in issue for issue in data["collection"]["issues"]))
+            self.assertTrue(any("fragment state is invalid" in issue for issue in data["collection"]["issues"]))
+            self.assertTrue(any("fragment outcome is invalid" in issue for issue in data["collection"]["issues"]))
             self.assertTrue(any("bad" in line and "Tool collection issue" in line for line in data["summary"]["lines"]))
+
+    def test_malformed_nested_rust_scope_keeps_collector_renderable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+            fragments = root / "fragments"
+            fragments.mkdir()
+            self.assertEqual(run_helper(
+                "init", "--out", str(manifest), "--root", str(root), "--languages", "none",
+                "--workflow", "quality", "--invocation-id", "i", "--run-id", "r", "--run-attempt", "1",
+                "--commit", "c", "--ref", "r", "--expected-job", "good| |",
+                "--expected-job", "rust| |",
+            ).returncode, 0)
+            self.assertEqual(run_helper(
+                "fragment", "--out", str(fragments / "good.json"), "--logical-job", "good",
+                "--invocation-id", "i", "--run-id", "r", "--run-attempt", "1", "--state", "run",
+                "--outcome", "success", "--reason", "completed", "--reason-code", "completed",
+            ).returncode, 0)
+            unknown_measurement = {"status": "unknown", "count": None, "unit": "source_path", "method": "fixture", "reason": "fixture"}
+            tool = {
+                "name": "clippy", "command": ["cargo", "clippy"], "working_directory": str(root),
+                "state": "run", "outcome": "success", "reason": "completed", "reason_code": "completed",
+                "exit_code": 0, "diagnostics": [],
+                "measurements": {name: dict(unknown_measurement) for name in ("examined", "unparsed", "policy_excluded")},
+                "rust": {"requested": {}, "observed": None, "collection": {"issues": None}},
+            }
+            (fragments / "rust.json").write_text(json.dumps({
+                "schema_version": 1, "kind": "workflow-scope-fragment",
+                "identity": {"producer": "gate", "workflow": "quality", "invocation_id": "i", "run_id": "r", "run_attempt": "1", "logical_job": "rust", "leg": ""},
+                "state": "run", "outcome": "success", "diagnostics": [], "tools": [tool],
+                "tool_collection": {"status": "complete", "issues": []},
+            }))
+            out = root / "out.json"
+            result = run_helper("collect", "--manifest", str(manifest), "--fragments-dir", str(fragments), "--out", str(out))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(out.read_text())
+            self.assertEqual(data["collection"]["status"], "partial")
+            self.assertEqual(next(job for job in data["jobs"] if job["logical_job"] == "good")["outcome"], "success")
+            rust = next(job for job in data["jobs"] if job["logical_job"] == "rust")
+            self.assertEqual(rust["tools"][0]["collection"]["status"], "partial")
+            self.assertTrue(any("invalid Rust observed scope" in issue for issue in data["collection"]["issues"]))
+            self.assertTrue(any("invalid Rust collection issues" in issue for issue in data["collection"]["issues"]))
 
     def test_summary_escapes_bounded_lines_and_cancellation_is_data(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -231,6 +231,15 @@ def _normalize_rust_scope(value: object, tool_name: str) -> tuple[dict[str, Any]
     if not isinstance(observed, dict):
         result["observed"] = {"artifacts": []}
         issues.append(f"invalid Rust observed scope for {tool_name}")
+        rust_collection = result.get("collection")
+        if isinstance(rust_collection, dict):
+            collection_issues = rust_collection.get("issues", [])
+            if not isinstance(collection_issues, list) or not all(isinstance(item, str) for item in collection_issues):
+                result["collection"] = {"status": "partial", "issues": []}
+                issues.append(f"invalid Rust collection issues for {tool_name}")
+        elif rust_collection is not None:
+            result["collection"] = {"status": "partial", "issues": [f"invalid Rust collection for {tool_name}"]}
+            issues.append(f"invalid Rust collection for {tool_name}")
         return result, issues
     observed_result = dict(observed)
     artifacts = observed_result.get("artifacts", [])

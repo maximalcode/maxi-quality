@@ -670,6 +670,7 @@ PY
   grep -q 'scope artifact analysis metadata is malformed' "$WORK/malformed-analysis-$malformed.md"
   grep -q "| malformed-analysis-$malformed | 1 |" "$WORK/malformed-analysis-$malformed.md"
   grep -q '| run-one | 1 |' "$WORK/malformed-analysis-$malformed.md"
+  grep -Fq '| Semgrep | **2** findings |' "$WORK/malformed-analysis-$malformed.md"
 done
 
 # The action/workflow handoff is checked from the production text itself.
