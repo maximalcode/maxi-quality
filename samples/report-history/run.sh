@@ -97,6 +97,75 @@ if grep -q 'ERRORED' "$WORK/producer-findings.md"; then
   exit 1
 fi
 
+# Malformed optional analysis fields are unknown metadata, not a renderer
+# crash or a fabricated zero/error finding result.
+MALFORMED_ANALYSIS="$WORK/malformed-analysis-scope.json"
+cp "$SFIND" "$MALFORMED_ANALYSIS"
+python3 - "$MALFORMED_ANALYSIS" <<'PY'
+import json, sys
+path = sys.argv[1]
+doc = json.load(open(path, encoding="utf-8"))
+doc["analysis"]["outcome"] = []
+json.dump(doc, open(path, "w", encoding="utf-8"))
+PY
+set +e
+python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
+  --date 2026-01-01 --run-id malformed-analysis --run-attempt 1 \
+  --started-at 2026-01-01T10:15:00Z --scope "$MALFORMED_ANALYSIS" >"$WORK/malformed-analysis.md"
+malformed_analysis_rc=$?
+set -e
+[[ $malformed_analysis_rc == 0 ]]
+grep -q '| Semgrep | \*\*2\*\* findings |' "$WORK/malformed-analysis.md"
+if grep -q 'ERRORED' "$WORK/malformed-analysis.md"; then
+  echo "malformed optional analysis metadata fabricated an operational error" >&2
+  exit 1
+fi
+
+# A mixed run retains valid Semgrep findings while an unrelated operational
+# license failure keeps the report errored. Reason text alone is not finding
+# classification evidence.
+MIXED_SCOPE="$WORK/mixed-scope.json"
+cp "$SFIND" "$MIXED_SCOPE"
+python3 - "$MIXED_SCOPE" <<'PY'
+import json, sys
+path = sys.argv[1]
+doc = json.load(open(path, encoding="utf-8"))
+doc["tools"]["licenses"].update(
+    state="run", outcome="failure", exit_code=7,
+    reason="License allowlist reported violations or an error",
+)
+json.dump(doc, open(path, "w", encoding="utf-8"))
+PY
+set +e
+python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
+  --date 2026-01-01 --run-id run-one --run-attempt 1 \
+  --started-at 2026-01-01T10:00:00Z --scope "$MIXED_SCOPE" >"$WORK/mixed.md"
+mixed_rc=$?
+set -e
+[[ $mixed_rc == 2 ]]
+grep -q 'ERRORED' "$WORK/mixed.md"
+
+# Two actual producer-shaped findings runs remain comparable even though both
+# analysis outcomes are failure: the failure is the findings verdict, not an
+# incomplete scanner attempt.
+FINDING_NEXT="$WORK/producer-findings-next-scope.json"
+cp "$SFIND" "$FINDING_NEXT"
+python3 - "$FINDING_NEXT" <<'PY'
+import json, sys
+path = sys.argv[1]
+doc = json.load(open(path, encoding="utf-8"))
+doc["identity"].update(run_id="run-next", invocation_id="run-next", started_at="2026-01-01T10:30:00Z")
+json.dump(doc, open(path, "w", encoding="utf-8"))
+PY
+python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
+  --date 2026-01-01 --run-id run-next --run-attempt 1 \
+  --started-at 2026-01-01T10:30:00Z --scope "$FINDING_NEXT" \
+  --previous-body "$WORK/producer-findings.md" >"$WORK/producer-findings-next.md"
+if grep -q 'incomplete attempt is not a stable baseline' "$WORK/producer-findings-next.md"; then
+  echo "valid findings history was qualified as an incomplete attempt" >&2
+  exit 1
+fi
+
 # A real scanner boundary failure still controls the report exit and visible
 # ERRORED state when a stale or partial JSON happens to be readable.
 SOP=$(scope operational 1 2026-01-01T10:30:00Z)

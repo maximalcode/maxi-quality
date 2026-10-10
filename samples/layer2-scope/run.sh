@@ -293,12 +293,15 @@ mkdir -p "$WORK/sbom/bin"
 cat >"$WORK/sbom/bin/osv-scanner" <<'SH'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-if [[ "${1:-}" == --version ]]; then echo 'osv-scanner 2.5.0'; exit 0; fi
+if [[ "${1:-}" == --version ]]; then
+  [[ "${SBOM_MODE:-known}" == unknown ]] && exit 1
+  echo 'osv-scanner 2.5.0'; exit 0
+fi
 if [[ "${*}" == *--all-packages* ]]; then
   output=''
   for arg in "$@"; do [[ "$arg" == --output-file=* ]] && output="${arg#--output-file=}"; done
   case "${SBOM_MODE:-known}" in
-    known|partial) printf '{"components":[{},{}]}' >"$output" ;;
+    known|unknown|partial) printf '{"components":[{},{}]}' >"$output" ;;
     malformed) printf '{"components":{}}' >"$output" ;;
   esac
   [[ "${SBOM_MODE:-known}" == partial ]] && exit 9
@@ -307,7 +310,7 @@ fi
 exit 128
 SH
 chmod +x "$WORK/sbom/bin/osv-scanner"
-for sbom_mode in known malformed partial; do
+for sbom_mode in known unknown malformed partial; do
   mkdir "$WORK/sbom/$sbom_mode"
   rc=0
   SBOM_MODE="$sbom_mode" PATH="$WORK/sbom/bin:/usr/bin:/bin" \
@@ -325,6 +328,10 @@ if mode == "known":
     assert tool["outcome"] == "success"
     assert tool["effective"]["version"] == "osv-scanner 2.5.0"
     assert tool["effective"]["format"] == "cyclonedx-1-6"
+elif mode == "unknown":
+    assert native["status"] == "known" and native["count"] == 2
+    assert tool["effective"]["version"] == "unknown"
+    assert tool["effective"]["comparison"]["status"] == "incomplete"
 elif mode == "malformed":
     assert native["status"] == "unknown" and native["count"] is None
     assert tool["outcome"] == "success"
@@ -352,6 +359,41 @@ assert effective["license_allowlist"] == ["MIT", "Apache-2.0"]
 assert effective["content_fingerprint"]
 PY
 echo "OK: license allowlist and scanner version metadata"
+
+# Effective metadata is additive. A writer failure warns and marks collection
+# partial when scope is requested, while the scanner's clean verdict survives
+# both with and without the optional scope handoff.
+mkdir -p "$WORK/metadata-fault/bin" "$WORK/metadata-fault/with-scope"
+cat >"$WORK/metadata-fault/bin/python3" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-" && "${2:-}" == */osv-effective.json ]]; then
+  echo "injected metadata writer failure" >&2
+  exit 71
+fi
+exec /usr/bin/python3 "$@"
+SH
+chmod +x "$WORK/metadata-fault/bin/python3"
+rc=0
+PATH="$WORK/metadata-fault/bin:$WORK/sbom/bin:/usr/bin:/bin" \
+  bash "$ROOT/scripts/scan.sh" samples/policy/exclude --skip semgrep --skip gitleaks \
+  >"$WORK/metadata-fault/no-scope.log" 2>&1 || rc=$?
+[[ $rc == 0 ]] || { echo "metadata writer failure gated scan without scope: $rc" >&2; exit 1; }
+rc=0
+PATH="$WORK/metadata-fault/bin:$WORK/sbom/bin:/usr/bin:/bin" \
+  bash "$ROOT/scripts/scan.sh" samples/policy/exclude --skip semgrep --skip gitleaks \
+  --scope-out "$WORK/metadata-fault/with-scope/scope.json" \
+  >"$WORK/metadata-fault/with-scope/log" 2>&1 || rc=$?
+[[ $rc == 0 ]] || { echo "metadata writer failure gated scan with scope: $rc" >&2; exit 1; }
+grep -q 'effective metadata unavailable' "$WORK/metadata-fault/with-scope/log"
+python3 - "$WORK/metadata-fault/with-scope/scope.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["analysis"]["outcome"] == "success"
+assert d["collection"]["status"] == "partial"
+assert any("effective metadata unavailable" in issue for issue in d["collection"]["issues"])
+assert d["tools"]["osv"]["effective"] == {}
+print("OK: optional metadata writer failure preserves scanner verdict")
+PY
 
 # A diagnostic sink failure must still drain the scanner stream and preserve
 # the scanner's successful verdict. The scan waits for that fallback drain

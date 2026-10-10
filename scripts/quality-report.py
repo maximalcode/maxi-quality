@@ -241,26 +241,31 @@ def _scope_has_operational_error(scope: dict) -> bool:
     """Distinguish a scanner finding outcome from a broken scanner boundary."""
     analysis = scope.get("analysis") if isinstance(scope.get("analysis"), dict) else {}
     outcome = analysis.get("outcome")
-    if outcome not in {"failure", "cancelled"}:
+    if not isinstance(outcome, str) or outcome not in {"failure", "cancelled"}:
         return False
     if outcome == "cancelled":
         return True
     tools = scope.get("tools") if isinstance(scope.get("tools"), dict) else {}
     saw_failure = False
-    for record in tools.values():
+    for name, record in tools.items():
         if not isinstance(record, dict) or record.get("outcome") != "failure":
             continue
         saw_failure = True
-        reason = str(record.get("reason") or "").lower()
         exit_code = record.get("exit_code")
-        # Scanner exit 1 is the established finding result for all Layer 2
-        # tools. Other exit codes and setup/classification reasons mean the
-        # report cannot know what the scan covered and must stay ERRORED.
-        finding_reason = any(
-            marker in reason
-            for marker in ("completed with findings", "reported findings", "reported violations")
+        # These are the only native exit-1 finding boundaries. Semgrep's
+        # finding result is its policy-classifier reason; its scanner/setup
+        # failure uses a different reason even when the process returned 1.
+        # License records deliberately remain operationally ambiguous: an
+        # arbitrary reason must never turn a broken handoff into a green report.
+        reason = record.get("reason")
+        semgrep_finding = (
+            name == "semgrep"
+            and isinstance(reason, str)
+            and reason.strip().lower() == "semgrep completed with findings"
+            and exit_code == 1
         )
-        if exit_code == 1 or finding_reason:
+        native_finding = name in {"gitleaks", "osv"} and exit_code == 1
+        if semgrep_finding or native_finding:
             continue
         return True
     return not saw_failure
@@ -324,6 +329,8 @@ def _safe_history_scope(scope: object) -> dict:
     safe = {"status": status}
     if status != "available":
         safe["reason"] = _one_line(scope.get("reason", "scope metadata unavailable"))
+    if isinstance(scope.get("operational_error"), bool):
+        safe["operational_error"] = scope["operational_error"]
     for key in ("outcome", "collection", "artifact", "artifact_link", "diagnostic"):
         value = scope.get(key)
         if isinstance(value, str):
@@ -429,6 +436,11 @@ def _compact_scope(scope: dict | None, scope_error: str | None) -> dict:
     compact = {
         "status": "available",
         "outcome": analysis.get("outcome", "unknown"),
+        # A findings-bearing analysis is recorded as failure by the producer,
+        # but complete evidence still makes it a valid comparison baseline.
+        # Retain the separate operational classification so history does not
+        # turn an ordinary finding delta into an incomplete-attempt warning.
+        "operational_error": _scope_has_operational_error(scope),
         "exit_code": analysis.get("exit_code"),
         "collection": collection.get("status", "unknown"),
         "tools": {},
@@ -661,7 +673,11 @@ def _comparison(current: dict, previous: dict | None) -> dict:
     previous_scope = previous.get("scope") if isinstance(previous.get("scope"), dict) else {}
     if current_scope.get("status") != "available" or previous_scope.get("status") != "available":
         reasons.append("scope evidence unavailable")
-    if current.get("outcome") != "success" or previous.get("outcome") != "success":
+    current_operational = current_scope.get("operational_error")
+    previous_operational = previous_scope.get("operational_error")
+    if (current.get("outcome") != "success" and current_operational is not False) or (
+        previous.get("outcome") != "success" and previous_operational is not False
+    ):
         reasons.append("incomplete attempt is not a stable baseline")
     if current.get("identity", {}).get("mode") != previous.get("identity", {}).get("mode"):
         reasons.append("scan mode changed")
@@ -1137,7 +1153,8 @@ def main() -> int:
             return 3
     if scope is not None:
         if scan_error is None and _scope_has_operational_error(scope):
-            semgrep = scope.get("tools", {}).get("semgrep", {})
+            tools = scope.get("tools") if isinstance(scope.get("tools"), dict) else {}
+            semgrep = tools.get("semgrep") if isinstance(tools.get("semgrep"), dict) else {}
             scan_error = str(semgrep.get("reason") or "scope records a failed/incomplete Layer 2 attempt")
     try:
         prior = previous_history(body)
