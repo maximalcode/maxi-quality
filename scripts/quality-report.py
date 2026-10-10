@@ -351,10 +351,26 @@ def _safe_history_scope(scope: object) -> dict:
             safe[key] = _one_line(value, 220)
     raw_tools = scope.get("tools")
     safe_tools = {}
+    malformed = status == "available" and (not isinstance(raw_tools, dict) or not raw_tools)
+
+    def recover_measurement(value: object) -> dict:
+        nonlocal malformed
+        normalized = _compact_measurement(value)
+        if not isinstance(value, dict) or (
+            value.get("status") != normalized["status"]
+            or value.get("count") != normalized["count"]
+            or isinstance(value.get("count"), bool)
+            or not isinstance(value.get("unit"), str)
+            or (normalized["status"] == "known" and not isinstance(value.get("method"), str))
+        ):
+            malformed = True
+        return normalized
+
     if isinstance(raw_tools, dict):
         for raw_name, raw_tool in raw_tools.items():
             name = _one_line(raw_name, 80)
             if not isinstance(raw_tool, dict):
+                malformed = True
                 safe_tools[name] = {"state": "unknown", "outcome": "unknown", "reason": "malformed tool metadata"}
                 continue
             tool = {}
@@ -368,25 +384,37 @@ def _safe_history_scope(scope: object) -> dict:
                 value = raw_tool.get(key)
                 if isinstance(value, dict):
                     tool[key] = _compact_value(value)
+                elif key in raw_tool:
+                    malformed = True
             measurements = raw_tool.get("measurements")
             if isinstance(measurements, dict):
                 tool["measurements"] = {
-                    key: _compact_measurement(measurements.get(key))
+                    key: recover_measurement(measurements.get(key))
                     for key in ("examined", "unparsed", "policy_excluded")
                     if key in measurements
                 }
+            elif "measurements" in raw_tool:
+                malformed = True
             not_applicable = raw_tool.get("not_applicable")
             if isinstance(not_applicable, list):
                 tool["not_applicable"] = [
                     key for key in not_applicable
                     if isinstance(key, str) and key in {"examined", "unparsed", "policy_excluded"}
                 ]
+                if len(tool["not_applicable"]) != len(not_applicable):
+                    malformed = True
+            elif "not_applicable" in raw_tool:
+                malformed = True
             native = raw_tool.get("native")
             if isinstance(native, dict) and "component_count" in native:
-                tool["native"] = {"component_count": _compact_measurement(native.get("component_count"))}
+                tool["native"] = {"component_count": recover_measurement(native.get("component_count"))}
+            elif "native" in raw_tool and not isinstance(native, dict):
+                malformed = True
             safe_tools[name] = tool
     if safe_tools:
         safe["tools"] = safe_tools
+    if malformed:
+        safe.update(status="unknown", reason="malformed scope metadata; comparison unavailable")
     return safe
 
 
@@ -625,6 +653,10 @@ def previous_history(body: str | None) -> list[dict]:
         end = body.find(HISTORY_DATA_END, start)
         if end >= 0:
             raw = body[start:end].strip()
+            # Earlier reports put bare JSON between closed marker comments.
+            # Keep reading those while the writer hides new metadata itself.
+            if raw.startswith("<!--") and raw.endswith("-->"):
+                raw = raw[4:-3].strip()
             try:
                 value = json.loads(raw)
                 if isinstance(value, list):
@@ -688,7 +720,7 @@ def _comparison(current: dict, previous: dict | None) -> dict:
     current_scope = current.get("scope") if isinstance(current.get("scope"), dict) else {}
     previous_scope = previous.get("scope") if isinstance(previous.get("scope"), dict) else {}
     if current_scope.get("status") != "available" or previous_scope.get("status") != "available":
-        reasons.append("scope evidence unavailable")
+        return {"status": "unavailable", "reason": "current or predecessor scope evidence unavailable"}
     current_operational = current_scope.get("operational_error")
     previous_operational = previous_scope.get("operational_error")
     if (current.get("outcome") != "success" and current_operational is not False) or (
@@ -871,7 +903,9 @@ def _history_payload(entries: list[dict]) -> str:
         return value
 
     payload = {"version": 4, "keys": key_vocab, "vocab": vocab, "entries": intern(entries)}
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    # HTML comments cannot contain "--". JSON escapes retain the exact value
+    # while preventing tool text from closing or nesting the hidden comment.
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).replace("--", "\\u002d\\u002d")
 
 
 def _artifact_link(repository: str, identity: dict, artifact: str) -> str | None:
@@ -1082,7 +1116,7 @@ def build(counts, date, gitleaks, osv, previous, target, licenses="not run",
 
     lines += [
         HISTORY_DATA_START,
-        _history_payload(retained),
+        "<!--\n" + _history_payload(retained) + "\n-->",
         HISTORY_DATA_END,
         HISTORY_HEADING,
         "",
