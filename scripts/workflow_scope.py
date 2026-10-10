@@ -631,15 +631,46 @@ def tool_record(args: argparse.Namespace) -> None:
     write(path, records)
 
 
-def expected_tool_record(spec: str, dead_code_mode: str, blocked: bool = False) -> dict[str, Any]:
-    bits = spec.split("|", 4)
+def parse_step_outcomes(raw: str) -> dict[str, str]:
+    if not raw:
+        return {}
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(decoded, dict):
+        return {}
+    result: dict[str, str] = {}
+    for name, value in decoded.items():
+        if isinstance(value, dict) and isinstance(value.get("outcome"), str):
+            result[str(name)] = value["outcome"]
+        elif isinstance(value, str):
+            result[str(name)] = value
+    return result
+
+
+def expected_tool_record(
+    spec: str,
+    dead_code_mode: str,
+    blocked: bool = False,
+    step_outcomes: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    bits = spec.split("|", 6)
     name = bits[0]
     state = bits[1] if len(bits) > 1 and bits[1] else "unknown"
     outcome = bits[2] if len(bits) > 2 and bits[2] else "unknown"
     reason_code = bits[3] if len(bits) > 3 and bits[3] else "missing_tool_record"
     reason = bits[4] if len(bits) > 4 and bits[4] else "command execution is unknown because no boundary record was received"
+    owner_steps = [value for value in bits[5].split(",") if value] if len(bits) > 5 else []
+    prerequisite_steps = [value for value in bits[6].split(",") if value] if len(bits) > 6 else []
+    observed_steps = step_outcomes or {}
+    analysis_skipped = bool(owner_steps) and all(observed_steps.get(step) == "skipped" for step in owner_steps)
+    failed_prerequisites = [step for step in prerequisite_steps if observed_steps.get(step) == "failure"]
     if blocked:
         state, outcome, reason_code, reason = "skipped", "unknown", "blocked", "command was prevented by an earlier recorded failure"
+    elif analysis_skipped and failed_prerequisites:
+        state, outcome, reason_code = "skipped", "unknown", "prerequisite_failure"
+        reason = f"{reason}; prerequisite step {', '.join(failed_prerequisites)} failed"
     elif reason_code == "opaque":
         # Known nested analyzers stay readable without pretending that the
         # enclosing build proved their execution. Their identity and opaque
@@ -840,6 +871,7 @@ def fragment(args: argparse.Namespace) -> None:
         },
     }
     observed = {str(item.get("name")) for item in value["tools"] if item.get("name")}
+    step_outcomes = parse_step_outcomes(args.step_outcomes)
     failure_seen = False
     previous_names: set[str] = set()
     missing_records: list[str] = []
@@ -855,6 +887,7 @@ def fragment(args: argparse.Namespace) -> None:
             spec,
             args.dead_code_mode,
             blocked=failure_seen and not opaque,
+            step_outcomes=step_outcomes,
         )
         seen = expected["name"] in observed or any(name.startswith(expected["name"] + ":") for name in observed)
         if not seen:
@@ -943,6 +976,8 @@ def collect(args: argparse.Namespace) -> None:
                 document = build_document(args, observe_presence=False)
                 manifest_issue = "current-attempt manifest identity does not match collector identity"
     identity = document["identity"]
+    if args.cancellation:
+        identity["cancellation"] = args.cancellation
     expected = document.get("expected_jobs", [])
     received: dict[str, dict[str, Any]] = {}
     issues: list[str] = [manifest_issue] if manifest_issue else []
@@ -1160,6 +1195,7 @@ def parser() -> argparse.ArgumentParser:
     fragment_parser.add_argument("--expected-tool", action="append")
     fragment_parser.add_argument("--dead-code-mode", default="auto")
     fragment_parser.add_argument("--job-outcome", default="unknown")
+    fragment_parser.add_argument("--step-outcomes", default="{}")
     fragment_parser.set_defaults(func=fragment)
     tool_parser = sub.add_parser("tool")
     tool_parser.add_argument("--file", required=True)

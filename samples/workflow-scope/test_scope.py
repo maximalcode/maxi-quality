@@ -200,6 +200,37 @@ class WorkflowScopeTests(unittest.TestCase):
             self.assertIn("typescript|pkg-b", data["collection"]["missing"])
             self.assertEqual(data["coverage"]["state"], "not_applicable")
 
+    def test_collect_merges_cancellation_into_valid_manifest_and_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+            fragments = root / "fragments"
+            fragments.mkdir()
+            init = run_helper(
+                "init", "--out", str(manifest), "--root", str(root), "--languages", "none",
+                "--workflow", "quality", "--invocation-id", "collect-cancel",
+                "--run-id", "collect-run", "--run-attempt", "2", "--commit", "c", "--ref", "r",
+                "--expected-job", "typescript|ts|pkg",
+            )
+            self.assertEqual(init.returncode, 0, init.stderr)
+            fragment = run_helper(
+                "fragment", "--out", str(fragments / "typescript.json"),
+                "--workflow", "quality", "--invocation-id", "collect-cancel", "--run-id", "collect-run",
+                "--run-attempt", "2", "--logical-job", "typescript", "--language", "ts", "--leg", "pkg",
+                "--state", "run", "--outcome", "cancelled", "--reason", "cancelled at boundary",
+            )
+            self.assertEqual(fragment.returncode, 0, fragment.stderr)
+            collected = root / "collected.json"
+            collect = run_helper(
+                "collect", "--manifest", str(manifest), "--fragments-dir", str(fragments), "--out", str(collected),
+                "--workflow", "quality", "--invocation-id", "collect-cancel", "--run-id", "collect-run",
+                "--run-attempt", "2", "--cancellation", "cancelled",
+            )
+            self.assertEqual(collect.returncode, 0, collect.stderr)
+            data = json.loads(collected.read_text())
+            self.assertEqual(data["identity"]["cancellation"], "cancelled")
+            self.assertTrue(any("Cancellation metadata: cancelled" in line for line in data["summary"]["lines"]))
+
     def test_deselected_unsupported_shape_is_observed_without_detector_refusal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

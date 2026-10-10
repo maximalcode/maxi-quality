@@ -538,6 +538,98 @@ class LanguageToolFixtures(unittest.TestCase):
             job = json.loads(collected.read_text())["jobs"][0]
             self.assertEqual([tool["name"] for tool in job["tools"][:2]], ["install", "lint"])
 
+    def test_fragment_action_maps_failed_setup_and_skipped_analysis_to_prerequisite_failure(self) -> None:
+        scope_action = yaml.safe_load((ROOT / "actions" / "workflow-scope" / "action.yml").read_text(encoding="utf-8"))
+        fragment_body = next(step["run"] for step in scope_action["runs"]["steps"] if step.get("name") == "Write workflow scope fragment")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "fragment.json"
+            env = {
+                **os.environ,
+                "GITHUB_ACTION_PATH": str(ROOT / "actions" / "workflow-scope"),
+                "RUNNER_TEMP": str(root),
+                "GITHUB_OUTPUT": str(root / "github-output"),
+                "OUT": str(output),
+                "PRODUCER": "gate", "WORKFLOW": "quality", "INVOCATION": "setup-failure",
+                "RUN_ID": "setup-run", "RUN_ATTEMPT": "1", "LOGICAL_JOB": "python", "LANGUAGE": "python",
+                "LEG": "fixture", "STATE": "run", "OUTCOME": "failure", "REASON": "fixture",
+                "REASON_CODE": "fixture", "DIAGNOSTIC": "", "DIAGNOSTIC_FILE": "", "TOOLS_FILE": str(root / "missing-tools.json"),
+                "EXPECTED_TOOLS": "ruff|skipped|unknown|blocked|Ruff step was not reached|python-uv,python-pip|setup-python,setup-uv\nmypy|skipped|unknown|blocked|mypy step was not reached|python-uv,python-pip|setup-python,setup-uv",
+                "DEAD_CODE_MODE": "auto", "JOB_OUTCOME": "failure", "STEP_OUTCOMES": json.dumps({
+                    "setup-python": {"outcome": "failure"},
+                    "python-uv": {"outcome": "skipped"},
+                    "python-pip": {"outcome": "skipped"},
+                    "setup-uv": {"outcome": "skipped"},
+                }),
+                "ARTIFACT_PREFIX": "setup-failure",
+            }
+            result = subprocess.run(["bash", "-c", textwrap.dedent(fragment_body)], cwd=root, env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            tools = json.loads(output.read_text())["tools"]
+            self.assertEqual([(item["name"], item["state"], item["reason_code"]) for item in tools], [
+                ("ruff", "skipped", "prerequisite_failure"),
+                ("mypy", "skipped", "prerequisite_failure"),
+            ])
+
+    def test_fragment_action_keeps_missing_record_unknown_without_setup_evidence(self) -> None:
+        scope_action = yaml.safe_load((ROOT / "actions" / "workflow-scope" / "action.yml").read_text(encoding="utf-8"))
+        fragment_body = next(step["run"] for step in scope_action["runs"]["steps"] if step.get("name") == "Write workflow scope fragment")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "fragment.json"
+            env = {
+                **os.environ,
+                "GITHUB_ACTION_PATH": str(ROOT / "actions" / "workflow-scope"), "RUNNER_TEMP": str(root), "OUT": str(output),
+                "GITHUB_OUTPUT": str(root / "github-output"),
+                "PRODUCER": "gate", "WORKFLOW": "quality", "INVOCATION": "unknown-setup", "RUN_ID": "unknown-run", "RUN_ATTEMPT": "1",
+                "LOGICAL_JOB": "python", "LANGUAGE": "python", "LEG": "fixture", "STATE": "run", "OUTCOME": "success", "REASON": "fixture",
+                "REASON_CODE": "fixture", "DIAGNOSTIC": "", "DIAGNOSTIC_FILE": "", "TOOLS_FILE": str(root / "missing-tools.json"),
+                "EXPECTED_TOOLS": "ruff|skipped|unknown|blocked|Ruff step was not reached|python-uv,python-pip|setup-python,setup-uv",
+                "DEAD_CODE_MODE": "auto", "JOB_OUTCOME": "success", "STEP_OUTCOMES": "{}", "ARTIFACT_PREFIX": "unknown-setup",
+            }
+            result = subprocess.run(["bash", "-c", textwrap.dedent(fragment_body)], cwd=root, env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            tool = json.loads(output.read_text())["tools"][0]
+            self.assertEqual((tool["state"], tool["reason_code"]), ("unknown", "missing_tool_record"))
+
+    def test_production_language_fragment_handoffs_cover_setup_failures_for_all_five_jobs(self) -> None:
+        workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        scope_action = yaml.safe_load((ROOT / "actions" / "workflow-scope" / "action.yml").read_text(encoding="utf-8"))
+        fragment_body = next(step["run"] for step in scope_action["runs"]["steps"] if step.get("name") == "Write workflow scope fragment")
+        jobs = {name: workflow["jobs"][name] for name in ("typescript", "dotnet", "python", "rust", "java")}
+        for job_name, job in jobs.items():
+            record = next(step for step in job["steps"] if step.get("name", "").startswith("Record ") and "workflow scope fragment" in step["name"])
+            expected = [line for line in record["with"]["expected-tools"].splitlines() if line.strip()]
+            mapped = [line for line in expected if len(line.split("|", 6)) > 6 and line.split("|", 6)[3] != "opaque"]
+            self.assertTrue(mapped, job_name)
+            self.assertEqual(record["with"]["step-outcomes"], "${{ toJSON(steps) }}")
+            step_ids = {step.get("id") for step in job["steps"]}
+            outcomes: dict[str, dict[str, str]] = {}
+            for spec in mapped:
+                bits = spec.split("|", 6)
+                for owner in bits[5].split(","):
+                    outcomes[owner] = {"outcome": "skipped"}
+            outcomes["checkout"] = {"outcome": "failure"}
+            self.assertTrue(set(outcomes).issubset(step_ids), (job_name, set(outcomes) - step_ids))
+            with self.subTest(job=job_name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                output = root / "fragment.json"
+                env = {
+                    **os.environ, "GITHUB_ACTION_PATH": str(ROOT / "actions" / "workflow-scope"), "RUNNER_TEMP": str(root),
+                    "GITHUB_OUTPUT": str(root / "github-output"), "OUT": str(output), "PRODUCER": "gate", "WORKFLOW": "quality",
+                    "INVOCATION": "handoff", "RUN_ID": "handoff-run", "RUN_ATTEMPT": "1", "LOGICAL_JOB": job_name,
+                    "LANGUAGE": job_name, "LEG": "fixture", "STATE": "run", "OUTCOME": "failure", "REASON": "fixture",
+                    "REASON_CODE": "fixture", "DIAGNOSTIC": "", "DIAGNOSTIC_FILE": "", "TOOLS_FILE": str(root / "missing-tools.json"),
+                    "EXPECTED_TOOLS": "\n".join(expected), "DEAD_CODE_MODE": "auto", "JOB_OUTCOME": "failure",
+                    "STEP_OUTCOMES": json.dumps(outcomes), "ARTIFACT_PREFIX": "handoff",
+                }
+                result = subprocess.run(["bash", "-c", textwrap.dedent(fragment_body)], cwd=root, env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                tools = json.loads(output.read_text())["tools"]
+                for item in tools:
+                    if item["name"] in {line.split("|", 1)[0] for line in mapped}:
+                        self.assertEqual((item["state"], item["reason_code"]), ("skipped", "prerequisite_failure"), item)
+
     def test_rust_command_and_fragment_use_copied_helper_without_adopter_scripts(self) -> None:
         scope_action = yaml.safe_load((ROOT / "actions" / "workflow-scope" / "action.yml").read_text(encoding="utf-8"))
         self.assertEqual(

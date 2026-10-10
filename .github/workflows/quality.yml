@@ -781,7 +781,8 @@ jobs:
       matrix:
         dir: ${{ fromJSON(needs.detect.outputs.ts_dirs) }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Prepare workflow scope command recorder
         id: scope-helper
         if: always()
@@ -789,10 +790,12 @@ jobs:
         continue-on-error: true
         with:
           mode: helper
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      - id: setup-node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: ${{ inputs.node-version }}
       - name: Install and lint
+        id: typescript-analysis
         shell: bash
         working-directory: ${{ matrix.dir }}
         env:
@@ -863,6 +866,7 @@ jobs:
       # errors first — knip's answer to "is this file dead" is worth less when
       # the file does not compile.
       - name: Dead code and unused dependencies (knip)
+        id: typescript-deadcode
         if: inputs.dead-code != 'off'
         uses: maximalcode/maxi-quality/actions/deadcode@613a26c952d3a5b224b15e7268b182826c1e53b2
         env:
@@ -891,11 +895,12 @@ jobs:
           reason-code: matrix-leg
           tools-file: ${{ runner.temp }}/maxi-quality-tools.json
           expected-tools: |-
-            install|skipped|unknown|blocked|install step was not reached
-            lint|skipped|unknown|blocked|lint step was not reached
-            knip|skipped|unknown|blocked|dead-code step was not reached
+            install|skipped|unknown|blocked|install step was not reached|typescript-analysis|checkout,setup-node
+            lint|skipped|unknown|blocked|lint step was not reached|typescript-analysis|checkout,setup-node
+            knip|skipped|unknown|blocked|dead-code step was not reached|typescript-deadcode|checkout,setup-node,typescript-analysis
           dead-code-mode: ${{ inputs.dead-code }}
           job-outcome: ${{ job.status }}
+          step-outcomes: ${{ toJSON(steps) }}
           artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.detect.outputs.scope_invocation_id }}
 
   dotnet:
@@ -907,7 +912,8 @@ jobs:
       matrix:
         target: ${{ fromJSON(needs.detect.outputs.dotnet_targets) }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Prepare workflow scope command recorder
         id: scope-helper
         if: always()
@@ -915,7 +921,8 @@ jobs:
         continue-on-error: true
         with:
           mode: helper
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+      - id: setup-dotnet
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           dotnet-version: ${{ inputs.dotnet-version }}
       # The gate lives in Directory.Build.props (TreatWarningsAsErrors) —
@@ -939,6 +946,7 @@ jobs:
       # env: hands bash a value instead of splicing text, so the same filename
       # is just an argument that fails to build.
       - name: Build
+        id: dotnet-analysis
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
@@ -993,11 +1001,12 @@ jobs:
           reason-code: matrix-leg
           tools-file: ${{ runner.temp }}/maxi-quality-tools.json
           expected-tools: |-
-            build|skipped|unknown|blocked|build step was not reached
-            roslyn|unknown|unknown|opaque|Roslyn execution is nested inside dotnet build
-            sonar-analyzer|unknown|unknown|opaque|SonarAnalyzer.CSharp execution is nested inside dotnet build
-            roslynator|unknown|unknown|opaque|Roslynator execution is nested inside dotnet build
+            build|skipped|unknown|blocked|build step was not reached|dotnet-analysis|checkout,setup-dotnet
+            roslyn|unknown|unknown|opaque|Roslyn execution is nested inside dotnet build|dotnet-analysis|checkout,setup-dotnet
+            sonar-analyzer|unknown|unknown|opaque|SonarAnalyzer.CSharp execution is nested inside dotnet build|dotnet-analysis|checkout,setup-dotnet
+            roslynator|unknown|unknown|opaque|Roslynator execution is nested inside dotnet build|dotnet-analysis|checkout,setup-dotnet
           job-outcome: ${{ job.status }}
+          step-outcomes: ${{ toJSON(steps) }}
           artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.detect.outputs.scope_invocation_id }}
 
   python:
@@ -1009,7 +1018,8 @@ jobs:
       matrix:
         dir: ${{ fromJSON(needs.detect.outputs.python_dirs) }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Prepare workflow scope command recorder
         id: scope-helper
         if: always()
@@ -1017,7 +1027,8 @@ jobs:
         continue-on-error: true
         with:
           mode: helper
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      - id: setup-python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: ${{ inputs.python-version }}
 
@@ -1052,12 +1063,14 @@ jobs:
       # `uses:` SHA guard in ci.yml never caught it because a pipe is not a
       # `uses:` line; that guard now covers this shape too.
       - name: Install uv
+        id: setup-uv
         if: steps.mode.outputs.tool == 'uv'
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           version: ${{ inputs.uv-version }}
 
       - name: Lint and type-check (uv)
+        id: python-uv
         if: steps.mode.outputs.tool == 'uv'
         shell: bash
         working-directory: ${{ matrix.dir }}
@@ -1099,6 +1112,7 @@ jobs:
           scope_run mypy uv run mypy .
 
       - name: Lint and type-check (pip)
+        id: python-pip
         if: steps.mode.outputs.tool == 'pip'
         shell: bash
         working-directory: ${{ matrix.dir }}
@@ -1160,6 +1174,7 @@ jobs:
       # rejected (125 findings, 118 of them one first-party artifact, versus 3
       # at the granularity deptry is designed for).
       - name: Unused and undeclared dependencies (deptry)
+        id: python-deptry
         if: inputs.dead-code != 'off'
         uses: maximalcode/maxi-quality/actions/deadcode@613a26c952d3a5b224b15e7268b182826c1e53b2
         env:
@@ -1187,12 +1202,13 @@ jobs:
           reason-code: matrix-leg
           tools-file: ${{ runner.temp }}/maxi-quality-tools.json
           expected-tools: |-
-            setup|skipped|unknown|blocked|Python setup step was not reached
-            ruff|skipped|unknown|blocked|Ruff step was not reached
-            mypy|skipped|unknown|blocked|mypy step was not reached
-            deptry|skipped|unknown|blocked|deptry action was not reached
+            setup|skipped|unknown|blocked|Python setup step was not reached|python-uv,python-pip|checkout,setup-python,setup-uv,mode
+            ruff|skipped|unknown|blocked|Ruff step was not reached|python-uv,python-pip|checkout,setup-python,setup-uv,mode
+            mypy|skipped|unknown|blocked|mypy step was not reached|python-uv,python-pip|checkout,setup-python,setup-uv,mode
+            deptry|skipped|unknown|blocked|deptry action was not reached|python-deptry|checkout,setup-python,setup-uv,mode,python-uv,python-pip
           dead-code-mode: ${{ inputs.dead-code }}
           job-outcome: ${{ job.status }}
+          step-outcomes: ${{ toJSON(steps) }}
           artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.detect.outputs.scope_invocation_id }}
 
   # Rust rides the reusable workflow like every other language (#70). It used to
@@ -1216,7 +1232,8 @@ jobs:
       matrix:
         dir: ${{ fromJSON(needs.detect.outputs.rust_dirs) }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Prepare workflow scope command recorder
         id: scope-helper
         if: always()
@@ -1232,6 +1249,7 @@ jobs:
       # a no-op wherever rustup is already reachable, and GITHUB_PATH carries
       # it to every later step of the job.
       - name: Put cargo's user bin dir on PATH (self-hosted runners)
+        id: rust-path
         shell: bash
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
@@ -1239,6 +1257,7 @@ jobs:
       # why at length. This value is an input rather than a globbed filename,
       # so the exposure is smaller, but the habit is the mitigation.
       - name: Pinned Rust toolchain
+        id: rust-toolchain
         shell: bash
         env:
           RUST_VERSION: ${{ inputs.rust-version }}
@@ -1255,6 +1274,7 @@ jobs:
       # the same standard every SHA-pinned `uses:` line here meets, in a shape
       # `uses:` cannot express. Bump the two together.
       - name: Pinned cargo-deny (checksum-verified)
+        id: setup-cargo-deny
         shell: bash
         env:
           CARGO_DENY_SHA256: '9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f'
@@ -1267,6 +1287,7 @@ jobs:
             cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny
 
       - name: Format, lint and audit
+        id: rust-analysis
         shell: bash
         working-directory: ${{ matrix.dir }}
         env:
@@ -1341,10 +1362,11 @@ jobs:
           reason-code: matrix-leg
           tools-file: ${{ runner.temp }}/maxi-quality-tools.json
           expected-tools: |-
-            fmt|skipped|unknown|blocked|format step was not reached
-            clippy|skipped|unknown|blocked|Clippy step was not reached
-            cargo-deny|skipped|unknown|blocked|cargo-deny step was not reached
+            fmt|skipped|unknown|blocked|format step was not reached|rust-analysis|checkout,rust-path,rust-toolchain,setup-cargo-deny
+            clippy|skipped|unknown|blocked|Clippy step was not reached|rust-analysis|checkout,rust-path,rust-toolchain,setup-cargo-deny
+            cargo-deny|skipped|unknown|blocked|cargo-deny step was not reached|rust-analysis|checkout,rust-path,rust-toolchain,setup-cargo-deny
           job-outcome: ${{ job.status }}
+          step-outcomes: ${{ toJSON(steps) }}
           artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.detect.outputs.scope_invocation_id }}
 
   # Java rides the reusable workflow like every other language. The pins live
@@ -1369,7 +1391,8 @@ jobs:
       matrix:
         dir: ${{ fromJSON(needs.detect.outputs.java_dirs) }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Prepare workflow scope command recorder
         id: scope-helper
         if: always()
@@ -1377,7 +1400,8 @@ jobs:
         continue-on-error: true
         with:
           mode: helper
-      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+      - id: setup-java
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
         with:
           distribution: temurin
           java-version: ${{ inputs.java-version }}
@@ -1394,6 +1418,7 @@ jobs:
       # -B and --no-transfer-progress keep the log readable; -e is deliberately
       # absent, because a stack trace per finding buries the findings.
       - name: Compile with Error Prone and NullAway
+        id: java-compile
         shell: bash
         working-directory: ${{ matrix.dir }}
         env:
@@ -1446,6 +1471,7 @@ jobs:
       # avoid, and spotless is not bound to a lifecycle phase for the same
       # reason Rust's -Dwarnings lives in the job.
       - name: Everything the formatter owns must already be formatted
+        id: java-spotless
         shell: bash
         working-directory: ${{ matrix.dir }}
         env:
@@ -1497,11 +1523,12 @@ jobs:
           reason-code: matrix-leg
           tools-file: ${{ runner.temp }}/maxi-quality-tools.json
           expected-tools: |-
-            test-compile|skipped|unknown|blocked|compile step was not reached
-            error-prone|unknown|unknown|opaque|Error Prone execution is nested inside Maven javac
-            nullaway|unknown|unknown|opaque|NullAway execution is nested inside Maven javac
-            spotless|skipped|unknown|blocked|formatter step was not reached
+            test-compile|skipped|unknown|blocked|compile step was not reached|java-compile|checkout,setup-java
+            error-prone|unknown|unknown|opaque|Error Prone execution is nested inside Maven javac|java-compile|checkout,setup-java
+            nullaway|unknown|unknown|opaque|NullAway execution is nested inside Maven javac|java-compile|checkout,setup-java
+            spotless|skipped|unknown|blocked|formatter step was not reached|java-spotless|checkout,setup-java,java-compile
           job-outcome: ${{ job.status }}
+          step-outcomes: ${{ toJSON(steps) }}
           artifact-prefix: maxi-quality-workflow-scope-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.detect.outputs.scope_invocation_id }}
 
   layer2:
