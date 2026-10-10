@@ -624,13 +624,15 @@ run_gitleaks() {
     fi
   fi
 
-  local gitleaks_version=""
-  gitleaks_version="$("${RESOLVED_CMD[@]}" version 2>/dev/null || true)"
-  gitleaks_version="${gitleaks_version%%$'\n'*}"
-  [[ -n "$gitleaks_version" ]] || gitleaks_version="unknown"
-  local gitleaks_effective="$WORKDIR/gitleaks-effective.json"
-  local -a gitleaks_metadata_issue=()
-  if ! python3 - "$gitleaks_effective" "$gitleaks_version" "$history_mode" "$fallback" "${TARGET}/.gitleaks.toml" "${TARGET}/gitleaks.toml" <<'PY'
+  local gitleaks_version="" gitleaks_effective=""
+  local -a gitleaks_metadata_issue=() gitleaks_effective_arg=()
+  if [[ -n "$SCOPE_OUT" ]]; then
+    gitleaks_version="$("${RESOLVED_CMD[@]}" version 2>/dev/null || true)"
+    gitleaks_version="${gitleaks_version%%$'\n'*}"
+    [[ -n "$gitleaks_version" ]] || gitleaks_version="unknown"
+    gitleaks_effective="$WORKDIR/gitleaks-effective.json"
+  fi
+  if [[ -n "$SCOPE_OUT" ]] && ! python3 - "$gitleaks_effective" "$gitleaks_version" "$history_mode" "$fallback" "${TARGET}/.gitleaks.toml" "${TARGET}/gitleaks.toml" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -664,7 +666,6 @@ PY
     gitleaks_effective=""
     gitleaks_metadata_issue=(--collection-issue "effective metadata unavailable for gitleaks")
   fi
-  local -a gitleaks_effective_arg=()
   [[ -n "$gitleaks_effective" ]] && gitleaks_effective_arg=(--effective-json "$gitleaks_effective")
 
   local rc=0 gitleaks_log="$WORKDIR/gitleaks.log"
@@ -711,15 +712,17 @@ run_osv() {
     }
   local root="$RESOLVED_ROOT"
 
-  local osv_version=""
-  osv_version="$("${RESOLVED_CMD[@]}" --version 2>/dev/null || true)"
-  osv_version="${osv_version%%$'\n'*}"
-  [[ -n "$osv_version" ]] || osv_version="unknown"
-  local osv_effective="$WORKDIR/osv-effective.json"
-  local licenses_effective="$WORKDIR/licenses-effective.json"
-  local sbom_effective="$WORKDIR/sbom-effective.json"
-  local -a osv_metadata_issue=()
-  if ! python3 - "$osv_effective" "$licenses_effective" "$sbom_effective" "$osv_version" "$LICENSES" <<'PY'
+  local osv_version="" osv_effective="" licenses_effective="" sbom_effective=""
+  local -a osv_metadata_issue=() osv_effective_arg=() licenses_effective_arg=() sbom_effective_arg=()
+  if [[ -n "$SCOPE_OUT" ]]; then
+    osv_version="$("${RESOLVED_CMD[@]}" --version 2>/dev/null || true)"
+    osv_version="${osv_version%%$'\n'*}"
+    [[ -n "$osv_version" ]] || osv_version="unknown"
+    osv_effective="$WORKDIR/osv-effective.json"
+    licenses_effective="$WORKDIR/licenses-effective.json"
+    sbom_effective="$WORKDIR/sbom-effective.json"
+  fi
+  if [[ -n "$SCOPE_OUT" ]] && ! python3 - "$osv_effective" "$licenses_effective" "$sbom_effective" "$osv_version" "$LICENSES" <<'PY'
 import hashlib
 import json
 import sys
@@ -755,7 +758,6 @@ PY
     sbom_effective=""
     osv_metadata_issue=(--collection-issue "effective metadata unavailable for osv-scanner")
   fi
-  local -a osv_effective_arg=() licenses_effective_arg=() sbom_effective_arg=()
   [[ -n "$osv_effective" ]] && osv_effective_arg=(--effective-json "$osv_effective")
   [[ -n "$licenses_effective" ]] && licenses_effective_arg=(--effective-json "$licenses_effective")
   [[ -n "$sbom_effective" ]] && sbom_effective_arg=(--effective-json "$sbom_effective")

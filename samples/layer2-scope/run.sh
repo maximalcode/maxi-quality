@@ -362,6 +362,70 @@ assert effective["content_fingerprint"]
 PY
 echo "OK: license allowlist and scanner version metadata"
 
+# Scope metadata collection is opt-in. Without --scope-out, the scanner keeps
+# its original command surface; with it, the version probes and effective
+# metadata are retained in the artifact.
+mkdir -p "$WORK/metadata-boundary/bin" "$WORK/metadata-boundary/no-scope" "$WORK/metadata-boundary/with-scope"
+cat > "$WORK/metadata-boundary/bin/gitleaks" <<'SH'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf 'gitleaks %s\n' "$*" >> "${TOOL_LOG:?}"
+if [[ "${1:-}" == version ]]; then
+  echo 'gitleaks 8.24.2'
+fi
+exit 0
+SH
+cat > "$WORK/metadata-boundary/bin/osv-scanner" <<'SH'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf 'osv-scanner %s\n' "$*" >> "${TOOL_LOG:?}"
+if [[ "${1:-}" == --version ]]; then
+  echo 'osv-scanner 2.5.0'
+  exit 0
+fi
+[[ "${1:-}" == scan ]] && exit 128
+exit 0
+SH
+chmod +x "$WORK/metadata-boundary/bin/gitleaks" "$WORK/metadata-boundary/bin/osv-scanner"
+
+: > "$WORK/metadata-boundary/no-scope/tools.log"
+TOOL_LOG="$WORK/metadata-boundary/no-scope/tools.log" \
+  PATH="$WORK/metadata-boundary/bin:/usr/bin:/bin" \
+  bash "$ROOT/scripts/scan.sh" samples/policy/exclude --skip semgrep \
+  >"$WORK/metadata-boundary/no-scope/log" 2>&1
+[[ "$(wc -l < "$WORK/metadata-boundary/no-scope/tools.log")" -eq 2 ]] || {
+  echo "scope-disabled scan changed the tool command surface" >&2
+  cat "$WORK/metadata-boundary/no-scope/tools.log" >&2
+  exit 1
+}
+! grep -qE '(^| )(version|--version)( |$)' "$WORK/metadata-boundary/no-scope/tools.log" || {
+  echo "scope-disabled scan collected a tool version" >&2
+  cat "$WORK/metadata-boundary/no-scope/tools.log" >&2
+  exit 1
+}
+
+: > "$WORK/metadata-boundary/with-scope/tools.log"
+TOOL_LOG="$WORK/metadata-boundary/with-scope/tools.log" \
+  PATH="$WORK/metadata-boundary/bin:/usr/bin:/bin" \
+  bash "$ROOT/scripts/scan.sh" samples/policy/exclude --skip semgrep \
+  --scope-out "$WORK/metadata-boundary/with-scope/scope.json" \
+  >"$WORK/metadata-boundary/with-scope/log" 2>&1
+python3 - "$WORK/metadata-boundary/with-scope/scope.json" \
+  "$WORK/metadata-boundary/with-scope/tools.log" <<'PY'
+import json
+import sys
+
+data = json.load(open(sys.argv[1]))
+calls = open(sys.argv[2]).read()
+assert "gitleaks version" in calls
+assert "osv-scanner --version" in calls
+assert data["tools"]["gitleaks"]["effective"]["version"] == "gitleaks 8.24.2"
+assert data["tools"]["osv"]["effective"]["version"] == "osv-scanner 2.5.0"
+assert data["tools"]["gitleaks"]["effective"]["content_fingerprint"]
+assert data["tools"]["osv"]["effective"]["content_fingerprint"]
+print("OK: scope metadata collection boundary")
+PY
+
 # Effective metadata is additive. A writer failure warns and marks collection
 # partial when scope is requested, while the scanner's clean verdict survives
 # both with and without the optional scope handoff.
