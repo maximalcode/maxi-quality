@@ -81,7 +81,7 @@ inputs:
     description: 'Optional JSON file of actual language command records.'
     default: ''
   expected-tools:
-    description: 'Expected language tools as name|state|outcome|reason-code|reason lines.'
+    description: 'Expected language tools as name|state|outcome|reason-code|reason|analysis-step|prerequisite-step lines.'
     default: ''
   dead-code-mode:
     description: 'Dead-code input used to distinguish an intentional opt-out.'
@@ -89,6 +89,9 @@ inputs:
   job-outcome:
     description: 'Actual enclosing job outcome for missing-boundary interpretation.'
     default: unknown
+  step-outcomes:
+    description: 'JSON map of actual workflow step outcomes for prerequisite evidence.'
+    default: '{}'
   cancellation:
     description: 'Cancellation metadata when finalization observes it.'
     default: ''
@@ -192,6 +195,7 @@ runs:
         EXPECTED_TOOLS: ${{ inputs.expected-tools }}
         DEAD_CODE_MODE: ${{ inputs.dead-code-mode }}
         JOB_OUTCOME: ${{ inputs.job-outcome }}
+        STEP_OUTCOMES: ${{ inputs.step-outcomes }}
         ARTIFACT_PREFIX: ${{ inputs.artifact-prefix }}
       run: |
         set -u
@@ -212,7 +216,7 @@ runs:
             [[ -n "$expected" ]] && args+=(--expected-tool "$expected")
           done <<< "$EXPECTED_TOOLS"
         fi
-        args+=(--dead-code-mode "${DEAD_CODE_MODE:-auto}" --job-outcome "${JOB_OUTCOME:-unknown}")
+        args+=(--dead-code-mode "${DEAD_CODE_MODE:-auto}" --job-outcome "${JOB_OUTCOME:-unknown}" --step-outcomes "${STEP_OUTCOMES:-}")
         python3 "$script" "${args[@]}"
         transport=$(python3 -c 'import hashlib, os; print(hashlib.sha256((os.environ["ARTIFACT_PREFIX"] + "\0" + os.environ["LOGICAL_JOB"] + "\0" + os.environ["LEG"]).encode()).hexdigest()[:16])')
         echo "artifact_name=${ARTIFACT_PREFIX}-${transport}-fragment" >> "$GITHUB_OUTPUT"
