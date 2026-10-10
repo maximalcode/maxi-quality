@@ -69,6 +69,7 @@ MAX_HISTORY = 52
 MAX_UNPARSED_ROWS = 20
 MAX_DIAGNOSTIC_EXCERPT = 220
 MAX_HISTORY_REASON = 140
+MAX_HISTORY_VOCAB = 128
 
 
 def load_sbom(path: str | None) -> tuple[int, collections.Counter[str]] | None:
@@ -254,8 +255,11 @@ def load_scope(path: str | None) -> tuple[dict | None, str | None]:
 def _compact_measurement(measurement: object) -> dict:
     if not isinstance(measurement, dict):
         return {"status": "unknown", "count": None, "unit": "unknown", "method": "unknown", "reason": "measurement unavailable"}
-    status = measurement.get("status") if measurement.get("status") in {"known", "unknown", "not_applicable"} else "unknown"
-    count = measurement.get("count") if status == "known" and isinstance(measurement.get("count"), int) and measurement.get("count") >= 0 else None
+    raw_status = measurement.get("status")
+    status = raw_status if isinstance(raw_status, str) and raw_status in {"known", "unknown", "not_applicable"} else "unknown"
+    count = measurement.get("count") if status == "known" and isinstance(measurement.get("count"), int) and not isinstance(measurement.get("count"), bool) and measurement.get("count") >= 0 else None
+    if status == "known" and count is None:
+        status = "unknown"
     result = {
         "status": status,
         "count": count,
@@ -264,6 +268,112 @@ def _compact_measurement(measurement: object) -> dict:
     if status == "known":
         result["method"] = _one_line(measurement.get("method", "unknown"), 60)
     return result
+
+
+def _safe_history_scope(scope: object) -> dict:
+    """Normalize optional hidden scope metadata before comparison or display."""
+    if not isinstance(scope, dict):
+        return {"status": "unknown", "reason": "malformed scope metadata"}
+    raw_status = scope.get("status")
+    status = raw_status if isinstance(raw_status, str) and raw_status in {"available", "unknown"} else "unknown"
+    safe = {"status": status}
+    if status != "available":
+        safe["reason"] = _one_line(scope.get("reason", "scope metadata unavailable"))
+    for key in ("outcome", "collection", "artifact", "artifact_link", "diagnostic"):
+        value = scope.get(key)
+        if isinstance(value, str):
+            safe[key] = _one_line(value, 220)
+    raw_tools = scope.get("tools")
+    safe_tools = {}
+    if isinstance(raw_tools, dict):
+        for raw_name, raw_tool in raw_tools.items():
+            name = _one_line(raw_name, 80)
+            if not isinstance(raw_tool, dict):
+                safe_tools[name] = {"state": "unknown", "outcome": "unknown", "reason": "malformed tool metadata"}
+                continue
+            tool = {}
+            for key in ("requested", "state", "outcome", "reason_code"):
+                value = raw_tool.get(key)
+                if key == "requested" and isinstance(value, bool):
+                    tool[key] = value
+                elif isinstance(value, str):
+                    tool[key] = _one_line(value, 140)
+            for key in ("mode", "effective"):
+                value = raw_tool.get(key)
+                if isinstance(value, dict):
+                    tool[key] = _compact_value(value)
+            measurements = raw_tool.get("measurements")
+            if isinstance(measurements, dict):
+                tool["measurements"] = {
+                    key: _compact_measurement(measurements.get(key))
+                    for key in ("examined", "unparsed", "policy_excluded")
+                    if key in measurements
+                }
+            not_applicable = raw_tool.get("not_applicable")
+            if isinstance(not_applicable, list):
+                tool["not_applicable"] = [
+                    key for key in not_applicable
+                    if key in {"examined", "unparsed", "policy_excluded"}
+                ]
+            native = raw_tool.get("native")
+            if isinstance(native, dict) and "component_count" in native:
+                tool["native"] = {"component_count": _compact_measurement(native.get("component_count"))}
+            safe_tools[name] = tool
+    if safe_tools:
+        safe["tools"] = safe_tools
+    return safe
+
+
+def _safe_history_entry(entry: dict) -> dict:
+    """Keep recoverable finding identity while degrading malformed scope fields."""
+    raw_identity = entry.get("identity") if isinstance(entry.get("identity"), dict) else {}
+    identity = {}
+    for key in ("run_id", "run_attempt", "commit", "ref", "mode", "baseline_ref", "producer"):
+        value = raw_identity.get(key)
+        identity[key] = _one_line(value, 140) if isinstance(value, str) else "unknown"
+    identity["started_at"] = _parse_time(raw_identity.get("started_at"), "")
+    findings = entry.get("findings")
+    if not isinstance(findings, int) or isinstance(findings, bool) or findings < 0:
+        findings = None
+    safe = {
+        "id": _one_line(entry.get("id"), 180) if isinstance(entry.get("id"), str) else "malformed-entry",
+        "legacy": bool(entry.get("legacy", False)),
+        "identity": identity,
+        "findings": findings,
+        "largest": _one_line(entry.get("largest", "—"), 120),
+        "outcome": entry.get("outcome") if isinstance(entry.get("outcome"), str) and entry.get("outcome") in {"success", "failure", "incomplete", "unknown"} else "unknown",
+        "scope": _safe_history_scope(entry.get("scope")),
+    }
+    presentation = entry.get("presentation")
+    if isinstance(presentation, dict):
+        counts = presentation.get("counts")
+        safe_presentation = {
+            "counts": {
+                str(rule): count for rule, count in counts.items()
+                if isinstance(count, int) and not isinstance(count, bool) and count >= 0
+            } if isinstance(counts, dict) else {},
+        }
+        for key in ("gitleaks", "osv", "licenses", "scan_error"):
+            if isinstance(presentation.get(key), str):
+                safe_presentation[key] = _one_line(presentation[key], 220)
+        paths = presentation.get("unparsed")
+        if isinstance(paths, list):
+            safe_presentation["unparsed"] = [_one_line(path, 180) for path in paths if isinstance(path, str)][:MAX_UNPARSED_ROWS]
+        total = presentation.get("unparsed_total")
+        if isinstance(total, int) and not isinstance(total, bool) and total >= 0:
+            safe_presentation["unparsed_total"] = total
+        sbom = presentation.get("sbom")
+        if isinstance(sbom, dict) and isinstance(sbom.get("components"), int) and not isinstance(sbom.get("components"), bool) and sbom["components"] >= 0:
+            licenses = sbom.get("licenses")
+            safe_presentation["sbom"] = {
+                "components": sbom["components"],
+                "licenses": {
+                    str(name): count for name, count in licenses.items()
+                    if isinstance(count, int) and not isinstance(count, bool) and count >= 0
+                } if isinstance(licenses, dict) else {},
+            }
+        safe["presentation"] = safe_presentation
+    return safe
 
 
 def _compact_scope(scope: dict | None, scope_error: str | None) -> dict:
@@ -279,9 +389,10 @@ def _compact_scope(scope: dict | None, scope_error: str | None) -> dict:
         "tools": {},
         "artifact": (scope.get("summary") if isinstance(scope.get("summary"), dict) else {}).get("artifact", "layer2-scope.json"),
     }
-    analysis_excerpt = _scope_excerpt(analysis.get("diagnostics"))
-    if analysis_excerpt:
-        compact["diagnostic"] = analysis_excerpt
+    # Full diagnostics remain in the run artifact, and the current entry gets
+    # a bounded excerpt in _display_scope_data. Historical entries only need
+    # structured evidence for comparison; retaining repeated excerpts makes a
+    # bounded issue body grow with the number of runs.
     for name, record in (scope.get("tools") or {}).items():
         if not isinstance(record, dict):
             compact["tools"][name] = {"state": "unknown", "outcome": "unknown", "reason": "malformed"}
@@ -338,9 +449,6 @@ def _compact_scope(scope: dict | None, scope_error: str | None) -> dict:
                 }
             }
         compact["tools"][name] = tool_compact
-        diagnostic = _scope_excerpt(record.get("diagnostics"))
-        if diagnostic:
-            compact["tools"][name]["diagnostic"] = diagnostic
     return compact
 
 
@@ -449,7 +557,30 @@ def previous_history(body: str | None) -> list[dict]:
             try:
                 value = json.loads(raw)
                 if isinstance(value, list):
-                    marker_entries = [entry for entry in value if isinstance(entry, dict) and entry.get("id")]
+                    marker_entries = [
+                        _safe_history_entry(entry)
+                        for entry in value
+                        if isinstance(entry, dict) and entry.get("id")
+                    ]
+                elif (
+                    isinstance(value, dict)
+                    and value.get("version") in {3, 4}
+                    and isinstance(value.get("vocab"), list)
+                    and isinstance(value.get("entries"), list)
+                ):
+                    vocab = value["vocab"]
+                    key_vocab = value.get("keys") if value.get("version") == 4 else None
+                    if key_vocab is not None and (
+                        not isinstance(key_vocab, list)
+                        or any(not isinstance(key, str) for key in key_vocab)
+                    ):
+                        key_vocab = None
+                    decoded = _decode_history_strings(value["entries"], vocab, key_vocab)
+                    marker_entries = [
+                        _safe_history_entry(entry)
+                        for entry in decoded
+                        if isinstance(entry, dict) and entry.get("id")
+                    ]
             except json.JSONDecodeError:
                 marker_entries = None
     try:
@@ -591,8 +722,79 @@ def _display_scope(scope: dict, scope_error: str | None) -> list[str]:
     return lines + [""]
 
 
+def _decode_history_strings(value: object, vocab: list[object], key_vocab: list[object] | None = None) -> object:
+    if isinstance(value, dict):
+        decoded = {}
+        for key, item in value.items():
+            decoded_key = key
+            if key_vocab is not None and isinstance(key, str):
+                if key.startswith("@@k") and re.fullmatch(r"@@k\d+", key):
+                    decoded_key = key[1:]
+                else:
+                    match = re.fullmatch(r"@k(\d+)", key)
+                    if match and int(match.group(1)) < len(key_vocab) and isinstance(key_vocab[int(match.group(1))], str):
+                        decoded_key = key_vocab[int(match.group(1))]
+            decoded[decoded_key] = _decode_history_strings(item, vocab, key_vocab)
+        return decoded
+    if isinstance(value, list):
+        return [_decode_history_strings(item, vocab, key_vocab) for item in value]
+    if isinstance(value, str):
+        if value.startswith("~~"):
+            return value[1:]
+        match = re.fullmatch(r"~(\d+)", value)
+        if match and int(match.group(1)) < len(vocab) and isinstance(vocab[int(match.group(1))], str):
+            return vocab[int(match.group(1))]
+    return value
+
+
 def _history_payload(entries: list[dict]) -> str:
-    return json.dumps(entries, sort_keys=True, separators=(",", ":"))
+    frequencies: collections.Counter[str] = collections.Counter()
+    ordered: list[str] = []
+    key_frequencies: collections.Counter[str] = collections.Counter()
+    key_ordered: list[str] = []
+
+    def collect(value: object) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if isinstance(key, str):
+                    key_frequencies[key] += 1
+                    if key not in key_ordered:
+                        key_ordered.append(key)
+                collect(item)
+        elif isinstance(value, list):
+            for item in value:
+                collect(item)
+        elif isinstance(value, str):
+            frequencies[value] += 1
+            if value not in ordered:
+                ordered.append(value)
+
+    collect(entries)
+    vocab = [value for value in ordered if frequencies[value] > 1][:MAX_HISTORY_VOCAB]
+    tokens = {value: f"~{index}" for index, value in enumerate(vocab)}
+    key_vocab = [value for value in key_ordered if key_frequencies[value] > 1]
+    key_tokens = {value: f"@k{index}" for index, value in enumerate(key_vocab)}
+
+    def intern(value: object) -> object:
+        if isinstance(value, dict):
+            compact = {}
+            for key, item in value.items():
+                compact_key = key_tokens.get(key, key) if isinstance(key, str) else key
+                if isinstance(compact_key, str) and re.fullmatch(r"@k\d+", compact_key) and compact_key not in key_tokens.values():
+                    compact_key = f"@{compact_key}"
+                compact[compact_key] = intern(item)
+            return compact
+        if isinstance(value, list):
+            return [intern(item) for item in value]
+        if isinstance(value, str):
+            if value in tokens:
+                return tokens[value]
+            if re.fullmatch(r"~\d+", value):
+                return f"~{value}"
+        return value
+
+    payload = {"version": 4, "keys": key_vocab, "vocab": vocab, "entries": intern(entries)}
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
 def _artifact_link(repository: str, identity: dict, artifact: str) -> str | None:
@@ -641,8 +843,9 @@ def build(counts, date, gitleaks, osv, previous, target, licenses="not run",
     if not identity.get("started_at"):
         identity["started_at"] = _parse_time(args.started_at, f"{date}T00:00:00Z")
     scope_analysis = scope.get("analysis", {}) if isinstance(scope, dict) else {}
-    entry_outcome = "failure" if scan_error or scope_analysis.get("outcome") in {"failure", "cancelled"} else (
-        "incomplete" if scope is not None and scope_analysis.get("outcome") not in {"success", "failure", "cancelled"} else "success"
+    analysis_outcome = scope_analysis.get("outcome") if isinstance(scope_analysis.get("outcome"), str) else "unknown"
+    entry_outcome = "failure" if scan_error or analysis_outcome in {"failure", "cancelled"} else (
+        "incomplete" if scope is not None and analysis_outcome not in {"success", "failure", "cancelled"} else "success"
     )
     entry = {
         "id": _entry_id(identity, date), "legacy": False, "identity": identity,
@@ -877,14 +1080,20 @@ def main() -> int:
         # A valid own-run scope can prove that the scanner/setup failed before
         # its normal JSON handoff. Keep that attempt in history as failed,
         # while an absent or malformed scope retains the old refusal boundary.
-        if scope is not None and scope.get("analysis", {}).get("outcome") in {"failure", "cancelled"}:
+        scope_outcome = (
+            scope.get("analysis", {}).get("outcome")
+            if scope is not None and isinstance(scope.get("analysis"), dict)
+            else "unknown"
+        )
+        if isinstance(scope_outcome, str) and scope_outcome in {"failure", "cancelled"}:
             counts, scan_error, unparsed = collections.Counter(), "scanner result unavailable; scope records a failed/incomplete attempt", []
         else:
             print(f"error: cannot read Semgrep results from {args.json}: {exc}", file=sys.stderr)
             return 3
     if scope is not None:
         scope_analysis = scope.get("analysis") if isinstance(scope.get("analysis"), dict) else {}
-        if scope_analysis.get("outcome") in {"failure", "cancelled"} and scan_error is None:
+        scope_outcome = scope_analysis.get("outcome") if isinstance(scope_analysis.get("outcome"), str) else "unknown"
+        if scope_outcome in {"failure", "cancelled"} and scan_error is None:
             scan_error = "scope records a failed/incomplete Layer 2 attempt"
     try:
         prior = previous_history(body)
