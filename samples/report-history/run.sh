@@ -245,15 +245,15 @@ if isinstance(rows, dict):
     rows["entries"] = list(rows["entries"])
     rows["entries"][0] = dict(rows["entries"][0])
     rows["entries"][0]["scope"] = {"status": "available", "tools": {"semgrep": {
-        "effective": [], "measurements": {"examined": {"status": "known", "count": True}},
-        "not_applicable": None, "native": {"component_count": {"status": "known", "count": None}},
+        "effective": [], "measurements": {"examined": [], "unparsed": None},
+        "not_applicable": [{}, [], None, "examined"], "native": {"component_count": {"status": "known", "count": None}},
     }}
     }
 else:
     rows = list(rows)
     rows[0]["scope"] = {"status": "available", "tools": {"semgrep": {
-        "effective": [], "measurements": {"examined": {"status": "known", "count": True}},
-        "not_applicable": None, "native": {"component_count": {"status": "known", "count": None}},
+        "effective": [], "measurements": {"examined": [], "unparsed": None},
+        "not_applicable": [{}, [], None, "examined"], "native": {"component_count": {"status": "known", "count": None}},
     }}
     }
 open(target, "w", encoding="utf-8").write(

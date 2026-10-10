@@ -379,7 +379,7 @@ def _safe_history_scope(scope: object) -> dict:
             if isinstance(not_applicable, list):
                 tool["not_applicable"] = [
                     key for key in not_applicable
-                    if key in {"examined", "unparsed", "policy_excluded"}
+                    if isinstance(key, str) and key in {"examined", "unparsed", "policy_excluded"}
                 ]
             native = raw_tool.get("native")
             if isinstance(native, dict) and "component_count" in native:
@@ -635,6 +635,8 @@ def previous_history(body: str | None) -> list[dict]:
                     ]
                 elif (
                     isinstance(value, dict)
+                    and isinstance(value.get("version"), int)
+                    and not isinstance(value.get("version"), bool)
                     and value.get("version") in {3, 4}
                     and isinstance(value.get("vocab"), list)
                     and isinstance(value.get("entries"), list)
