@@ -375,11 +375,16 @@ runs:
               --state skipped --outcome unknown --reason-code setup_failure \
               --reason "quality lock setup failed before scanner invocation" --exit-code "$preflight_rc" || true
           done
-          for tool in licenses sbom; do
-            python3 "$scope_script" record --out "$SCOPE_OUT" --tool "$tool" \
+          if [[ -n "$LICENSES" ]]; then
+            python3 "$scope_script" record --out "$SCOPE_OUT" --tool licenses \
               --state skipped --outcome unknown --reason-code blocked \
               --reason "quality lock setup failed before optional invocation" --exit-code "$preflight_rc" || true
-          done
+          fi
+          if [[ -n "$SBOM_OUT" ]]; then
+            python3 "$scope_script" record --out "$SCOPE_OUT" --tool sbom \
+              --state skipped --outcome unknown --reason-code blocked \
+              --reason "quality lock setup failed before optional invocation" --exit-code "$preflight_rc" || true
+          fi
           python3 "$scope_script" finalize --out "$SCOPE_OUT" \
             --analysis-outcome failure --analysis-exit-code "$preflight_rc" \
             --collection-status complete || true
@@ -471,6 +476,8 @@ runs:
       env:
         SCOPE_OUT: ${{ runner.temp }}/maxi-quality-layer2-scope.json
         SETUP_LOG: ${{ runner.temp }}/layer2-setup.log
+        LICENSES: ${{ inputs.licenses }}
+        SBOM_OUT: ${{ inputs.sbom-out }}
       run: |
         set -Eeuo pipefail
         scope_script="${GITHUB_ACTION_PATH}/../../scripts/layer2_scope.py"
@@ -479,11 +486,16 @@ runs:
             --state skipped --outcome unknown --reason-code setup_failure \
             --reason "tool setup failed before scanner invocation" --exit-code 1 || true
         done
-        for tool in licenses sbom; do
-          python3 "$scope_script" record --out "$SCOPE_OUT" --tool "$tool" \
+        if [[ -n "$LICENSES" ]]; then
+          python3 "$scope_script" record --out "$SCOPE_OUT" --tool licenses \
             --state skipped --outcome unknown --reason-code blocked \
             --reason "tool setup failed before optional invocation" --exit-code 1 || true
-        done
+        fi
+        if [[ -n "$SBOM_OUT" ]]; then
+          python3 "$scope_script" record --out "$SCOPE_OUT" --tool sbom \
+            --state skipped --outcome unknown --reason-code blocked \
+            --reason "tool setup failed before optional invocation" --exit-code 1 || true
+        fi
         python3 "$scope_script" finalize --out "$SCOPE_OUT" \
           --analysis-outcome failure --analysis-exit-code 1 --collection-status complete || true
 
