@@ -256,6 +256,8 @@ def _scope_operational_reason(scope: dict) -> str:
     """Return the first operational failure's diagnostic for report errors."""
     tools = scope.get("tools") if isinstance(scope.get("tools"), dict) else {}
     for name, record in tools.items():
+        if name in {"gitleaks", "osv", "licenses", "sbom"}:
+            continue
         if not isinstance(record, dict) or record.get("outcome") != "failure":
             continue
         if not _scope_failure_is_finding(name, record):
@@ -283,6 +285,29 @@ def _scope_has_operational_error(scope: dict) -> bool:
         if not _scope_failure_is_finding(name, record):
             return True
     return not saw_failure
+
+
+def _scope_has_report_operational_error(scope: dict) -> bool:
+    """Gate only analysis boundaries; native report inputs stay diagnostic."""
+    analysis = scope.get("analysis") if isinstance(scope.get("analysis"), dict) else {}
+    outcome = analysis.get("outcome")
+    if not isinstance(outcome, str) or outcome not in {"failure", "cancelled"}:
+        return False
+    if outcome == "cancelled":
+        return True
+    tools = scope.get("tools") if isinstance(scope.get("tools"), dict) else {}
+    native_failure = False
+    analysis_failure = False
+    for name, record in tools.items():
+        if not isinstance(record, dict) or record.get("outcome") != "failure":
+            continue
+        if name in {"gitleaks", "osv", "licenses", "sbom"}:
+            native_failure = True
+            continue
+        analysis_failure = True
+        if not _scope_failure_is_finding(name, record):
+            return True
+    return not analysis_failure and not native_failure
 
 
 def _compact_value(value: object, depth: int = 0) -> object:
@@ -419,6 +444,24 @@ def _safe_history_scope(scope: object) -> dict:
     if malformed:
         safe.update(status="unknown", reason="malformed scope metadata; comparison unavailable")
     return safe
+
+
+def _canonicalize_legacy_entry(entry: dict) -> dict:
+    """Reconcile old ordinal legacy IDs with the stable date identity."""
+    identity = entry.get("identity") if isinstance(entry.get("identity"), dict) else {}
+    run_id = identity.get("run_id")
+    if entry.get("legacy") is not True and run_id != "legacy":
+        return entry
+    started = identity.get("started_at")
+    if isinstance(started, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}T00:00:00Z", started):
+        entry["id"] = f"legacy:{started[:10]}"
+        return entry
+    old_id = entry.get("id")
+    if isinstance(old_id, str):
+        match = re.fullmatch(r"legacy:(\d{4}-\d{2}-\d{2})(?::\d+)?", old_id)
+        if match:
+            entry["id"] = f"legacy:{match.group(1)}"
+    return entry
 
 
 def _safe_history_entry(entry: dict) -> dict:
@@ -611,7 +654,7 @@ def _legacy_entry(date: str, result: str, largest: str, ordinal: int) -> dict:
     result = result.strip()
     findings = int(result) if result.isdigit() else None
     return {
-        "id": f"legacy:{date}:{ordinal}",
+        "id": f"legacy:{date}",
         "legacy": True,
         "identity": {"run_id": "legacy", "run_attempt": "unknown", "started_at": f"{date}T00:00:00Z", "mode": "unknown", "commit": "unknown", "ref": "unknown", "producer": "report"},
         "findings": findings,
@@ -630,6 +673,9 @@ def _parse_history_rows(body: str) -> list[dict]:
         run, attempt, started, outcome, findings = [part.strip() for part in match.groups()]
         if run in {"Run", "---"} or attempt in {"Attempt", "---"}:
             continue
+        if run == "legacy" and attempt == "unknown" and re.fullmatch(r"\d{4}-\d{2}-\d{2}T00:00:00Z", started):
+            entries.append(_legacy_entry(started[:10], findings, "—", ordinal))
+            continue
         parsed_findings = int(findings) if findings.isdigit() else None
         entries.append({
             "id": f"{run}/{attempt}", "legacy": False,
@@ -637,10 +683,15 @@ def _parse_history_rows(body: str) -> list[dict]:
             "findings": parsed_findings, "largest": "—", "outcome": outcome.lower(),
             "scope": {"status": "unknown", "reason": "compact metadata unavailable"},
         })
-    if entries:
-        return entries
-    for ordinal, match in enumerate(LEGACY_HISTORY_ROW.finditer(tail)):
-        entries.append(_legacy_entry(match.group(1), match.group(2), match.group(3), ordinal))
+    legacy_entries = [
+        _legacy_entry(match.group(1), match.group(2), match.group(3), ordinal)
+        for ordinal, match in enumerate(LEGACY_HISTORY_ROW.finditer(tail))
+    ]
+    entries.extend(legacy_entries)
+    by_id = {}
+    for entry in entries:
+        by_id.setdefault(entry["id"], entry)
+    entries = list(by_id.values())
     if not entries:
         raise ValueError("previous report history table is malformed")
     return entries
@@ -664,7 +715,7 @@ def previous_history(body: str | None) -> list[dict]:
                 value = json.loads(raw)
                 if isinstance(value, list):
                     marker_entries = [
-                        _safe_history_entry(entry)
+                        _canonicalize_legacy_entry(_safe_history_entry(entry))
                         for entry in value
                         if isinstance(entry, dict) and entry.get("id")
                     ]
@@ -685,7 +736,7 @@ def previous_history(body: str | None) -> list[dict]:
                         key_vocab = None
                     decoded = _decode_history_strings(value["entries"], vocab, key_vocab)
                     marker_entries = [
-                        _safe_history_entry(entry)
+                        _canonicalize_legacy_entry(_safe_history_entry(entry))
                         for entry in decoded
                         if isinstance(entry, dict) and entry.get("id")
                     ]
@@ -1205,7 +1256,7 @@ def main() -> int:
             print(f"error: cannot read Semgrep results from {args.json}: {exc}", file=sys.stderr)
             return 3
     if scope is not None:
-        if scan_error is None and _scope_has_operational_error(scope):
+        if scan_error is None and _scope_has_report_operational_error(scope):
             scan_error = _scope_operational_reason(scope)
     try:
         prior = previous_history(body)
