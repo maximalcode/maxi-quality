@@ -425,6 +425,45 @@ class WorkflowScopeTests(unittest.TestCase):
             self.assertTrue(any("unsupported workflow scope contract" in issue for issue in data["collection"]["issues"]))
             self.assertTrue(any("outcome is invalid" in issue for issue in data["collection"]["issues"]))
 
+    def test_malformed_nested_fragment_data_keeps_valid_sibling(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+            fragments = root / "fragments"
+            fragments.mkdir()
+            self.assertEqual(run_helper(
+                "init", "--out", str(manifest), "--root", str(root), "--languages", "none",
+                "--workflow", "quality", "--invocation-id", "i", "--run-id", "r", "--run-attempt", "1",
+                "--commit", "c", "--ref", "r", "--expected-job", "good| |",
+                "--expected-job", "bad| |",
+            ).returncode, 0)
+            self.assertEqual(run_helper(
+                "fragment", "--out", str(fragments / "good.json"), "--logical-job", "good",
+                "--invocation-id", "i", "--run-id", "r", "--run-attempt", "1", "--state", "run",
+                "--outcome", "success", "--reason", "completed", "--reason-code", "completed",
+            ).returncode, 0)
+            (fragments / "bad.json").write_text(json.dumps({
+                "schema_version": 1, "kind": "workflow-scope-fragment",
+                "identity": {"producer": "gate", "workflow": "quality", "invocation_id": "i", "run_id": "r", "run_attempt": "1", "logical_job": "bad", "leg": ""},
+                "state": "run", "outcome": "success", "diagnostics": {"unexpected": "container"},
+                "tools": "malformed", "tool_collection": [],
+            }))
+            (fragments / "malformed-kind.json").write_text(json.dumps({
+                "schema_version": 1, "kind": [], "identity": {},
+            }))
+            out = root / "out.json"
+            result = run_helper("collect", "--manifest", str(manifest), "--fragments-dir", str(fragments), "--out", str(out))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(out.read_text())
+            self.assertEqual(data["collection"]["status"], "partial")
+            self.assertEqual(next(job for job in data["jobs"] if job["logical_job"] == "good")["outcome"], "success")
+            bad = next(job for job in data["jobs"] if job["logical_job"] == "bad")
+            self.assertEqual(bad["tool_collection"]["status"], "partial")
+            self.assertTrue(any("tools container is not a list" in issue for issue in data["collection"]["issues"]))
+            self.assertTrue(any("diagnostics container is malformed" in issue for issue in data["collection"]["issues"]))
+            self.assertTrue(any("unsupported workflow scope contract" in issue for issue in data["collection"]["issues"]))
+            self.assertTrue(any("bad" in line and "Tool collection issue" in line for line in data["summary"]["lines"]))
+
     def test_summary_escapes_bounded_lines_and_cancellation_is_data(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

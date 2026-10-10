@@ -650,6 +650,28 @@ python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
 grep -q 'scope identity does not match' "$WORK/foreign.md"
 grep -q '| foreign-run | 1 |' "$WORK/foreign.md"
 
+# Malformed optional scope containers must leave the findings report usable and
+# make scope evidence explicitly unavailable. The report CLI receives a valid
+# scope envelope with analysis replaced by both wrong JSON container types.
+for malformed in list null; do
+  bad_scope="$WORK/malformed-analysis-$malformed.json"
+  python3 - "$S1" "$bad_scope" "$malformed" <<'PY'
+import json, sys
+source, target, shape = sys.argv[1:]
+scope = json.load(open(source))
+scope["identity"]["run_id"] = "malformed-analysis-" + shape
+scope["identity"]["run_attempt"] = "1"
+scope["analysis"] = [] if shape == "list" else None
+json.dump(scope, open(target, "w"))
+PY
+  python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
+    --date 2026-01-04 --run-id "malformed-analysis-$malformed" --run-attempt 1 \
+    --started-at 2026-01-04T10:00:00Z --scope "$bad_scope" --previous-body "$WORK/one.md" >"$WORK/malformed-analysis-$malformed.md"
+  grep -q 'scope artifact analysis metadata is malformed' "$WORK/malformed-analysis-$malformed.md"
+  grep -q "| malformed-analysis-$malformed | 1 |" "$WORK/malformed-analysis-$malformed.md"
+  grep -q '| run-one | 1 |' "$WORK/malformed-analysis-$malformed.md"
+done
+
 # The action/workflow handoff is checked from the production text itself.
 python3 - "$ROOT/actions/report-issue/action.yml" "$ROOT/.github/workflows/quality-report.yml" <<'PY'
 import pathlib, sys
