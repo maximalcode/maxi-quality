@@ -1043,6 +1043,17 @@ def _normalize_layer2_scope(value: dict[str, Any], path: pathlib.Path) -> tuple[
                 issues.append(issue)
                 unknown = _unknown_tool_record(name, issue)
                 unknown["diagnostics"] = tool_diagnostics
+                if isinstance(item.get("state"), str) and item["state"] in VALID_STATES:
+                    unknown["state"] = item["state"]
+                if isinstance(item.get("outcome"), str) and item["outcome"] in VALID_OUTCOMES:
+                    unknown["outcome"] = item["outcome"]
+                exit_code = item.get("exit_code")
+                if exit_code is None or (isinstance(exit_code, int) and not isinstance(exit_code, bool) and 0 <= exit_code <= 255):
+                    unknown["exit_code"] = exit_code
+                if isinstance(item.get("reason"), str):
+                    unknown["reason"] = item["reason"]
+                if "reason_code" in item and (item.get("reason_code") is None or isinstance(item.get("reason_code"), str)):
+                    unknown["reason_code"] = item["reason_code"]
                 if isinstance(item.get("requested"), bool):
                     unknown["requested"] = item["requested"]
                 for field in ("mode", "effective"):
