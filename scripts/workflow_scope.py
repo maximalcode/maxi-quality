@@ -51,6 +51,7 @@ VALID_STATES = {"run", "skipped", "not_applicable", "unknown"}
 VALID_OUTCOMES = {"success", "failure", "cancelled", "unknown"}
 VALID_MEASUREMENT_STATES = {"known", "unknown", "not_applicable"}
 TOOL_MEASUREMENTS = ("examined", "unparsed", "policy_excluded")
+LAYER2_TOOLS = ("semgrep", "gitleaks", "osv", "licenses", "sbom")
 
 
 def now() -> str:
@@ -942,8 +943,11 @@ def _normalize_layer2_scope(value: dict[str, Any], path: pathlib.Path) -> tuple[
         issues.append("analysis container is malformed")
     else:
         safe_analysis = dict(analysis)
-        outcome = safe_analysis.get("outcome", "unknown")
-        if not isinstance(outcome, str) or outcome not in VALID_OUTCOMES:
+        outcome = safe_analysis.get("outcome")
+        if "outcome" not in safe_analysis:
+            safe_analysis["outcome"] = "unknown"
+            issues.append("analysis outcome is missing")
+        elif not isinstance(outcome, str) or outcome not in VALID_OUTCOMES:
             safe_analysis["outcome"] = "unknown"
             issues.append("analysis outcome is invalid")
         safe_analysis["diagnostics"], diagnostic_issues = diagnostics(safe_analysis.get("diagnostics", []), "analysis")
@@ -970,6 +974,29 @@ def _normalize_layer2_scope(value: dict[str, Any], path: pathlib.Path) -> tuple[
             tool_diagnostics, diagnostic_issues = diagnostics(candidate.get("diagnostics", []), f"tool {name}")
             candidate["diagnostics"] = []
             violations = validate_tool_record(candidate)
+            for field in ("requested", "mode", "effective", "native"):
+                if field not in item:
+                    violations.append(f"missing {field}")
+                elif field == "requested" and not isinstance(item[field], bool):
+                    violations.append("requested must be a boolean")
+                elif field != "requested" and not isinstance(item[field], dict):
+                    violations.append(f"{field} must be an object")
+            native = item.get("native")
+            if isinstance(native, dict) and "component_count" in native:
+                component = native["component_count"]
+                if not isinstance(component, dict):
+                    violations.append("native component_count must be an object")
+                else:
+                    status = component.get("status")
+                    count = component.get("count")
+                    if not isinstance(status, str) or status not in VALID_MEASUREMENT_STATES:
+                        violations.append("native component_count status is invalid")
+                    if count is not None and (isinstance(count, bool) or not isinstance(count, int) or count < 0):
+                        violations.append("native component_count count must be a non-negative integer or null")
+                    if status == "known" and count is None:
+                        violations.append("native component_count known status requires a numeric count")
+                    if isinstance(status, str) and status in {"unknown", "not_applicable"} and count is not None:
+                        violations.append(f"native component_count {status} status requires a null count")
             issues.extend(diagnostic_issues)
             measurement_violation = all(
                 issue.startswith("measurement ")
@@ -1032,6 +1059,9 @@ def _normalize_layer2_scope(value: dict[str, Any], path: pathlib.Path) -> tuple[
                     normalized_tool["collection"] = collection
             tools[name] = normalized_tool
     normalized["tools"] = tools
+    for name in LAYER2_TOOLS:
+        if name not in tools:
+            issues.append(f"missing required Layer 2 tool record: {name}")
     for tool in tools.values():
         collection = tool.get("collection")
         if collection is None:

@@ -491,6 +491,56 @@ class WorkflowScopeTests(unittest.TestCase):
             self.assertIn("invalid measurement", issues)
             self.assertTrue(any("producer capture unavailable" in line for line in data["summary"]["lines"]))
 
+    def test_layer2_missing_required_tools_degrades_collection(self) -> None:
+        for remaining in ({}, {"semgrep": "keep"}):
+            with self.subTest(remaining=remaining):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    manifest = root / "manifest.json"
+                    fragments = root / "fragments"
+                    fragments.mkdir()
+                    self.assertEqual(run_helper(
+                        "init", "--out", str(manifest), "--root", str(root), "--languages", "none",
+                        "--workflow", "quality", "--invocation-id", "missing-tools", "--run-id", "run",
+                        "--run-attempt", "1", "--commit", "c", "--ref", "r", "--expected-job", "layer2||",
+                    ).returncode, 0)
+                    self.assertEqual(run_helper(
+                        "fragment", "--out", str(fragments / "layer2.json"), "--logical-job", "layer2",
+                        "--invocation-id", "missing-tools", "--run-id", "run", "--run-attempt", "1",
+                        "--state", "run", "--outcome", "success", "--reason", "scope collected",
+                    ).returncode, 0)
+                    producer = root / "layer2.json"
+                    self.assertEqual(subprocess.run([
+                        sys.executable, str(ROOT / "scripts/layer2_scope.py"), "init", "--out", str(producer),
+                        "--producer", "gate", "--workflow", "quality", "--invocation-id", "layer2-producer",
+                        "--run-id", "run", "--run-attempt", "1", "--job", "layer2", "--commit", "c",
+                        "--ref", "r", "--mode", "full",
+                    ], capture_output=True, text=True).returncode, 0)
+                    self.assertEqual(subprocess.run([
+                        sys.executable, str(ROOT / "scripts/layer2_scope.py"), "finalize", "--out", str(producer),
+                        "--analysis-outcome", "success", "--analysis-exit-code", "0", "--collection-status", "complete",
+                    ], capture_output=True, text=True).returncode, 0)
+                    value = json.loads(producer.read_text())
+                    if remaining:
+                        value["tools"] = {name: value["tools"][name] for name in remaining}
+                    else:
+                        value["tools"] = {}
+                    producer.write_text(json.dumps(value))
+                    out = root / "collected.json"
+                    result = run_helper(
+                        "collect", "--manifest", str(manifest), "--fragments-dir", str(fragments), "--out", str(out),
+                        "--layer2-dir", str(root), "--layer2-invocation-id", "layer2-producer",
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    data = json.loads(out.read_text())
+                    self.assertEqual(data["collection"]["status"], "partial")
+                    issues = " ".join(data["collection"]["issues"])
+                    self.assertIn("missing required Layer 2 tool record", issues)
+                    if remaining:
+                        self.assertIn("gitleaks", issues)
+                    else:
+                        self.assertIn("semgrep", issues)
+
     def test_presence_uses_language_boundaries_and_detector_selection_verbatim(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
