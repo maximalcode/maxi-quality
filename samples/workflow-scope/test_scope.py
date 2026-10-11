@@ -964,6 +964,78 @@ class WorkflowScopeTests(unittest.TestCase):
             self.assertTrue(any(line.startswith("Diagnostic ") for line in summary_lines))
             self.assertIn("bad\\nreason", json.dumps(data))
 
+    def test_real_collector_action_preserves_needs_cancellation_and_skipped_outcomes(self) -> None:
+        for label, raw_needs, expected_state, expected_reason_code in (
+            ("cancelled", '{"rust":{"result":"cancelled"}}', "unknown", "missing_fragment"),
+            ("skipped", '{"rust":{"result":"skipped"}}', "skipped", "dependency_skipped"),
+            ("success", '{"rust":{"result":"success"}}', "unknown", "missing_fragment"),
+            ("empty", "{}", "unknown", "missing_fragment"),
+            ("malformed", "not-json", "unknown", "missing_fragment"),
+            ("unset", None, "unknown", "missing_fragment"),
+        ):
+            with self.subTest(needs=label), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                inputs = root / "inputs"
+                manifest_path = inputs / "manifest-artifact" / "maxi-quality-workflow-scope-manifest.json"
+                manifest_path.parent.mkdir(parents=True)
+                self.assertEqual(run_helper(
+                    "init", "--out", str(manifest_path), "--root", str(root), "--languages", "none",
+                    "--workflow", "quality", "--invocation-id", "action-outcomes", "--run-id", "run",
+                    "--run-attempt", "1", "--commit", "c", "--ref", "r",
+                    "--expected-job", "rust|rust|linux", "--expected-job", "rust|rust|macos",
+                ).returncode, 0)
+                fragment_path = inputs / "fragment-artifact" / "maxi-quality-workflow-scope-fragment.json"
+                fragment_path.parent.mkdir(parents=True)
+                self.assertEqual(run_helper(
+                    "fragment", "--out", str(fragment_path), "--workflow", "quality",
+                    "--invocation-id", "action-outcomes", "--run-id", "run", "--run-attempt", "1",
+                    "--logical-job", "rust", "--language", "rust", "--leg", "linux", "--state", "run",
+                    "--outcome", "success", "--reason", "fresh current-attempt success",
+                ).returncode, 0)
+                env = {
+                    **os.environ,
+                    "INPUT_ROOT": str(inputs),
+                    "LAYER2_INPUT_ROOT": str(root / "no-layer2"),
+                    "OUT": str(root / "out.json"),
+                    "ROOT": str(root),
+                    "PRODUCER": "gate",
+                    "WORKFLOW": "quality",
+                    "INVOCATION": "action-outcomes",
+                    "RUN_ID": "run",
+                    "RUN_ATTEMPT": "1",
+                    "COMMIT": "c",
+                    "REF": "r",
+                    "LANGUAGES": "none",
+                    "MODE_NAME": "full",
+                    "BASELINE": "",
+                    "EXPECTED": "[]",
+                    "COVERAGE": "not_applicable",
+                    "LAYER2_INVOCATION": "",
+                    "CANCELLATION": "",
+                    "RUNNER_TEMP": str(root),
+                    "GITHUB_ACTION_PATH": str(ROOT / "actions/workflow-scope"),
+                    "GITHUB_STEP_SUMMARY": str(root / "summary.md"),
+                }
+                if raw_needs is not None:
+                    env["JOB_OUTCOMES"] = raw_needs
+                else:
+                    env.pop("JOB_OUTCOMES", None)
+                result = subprocess.run(
+                    ["bash", "-e", "-o", "pipefail", "-c", extract_action_body("Collect and publish workflow scope")],
+                    env=env, text=True, capture_output=True, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                data = json.loads((root / "out.json").read_text())
+                jobs = {(job["logical_job"], job["leg"]): job for job in data["jobs"]}
+                self.assertEqual(jobs[("rust", "linux")]["outcome"], "success")
+                self.assertEqual(jobs[("rust", "macos")]["state"], expected_state)
+                self.assertEqual(jobs[("rust", "macos")]["reason_code"], expected_reason_code)
+                if label == "cancelled":
+                    self.assertEqual(data["identity"]["upstream_cancelled_jobs"], ["rust"])
+                    self.assertTrue(any("Upstream cancelled jobs: rust" in line for line in data["summary"]["lines"]))
+                else:
+                    self.assertNotIn("upstream_cancelled_jobs", data["identity"])
+
     def test_real_collector_action_preserves_legs_without_sha256sum(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
