@@ -858,6 +858,80 @@ class WorkflowScopeTests(unittest.TestCase):
             self.assertTrue(any(line.startswith("Diagnostic ") for line in summary_lines))
             self.assertIn("bad\\nreason", json.dumps(data))
 
+    def test_real_collector_action_preserves_legs_without_sha256sum(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inputs = root / "inputs"
+            manifest_path = inputs / "manifest-artifact" / "maxi-quality-workflow-scope-manifest.json"
+            manifest_path.parent.mkdir(parents=True)
+            self.assertEqual(
+                run_helper(
+                    "init", "--out", str(manifest_path), "--root", str(root), "--languages", "none",
+                    "--workflow", "quality", "--invocation-id", "transport", "--run-id", "run",
+                    "--run-attempt", "1", "--commit", "c", "--ref", "r",
+                    "--expected-job", "typescript|ts|packages/a",
+                    "--expected-job", "typescript|ts|packages/b",
+                ).returncode,
+                0,
+            )
+            for index, (leg, outcome) in enumerate((("packages/a", "success"), ("packages/b", "failure"))):
+                path = inputs / f"artifact-{index}" / "maxi-quality-workflow-scope-fragment.json"
+                path.parent.mkdir()
+                self.assertEqual(
+                    run_helper(
+                        "fragment", "--out", str(path), "--logical-job", "typescript", "--language", "ts",
+                        "--leg", leg, "--invocation-id", "transport", "--run-id", "run",
+                        "--run-attempt", "1", "--state", "run", "--outcome", outcome,
+                        "--reason", f"{leg} {outcome}",
+                    ).returncode,
+                    0,
+                )
+
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            unavailable = fake_bin / "sha256sum"
+            unavailable.write_text("#!/bin/sh\nexit 127\n")
+            unavailable.chmod(0o755)
+            env = {
+                **os.environ,
+                "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                "INPUT_ROOT": str(inputs),
+                "LAYER2_INPUT_ROOT": str(root / "no-layer2"),
+                "OUT": str(root / "out.json"),
+                "ROOT": str(root),
+                "PRODUCER": "gate",
+                "WORKFLOW": "quality",
+                "INVOCATION": "transport",
+                "RUN_ID": "run",
+                "RUN_ATTEMPT": "1",
+                "COMMIT": "c",
+                "REF": "r",
+                "LANGUAGES": "none",
+                "MODE_NAME": "full",
+                "BASELINE": "",
+                "EXPECTED": "[]",
+                "COVERAGE": "not_applicable",
+                "JOB_OUTCOMES": "{}",
+                "LAYER2_INVOCATION": "",
+                "CANCELLATION": "",
+                "RUNNER_TEMP": str(root),
+                "GITHUB_ACTION_PATH": str(ROOT / "actions/workflow-scope"),
+                "GITHUB_STEP_SUMMARY": str(root / "summary.md"),
+            }
+            result = subprocess.run(
+                ["bash", "-e", "-o", "pipefail", "-c", extract_action_body("Collect and publish workflow scope")],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads((root / "out.json").read_text())
+            jobs = {job["leg"]: job for job in data["jobs"] if job["logical_job"] == "typescript"}
+            self.assertEqual(jobs["packages/a"]["outcome"], "success")
+            self.assertEqual(jobs["packages/b"]["outcome"], "failure")
+            self.assertEqual(data["collection"]["status"], "complete")
+
     def test_fragment_transport_name_is_safe_for_matrix_paths(self) -> None:
         action = yaml.safe_load((ROOT / "actions/workflow-scope/action.yml").read_text(encoding="utf-8"))
         upload = next(step for step in action["runs"]["steps"] if step["name"] == "Upload workflow scope fragment")
