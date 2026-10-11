@@ -978,6 +978,13 @@ jobs:
           tar xzf /tmp/cargo-deny.tgz -C "$HOME/.cargo/bin" --strip-components=1 \
             cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny
           cargo deny --version
+      - name: Rust scope fixture uses the pinned toolchain
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -c 'import yaml' 2>/dev/null \
+            || python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
+          python3 samples/workflow-scope/test_rust_scope.py
       # The fixture manifests carry COPIES of configs/rust (same shape as the
       # sample .editorconfigs, and the same drift risk). rustfmt.toml and
       # deny.toml must match verbatim; the [lints] block appended to each
@@ -1562,6 +1569,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Report history fixture and scope handoff
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -c 'import yaml' 2>/dev/null \
+            || python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
+          python3 -c 'import yaml'
+          bash samples/report-history/run.sh
       - name: Report must accumulate history, not reset it
         shell: bash
         run: |
@@ -1578,14 +1593,15 @@ jobs:
           # single argv token and argparse rejects the lot.
           gen() {
             local -a a=(--json "$F" --date "$1" --target demo/repo
-                        --gitleaks clean --osv clean)
+                        --gitleaks clean --osv clean --run-id "$3"
+                        --run-attempt "$4" --started-at "$5")
             [[ -n "${2:-}" ]] && a+=(--previous-body "$2")
             python3 scripts/quality-report.py "${a[@]}"
           }
 
-          gen 2026-01-01            > /tmp/b1.md
-          gen 2026-01-08 /tmp/b1.md > /tmp/b2.md
-          gen 2026-01-15 /tmp/b2.md > /tmp/b3.md
+          gen 2026-01-01 ''          ci-r1 1 2026-01-01T10:00:00Z > /tmp/b1.md
+          gen 2026-01-08 /tmp/b1.md ci-r2 1 2026-01-08T10:00:00Z > /tmp/b2.md
+          gen 2026-01-15 /tmp/b2.md ci-r3 1 2026-01-15T10:00:00Z > /tmp/b3.md
 
           grep -q '| 3 |' /tmp/b1.md || grep -q '\*\*3\*\*' /tmp/b1.md || {
             echo '::error::total finding count missing from the report'; exit 1; }
@@ -1598,43 +1614,51 @@ jobs:
           # scrambled everything in the middle. Three runs rendered
           # 15, 01, 08 — correct count, correct top row, wrong table. Caught by
           # the acceptance canary, not by this job.
-          dates() { grep -oE '^\| [0-9]{4}-[0-9]{2}-[0-9]{2}' "$1" | tr -d '| ' | tr '\n' ' '; }
+          dates() {
+            grep -oE '^\| ci-[^|]+' "$1" | sed 's/^| //' | awk '{$1=$1}1' | paste -sd' ' -
+          }
           expect() {
             local got; got="$(dates "$1")"
-            if [[ "$got" != "$2 " ]]; then
-              echo "::error::history is [$got], expected [$2 ] — $3"
+            if [[ "$got" != "$2" ]]; then
+              echo "::error::history is [$got], expected [$2] — $3"
               sed -n '/## History/,$p' "$1"
               exit 1
             fi
           }
-          expect /tmp/b3.md '2026-01-15 2026-01-08 2026-01-01' \
+          expect /tmp/b3.md 'ci-r3 ci-r2 ci-r1' \
                  'rows must be newest-first in full, not just at the top'
 
-          # A second run on the same day must REPLACE that day's row. The
-          # history is a daily series; the canary runs on both push and
-          # pull_request and produced two identical rows.
-          gen 2026-01-15 /tmp/b3.md > /tmp/b3b.md
-          expect /tmp/b3b.md '2026-01-15 2026-01-08 2026-01-01' \
-                 'a same-day rerun appended a duplicate row instead of replacing it'
+          # Same-day runs and attempts are distinct identities. Reprocessing
+          # the same identity is the idempotent case.
+          gen 2026-01-15 /tmp/b3.md ci-r4 1 2026-01-15T11:00:00Z > /tmp/b3b.md
+          expect /tmp/b3b.md 'ci-r4 ci-r3 ci-r2 ci-r1' \
+                 'a same-day run must retain a distinct history entry'
+          gen 2026-01-15 /tmp/b3b.md ci-r4 1 2026-01-15T11:00:00Z > /tmp/b3idempotent.md
+          expect /tmp/b3idempotent.md 'ci-r4 ci-r3 ci-r2 ci-r1' \
+                 'same identity must be idempotent'
 
           # And a row arriving out of order still sorts into place.
-          gen 2026-01-05 /tmp/b3b.md > /tmp/b3c.md
-          expect /tmp/b3c.md '2026-01-15 2026-01-08 2026-01-05 2026-01-01' \
+          gen 2026-01-05 /tmp/b3b.md ci-old 1 2026-01-05T09:00:00Z > /tmp/b3c.md
+          expect /tmp/b3c.md 'ci-r4 ci-r3 ci-r2 ci-old ci-r1' \
                  'an out-of-order date was appended rather than sorted'
 
-          # A body it cannot parse must not silently wipe history.
+          # A body it cannot parse must refuse the write, rather than silently
+          # replacing the only durable history with a fresh report.
           echo 'garbage, no history heading' > /tmp/junk.md
-          gen 2026-02-01 /tmp/junk.md > /tmp/b4.md
-          grep -q '2026-02-01' /tmp/b4.md || {
-            echo '::error::report failed on an unparseable previous body'; exit 1; }
-          echo 'OK: history accumulates, stays newest-first, survives a junk body'
+          if gen 2026-02-01 /tmp/junk.md ci-junk 1 2026-02-01T10:00:00Z > /tmp/b4.md; then
+            echo '::error::unrecoverable history was silently replaced'; exit 1
+          fi
+          echo 'OK: history accumulates, stays newest-first, and refuses junk'
 
       - name: Dependency table must read all three CycloneDX licence spellings
         shell: bash
         run: |
           set -Eeuo pipefail
           out=$(python3 scripts/quality-report.py --json /tmp/findings.json \
-                  --date 2026-03-01 --sbom samples/sbom/cyclonedx.json)
+                  --date 2026-03-01 --run-id ci-sbom-good --run-attempt 1 \
+                  --started-at 2026-03-01T10:00:00Z --sbom samples/sbom/cyclonedx.json \
+                  --previous-body /tmp/b3.md)
+          printf '%s\n' "$out" > /tmp/b-sbom.md
           echo "$out"
           grep -q '^6 resolved components' <<<"$out" || {
             echo '::error::component count wrong'; exit 1; }
@@ -1656,7 +1680,8 @@ jobs:
           # history is the irreplaceable part; a re-runnable inventory is not.
           echo 'not json at all' > /tmp/bad-sbom.json
           out=$(python3 scripts/quality-report.py --json /tmp/findings.json \
-                  --date 2026-03-02 --sbom /tmp/bad-sbom.json --previous-body /tmp/b3.md)
+                  --date 2026-03-02 --run-id ci-sbom-bad --run-attempt 1 \
+                  --started-at 2026-03-02T10:00:00Z --sbom /tmp/bad-sbom.json --previous-body /tmp/b3.md)
           # An `if`, not `grep -q ... && { exit 1; }`: this step runs under
           # `set -e`, where the && form aborts precisely when grep finds
           # nothing — i.e. on the PASSING path. The SC2015 trap.
@@ -1664,7 +1689,7 @@ jobs:
             echo '::error::a malformed SBOM produced a dependency section anyway'
             exit 1
           fi
-          n=$(grep -cE '^\| 2026-0[0-9]-[0-9]{2} \|' <<<"$out" || true)
+          n=$(grep -cE '^\| ci-' <<<"$out" || true)
           [[ "$n" -eq 4 ]] || {
             echo "::error::a malformed SBOM cost the report its history ($n rows, expected 4)"; exit 1; }
           echo 'OK: dependency table parses every licence shape and fails soft'
@@ -1677,7 +1702,9 @@ jobs:
           # the command substitution — `rc` set INSIDE the function would be set
           # in the subshell the substitution creates and lost on the way out.
           gen() {  # gen <json> <date> [previous-body]  -> body on stdout
-            local -a a=(--json "$1" --date "$2" --target demo/repo)
+            local -a a=(--json "$1" --date "$2" --target demo/repo
+                        --run-id "ci-error-$2" --run-attempt 1
+                        --started-at "${2}T10:00:00Z")
             if [[ -n "${3:-}" ]]; then a+=(--previous-body "$3"); fi
             python3 scripts/quality-report.py "${a[@]}" 2>/tmp/report.err
           }
@@ -1690,21 +1717,21 @@ jobs:
           {"results": [], "errors": [{"type": "PartialParsing", "message": "rule x failed to parse"}],
            "paths": {"scanned": ["a.ts"]}}
           JSON
-          rc=0; body=$(gen /tmp/errored.json 2026-04-01 /tmp/b3.md) || rc=$?
+          rc=0; body=$(gen /tmp/errored.json 2026-04-01 /tmp/b-sbom.md) || rc=$?
           [[ "$rc" == "2" ]] || { echo "::error::an errored scan exited $rc, expected 2"; exit 1; }
           grep -q 'ERRORED' <<<"$body" || {
             echo '::error::an errored scan did not render as ERRORED'; echo "$body"; exit 1; }
           if grep -qE '^\| Semgrep \| \*\*0\*\* findings \|$' <<<"$body"; then
             echo '::error::an errored scan still rendered as 0 findings'; exit 1
           fi
-          grep -qE '^\| 2026-04-01 \| ERRORED \|' <<<"$body" || {
+          grep -qE '^\| ci-error-2026-04-01 \| 1 \| .* \| failure \| ERRORED \|' <<<"$body" || {
             echo '::error::the history row for an errored run is not marked ERRORED'
             sed -n '/## History/,$p' <<<"$body"; exit 1; }
 
           # The outage must not cost the history either — that table is the only
           # store there is.
-          n=$(grep -cE '^\| 2026-0[0-9]-[0-9]{2} \|' <<<"$body")
-          [[ "$n" -eq 4 ]] || { echo "::error::history lost rows on an errored run ($n, expected 4)"; exit 1; }
+          n=$(grep -cE '^\| ci-' <<<"$body")
+          [[ "$n" -eq 5 ]] || { echo "::error::history lost rows on an errored run ($n, expected 5)"; exit 1; }
 
           # A scan that ran to completion over nothing is the same failure with
           # a different shape: it knows it looked at no files.
@@ -4124,6 +4151,7 @@ jobs:
         continue-on-error: true
         with:
           json-out: ${{ runner.temp }}/layer2.json
+          producer: gate
       - name: The scan must have FAILED, with exactly the expected finding set
         shell: bash
         env:
@@ -4159,6 +4187,42 @@ jobs:
       - name: changed-only preserves history and filters PR merge baselines
         shell: bash
         run: bash samples/layer2-changed-only/run.sh
+
+      - name: scope evidence covers scanner and collection failure paths
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: bash samples/layer2-scope/run.sh
+
+      - name: scope fixture unit checks
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: python3 samples/layer2-scope/test_scope.py
+
+      - name: scope evidence keeps the verdict and all Layer 2 invocations
+        shell: bash
+        env:
+          SCOPE: ${{ steps.scan.outputs.scope }}
+        run: |
+          set -Eeuo pipefail
+          test -s "$SCOPE"
+          python3 - "$SCOPE" <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          assert d["schema_version"] == 1
+          assert d["kind"] == "layer2-scope"
+          assert d["identity"]["producer"] == "gate"
+          assert d["analysis"]["outcome"] == "failure"
+          assert set(d["tools"]) == {"semgrep", "gitleaks", "osv", "licenses", "sbom"}
+          assert all(set(r["measurements"]) == {"examined", "unparsed", "policy_excluded"}
+                     for r in d["tools"].values())
+          for name, tool in d["tools"].items():
+              if name == "semgrep" and tool["state"] == "run":
+                  assert all(m["status"] == "known" and m["count"] is not None
+                             for m in tool["measurements"].values())
+              else:
+                  assert all(m["count"] is None for m in tool["measurements"].values())
+          print("OK: Layer 2 scope contract and failure evidence are present")
+          PY
 
   # A consumer's FILENAMES reach quality.yml's matrix, and a matrix value that
   # is interpolated into a run body is code. This job proves the safe form is
@@ -4594,17 +4658,23 @@ jobs:
 
           # And this repo itself, which is the workspace shape in miniature:
           # a root lockfile with two sample package.json files under it, plus
-          # the three crates — every one of which must carry its own lockfile,
+          # the four crates, including the workflow-scope fixture — every one
+          # of which must carry its own lockfile,
           # because that is exactly what this baseline now asks of consumers.
           run "$GITHUB_WORKSPACE" auto
           eq 'self rc' "$rc" 0
           eq 'self ts_dirs' "$(val ts_dirs)" '["."]'
           eq 'self has_rust' "$(val has_rust)" true
-          eq 'self rust_dirs' "$(val rust_dirs)" '["examples/rust-cli","samples/rust","samples/rust-clean"]'
+          eq 'self rust_dirs' "$(val rust_dirs)" '["examples/rust-cli","samples/rust","samples/rust-clean","samples/workflow-scope/rust-fixture"]'
           eq 'self has_java' "$(val has_java)" true
           eq 'self java_dirs' "$(val java_dirs)" '["examples/java-maven","samples/java","samples/java-clean","samples/java-lint"]'
 
           echo 'OK: every detection fixture classified, and the two silent skips now fail loud'
+
+          # Keep the whole-workflow scope fixture in this existing detector
+          # context so the shipped detector body and the scope handoff are
+          # exercised by the same CI check.
+          bash samples/workflow-scope/run.sh
 
   # The counts, asserted precisely — semgrep JSON, no fragile CLI-output greps.
   layer2-counts:
@@ -4765,6 +4835,54 @@ jobs:
           restore groups
 
           echo 'OK: every policy knob is load-bearing in both directions'
+
+      - name: Semgrep scope evidence separates policy and ignore controls
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          backup="$RUNNER_TEMP/exclude-policy.yml"
+          restore() {
+            if [[ -f "$backup" ]]; then
+              mv "$backup" samples/policy/exclude/.maxi-quality.yml
+            fi
+          }
+          trap restore EXIT
+          rc=0
+          ./scripts/scan.sh samples/policy/exclude --skip gitleaks --skip osv \
+            --scope-out "$RUNNER_TEMP/policy-on.json" >/dev/null 2>&1 || rc=$?
+          [[ "$rc" == 1 ]] || { echo "::error::policy-on scan exited $rc"; exit 1; }
+          python3 - "$RUNNER_TEMP/policy-on.json" <<'PY'
+          import json, sys
+          measurements = json.load(open(sys.argv[1]))["tools"]["semgrep"]["measurements"]
+          assert measurements["examined"]["count"] == 1
+          assert measurements["policy_excluded"]["count"] == 1
+          assert measurements["policy_excluded"]["unit"] == "target_path"
+          PY
+          mv samples/policy/exclude/.maxi-quality.yml "$backup"
+          rc=0
+          ./scripts/scan.sh samples/policy/exclude --skip gitleaks --skip osv \
+            --scope-out "$RUNNER_TEMP/policy-off.json" >/dev/null 2>&1 || rc=$?
+          [[ "$rc" == 1 ]] || { echo "::error::policy-off scan exited $rc"; exit 1; }
+          python3 - "$RUNNER_TEMP/policy-off.json" <<'PY'
+          import json, sys
+          measurements = json.load(open(sys.argv[1]))["tools"]["semgrep"]["measurements"]
+          assert measurements["examined"]["count"] == 2
+          assert measurements["policy_excluded"]["count"] == 0
+          PY
+          rc=0
+          ./scripts/scan.sh samples/layer2-scope/default-ignore --skip gitleaks --skip osv \
+            --scope-out "$RUNNER_TEMP/default-ignore.json" >/dev/null 2>&1 || rc=$?
+          [[ "$rc" == 1 ]] || { echo "::error::default-ignore scan exited $rc"; exit 1; }
+          python3 - "$RUNNER_TEMP/default-ignore.json" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1]))
+          measurements = data["tools"]["semgrep"]["measurements"]
+          assert measurements["examined"]["count"] == 1
+          assert measurements["policy_excluded"]["count"] == 0
+          raw = "\n".join(item["text"] for item in data["tools"]["semgrep"]["diagnostics"])
+          assert "semgrepignore_patterns_match" in raw
+          PY
+          echo 'OK: attempted, policy-excluded and default-ignore scope evidence are distinct'
 
       - name: The resolved policy matches its snapshot
         shell: bash

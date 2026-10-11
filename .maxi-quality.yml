@@ -29,6 +29,10 @@ paths:
   exclude:
     - samples/policy
     - samples/parse-errors
+    # The Semgrep scope fixture has deliberate findings in both its selected
+    # and ignored controls. It is scanned directly by samples/layer2-scope,
+    # so it must not shift this repository's exact rule manifest.
+    - samples/layer2-scope/default-ignore
     # The slop fixtures (#51, #52) prove knip and deptry, not Semgrep. Scanned
     # as part of the repo they would couple two subsystems' manifests the same
     # way samples/policy would — and samples/knip's bait (dead files, an

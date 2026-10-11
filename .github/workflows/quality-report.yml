@@ -68,6 +68,9 @@ on:
 
 jobs:
   report:
+    concurrency:
+      group: maxi-quality-report-${{ github.repository }}-${{ inputs.label }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     outputs:
       issue: ${{ steps.write.outputs.issue }}
@@ -77,6 +80,14 @@ jobs:
           # Gitleaks scans history, not just the tree.
           fetch-depth: 0
 
+      # Capture identity before setup and scanning. If a later success-only
+      # output is missing, the report still orders this attempt by execution
+      # time rather than by the time its issue write happens.
+      - name: Capture report execution identity
+        id: report_identity
+        shell: bash
+        run: echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       # NO checkout of maxi-quality here. The first version of this workflow did
       # exactly that and died with "Repository not found" on every consumer,
       # because a consumer's default token could not clone a private baseline.
@@ -85,8 +96,10 @@ jobs:
       # who forks this baseline and keeps their copy private.
       - name: Full scan
         id: scan
+        continue-on-error: true
         uses: maximalcode/maxi-quality/actions/layer2@613a26c952d3a5b224b15e7268b182826c1e53b2
         with:
+          producer: report
           # A FULL scan, never changed-only: the backlog IS the point here.
           # no-fail because a report must not fail merely because findings
           # exist — failing on findings is quality.yml's job, not this one's.
@@ -107,6 +120,7 @@ jobs:
 
       - name: Write the standing issue
         id: write
+        if: always()
         uses: maximalcode/maxi-quality/actions/report-issue@613a26c952d3a5b224b15e7268b182826c1e53b2
         with:
           json: ${{ runner.temp }}/semgrep.json
@@ -116,6 +130,13 @@ jobs:
           gitleaks: ${{ steps.scan.outputs.gitleaks }}
           osv: ${{ steps.scan.outputs.osv }}
           licenses: ${{ steps.scan.outputs.licenses }}
+          scope: ${{ steps.scan.outputs.scope }}
+          run-id: ${{ github.run_id }}
+          run-attempt: ${{ github.run_attempt }}
+          invocation-id: ${{ github.run_id }}
+          started-at: ${{ steps.report_identity.outputs.started_at }}
+          commit: ${{ github.sha }}
+          ref: ${{ github.ref }}
 
       # The issue holds the SUMMARY (counts per licence); this is the artifact
       # an auditor actually asks for. Uploaded even if the issue write failed —
