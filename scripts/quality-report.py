@@ -392,6 +392,8 @@ def _safe_history_scope(scope: object) -> dict:
             or (normalized["status"] == "known" and not isinstance(value.get("method"), str))
         ):
             malformed = True
+        if isinstance(value, dict) and isinstance(value.get("reason"), str):
+            normalized["reason"] = _one_line(value["reason"], 150)
         return normalized
 
     if isinstance(raw_tools, dict):
@@ -402,7 +404,7 @@ def _safe_history_scope(scope: object) -> dict:
                 safe_tools[name] = {"state": "unknown", "outcome": "unknown", "reason": "malformed tool metadata"}
                 continue
             tool = {}
-            for key in ("requested", "state", "outcome", "reason_code"):
+            for key in ("requested", "state", "outcome", "reason_code", "reason", "diagnostic"):
                 value = raw_tool.get(key)
                 if key == "requested" and isinstance(value, bool):
                     tool[key] = value
@@ -512,6 +514,13 @@ def _safe_history_entry(entry: dict) -> dict:
                     if isinstance(count, int) and not isinstance(count, bool) and count >= 0
                 } if isinstance(licenses, dict) else {},
             }
+        # The compact top-level scope is sufficient for comparisons, but it
+        # deliberately omits diagnostic excerpts. Retain one bounded display
+        # scope alongside the newest presentation so a late older completion
+        # can still render the current run's evidence.
+        display_scope = presentation.get("scope")
+        if isinstance(display_scope, dict):
+            safe_presentation["scope"] = _safe_history_scope(display_scope)
         safe["presentation"] = safe_presentation
     return safe
 
@@ -1012,16 +1021,20 @@ def build(counts, date, gitleaks, osv, previous, target, licenses="not run",
     entry_outcome = "failure" if scan_error or analysis_outcome in {"failure", "cancelled"} else (
         "incomplete" if scope is not None and analysis_outcome not in {"success", "failure", "cancelled"} else "success"
     )
+    entry_presentation = _presentation(counts, gitleaks, osv, licenses, sbom, unparsed, scan_error)
+    entry_presentation["scope"] = _display_scope_data(scope, scope_error)
     entry = {
         "id": _entry_id(identity, date), "legacy": False, "identity": identity,
         "findings": None if scan_error else total, "largest": top_txt,
         "outcome": entry_outcome,
         "scope": _compact_scope(scope, scope_error),
-        "presentation": _presentation(counts, gitleaks, osv, licenses, sbom, unparsed, scan_error),
+        "presentation": entry_presentation,
     }
     link = _artifact_link(target, identity, entry["scope"].get("artifact", "layer2-scope.json"))
     if link:
         entry["scope"]["artifact_link"] = link
+        if isinstance(entry["presentation"].get("scope"), dict):
+            entry["presentation"]["scope"]["artifact_link"] = link
 
     retained = [old for old in (previous or []) if old.get("id") != entry.get("id")]
     retained.append(entry)
@@ -1057,7 +1070,12 @@ def build(counts, date, gitleaks, osv, previous, target, licenses="not run",
         display_sbom = (
             {"components": sbom[0], "licenses": dict(sbom[1])} if sbom else None
         )
-    display_scope = _display_scope_data(scope, scope_error) if rendering_current else current.get("scope", {"status": "unknown", "reason": "scope unavailable"})
+    retained_display_scope = current_presentation.get("scope") if isinstance(current_presentation, dict) else None
+    display_scope = (
+        _display_scope_data(scope, scope_error)
+        if rendering_current
+        else retained_display_scope or current.get("scope", {"status": "unknown", "reason": "scope unavailable"})
+    )
     if rendering_current and link:
         display_scope["artifact_link"] = link
 

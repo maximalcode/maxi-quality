@@ -323,6 +323,54 @@ grep -Fq '\[details\]\(https://example.invalid\)' "$WORK/escaped-diagnostic.md"
 grep -Fq '\|' "$WORK/escaped-diagnostic.md"
 grep -q '\.\.\.' "$WORK/escaped-diagnostic.md"
 
+# An older completion must not erase the bounded diagnostic display from the
+# newest retained presentation. Reprocessing that older identity is also
+# idempotent: it must continue to show the same newest diagnostic.
+NEWER_SCOPE="$WORK/newer-display-scope.json"
+cp "$SFIND" "$NEWER_SCOPE"
+python3 - "$NEWER_SCOPE" <<'PY'
+import json, sys
+path = sys.argv[1]
+doc = json.load(open(path, encoding="utf-8"))
+doc["identity"].update(run_id="display-newer", invocation_id="display-newer", started_at="2026-01-01T12:00:00Z")
+doc["tools"]["semgrep"]["diagnostics"] = [{
+    "stream": "combined", "source": "fixture",
+    "text": "CURRENT-NEWER-DIAGNOSTIC survives older arrival",
+}]
+json.dump(doc, open(path, "w", encoding="utf-8"))
+PY
+python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
+  --date 2026-01-01 --run-id display-newer --run-attempt 1 \
+  --started-at 2026-01-01T12:00:00Z --scope "$NEWER_SCOPE" >"$WORK/display-newer.md"
+
+OLDER_SCOPE="$WORK/older-display-scope.json"
+cp "$SFIND" "$OLDER_SCOPE"
+python3 - "$OLDER_SCOPE" <<'PY'
+import json, sys
+path = sys.argv[1]
+doc = json.load(open(path, encoding="utf-8"))
+doc["identity"].update(run_id="display-older", invocation_id="display-older", started_at="2026-01-01T11:00:00Z")
+doc["tools"]["semgrep"]["diagnostics"] = [{
+    "stream": "combined", "source": "fixture",
+    "text": "OLDER-DIAGNOSTIC-MUST-NOT-BECOME-CURRENT",
+}]
+json.dump(doc, open(path, "w", encoding="utf-8"))
+PY
+python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
+  --date 2026-01-01 --run-id display-older --run-attempt 1 \
+  --started-at 2026-01-01T11:00:00Z --scope "$OLDER_SCOPE" \
+  --previous-body "$WORK/display-newer.md" >"$WORK/display-older.md"
+grep -q 'CURRENT-NEWER-DIAGNOSTIC survives older arrival' "$WORK/display-older.md"
+if grep -q 'OLDER-DIAGNOSTIC-MUST-NOT-BECOME-CURRENT' "$WORK/display-older.md"; then
+  echo "older diagnostic replaced the newest retained presentation" >&2
+  exit 1
+fi
+python3 "$ROOT/scripts/quality-report.py" --json "$WORK/findings.json" \
+  --date 2026-01-01 --run-id display-older --run-attempt 1 \
+  --started-at 2026-01-01T11:00:00Z --scope "$OLDER_SCOPE" \
+  --previous-body "$WORK/display-older.md" >"$WORK/display-older-repeat.md"
+cmp -s "$WORK/display-older.md" "$WORK/display-older-repeat.md"
+
 # A legacy finding row remains visible, but its unavailable scope cannot be a
 # numeric comparison baseline for a new measured execution.
 cat >"$WORK/legacy.md" <<'MD'
