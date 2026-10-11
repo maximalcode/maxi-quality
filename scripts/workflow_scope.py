@@ -1043,6 +1043,33 @@ def _normalize_layer2_scope(value: dict[str, Any], path: pathlib.Path) -> tuple[
                 issues.append(issue)
                 unknown = _unknown_tool_record(name, issue)
                 unknown["diagnostics"] = tool_diagnostics
+                if isinstance(item.get("requested"), bool):
+                    unknown["requested"] = item["requested"]
+                for field in ("mode", "effective"):
+                    if isinstance(item.get(field), dict):
+                        unknown[field] = dict(item[field])
+                if isinstance(item.get("measurements"), dict) and not any(
+                    violation.startswith("measurement ")
+                    or violation in {"missing measurements", "measurements must be an object"}
+                    for violation in violations
+                ):
+                    unknown["measurements"] = dict(item["measurements"])
+                if isinstance(item.get("native"), dict):
+                    native = dict(item["native"])
+                    if any(violation.startswith("native component_count") for violation in violations):
+                        component = native.get("component_count")
+                        original = dict(component) if isinstance(component, dict) else {}
+                        unit = original.get("unit") if isinstance(original.get("unit"), str) else "dependency_component"
+                        method = original.get("method") if isinstance(original.get("method"), str) else "native component inventory"
+                        native["component_count"] = {
+                            **original,
+                            "status": "unknown",
+                            "count": None,
+                            "unit": unit,
+                            "method": method,
+                            "reason": "native component measurement is malformed",
+                        }
+                    unknown["native"] = native
                 tools[name] = unknown
                 continue
             normalized_tool = dict(item)

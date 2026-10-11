@@ -484,6 +484,8 @@ class WorkflowScopeTests(unittest.TestCase):
             self.assertEqual(malformed_record["tools"]["broken"]["diagnostics"][0]["text"], "tool diagnostic")
             self.assertEqual(malformed_record["tools"]["broken"]["measurements"]["examined"]["status"], "unknown")
             self.assertEqual(malformed_record["tools"]["bad-state"]["diagnostics"][0]["text"], "tool diagnostic")
+            self.assertEqual(malformed_record["tools"]["bad-state"]["effective"]["version"], "fixture")
+            self.assertEqual(malformed_record["tools"]["bad-state"]["native"]["result"], "fixture")
             self.assertEqual(data["collection"]["status"], "partial")
             issues = " ".join(data["collection"]["issues"])
             self.assertIn("producer capture unavailable", issues)
