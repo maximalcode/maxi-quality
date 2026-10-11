@@ -738,6 +738,11 @@ def needs_outcomes(args: argparse.Namespace) -> dict[str, str]:
     }
 
 
+def upstream_cancelled_jobs(args: argparse.Namespace) -> list[str]:
+    """Return current-attempt direct needs jobs cancelled upstream."""
+    return sorted(name for name, outcome in needs_outcomes(args).items() if outcome == "cancelled")
+
+
 def missing_job(args: argparse.Namespace, item: dict[str, Any], reason: str = "no fragment for this current attempt; execution is unknown") -> dict[str, Any]:
     outcome = needs_outcomes(args).get(item["logical_job"], "")
     if outcome == "skipped":
@@ -1234,6 +1239,9 @@ def collect(args: argparse.Namespace) -> None:
     identity = document["identity"]
     if args.cancellation:
         identity["cancellation"] = args.cancellation
+    cancelled_jobs = upstream_cancelled_jobs(args)
+    if cancelled_jobs:
+        identity["upstream_cancelled_jobs"] = cancelled_jobs
     expected = document.get("expected_jobs", [])
     received: dict[str, dict[str, Any]] = {}
     issues: list[str] = [manifest_issue] if manifest_issue else []
@@ -1357,6 +1365,9 @@ def render_lines(document: dict[str, Any]) -> list[str]:
     ]
     if identity.get("cancellation"):
         lines.append(f"Cancellation metadata: {safe(identity['cancellation'])}")
+    if identity.get("upstream_cancelled_jobs"):
+        jobs = ", ".join(identity["upstream_cancelled_jobs"])
+        lines.append(f"Upstream cancelled jobs: {safe(jobs)}")
     for language, value in document.get("languages", {}).items():
         markers = ", ".join(value.get("markers", [])) if value.get("markers") else document.get("presence", {}).get(language, {}).get("state", "unknown")
         lines.append(f"{LANGUAGE_NAMES[language]}: {safe(value['state'])} ({safe(markers)})")
