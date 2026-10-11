@@ -247,6 +247,16 @@ docker_ok() { have docker && docker info >/dev/null 2>&1; }
 # least one space after the label.
 record_status() { record "$(printf '%-11s%s' "$1" "$2")"; }
 
+# Keep an empty baseline value for full scans without relying on a conditional
+# expression inside an argument (which shellcheck correctly flags as ambiguous).
+baseline_ref_value() {
+  if (( CHANGED_ONLY )); then
+    printf '%s' "$BASE_REF"
+  else
+    printf ''
+  fi
+}
+
 if [[ -n "$SCOPE_OUT" ]]; then
   scope_mode=full
   [[ "$CHANGED_ONLY" == 1 ]] && scope_mode=changed-only
@@ -541,7 +551,7 @@ _semgrep_exec() {
       scope_record --tool semgrep --state run --outcome unknown \
         --reason "Semgrep result handoff failed while moving staged JSON" --exit-code "$rc" \
         --mode "$([[ "$CHANGED_ONLY" == 1 ]] && echo changed-only || echo full)" \
-        --baseline-ref "$([[ "$CHANGED_ONLY" == 1 ]] && echo "$BASE_REF" || true)" \
+        --baseline-ref "$(baseline_ref_value)" \
         --log "$semgrep_log" --log "$staged" --effective-json "$POLICY_JSON" \
         "${result_issue[@]}"
       scope_measure_semgrep
@@ -568,7 +578,7 @@ PY
     scope_record --tool semgrep --state run --outcome failure \
       --reason "Semgrep exited before producing a usable result" --exit-code "$rc" \
       --mode "$([[ "$CHANGED_ONLY" == 1 ]] && echo changed-only || echo full)" \
-      --baseline-ref "$([[ "$CHANGED_ONLY" == 1 ]] && echo "$BASE_REF" || true)" \
+      --baseline-ref "$(baseline_ref_value)" \
       --log "$semgrep_log" --log "$json_host" --effective-json "$POLICY_JSON" \
       ${result_issue[@]+"${result_issue[@]}"}
     scope_measure_semgrep
@@ -581,7 +591,7 @@ PY
   scope_record --tool semgrep --state run --outcome unknown \
     --reason "Semgrep completed; result classification pending" --exit-code "$rc" \
     --mode "$([[ "$CHANGED_ONLY" == 1 ]] && echo changed-only || echo full)" \
-    --baseline-ref "$([[ "$CHANGED_ONLY" == 1 ]] && echo "$BASE_REF" || true)" \
+    --baseline-ref "$(baseline_ref_value)" \
     --log "$semgrep_log" --log "$json_host" --effective-json "$POLICY_JSON" \
     ${result_issue[@]+"${result_issue[@]}"}
   scope_measure_semgrep
@@ -644,7 +654,7 @@ PY
       scope_record --tool semgrep --state run --outcome success \
         --reason "Semgrep completed" --exit-code 0 \
         --mode "$([[ "$CHANGED_ONLY" == 1 ]] && echo changed-only || echo full)" \
-        --baseline-ref "$([[ "$CHANGED_ONLY" == 1 ]] && echo "$BASE_REF" || true)" \
+        --baseline-ref "$(baseline_ref_value)" \
         --effective-json "$POLICY_JSON" \
         ${result_issue[@]+"${result_issue[@]}"}
       scope_measure_semgrep
@@ -654,7 +664,7 @@ PY
       scope_record --tool semgrep --state run --outcome failure \
         --reason "Semgrep completed with findings" --exit-code 1 \
         --mode "$([[ "$CHANGED_ONLY" == 1 ]] && echo changed-only || echo full)" \
-        --baseline-ref "$([[ "$CHANGED_ONLY" == 1 ]] && echo "$BASE_REF" || true)" \
+        --baseline-ref "$(baseline_ref_value)" \
         --effective-json "$POLICY_JSON" \
         ${result_issue[@]+"${result_issue[@]}"}
       scope_measure_semgrep
@@ -668,7 +678,7 @@ PY
       scope_record --tool semgrep --state run --outcome failure \
         --reason "Semgrep result classification failed" --exit-code "$crc" \
         --mode "$([[ "$CHANGED_ONLY" == 1 ]] && echo changed-only || echo full)" \
-        --baseline-ref "$([[ "$CHANGED_ONLY" == 1 ]] && echo "$BASE_REF" || true)" \
+        --baseline-ref "$(baseline_ref_value)" \
         --effective-json "$POLICY_JSON" \
         ${result_issue[@]+"${result_issue[@]}"}
       scope_measure_semgrep
@@ -773,7 +783,7 @@ PY
   if (( rc == 0 )); then
     scope_record --tool gitleaks --state run --outcome success \
       --reason "Gitleaks completed" --exit-code 0 --mode "$history_mode" \
-      --baseline-ref "$([[ "$CHANGED_ONLY" == 1 ]] && echo "$BASE_REF" || true)" \
+      --baseline-ref "$(baseline_ref_value)" \
       --fallback "$fallback" --log "$gitleaks_log" \
       ${gitleaks_effective_arg[@]+"${gitleaks_effective_arg[@]}"} \
       ${gitleaks_metadata_issue[@]+"${gitleaks_metadata_issue[@]}"}
@@ -781,7 +791,7 @@ PY
     scope_record --tool gitleaks --state run --outcome failure \
       --reason "Gitleaks exited with an error or findings" --exit-code "$rc" \
       --mode "$history_mode" \
-      --baseline-ref "$([[ "$CHANGED_ONLY" == 1 ]] && echo "$BASE_REF" || true)" \
+      --baseline-ref "$(baseline_ref_value)" \
       --fallback "$fallback" --log "$gitleaks_log" \
       ${gitleaks_effective_arg[@]+"${gitleaks_effective_arg[@]}"} \
       ${gitleaks_metadata_issue[@]+"${gitleaks_metadata_issue[@]}"}
