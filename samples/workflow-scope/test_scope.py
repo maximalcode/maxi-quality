@@ -231,6 +231,112 @@ class WorkflowScopeTests(unittest.TestCase):
             self.assertEqual(data["identity"]["cancellation"], "cancelled")
             self.assertTrue(any("Cancellation metadata: cancelled" in line for line in data["summary"]["lines"]))
 
+    def test_collect_retains_upstream_cancellation_without_overclaiming_missing_matrix_leg(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+            fragments = root / "fragments"
+            fragments.mkdir()
+            init = run_helper(
+                "init", "--out", str(manifest), "--root", str(root), "--languages", "none",
+                "--workflow", "quality", "--invocation-id", "upstream-cancel",
+                "--run-id", "upstream-run", "--run-attempt", "1", "--commit", "c", "--ref", "r",
+                "--expected-job", "rust|rust|linux", "--expected-job", "rust|rust|macos",
+            )
+            self.assertEqual(init.returncode, 0, init.stderr)
+            fragment = run_helper(
+                "fragment", "--out", str(fragments / "linux.json"),
+                "--workflow", "quality", "--invocation-id", "upstream-cancel", "--run-id", "upstream-run",
+                "--run-attempt", "1", "--logical-job", "rust", "--language", "rust", "--leg", "linux",
+                "--state", "run", "--outcome", "success", "--reason", "completed",
+            )
+            self.assertEqual(fragment.returncode, 0, fragment.stderr)
+            collected = root / "collected.json"
+            collect = run_helper(
+                "collect", "--manifest", str(manifest), "--fragments-dir", str(fragments), "--out", str(collected),
+                "--workflow", "quality", "--invocation-id", "upstream-cancel", "--run-id", "upstream-run",
+                "--run-attempt", "1", "--job-outcomes", '{"rust":{"result":"cancelled"}}',
+            )
+            self.assertEqual(collect.returncode, 0, collect.stderr)
+            data = json.loads(collected.read_text())
+            self.assertEqual(data["identity"]["upstream_cancelled_jobs"], ["rust"])
+            self.assertNotIn("cancellation", data["identity"])
+            jobs = {(job["logical_job"], job["leg"]): job for job in data["jobs"]}
+            self.assertEqual(jobs[("rust", "linux")]["outcome"], "success")
+            self.assertEqual(jobs[("rust", "macos")]["state"], "unknown")
+            self.assertEqual(jobs[("rust", "macos")]["outcome"], "unknown")
+            self.assertEqual(jobs[("rust", "macos")]["reason_code"], "missing_fragment")
+            self.assertEqual(data["analysis"]["outcome"], "unknown")
+            self.assertEqual(data["collection"]["status"], "partial")
+            self.assertTrue(any("Upstream cancelled jobs: rust" in line for line in data["summary"]["lines"]))
+
+    def test_collect_retains_upstream_cancellation_in_missing_manifest_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fragments = root / "fragments"
+            fragments.mkdir()
+            fragment = run_helper(
+                "fragment", "--out", str(fragments / "linux.json"),
+                "--workflow", "quality", "--invocation-id", "fallback-cancel", "--run-id", "fallback-run",
+                "--run-attempt", "2", "--logical-job", "rust", "--language", "rust", "--leg", "linux",
+                "--state", "run", "--outcome", "success", "--reason", "completed",
+            )
+            self.assertEqual(fragment.returncode, 0, fragment.stderr)
+            collected = root / "collected.json"
+            collect = run_helper(
+                "collect", "--manifest", str(root / "missing-manifest.json"), "--fragments-dir", str(fragments),
+                "--out", str(collected), "--root", str(root / "empty-workspace"), "--workflow", "quality",
+                "--invocation-id", "fallback-cancel", "--run-id", "fallback-run", "--run-attempt", "2",
+                "--expected-job", "rust|rust|linux", "--expected-job", "rust|rust|macos",
+                "--job-outcomes", '{"rust":{"result":"cancelled"}}',
+            )
+            self.assertEqual(collect.returncode, 0, collect.stderr)
+            data = json.loads(collected.read_text())
+            self.assertEqual(data["identity"]["upstream_cancelled_jobs"], ["rust"])
+            jobs = {(job["logical_job"], job["leg"]): job for job in data["jobs"]}
+            self.assertEqual(jobs[("rust", "linux")]["outcome"], "success")
+            self.assertEqual(jobs[("rust", "macos")]["state"], "unknown")
+            self.assertEqual(jobs[("rust", "macos")]["outcome"], "unknown")
+            self.assertEqual(data["analysis"]["outcome"], "unknown")
+            self.assertEqual(data["collection"]["status"], "partial")
+
+    def test_collect_does_not_invent_upstream_cancellation_for_absent_malformed_or_success_needs(self) -> None:
+        for needs in (None, "not-json", "[]", '{"rust":{"result":"success"}}'):
+            with self.subTest(needs=needs), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                manifest = root / "manifest.json"
+                fragments = root / "fragments"
+                fragments.mkdir()
+                init = run_helper(
+                    "init", "--out", str(manifest), "--root", str(root), "--languages", "none",
+                    "--workflow", "quality", "--invocation-id", "needs-control", "--run-id", "needs-run",
+                    "--run-attempt", "1", "--commit", "c", "--ref", "r",
+                    "--expected-job", "rust|rust|linux",
+                )
+                self.assertEqual(init.returncode, 0, init.stderr)
+                fragment = run_helper(
+                    "fragment", "--out", str(fragments / "linux.json"),
+                    "--workflow", "quality", "--invocation-id", "needs-control", "--run-id", "needs-run",
+                    "--run-attempt", "1", "--logical-job", "rust", "--language", "rust", "--leg", "linux",
+                    "--state", "run", "--outcome", "success", "--reason", "completed",
+                )
+                self.assertEqual(fragment.returncode, 0, fragment.stderr)
+                collected = root / "collected.json"
+                args = [
+                    "collect", "--manifest", str(manifest), "--fragments-dir", str(fragments), "--out", str(collected),
+                    "--workflow", "quality", "--invocation-id", "needs-control", "--run-id", "needs-run",
+                    "--run-attempt", "1",
+                ]
+                if needs is not None:
+                    args.extend(("--job-outcomes", needs))
+                collect = run_helper(*args)
+                self.assertEqual(collect.returncode, 0, collect.stderr)
+                data = json.loads(collected.read_text())
+                self.assertNotIn("upstream_cancelled_jobs", data["identity"])
+                self.assertEqual(data["jobs"][0]["outcome"], "success")
+                self.assertEqual(data["analysis"]["outcome"], "success")
+                self.assertEqual(data["collection"]["status"], "complete")
+
     def test_deselected_unsupported_shape_is_observed_without_detector_refusal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
