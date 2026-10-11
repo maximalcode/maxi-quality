@@ -399,6 +399,10 @@ class WorkflowScopeTests(unittest.TestCase):
                 "--producer", "gate", "--workflow", "quality", "--invocation-id", "l2", "--run-id", "r",
                 "--run-attempt", "1", "--job", "layer2", "--commit", "c", "--ref", "r", "--mode", "full",
             ], capture_output=True, text=True).returncode, 0)
+            self.assertEqual(subprocess.run([
+                sys.executable, str(ROOT / "scripts/layer2_scope.py"), "finalize", "--out", str(layer2),
+                "--analysis-outcome", "success", "--analysis-exit-code", "0", "--collection-status", "complete",
+            ], capture_output=True, text=True).returncode, 0)
             out = root / "out.json"
             self.assertEqual(run_helper(
                 "collect", "--manifest", str(manifest), "--fragments-dir", str(fragments), "--out", str(out),
@@ -410,6 +414,197 @@ class WorkflowScopeTests(unittest.TestCase):
             self.assertEqual(data["coverage"]["state"], "not_applicable")
             self.assertEqual(data["languages"]["python"]["state"], "skipped")
             self.assertEqual(len(data["layer2"]), 1)
+
+    def test_layer2_collection_degradation_is_propagated_and_siblings_survive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+            fragments = root / "fragments"
+            layer2 = root / "layer2"
+            fragments.mkdir()
+            layer2.mkdir()
+            self.assertEqual(run_helper(
+                "init", "--out", str(manifest), "--root", str(root), "--languages", "none",
+                "--workflow", "quality", "--invocation-id", "layer2-collect", "--run-id", "run",
+                "--run-attempt", "1", "--commit", "c", "--ref", "r", "--expected-job", "layer2||",
+            ).returncode, 0)
+            self.assertEqual(run_helper(
+                "fragment", "--out", str(fragments / "layer2.json"), "--logical-job", "layer2",
+                "--invocation-id", "layer2-collect", "--run-id", "run", "--run-attempt", "1",
+                "--state", "run", "--outcome", "success", "--reason", "scope collected",
+            ).returncode, 0)
+            producer = layer2 / "valid.json"
+            self.assertEqual(subprocess.run([
+                sys.executable, str(ROOT / "scripts/layer2_scope.py"), "init", "--out", str(producer),
+                "--producer", "gate", "--workflow", "quality", "--invocation-id", "layer2-producer",
+                "--run-id", "run", "--run-attempt", "1", "--job", "layer2", "--commit", "c",
+                "--ref", "r", "--mode", "full",
+            ], capture_output=True, text=True).returncode, 0)
+            valid = json.loads(producer.read_text())
+            valid["analysis"] = {
+                "outcome": "success",
+                "exit_code": 0,
+                "findings": 0,
+                "diagnostics": [{"stream": "stderr", "source": "semgrep", "text": "diagnostic"}],
+            }
+            valid["tools"]["semgrep"]["diagnostics"] = [
+                {"stream": "stderr", "source": "semgrep", "text": "tool diagnostic"},
+            ]
+            valid["tools"]["semgrep"]["effective"] = {"version": "fixture"}
+            valid["tools"]["semgrep"]["native"] = {"result": "fixture"}
+            valid["collection"] = {"status": "partial", "issues": ["producer capture unavailable"], "finalized_at": "fixture"}
+            producer.write_text(json.dumps(valid))
+            malformed = dict(valid)
+            malformed["collection"] = {"status": "complete", "issues": ["existing producer issue", None]}
+            malformed_tool = dict(valid["tools"]["semgrep"])
+            malformed_tool["measurements"] = dict(malformed_tool["measurements"])
+            malformed_tool["measurements"]["examined"] = {
+                **malformed_tool["measurements"]["examined"], "status": "known", "count": None,
+            }
+            malformed_generic = dict(valid["tools"]["semgrep"])
+            malformed_generic["state"] = "bogus"
+            malformed["tools"] = {"broken": malformed_tool, "bad-state": malformed_generic}
+            (layer2 / "malformed.json").write_text(json.dumps(malformed))
+
+            out = root / "collected.json"
+            result = run_helper(
+                "collect", "--manifest", str(manifest), "--fragments-dir", str(fragments), "--out", str(out),
+                "--layer2-dir", str(layer2), "--layer2-invocation-id", "layer2-producer",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(out.read_text())
+            self.assertEqual(len(data["layer2"]), 2)
+            self.assertEqual(data["layer2"][0]["analysis"]["outcome"], "success")
+            valid_record = next(record for record in data["layer2"] if record["collection"]["issues"] == ["producer capture unavailable"])
+            self.assertEqual(valid_record["analysis"]["diagnostics"][0]["text"], "diagnostic")
+            self.assertEqual(valid_record["tools"]["semgrep"]["diagnostics"][0]["text"], "tool diagnostic")
+            self.assertEqual(valid_record["tools"]["semgrep"]["effective"]["version"], "fixture")
+            self.assertEqual(valid_record["tools"]["semgrep"]["native"]["result"], "fixture")
+            malformed_record = next(record for record in data["layer2"] if "broken" in record["tools"])
+            self.assertEqual(malformed_record["tools"]["broken"]["diagnostics"][0]["text"], "tool diagnostic")
+            self.assertEqual(malformed_record["tools"]["broken"]["measurements"]["examined"]["status"], "unknown")
+            self.assertEqual(malformed_record["tools"]["bad-state"]["diagnostics"][0]["text"], "tool diagnostic")
+            self.assertEqual(malformed_record["tools"]["bad-state"]["effective"]["version"], "fixture")
+            self.assertEqual(malformed_record["tools"]["bad-state"]["native"]["result"], "fixture")
+            self.assertEqual(data["collection"]["status"], "partial")
+            issues = " ".join(data["collection"]["issues"])
+            self.assertIn("producer capture unavailable", issues)
+            self.assertIn("existing producer issue", issues)
+            self.assertIn("invalid measurement", issues)
+            self.assertTrue(any("producer capture unavailable" in line for line in data["summary"]["lines"]))
+
+    def test_layer2_missing_required_tools_degrades_collection(self) -> None:
+        for remaining in ({}, {"semgrep": "keep"}):
+            with self.subTest(remaining=remaining):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    manifest = root / "manifest.json"
+                    fragments = root / "fragments"
+                    fragments.mkdir()
+                    self.assertEqual(run_helper(
+                        "init", "--out", str(manifest), "--root", str(root), "--languages", "none",
+                        "--workflow", "quality", "--invocation-id", "missing-tools", "--run-id", "run",
+                        "--run-attempt", "1", "--commit", "c", "--ref", "r", "--expected-job", "layer2||",
+                    ).returncode, 0)
+                    self.assertEqual(run_helper(
+                        "fragment", "--out", str(fragments / "layer2.json"), "--logical-job", "layer2",
+                        "--invocation-id", "missing-tools", "--run-id", "run", "--run-attempt", "1",
+                        "--state", "run", "--outcome", "success", "--reason", "scope collected",
+                    ).returncode, 0)
+                    producer = root / "layer2.json"
+                    self.assertEqual(subprocess.run([
+                        sys.executable, str(ROOT / "scripts/layer2_scope.py"), "init", "--out", str(producer),
+                        "--producer", "gate", "--workflow", "quality", "--invocation-id", "layer2-producer",
+                        "--run-id", "run", "--run-attempt", "1", "--job", "layer2", "--commit", "c",
+                        "--ref", "r", "--mode", "full",
+                    ], capture_output=True, text=True).returncode, 0)
+                    self.assertEqual(subprocess.run([
+                        sys.executable, str(ROOT / "scripts/layer2_scope.py"), "finalize", "--out", str(producer),
+                        "--analysis-outcome", "success", "--analysis-exit-code", "0", "--collection-status", "complete",
+                    ], capture_output=True, text=True).returncode, 0)
+                    value = json.loads(producer.read_text())
+                    if remaining:
+                        value["tools"] = {name: value["tools"][name] for name in remaining}
+                    else:
+                        value["tools"] = {}
+                    producer.write_text(json.dumps(value))
+                    out = root / "collected.json"
+                    result = run_helper(
+                        "collect", "--manifest", str(manifest), "--fragments-dir", str(fragments), "--out", str(out),
+                        "--layer2-dir", str(root), "--layer2-invocation-id", "layer2-producer",
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    data = json.loads(out.read_text())
+                    self.assertEqual(data["collection"]["status"], "partial")
+                    issues = " ".join(data["collection"]["issues"])
+                    self.assertIn("missing required Layer 2 tool record", issues)
+                    if remaining:
+                        self.assertIn("gitleaks", issues)
+                    else:
+                        self.assertIn("semgrep", issues)
+
+    def test_layer2_native_measurement_fault_preserves_tool_execution(self) -> None:
+        for native_count, expected_collection in ((-1, "partial"), (2, "complete")):
+            with self.subTest(native_count=native_count):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    manifest = root / "manifest.json"
+                    fragments = root / "fragments"
+                    fragments.mkdir()
+                    self.assertEqual(run_helper(
+                        "init", "--out", str(manifest), "--root", str(root), "--languages", "none",
+                        "--workflow", "quality", "--invocation-id", "execution-preservation", "--run-id", "run",
+                        "--run-attempt", "1", "--commit", "c", "--ref", "r", "--expected-job", "layer2||",
+                    ).returncode, 0)
+                    self.assertEqual(run_helper(
+                        "fragment", "--out", str(fragments / "layer2.json"), "--logical-job", "layer2",
+                        "--invocation-id", "execution-preservation", "--run-id", "run", "--run-attempt", "1",
+                        "--state", "run", "--outcome", "success", "--reason", "scope collected",
+                    ).returncode, 0)
+                    producer = root / "layer2.json"
+                    self.assertEqual(subprocess.run([
+                        sys.executable, str(ROOT / "scripts/layer2_scope.py"), "init", "--out", str(producer),
+                        "--producer", "gate", "--workflow", "quality", "--invocation-id", "layer2-producer",
+                        "--run-id", "run", "--run-attempt", "1", "--job", "layer2", "--commit", "c",
+                        "--ref", "r", "--mode", "full",
+                    ], capture_output=True, text=True).returncode, 0)
+                    self.assertEqual(subprocess.run([
+                        sys.executable, str(ROOT / "scripts/layer2_scope.py"), "finalize", "--out", str(producer),
+                        "--analysis-outcome", "success", "--analysis-exit-code", "0", "--collection-status", "complete",
+                    ], capture_output=True, text=True).returncode, 0)
+                    value = json.loads(producer.read_text())
+                    semgrep = value["tools"]["semgrep"]
+                    semgrep.update({"state": "run", "outcome": "success", "exit_code": 0,
+                                    "reason": "scanner completed", "reason_code": "completed"})
+                    semgrep["diagnostics"] = [{"stream": "stderr", "source": "semgrep", "text": "scanner diagnostic"}]
+                    semgrep["measurements"]["examined"] = {
+                        **semgrep["measurements"]["examined"], "status": "known", "count": 4,
+                    }
+                    semgrep["native"]["component_count"] = {
+                        "status": "known", "count": native_count, "unit": "dependency_component",
+                        "method": "fixture", "reason": "fixture native count",
+                    }
+                    producer.write_text(json.dumps(value))
+                    out = root / "collected.json"
+                    result = run_helper(
+                        "collect", "--manifest", str(manifest), "--fragments-dir", str(fragments), "--out", str(out),
+                        "--layer2-dir", str(root), "--layer2-invocation-id", "layer2-producer",
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    data = json.loads(out.read_text())
+                    record = data["layer2"][0]["tools"]["semgrep"]
+                    self.assertEqual(data["collection"]["status"], expected_collection)
+                    self.assertEqual(record["state"], "run")
+                    self.assertEqual(record["outcome"], "success")
+                    self.assertEqual(record["exit_code"], 0)
+                    self.assertEqual(record["reason"], "scanner completed")
+                    self.assertEqual(record["diagnostics"][0]["text"], "scanner diagnostic")
+                    self.assertEqual(record["measurements"]["examined"]["count"], 4)
+                    if native_count < 0:
+                        self.assertEqual(record["native"]["component_count"]["status"], "unknown")
+                        self.assertIsNone(record["native"]["component_count"]["count"])
+                    else:
+                        self.assertEqual(record["native"]["component_count"]["count"], native_count)
 
     def test_presence_uses_language_boundaries_and_detector_selection_verbatim(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -51,6 +51,7 @@ VALID_STATES = {"run", "skipped", "not_applicable", "unknown"}
 VALID_OUTCOMES = {"success", "failure", "cancelled", "unknown"}
 VALID_MEASUREMENT_STATES = {"known", "unknown", "not_applicable"}
 TOOL_MEASUREMENTS = ("examined", "unparsed", "policy_excluded")
+LAYER2_TOOLS = ("semgrep", "gitleaks", "osv", "licenses", "sbom")
 
 
 def now() -> str:
@@ -919,6 +920,259 @@ def fallback_document(args: argparse.Namespace, issue: str) -> dict[str, Any]:
     return document
 
 
+def _normalize_layer2_scope(value: dict[str, Any], path: pathlib.Path) -> tuple[dict[str, Any], list[str]]:
+    """Keep a Layer 2 producer leg renderable while surfacing nested loss."""
+    normalized = dict(value)
+    issues: list[str] = []
+
+    def diagnostics(value: object, label: str) -> tuple[list[dict[str, Any]], list[str]]:
+        if not isinstance(value, list):
+            return [], [f"{label} diagnostics container is malformed"]
+        valid: list[dict[str, Any]] = []
+        invalid = False
+        for item in value:
+            if not isinstance(item, dict) or not all(isinstance(item.get(field), str) for field in ("stream", "source", "text")):
+                invalid = True
+                continue
+            valid.append(dict(item))
+        return valid, [f"{label} diagnostics contain malformed entries"] if invalid else []
+
+    analysis = normalized.get("analysis")
+    if not isinstance(analysis, dict):
+        normalized["analysis"] = {"outcome": "unknown", "exit_code": None, "findings": None, "diagnostics": []}
+        issues.append("analysis container is malformed")
+    else:
+        safe_analysis = dict(analysis)
+        outcome = safe_analysis.get("outcome")
+        if "outcome" not in safe_analysis:
+            safe_analysis["outcome"] = "unknown"
+            issues.append("analysis outcome is missing")
+        elif not isinstance(outcome, str) or outcome not in VALID_OUTCOMES:
+            safe_analysis["outcome"] = "unknown"
+            issues.append("analysis outcome is invalid")
+        safe_analysis["diagnostics"], diagnostic_issues = diagnostics(safe_analysis.get("diagnostics", []), "analysis")
+        issues.extend(diagnostic_issues)
+        normalized["analysis"] = safe_analysis
+
+    raw_tools = normalized.get("tools")
+    if "tools" not in normalized:
+        tools: dict[str, dict[str, Any]] = {}
+        issues.append("tools container is missing")
+    elif not isinstance(raw_tools, dict):
+        tools = {}
+        issues.append("tools container is not an object")
+    else:
+        tools = {}
+        for name, item in raw_tools.items():
+            if not isinstance(name, str) or not isinstance(item, dict):
+                issue = f"invalid tool record {name}: expected an object"
+                issues.append(issue)
+                continue
+            candidate = dict(item)
+            candidate.setdefault("command", [])
+            candidate.setdefault("working_directory", None)
+            tool_diagnostics, diagnostic_issues = diagnostics(candidate.get("diagnostics", []), f"tool {name}")
+            candidate["diagnostics"] = []
+            violations = validate_tool_record(candidate)
+            for field in ("requested", "mode", "effective", "native"):
+                if field not in item:
+                    violations.append(f"missing {field}")
+                elif field == "requested" and not isinstance(item[field], bool):
+                    violations.append("requested must be a boolean")
+                elif field != "requested" and not isinstance(item[field], dict):
+                    violations.append(f"{field} must be an object")
+            native = item.get("native")
+            if isinstance(native, dict) and "component_count" in native:
+                component = native["component_count"]
+                if not isinstance(component, dict):
+                    violations.append("native component_count must be an object")
+                else:
+                    status = component.get("status")
+                    count = component.get("count")
+                    if not isinstance(status, str) or status not in VALID_MEASUREMENT_STATES:
+                        violations.append("native component_count status is invalid")
+                    if count is not None and (isinstance(count, bool) or not isinstance(count, int) or count < 0):
+                        violations.append("native component_count count must be a non-negative integer or null")
+                    if status == "known" and count is None:
+                        violations.append("native component_count known status requires a numeric count")
+                    if isinstance(status, str) and status in {"unknown", "not_applicable"} and count is not None:
+                        violations.append(f"native component_count {status} status requires a null count")
+            issues.extend(diagnostic_issues)
+            measurement_violation = all(
+                issue.startswith("measurement ")
+                or issue in {"missing measurements", "measurements must be an object"}
+                for issue in violations
+            )
+            if violations and measurement_violation:
+                normalized_tool = dict(item)
+                normalized_tool.setdefault("command", [])
+                normalized_tool.setdefault("working_directory", None)
+                normalized_tool["diagnostics"] = tool_diagnostics
+                raw_measurements = item.get("measurements")
+                measurements = dict(raw_measurements) if isinstance(raw_measurements, dict) else {}
+                for measurement_name in TOOL_MEASUREMENTS:
+                    measurement_value = measurements.get(measurement_name)
+                    if isinstance(measurement_value, dict) and not any(
+                        violation.startswith(f"measurement {measurement_name} ") for violation in violations
+                    ):
+                        continue
+                    original = dict(measurement_value) if isinstance(measurement_value, dict) else {}
+                    unit = original.get("unit") if isinstance(original.get("unit"), str) else "unknown"
+                    method = original.get("method") if isinstance(original.get("method"), str) else "Layer 2 measurement evidence"
+                    measurements[measurement_name] = {
+                        **original,
+                        "status": "unknown",
+                        "count": None,
+                        "unit": unit,
+                        "method": method,
+                        "reason": "measurement evidence is malformed",
+                    }
+                normalized_tool["measurements"] = measurements
+                issue = f"invalid measurement in tool record {name}: {'; '.join(violations)}"
+                issues.append(issue)
+                collection = normalized_tool.get("collection")
+                if not isinstance(collection, dict):
+                    collection = {"status": "partial", "issues": []}
+                collection["status"] = "partial"
+                collection["issues"] = [item for item in collection.get("issues", []) if isinstance(item, str)] + [issue]
+                normalized_tool["collection"] = collection
+                tools[name] = normalized_tool
+                continue
+            if violations:
+                issue = f"invalid tool record {name}: {'; '.join(violations)}"
+                issues.append(issue)
+                unknown = _unknown_tool_record(name, issue)
+                unknown["diagnostics"] = tool_diagnostics
+                if isinstance(item.get("state"), str) and item["state"] in VALID_STATES:
+                    unknown["state"] = item["state"]
+                if isinstance(item.get("outcome"), str) and item["outcome"] in VALID_OUTCOMES:
+                    unknown["outcome"] = item["outcome"]
+                exit_code = item.get("exit_code")
+                if exit_code is None or (isinstance(exit_code, int) and not isinstance(exit_code, bool) and 0 <= exit_code <= 255):
+                    unknown["exit_code"] = exit_code
+                if isinstance(item.get("reason"), str):
+                    unknown["reason"] = item["reason"]
+                if "reason_code" in item and (item.get("reason_code") is None or isinstance(item.get("reason_code"), str)):
+                    unknown["reason_code"] = item["reason_code"]
+                if isinstance(item.get("requested"), bool):
+                    unknown["requested"] = item["requested"]
+                for field in ("mode", "effective"):
+                    if isinstance(item.get(field), dict):
+                        unknown[field] = dict(item[field])
+                if isinstance(item.get("measurements"), dict) and not any(
+                    violation.startswith("measurement ")
+                    or violation in {"missing measurements", "measurements must be an object"}
+                    for violation in violations
+                ):
+                    unknown["measurements"] = dict(item["measurements"])
+                if isinstance(item.get("native"), dict):
+                    native = dict(item["native"])
+                    if any(violation.startswith("native component_count") for violation in violations):
+                        component = native.get("component_count")
+                        original = dict(component) if isinstance(component, dict) else {}
+                        unit = original.get("unit") if isinstance(original.get("unit"), str) else "dependency_component"
+                        method = original.get("method") if isinstance(original.get("method"), str) else "native component inventory"
+                        native["component_count"] = {
+                            **original,
+                            "status": "unknown",
+                            "count": None,
+                            "unit": unit,
+                            "method": method,
+                            "reason": "native component measurement is malformed",
+                        }
+                    unknown["native"] = native
+                tools[name] = unknown
+                continue
+            normalized_tool = dict(item)
+            normalized_tool["diagnostics"] = tool_diagnostics
+            if "rust" in normalized_tool:
+                normalized_tool["rust"], rust_issues = _normalize_rust_scope(normalized_tool["rust"], name)
+                if rust_issues:
+                    issues.extend(rust_issues)
+                    collection = normalized_tool.get("collection")
+                    if not isinstance(collection, dict):
+                        collection = {"status": "partial", "issues": []}
+                    collection["status"] = "partial"
+                    collection["issues"] = [item for item in collection.get("issues", []) if isinstance(item, str)] + rust_issues
+                    normalized_tool["collection"] = collection
+            tools[name] = normalized_tool
+    normalized["tools"] = tools
+    for name in LAYER2_TOOLS:
+        if name not in tools:
+            issues.append(f"missing required Layer 2 tool record: {name}")
+    for tool in tools.values():
+        collection = tool.get("collection")
+        if collection is None:
+            continue
+        if not isinstance(collection, dict):
+            issues.append(f"invalid tool collection for {tool.get('name', 'unknown')}")
+            tool["collection"] = {
+                "status": "partial",
+                "issues": [f"invalid tool collection for {tool.get('name', 'unknown')}"],
+            }
+            continue
+        status = collection.get("status")
+        collection_issues = collection.get("issues")
+        if not isinstance(collection_issues, list):
+            issue = f"tool collection issues are malformed for {tool.get('name', 'unknown')}"
+            issues.append(issue)
+            tool["collection"] = {"status": "partial", "issues": [issue]}
+            continue
+        if not all(isinstance(item, str) for item in collection_issues):
+            issue = f"tool collection issues contain malformed entries for {tool.get('name', 'unknown')}"
+            issues.append(issue)
+            collection_issues = [item for item in collection_issues if isinstance(item, str)]
+            collection["status"] = "partial"
+            collection["issues"] = [*collection_issues, issue]
+            tool["collection"] = collection
+            continue
+        if not isinstance(status, str) or status not in {"complete", "partial", "unknown", "failed", "in_progress"}:
+            issue = f"tool collection status is invalid for {tool.get('name', 'unknown')}"
+            issues.append(issue)
+            tool["collection"] = {"status": "partial", "issues": [*collection_issues, issue]}
+            continue
+        if status != "complete":
+            issues.extend(collection_issues)
+            if not collection_issues:
+                issues.append(f"tool collection is {status} for {tool.get('name', 'unknown')}")
+
+    raw_collection = normalized.get("collection")
+    if not isinstance(raw_collection, dict):
+        collection = {"status": "partial", "issues": ["Layer 2 collection metadata is unavailable"]}
+        issues.append("Layer 2 collection metadata is unavailable")
+    else:
+        collection = dict(raw_collection)
+        status = collection.get("status")
+        collection_issues = collection.get("issues")
+        if not isinstance(status, str) or status not in {"complete", "partial", "unknown", "failed", "in_progress"}:
+            status = "partial"
+            issues.append("Layer 2 collection status is invalid")
+        if not isinstance(collection_issues, list):
+            collection_issues = []
+            status = "partial"
+            issues.append("Layer 2 collection issues are malformed")
+        elif not all(isinstance(item, str) for item in collection_issues):
+            collection_issues = [item for item in collection_issues if isinstance(item, str)]
+            status = "partial"
+            issues.append("Layer 2 collection issues contain malformed entries")
+        if status in {"partial", "unknown", "failed", "in_progress"}:
+            if collection_issues:
+                issues.extend(collection_issues)
+            else:
+                collection_issues = ["Layer 2 producer reported incomplete collection"]
+                issues.append(collection_issues[0])
+        elif collection_issues:
+            status = "partial"
+            issues.extend(collection_issues)
+        collection["status"] = status
+        collection["issues"] = list(collection_issues)
+    if issues:
+        collection["status"] = "partial"
+        collection["issues"] = collection.get("issues", []) + [item for item in issues if item not in collection.get("issues", [])]
+    normalized["collection"] = collection
+    return normalized, list(dict.fromkeys(issues))
+
+
 def layer2_records(directory: pathlib.Path, identity: dict[str, Any], invocation_id: str) -> tuple[list[dict[str, Any]], list[str]]:
     records: list[dict[str, Any]] = []
     issues: list[str] = []
@@ -951,7 +1205,9 @@ def layer2_records(directory: pathlib.Path, identity: dict[str, Any], invocation
         if any(str(value_identity.get(key, "")) != str(expected) for key, expected in expected_identity.items()):
             issues.append(f"ignored foreign Layer 2 scope {path.name}")
             continue
-        records.append(value)
+        normalized, nested_issues = _normalize_layer2_scope(value, path)
+        records.append(normalized)
+        issues.extend(f"Layer 2 scope {path.name}: {issue}" for issue in nested_issues)
     return records, issues
 
 
