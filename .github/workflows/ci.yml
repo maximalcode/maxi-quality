@@ -4658,13 +4658,14 @@ jobs:
 
           # And this repo itself, which is the workspace shape in miniature:
           # a root lockfile with two sample package.json files under it, plus
-          # the three crates — every one of which must carry its own lockfile,
+          # the four crates, including the workflow-scope fixture — every one
+          # of which must carry its own lockfile,
           # because that is exactly what this baseline now asks of consumers.
           run "$GITHUB_WORKSPACE" auto
           eq 'self rc' "$rc" 0
           eq 'self ts_dirs' "$(val ts_dirs)" '["."]'
           eq 'self has_rust' "$(val has_rust)" true
-          eq 'self rust_dirs' "$(val rust_dirs)" '["examples/rust-cli","samples/rust","samples/rust-clean"]'
+          eq 'self rust_dirs' "$(val rust_dirs)" '["examples/rust-cli","samples/rust","samples/rust-clean","samples/workflow-scope/rust-fixture"]'
           eq 'self has_java' "$(val has_java)" true
           eq 'self java_dirs' "$(val java_dirs)" '["examples/java-maven","samples/java","samples/java-clean","samples/java-lint"]'
 
