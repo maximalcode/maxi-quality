@@ -179,6 +179,31 @@ scope_capture_issue() {
     --out "$SCOPE_OUT" --section collection --stream combined \
     --source "$1" --log "$2" || warn "scope capture diagnostic failed"
 }
+scope_mark_semgrep_handoff_blocked() {
+  if (( SKIP_GITLEAKS )); then
+    scope_record --tool gitleaks --state skipped --outcome unknown --reason-code not_applicable \
+      --reason "explicit --skip gitleaks" --exit-code 0
+  else
+    scope_record --tool gitleaks --state skipped --outcome unknown --reason-code blocked \
+      --reason "Semgrep result handoff failed before Gitleaks invocation" --exit-code 1
+  fi
+  if (( SKIP_OSV )); then
+    scope_record --tool osv --state skipped --outcome unknown --reason-code not_applicable \
+      --reason "explicit --skip osv" --exit-code 0
+    [[ -n "$LICENSES" ]] && scope_record --tool licenses --state skipped --outcome unknown --reason-code blocked \
+      --reason "OSV-Scanner explicitly skipped before license invocation" --exit-code 0
+    [[ -n "$SBOM_OUT" ]] && scope_record --tool sbom --state skipped --outcome unknown --reason-code blocked \
+      --reason "OSV-Scanner explicitly skipped before SBOM invocation" --exit-code 0
+  else
+    scope_record --tool osv --state skipped --outcome unknown --reason-code blocked \
+      --reason "Semgrep result handoff failed before OSV-Scanner invocation" --exit-code 1
+    [[ -n "$LICENSES" ]] && scope_record --tool licenses --state skipped --outcome unknown --reason-code blocked \
+      --reason "Semgrep result handoff failed before license invocation" --exit-code 1
+    [[ -n "$SBOM_OUT" ]] && scope_record --tool sbom --state skipped --outcome unknown --reason-code blocked \
+      --reason "Semgrep result handoff failed before SBOM invocation" --exit-code 1
+  fi
+  return 0
+}
 scope_finish() {
   local rc=$?
   if [[ -n "$SCOPE_OUT" && -f "$SCOPE_OUT" ]]; then
@@ -504,14 +529,29 @@ _semgrep_exec() {
     scope_capture_issue "semgrep diagnostic capture incomplete (tee exit ${semgrep_status[1]})" "$semgrep_log"
   fi
 
-  if [[ -n "$staged" && -f "$staged" ]]; then
-    mv "$staged" "$json_host"
-  fi
-
   local -a result_issue=()
-  if [[ ! -s "$json_host" ]]; then
+  local handoff_rc=0
+  if [[ -n "$staged" && -f "$staged" ]]; then
+    if mv "$staged" "$json_host"; then
+      :
+    else
+      handoff_rc=$?
+      result_issue=(--collection-issue "Semgrep result handoff failed while moving staged JSON")
+      record_status semgrep "ERROR (result handoff)"; FINDINGS=1
+      scope_record --tool semgrep --state run --outcome unknown \
+        --reason "Semgrep result handoff failed while moving staged JSON" --exit-code "$rc" \
+        --mode "$([[ "$CHANGED_ONLY" == 1 ]] && echo changed-only || echo full)" \
+        --baseline-ref "$([[ "$CHANGED_ONLY" == 1 ]] && echo "$BASE_REF" || true)" \
+        --log "$semgrep_log" --log "$staged" --effective-json "$POLICY_JSON" \
+        "${result_issue[@]}"
+      scope_measure_semgrep
+      scope_mark_semgrep_handoff_blocked
+      exit "$handoff_rc"
+    fi
+  fi
+  if (( ${#result_issue[@]} == 0 )) && [[ ! -s "$json_host" ]]; then
     result_issue=(--collection-issue "Semgrep result JSON missing")
-  elif ! python3 - "$json_host" <<'PY'
+  elif (( ${#result_issue[@]} == 0 )) && ! python3 - "$json_host" <<'PY'
 import json
 import sys
 with open(sys.argv[1], encoding="utf-8") as fh:
@@ -535,11 +575,39 @@ PY
     return 0
   fi
 
-  # The caller's copy, if they asked for one. Written from the file the verdict
-  # was actually computed from, so a report can never disagree with the gate.
+  # Capture the completed scanner boundary before a caller's result handoff.
+  # The later classification update omits logs, so a successful handoff never
+  # duplicates diagnostics while a failed handoff still leaves them durable.
+  scope_record --tool semgrep --state run --outcome unknown \
+    --reason "Semgrep completed; result classification pending" --exit-code "$rc" \
+    --mode "$([[ "$CHANGED_ONLY" == 1 ]] && echo changed-only || echo full)" \
+    --baseline-ref "$([[ "$CHANGED_ONLY" == 1 ]] && echo "$BASE_REF" || true)" \
+    --log "$semgrep_log" --log "$json_host" --effective-json "$POLICY_JSON" \
+    ${result_issue[@]+"${result_issue[@]}"}
+  scope_measure_semgrep
+
+  # Preserve the original handoff order and exact mkdir/cp failure status. The
+  # scope boundary above is best-effort evidence; it cannot make the handoff a
+  # non-gating operation.
   if [[ -n "$JSON_OUT" ]]; then
-    mkdir -p "$(dirname "$JSON_OUT")"
-    cp "$json_host" "$JSON_OUT"
+    handoff_rc=0
+    if mkdir -p "$(dirname "$JSON_OUT")"; then
+      if cp "$json_host" "$JSON_OUT"; then
+        :
+      else
+        handoff_rc=$?
+      fi
+    else
+      handoff_rc=$?
+    fi
+    if (( handoff_rc != 0 )); then
+      warn "Semgrep result handoff failed"
+      scope_record --tool semgrep --state run --outcome unknown \
+        --reason "Semgrep result handoff failed" --exit-code "$rc" \
+        --collection-issue "Semgrep result handoff failed (exit $handoff_rc)"
+      scope_mark_semgrep_handoff_blocked
+      exit "$handoff_rc"
+    fi
   fi
 
   # classify's stdout is teed rather than left to flow, because the summary
@@ -577,7 +645,7 @@ PY
         --reason "Semgrep completed" --exit-code 0 \
         --mode "$([[ "$CHANGED_ONLY" == 1 ]] && echo changed-only || echo full)" \
         --baseline-ref "$([[ "$CHANGED_ONLY" == 1 ]] && echo "$BASE_REF" || true)" \
-        --log "$semgrep_log" --log "$json_host" --effective-json "$POLICY_JSON" \
+        --effective-json "$POLICY_JSON" \
         ${result_issue[@]+"${result_issue[@]}"}
       scope_measure_semgrep
       ;;
@@ -587,7 +655,7 @@ PY
         --reason "Semgrep completed with findings" --exit-code 1 \
         --mode "$([[ "$CHANGED_ONLY" == 1 ]] && echo changed-only || echo full)" \
         --baseline-ref "$([[ "$CHANGED_ONLY" == 1 ]] && echo "$BASE_REF" || true)" \
-        --log "$semgrep_log" --log "$json_host" --effective-json "$POLICY_JSON" \
+        --effective-json "$POLICY_JSON" \
         ${result_issue[@]+"${result_issue[@]}"}
       scope_measure_semgrep
       ;;
@@ -601,11 +669,12 @@ PY
         --reason "Semgrep result classification failed" --exit-code "$crc" \
         --mode "$([[ "$CHANGED_ONLY" == 1 ]] && echo changed-only || echo full)" \
         --baseline-ref "$([[ "$CHANGED_ONLY" == 1 ]] && echo "$BASE_REF" || true)" \
-        --log "$semgrep_log" --log "$json_host" --effective-json "$POLICY_JSON" \
+        --effective-json "$POLICY_JSON" \
         ${result_issue[@]+"${result_issue[@]}"}
       scope_measure_semgrep
       ;;
   esac
+
   return 0
 }
 
@@ -945,11 +1014,27 @@ PY
     if (( tee_rc != 0 )); then
       scope_capture_issue "sbom diagnostic capture incomplete (tee exit $tee_rc)" "$sbom_log"
     fi
+    local sbom_handoff_issue=""
+    local sbom_handoff_rc=0
+    local -a sbom_handoff_issue_arg=()
     if [[ -n "$staged" && -f "$staged" ]]; then
-      mkdir -p "$(dirname "$SBOM_OUT")"
-      mv "$staged" "$SBOM_OUT"
+      if mkdir -p "$(dirname "$SBOM_OUT")"; then
+        :
+      else
+        sbom_handoff_rc=$?
+        sbom_handoff_issue="SBOM result handoff failed while creating destination"
+      fi
+      if [[ -z "$sbom_handoff_issue" ]]; then
+        if mv "$staged" "$SBOM_OUT"; then
+          :
+        else
+          sbom_handoff_rc=$?
+          sbom_handoff_issue="SBOM result handoff failed while moving staged JSON"
+        fi
+      fi
     fi
-    if [[ -f "$SBOM_OUT" ]]; then
+    [[ -n "$sbom_handoff_issue" ]] && sbom_handoff_issue_arg=(--collection-issue "$sbom_handoff_issue")
+    if [[ -z "$sbom_handoff_issue" && -f "$SBOM_OUT" ]]; then
       local n
       n=$(python3 - "$SBOM_OUT" <<'PY'
 import json
@@ -982,8 +1067,13 @@ PY
       scope_record --tool sbom --state run --outcome failure \
         --reason "SBOM invocation produced no artifact" --exit-code "$src" \
         --mode "source-recursive" --resolution "resolver-enabled" --log "$sbom_log" \
+        ${sbom_handoff_issue_arg[@]+"${sbom_handoff_issue_arg[@]}"} \
         ${sbom_effective_arg[@]+"${sbom_effective_arg[@]}"} \
         ${osv_metadata_issue[@]+"${osv_metadata_issue[@]}"}
+    fi
+    if [[ -n "$sbom_handoff_issue" ]]; then
+      warn "$sbom_handoff_issue"
+      exit "$sbom_handoff_rc"
     fi
     echo
   fi

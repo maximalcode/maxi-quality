@@ -226,6 +226,70 @@ class Layer2ScopeContractTests(unittest.TestCase):
             self.assertEqual(policy["status"], "unknown")
             self.assertIn("verbose skip metadata", policy["reason"])
 
+    def test_semgrep_missing_json_preserves_diagnostics_before_report_handoff(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            binary = root / "bin"
+            binary.mkdir()
+            semgrep = binary / "semgrep"
+            semgrep.write_text(
+                "#!/usr/bin/env bash\n"
+                'if [[ "${1:-}" == --version ]]; then echo 1.172.0; exit 0; fi\n'
+                'printf "distinct missing-result diagnostic\\n" >&2\n'
+                "exit 0\n"
+            )
+            semgrep.chmod(0o755)
+            for name in ("gitleaks", "osv-scanner"):
+                downstream = binary / name
+                downstream.write_text(
+                    "#!/usr/bin/env bash\n"
+                    f"printf invoked > {root / (name + '.invoked')}\n"
+                    "exit 0\n"
+                )
+                downstream.chmod(0o755)
+
+            def run(*extra: str, skip_tools: bool = True) -> subprocess.CompletedProcess[str]:
+                command = [str(ROOT / "scripts" / "scan.sh"), str(ROOT / "samples" / "policy" / "exclude")]
+                if skip_tools:
+                    command.extend(("--skip", "gitleaks", "--skip", "osv"))
+                command.extend(extra)
+                return subprocess.run(
+                    command,
+                    cwd=ROOT,
+                    env={**os.environ, "PATH": f"{binary}:{os.environ['PATH']}"},
+                    text=True,
+                    capture_output=True,
+                )
+
+            report = root / "report.json"
+            scope = root / "scope.json"
+            result = run("--json-out", str(report), "--scope-out", str(scope))
+            self.assertEqual(result.returncode, 1, result.stderr)
+            data = json.loads(scope.read_text())
+            tool = data["tools"]["semgrep"]
+            self.assertEqual(tool["state"], "run")
+            self.assertTrue(any("distinct missing-result diagnostic" in item["text"] for item in tool["diagnostics"]))
+            self.assertEqual(data["collection"]["status"], "partial")
+            self.assertIn("missing", json.dumps(data).lower())
+            self.assertFalse((root / "gitleaks.invoked").exists())
+            self.assertFalse((root / "osv-scanner.invoked").exists())
+            self.assertEqual(data["tools"]["gitleaks"]["reason_code"], "not_applicable")
+            self.assertEqual(data["tools"]["osv"]["reason_code"], "not_applicable")
+
+            traced_scope = root / "traced-scope.json"
+            traced = run("--json-out", str(root / "traced.json"), "--scope-out", str(traced_scope), skip_tools=False)
+            self.assertEqual(traced.returncode, 1, traced.stderr)
+            traced_data = json.loads(traced_scope.read_text())
+            self.assertFalse((root / "gitleaks.invoked").exists())
+            self.assertFalse((root / "osv-scanner.invoked").exists())
+            self.assertEqual(traced_data["tools"]["gitleaks"]["reason_code"], "blocked")
+            self.assertEqual(traced_data["tools"]["osv"]["reason_code"], "blocked")
+
+            no_scope = run("--json-out", str(root / "no-scope.json"))
+            self.assertEqual(no_scope.returncode, 1, no_scope.stderr)
+            no_fail = run("--json-out", str(root / "no-fail.json"), "--scope-out", str(root / "no-fail-scope.json"), "--no-fail")
+            self.assertEqual(no_fail.returncode, 1, no_fail.stderr)
+
     def test_action_wires_independent_all_outcome_publication(self) -> None:
         action = yaml.safe_load((ROOT / "actions" / "layer2" / "action.yml").read_text())
         steps = action["runs"]["steps"]
