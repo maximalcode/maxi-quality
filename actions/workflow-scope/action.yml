@@ -289,7 +289,8 @@ runs:
         fragments="$RUNNER_TEMP/maxi-quality-workflow-scope-fragments"
         mkdir -p "$fragments"
         find "$INPUT_ROOT" -type f -name '*fragment.json' -print0 2>/dev/null | while IFS= read -r -d '' path; do
-          key=$(printf '%s' "$path" | sha256sum | cut -c1-16)
+          key=$(printf '%s' "$path" | python3 -c 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:16])')
+          [[ -n "$key" ]] || { echo "::error::could not derive a transport key for $path"; exit 1; }
           cp "$path" "$fragments/$key.json"
         done
         if [[ -z "$manifest" ]]; then
