@@ -3682,35 +3682,20 @@ jobs:
           /tmp/actionlint -color -verbose
           echo 'OK: all workflows lint clean'
 
-      # Third-party actions must be pinned to a full commit SHA, never a tag.
-      # A tag is mutable: whoever controls it can point it at new code, and that
-      # code then runs in every consumer's CI with their GITHUB_TOKEN. This is
-      # the supply-chain hole that `pins.yml` already closes for the scanner
-      # binaries; actions were simply never covered.
-      #
-      # `maximalcode/*@v1` is EXEMPT and must stay so: our own moving tag is how
-      # consumers pick up fixes without editing a file, it is our repo to move,
-      # and it only moves after this CI is green (release-tag.yml).
+      # Third-party actions must be pinned to a full commit SHA. The checker
+      # parses whole YAML scalar values so suffixes cannot hide after a valid
+      # 40-character prefix; its scan scope and existing exemptions are kept in
+      # scripts/check-action-pins.py.
       - name: Third-party actions must be SHA-pinned
         shell: bash
-        run: |
-          set -Eeuo pipefail
-          # examples/ is in the roots because examples/README.md calls that
-          # directory "the correct thing to copy" — an unpinned action there is
-          # this guard teaching the opposite of what it enforces.
-          bad=$(grep -rhoE 'uses: [A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[A-Za-z0-9._-]+' \
-                  .github/workflows/ actions/ examples/ \
-                | grep -vE '@[0-9a-f]{40}' \
-                | grep -vE '^uses: maximalcode/' \
-                | sort -u || true)
-          if [[ -n "$bad" ]]; then
-            echo '::error::these actions are pinned to a MUTABLE tag — use the full commit SHA:'
-            echo "$bad"
-            echo 'Resolve with: gh api repos/OWNER/REPO/git/ref/tags/TAG --jq .object.sha'
-            echo 'Keep the tag as a trailing comment so Dependabot can still bump it.'
-            exit 1
-          fi
-          echo 'OK: every third-party action is pinned to a commit SHA'
+        run: python3 scripts/check-action-pins.py
+
+      # The test extracts the step above and executes it against temporary
+      # repositories, so all three scanned roots and every ref-shape assertion
+      # use exactly the implementation that gates this workflow.
+      - name: Action-pin guard regression corpus
+        shell: bash
+        run: python3 samples/guards/test_action_pins.py
 
       # Issue forms fail SILENTLY: a malformed one is not a red check anywhere,
       # it is an error banner on the new-issue page that only a stranger trying

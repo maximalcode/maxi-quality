@@ -1,0 +1,5 @@
+# Three original upload-artifact failures from one workflow, kept as separate
+# labelled steps in test_action_pins.py. They all had one extra trailing `0`.
+Upload workflow scope manifest|actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a0
+Upload workflow scope fragment|actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a0
+Upload whole workflow scope|actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a0
