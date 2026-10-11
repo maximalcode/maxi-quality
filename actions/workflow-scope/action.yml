@@ -281,7 +281,7 @@ runs:
         INVOCATION="${INVOCATION:-unknown}"; RUN_ID="${RUN_ID:-unknown}"; RUN_ATTEMPT="${RUN_ATTEMPT:-1}"
         COMMIT="${COMMIT:-unknown}"; REF="${REF:-unknown}"; LANGUAGES="${LANGUAGES:-auto}"
         MODE_NAME="${MODE_NAME:-full}"; BASELINE="${BASELINE:-}"; EXPECTED="${EXPECTED:-[]}"
-        JOB_OUTCOMES="${JOB_OUTCOMES:-{}}"; COVERAGE="${COVERAGE:-unknown}"
+        JOB_OUTCOMES="${JOB_OUTCOMES:-}"; COVERAGE="${COVERAGE:-unknown}"
         LAYER2_INVOCATION="${LAYER2_INVOCATION:-}"; CANCELLATION="${CANCELLATION:-}"
         GITHUB_STEP_SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
         script="$GITHUB_ACTION_PATH/../../scripts/workflow_scope.py"
