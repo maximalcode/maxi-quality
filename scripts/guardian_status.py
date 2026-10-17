@@ -8,12 +8,22 @@ from pathlib import Path
 import subprocess
 import sys
 
+import guardian_lifecycle
 
-def status(root: str, host: str = "claude", *, git, check,
+
+def status(root: str, host: str | None = None, *, git, check,
            clear_git_environment, runtime: Path) -> dict:
     """Read installation diagnosis and the latest saved gate observation."""
     canonical_root = str(Path(root).resolve())
     clear_git_environment()
+    requested_host = host
+    state_error = None
+    if host is None:
+        try:
+            host = guardian_lifecycle.selected_host(Path(canonical_root))
+        except ValueError as exc:
+            state_error = str(exc)
+            host = "claude"
     diagnosis_proc = subprocess.run(
         [sys.executable, str(runtime), "diagnose", "--root", canonical_root,
          "--host", host, "--json"], cwd=canonical_root, capture_output=True,
@@ -27,6 +37,11 @@ def status(root: str, host: str = "claude", *, git, check,
                      "live_enforcement": "unverified", "host_settings": "unverified",
                      "diagnosis_error": diagnosis_proc.stderr.strip() or
                      "runtime diagnosis returned no JSON"}
+    try:
+        diagnosis = guardian_lifecycle.status_overlay(
+            Path(canonical_root), diagnosis, requested_host or host)
+    except ValueError as exc:
+        state_error = str(exc)
 
     metadata = Path(git("rev-parse", "--absolute-git-dir", cwd=canonical_root).strip())
     reports: list[tuple[dict, Path]] = []
@@ -62,8 +77,13 @@ def status(root: str, host: str = "claude", *, git, check,
         "project_root": canonical_root,
         "host": {"name": host, "trust": "unverified",
                  "observed_enforcement": diagnosis.get("live_enforcement", "unverified")},
+        "selection": {"host": host, "source": "explicit" if requested_host else
+                       guardian_lifecycle.selection_source(Path(canonical_root)),
+                       "error": state_error},
         "installation": {"status": diagnosis.get("status", "unavailable"),
                          "profile": diagnosis.get("installation_profile", "unknown"),
+                         "lifecycle": diagnosis.get("lifecycle", "unknown"),
+                         "selected_host": diagnosis.get("selected_host"),
                          "release": diagnosis.get("release"),
                          "configured_gate": diagnosis.get("configured_gate"),
                          "checks": diagnosis.get("checks", []),

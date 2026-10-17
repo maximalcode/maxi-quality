@@ -108,24 +108,38 @@ discovery of arbitrary toolchains.
 
 ## Enable Guardian
 
-Use the same entry with the selected native host and an immutable release:
+Use the same entry with the selected native host and an immutable release. The
+host-specific skill invokes its own host by default; the host-neutral local
+command requires an explicit selection:
 
 ```bash
-python3 scripts/guardian.py setup /path/to/project --guardian codex \
-  --version v1.2.0 --commit <full-commit-for-that-release> \
+python3 scripts/guardian.py setup /path/to/project --guardian claude \
+  --version v1.3.0 --commit <full-commit-for-that-release> \
   --source /path/to/maxi-quality
 ```
 
-The version and commit above illustrate the syntax; select a release that
-contains native Codex support. Setup requires a matching local release tag and
+For Codex, replace `claude` with `codex`:
+
+```bash
+python3 scripts/guardian.py setup /path/to/project --guardian codex \
+  --version v1.3.0 --commit <full-commit-for-that-release> \
+  --source /path/to/maxi-quality
+```
+
+The version and commit above illustrate the syntax. The selected immutable
+release must contain the requested host adapter. Setup requires a matching local release tag and
 validates every guard payload file before application. Missing or incompatible
 payloads refuse with a prerequisite; there is no moving-release fallback or
 implicit download. Add `--apply` after inspecting the selection.
 
 Fresh Guardian setup uses the existing versioned runtime internally. It installs
 a release-specific launcher outside the project, prepares the immutable cache,
-and writes only the selected Codex integration, instructions, release lock and
-runtime-state ignores. Unrelated hook entries and settings remain intact.
+and writes only the selected host integration, its project-local skill link,
+instructions, release lock, selected-host ownership state and runtime-state
+ignores. The project-local skill links to the skill in the trusted source
+checkout, so the runner and instructions stay shared. An existing skill path is
+preserved and reported as a conflict. Unrelated hook entries and settings remain
+intact.
 Normal setup has no storage-mode question. Existing versioned profiles retain
 unrelated hooks and settings. A deliberate pinned update previews the owned
 hook changes and switches them to a release-specific launcher location; the
@@ -133,10 +147,11 @@ old launcher remains untouched. The selected launcher is installed only when
 `--apply` is used, and the selected project checks run afterward. Native host
 trust and live hook enforcement remain separate observations.
 
-**Host trust and live enforcement remain unverified.** Review and trust the exact
-hook definitions through Codex `/hooks`. A successful setup or gate run proves
-neither host trust nor live enforcement. Project configuration that disables
-hooks or adds ambiguous inline hook configuration must be reconciled first.
+**Host trust and live enforcement remain unverified.** Review and trust the
+exact hook definitions in the selected host. For Codex, use `/hooks`. A
+successful setup or gate run proves neither host trust nor live enforcement.
+Project configuration that disables hooks or adds ambiguous inline hook
+configuration must be reconciled first.
 
 ## Update deliberately
 

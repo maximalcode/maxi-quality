@@ -34,18 +34,27 @@ entry as a human, starting with its read-only preview:
 python3 "$BASELINE/scripts/guardian.py" setup "$PROJECT" --json
 ```
 
+When setup is invoked from Claude Code, select `--guardian claude`; from Codex,
+select `--guardian codex`. This makes the invoking host the default integration.
+The local command has no invoking host, so enable either native integration only
+with an explicit `--guardian claude` or `--guardian codex`. Both use the same
+setup path and project gate. A different existing Guardian host requires an
+explicit switch operation; setup never changes it silently.
+
 Preserve the existing whole gate and quality settings. When a gate is absent,
 show the discovered suggestions and establish the user's intended checks before
 selecting `--gate`; a lint-only command does not prove tests ran. Preview the
 selected arguments, explain their concrete changes, then apply that same
-selection with `--apply` within the user's setup authorization. A pinned update
-uses the explicitly selected immutable `--version`, matching `--commit` and
-local `--source`. Keep runtime storage internal to setup.
+selection with `--apply` within the user's setup authorization. First native
+setup and pinned updates use a compatible immutable `--version`, its matching
+`--commit`, and the trusted local `--source`. Keep runtime storage internal to
+setup.
 
-Automatic completion is opt-in. Use `--guardian codex` only when that native
-integration is requested; it uses local checks and current recorder evidence,
-not a full AI review after each edit. Report configuration, trust and observed
-native enforcement separately. Missing hook support, disabled features or
+Automatic completion is opt-in. Use `--guardian claude` or `--guardian codex`
+only when that native integration is requested; it uses local checks and
+current recorder evidence, not a full AI review after each edit. Report
+configuration, trust and observed native enforcement separately. Missing hook
+support, disabled features or
 unaccepted definitions mean **unavailable enforcement**; unknown host trust or
 unobserved enforcement stays **unverified**. A script or setup success is not a
 live host observation. Preserve setup refusals and failed post-update checks.
