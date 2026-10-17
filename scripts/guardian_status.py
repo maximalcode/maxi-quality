@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 import guardian_lifecycle
+import guardian_update
 
 
 def status(root: str, host: str | None = None, *, git, check,
@@ -72,6 +73,22 @@ def status(root: str, host: str | None = None, *, git, check,
             "observed_at": latest.get("created_at"),
             "report_path": latest.get("report_path"),
         }
+    pending_update = guardian_update.read_pending(metadata)
+    if pending_update:
+        version = pending_update.get("requested_version") or {}
+        verification = {
+            **verification,
+            "outcome": "incomplete",
+            "freshness": "unknown",
+            "pending_update": {
+                "status": "incomplete",
+                "current_version": (pending_update.get("current_version") or {}).get("version"),
+                "requested_version": version.get("version"),
+                "host": pending_update.get("host"),
+            },
+        }
+        diagnosis = {**diagnosis, "status": "update_pending", "healthy": False,
+                     "lifecycle": "update_pending", "live_enforcement": "unverified"}
     return {
         "schema_version": 1,
         "project_root": canonical_root,
@@ -89,4 +106,5 @@ def status(root: str, host: str | None = None, *, git, check,
                          "checks": diagnosis.get("checks", []),
                          "error": diagnosis.get("diagnosis_error")},
         "verification": verification,
+        "pending_update": (verification.get("pending_update") if pending_update else None),
     }

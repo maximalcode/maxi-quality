@@ -141,10 +141,26 @@ checkout, so the runner and instructions stay shared. An existing skill path is
 preserved and reported as a conflict. Unrelated hook entries and settings remain
 intact.
 Normal setup has no storage-mode question. Existing versioned profiles retain
-unrelated hooks and settings. A deliberate pinned update previews the owned
-hook changes and switches them to a release-specific launcher location; the
-old launcher remains untouched. The selected launcher is installed only when
-`--apply` is used, and the selected project checks run afterward. Native host
+unrelated hooks and settings. A deliberate pinned update previews the old and
+requested pins and owned hook changes, then diagnoses the newly selected
+launcher before running the actual project gate against that candidate setup.
+A passing gate commits the new selection. A failed, incomplete or catchably
+interrupted check restores the prior lock, owned wiring, state and receipt while
+retaining the failed run report. The old launcher remains untouched.
+
+An update writes a small journal in the worktree's Git metadata before it
+changes project files. Status and setup preview remain read-only and report an
+unfinished transition as incomplete. After a hard process termination, run
+`setup --apply` explicitly to restore the previous setup. Recovery proceeds
+only when no recorded setup or gate process remains active and every candidate
+file still matches the journal; user edits are preserved and reported as a
+conflict. A hard power loss cannot run recovery itself, and another setup
+process must be invoked to complete it. Do not start a second update while the
+journal reports a live process.
+
+If another Guardian host shares the project's runtime pin, preview names that
+integration and the shared effect. An update that would move its effective pin
+is refused until the installations are reconciled deliberately. Native host
 trust and live hook enforcement remain separate observations.
 
 **Host trust and live enforcement remain unverified.** Review and trust the
@@ -157,12 +173,12 @@ configuration must be reconciled first.
 
 Repeat setup with `--version`, `--commit` and the local `--source` for the
 requested release. Preview shows the old and requested pins and every proposed
-file change. Application validates the payload before activation, then runs the
-selected project gate through `guardian run`. The returned evidence retains the
-actual command, output paths and exit code. Failed payload validation preserves
-the previous usable selection. A failed post-update gate leaves the new pin
-visible, reports `applied_checks_failed` and returns a nonzero status; it never
-claims successful verification or silently rolls back evidence.
+file change. Application validates the payload, selects and diagnoses the new
+launcher, then runs the selected project's gate through the normal Guardian
+runner. The returned evidence retains the candidate pin, actual command, output
+paths and exit code. Failed payload validation preserves the previous usable
+selection. Failed or incomplete project verification restores the previous
+selection and returns a nonzero status while retaining the candidate run report.
 
 Existing copied/shared profiles are kept on their current delivery path. They
 can preview and reapply their existing setup, and explicitly select a gate,

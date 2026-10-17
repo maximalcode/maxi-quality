@@ -15,6 +15,7 @@ import sys
 import tempfile
 
 import guardian_status
+import guardian_update
 
 sys.dont_write_bytecode = True
 GUARD_DIR = Path(__file__).resolve().parent / "agent-guard"
@@ -255,10 +256,22 @@ def main() -> int:
             "switch": ("guardian_switch", "switch"),
         }[args.action]
         try:
+            clear_git_environment()
+            root = str(Path(args.root).resolve())
+            if repo_root(root) != root:
+                raise ValueError("target must be a Git working tree root")
+            metadata = Path(git("rev-parse", "--absolute-git-dir", cwd=root).strip())
+            pending = guardian_update.read_pending(metadata)
+            if pending:
+                raise guardian_update.PendingUpdateError(
+                    "a Guardian update is incomplete; run setup --apply to recover before "
+                    f"using {args.action}")
             operation = getattr(importlib.import_module(module_name), function_name)
         except (ImportError, AttributeError):
             report, rc = ({"outcome": "unavailable",
                            "error": f"{args.action} is not available in this Guardian release"}, 3)
+        except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+            report, rc = ({"outcome": "refused", "error": str(exc)}, 3)
         else:
             report, rc = operation(args, sys.modules[__name__])
         if args.json:
