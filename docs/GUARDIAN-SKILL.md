@@ -4,7 +4,7 @@ The [Guardian skill](../skills/guardian/SKILL.md) adds an AI assessment to the
 [local runner](GUARDIAN.md). It uses the same [setup entry](GUARDIAN-SETUP.md),
 without another check engine, provider account or CI dependency. Python 3.11+,
 Git, Bash and the project's check tools are required; AI assessment uses the
-current authenticated Codex host.
+currently invoking Claude or Codex host.
 
 Install from a trusted local checkout containing this skill. Keep that checkout
 at a deliberately selected commit; the skill follows that checkout and never
@@ -13,11 +13,17 @@ its physical location identifies the shared runner and documentation:
 
 ```bash
 BASELINE=/absolute/path/to/maxi-quality
-mkdir -p "$HOME/.agents/skills"
-test ! -e "$HOME/.agents/skills/guardian" &&
-  test ! -L "$HOME/.agents/skills/guardian" &&
-  ln -s "$BASELINE/skills/guardian" "$HOME/.agents/skills/guardian"
+SKILL_ROOT="$HOME/.claude/skills" # use $HOME/.agents/skills for Codex
+mkdir -p "$SKILL_ROOT"
+test ! -e "$SKILL_ROOT/guardian" &&
+  test ! -L "$SKILL_ROOT/guardian" &&
+  ln -s "$BASELINE/skills/guardian" "$SKILL_ROOT/guardian"
 ```
+
+For project-local discovery, selected-host setup creates `.claude/skills/guardian`
+for Claude or `.agents/skills/guardian` for Codex as a link to the same trusted
+checkout. Existing links and skill directories remain intact and are reported
+as conflicts for deliberate reconciliation.
 
 The existence checks leave an existing destination intact; reconcile it deliberately
 rather than overwriting another skill. Have the current host discover the skill
@@ -42,8 +48,8 @@ Human overrides appear only when explicitly supplied by the user; they neither
 change a failed result nor disable enforcement. Old findings require evidence
 of their age; uncertain findings stay unknown.
 
-Automatic completion is a separate opt-in through the existing native Codex
-setup. It uses the declared local gate and recorder freshness, not another AI
+Automatic completion is a separate opt-in through the selected native host
+setup (`--guardian claude` or `--guardian codex`). It uses the declared local gate and recorder freshness, not another AI
 review after every edit. Hook configuration, trust and live enforcement are
 separate observations; unavailable prerequisites and unobserved enforcement
 must be reported as such. Installation of this skill alone installs no hooks.

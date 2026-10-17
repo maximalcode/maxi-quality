@@ -508,8 +508,11 @@ class SetupTests(unittest.TestCase):
 
     def release(self):
         source = project(self.root / "release")
-        shutil.copytree(BASELINE / "scripts/agent-guard", source / "scripts/agent-guard")
-        shutil.copy(BASELINE / "scripts/quality-runtime.py", source / "scripts/quality-runtime.py")
+        shutil.copytree(BASELINE / "scripts", source / "scripts")
+        shutil.copytree(BASELINE / "skills/guardian", source / "skills/guardian")
+        (source / "docs").mkdir()
+        for name in ("GUARDIAN.md", "GUARDIAN-SETUP.md", "GUARDIAN-SKILL.md"):
+            shutil.copy(BASELINE / "docs" / name, source / "docs" / name)
         command(["git", "add", "."], source, check=True)
         command(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
                  "-c", "core.hooksPath=/dev/null", "commit", "-qm", "release fixture"], source, check=True)
@@ -840,4 +843,8 @@ class SetupTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    suite = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])
+    suite.addTests(unittest.defaultTestLoader.discover(
+        str(BASELINE / "samples/guardian"), pattern="test_*.py"))
+    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    raise SystemExit(0 if result.wasSuccessful() else 1)

@@ -28,6 +28,12 @@ read-only previews, repeated application, native Codex wiring, retained unrelate
 hooks, immutable updates and truthful post-update failure evidence. The tests
 never launch an agent host or assert that hooks are trusted.
 
+`test_setup_hosts.py` adds separate selected-Claude and selected-Codex setup flows:
+read-only preview, one-host application, shared skill link, existing gate run,
+selected-host status and repeat-apply idempotence. It also keeps foreign host
+settings and skill links intact and verifies that an explicitly inspected other
+host does not inherit the selected host's lifecycle overlay.
+
 `skill-review.json` defines the invented named task, failing gate and scoped
 repair for the installed skill's interface fixture. The test resolves a linked
 skill to the same runner as the CLI, retains failed evidence across an external
