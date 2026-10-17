@@ -111,6 +111,70 @@ class SelectedHostSetupTests(unittest.TestCase):
         self.assertEqual(report["verification"]["outcome"], "succeeded")
         self.assertEqual(report["installation"]["release"]["version"], "v9.0.0")
 
+    def test_claude_setup_preserves_plain_claude_instructions(self):
+        personal = "# Personal instructions\nKeep the existing project workflow.\n"
+        instruction = self.target / "CLAUDE.md"
+        instruction.write_text(personal)
+
+        result, applied = self.setup("--guardian", "claude", "--apply")
+        self.assertEqual(result.returncode, 0, applied)
+        text = instruction.read_text()
+        self.assertTrue(text.startswith(personal))
+        self.assertEqual(text.count("<!-- BEGIN maxi-quality agent-guard"), 1)
+        self.assertEqual(text.count("<!-- END maxi-quality agent-guard -->"), 1)
+        self.assertIn("record-gate", text)
+
+        result, repeated = self.setup("--guardian", "claude", "--apply")
+        self.assertEqual(result.returncode, 0, repeated)
+        self.assertEqual(repeated["outcome"], "unchanged")
+        self.assertEqual(instruction.read_text(), text)
+
+    def test_claude_setup_preserves_plain_agents_instructions(self):
+        personal = "# Shared instructions\nKeep the existing project workflow.\n"
+        instruction = self.target / "AGENTS.md"
+        instruction.write_text(personal)
+
+        result, applied = self.setup("--guardian", "claude", "--apply")
+        self.assertEqual(result.returncode, 0, applied)
+        text = instruction.read_text()
+        self.assertTrue(text.startswith(personal))
+        self.assertEqual(text.count("<!-- BEGIN maxi-quality agent-guard"), 1)
+        self.assertEqual(text.count("<!-- END maxi-quality agent-guard -->"), 1)
+
+    def test_switch_back_to_claude_preserves_personal_agents_instructions(self):
+        personal = "# Personal instructions\nKeep this workflow.\n"
+        agents = self.target / "AGENTS.md"
+        agents.write_text(personal)
+        result, applied = self.setup("--guardian", "codex", "--apply")
+        self.assertEqual(result.returncode, 0, applied)
+        codex_agents = agents.read_bytes()
+        self.assertTrue(agents.read_text().startswith(personal))
+
+        result = command([sys.executable, str(RUNNER), "switch", str(self.target),
+                          "--host", "claude", "--apply", "--json"],
+                         self.target, self.env)
+        report = json.loads(result.stdout)
+        self.assertEqual(result.returncode, 0, report)
+        self.assertEqual(report["outcome"], "switched")
+        self.assertEqual(agents.read_bytes(), codex_agents)
+        claude = self.target / "CLAUDE.md"
+        self.assertTrue(claude.is_file())
+        self.assertEqual(claude.read_text().count("<!-- BEGIN maxi-quality agent-guard"), 1)
+        self.assertEqual(claude.read_text().count("<!-- END maxi-quality agent-guard -->"), 1)
+
+    def test_claude_setup_keeps_damaged_instruction_region_as_conflict(self):
+        instruction = self.target / "CLAUDE.md"
+        instruction.write_text(
+            "Personal instructions.\n\n"
+            "<!-- BEGIN maxi-quality agent-guard -->\n"
+            "unfinished\n"
+        )
+        before = instruction.read_bytes()
+        result, refused = self.setup("--guardian", "claude", "--apply")
+        self.assertEqual(result.returncode, 3, refused)
+        self.assertIn("no complete maxi-quality agent region", refused["error"])
+        self.assertEqual(instruction.read_bytes(), before)
+
     def test_codex_setup_run_and_selected_status(self):
         claude_settings = self.target / ".claude/settings.json"
         claude_settings.write_text('{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo foreign-claude"}]}]}}')

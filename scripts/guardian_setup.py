@@ -22,6 +22,49 @@ class Refused(ValueError):
     """Configuration needs a deliberate correction before setup can proceed."""
 
 
+CLAUDE_BEGIN = "<!-- BEGIN maxi-quality agent-guard"
+CLAUDE_END = "<!-- END maxi-quality agent-guard -->"
+CODEX_BEGIN = "<!-- BEGIN maxi-quality codex-guard"
+
+
+def _claude_instruction_name(root: Path) -> str | None:
+    """Choose the instruction file that Claude migration may own a region in."""
+    claude = root / "CLAUDE.md"
+    if claude.exists() or claude.is_symlink():
+        return claude.name
+    agents = root / "AGENTS.md"
+    if not agents.exists() and not agents.is_symlink():
+        return None
+    text = agents.read_text(encoding="utf-8")
+    # An AGENTS.md containing the Codex region belongs to that adapter. Keep it
+    # intact when switching hosts and give Claude its native instruction file.
+    if CODEX_BEGIN in text and CLAUDE_BEGIN not in text:
+        return claude.name
+    return agents.name
+
+
+def _seed_claude_region(path: Path) -> None:
+    """Seed a missing Claude region without importing a consumer fragment."""
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    # Complete and partial regions are left for migration's ownership checks:
+    # existing checksum mismatches and malformed regions must remain conflicts.
+    if CLAUDE_BEGIN in text or CLAUDE_END in text:
+        return
+    separator = "" if not text or text.endswith("\n\n") else "\n"
+    if text and not text.endswith("\n"):
+        separator = "\n\n"
+    seed = (
+        f"{CLAUDE_BEGIN} -->\n"
+        "Run the project gate before finishing changed work:\n\n"
+        "```bash\n"
+        "python3 .claude/agent-guard/record-gate.py --gate\n"
+        "```\n"
+        f"{CLAUDE_END}\n"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text + separator + seed, encoding="utf-8")
+
+
 def read_object(path: Path) -> dict:
     if not path.exists():
         return {}
@@ -115,13 +158,14 @@ def proposed_files(root: Path, gate: dict, lock: dict | None, enable: bool,
         names.append(runtime.LOCK_NAME)
     migrate = enable or update
     operation_host = selected_host or host
+    instruction_name = None
     if migrate and operation_host == "codex":
         names.extend([".codex/hooks.json", "AGENTS.md", ".gitignore"])
     elif migrate and operation_host == "claude":
         names.extend([".claude/settings.json", ".gitignore"])
-        instruction = migration.instruction_path(root)
-        if instruction is not None:
-            names.append(instruction.name)
+        instruction_name = _claude_instruction_name(root)
+        if instruction_name is not None:
+            names.append(instruction_name)
     for name in names:
         safe_path(root, name)
     with tempfile.TemporaryDirectory(prefix="guardian-plan-") as directory:
@@ -138,6 +182,8 @@ def proposed_files(root: Path, gate: dict, lock: dict | None, enable: bool,
         if gate != existing_gate:
             migration.write_json(stage / names[0], gate)
         if migrate:
+            if operation_host == "claude" and instruction_name is not None:
+                _seed_claude_region(stage / instruction_name)
             migration.migrate(stage, lock["version"], lock["commit"], launcher, False,
                               host=operation_host or "claude")
         elif lock is not None and lock != read_object(stage / runtime.LOCK_NAME):
