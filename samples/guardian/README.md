@@ -34,6 +34,16 @@ selected-host status and repeat-apply idempotence. It also keeps foreign host
 settings and skill links intact and verifies that an explicitly inspected other
 host does not inherit the selected host's lifecycle overlay.
 
+The lifecycle suites exercise the same public CLI. `test_update.py` proves
+candidate-pin verification, failed and interrupted transition recovery,
+preserved user edits and shared-pin conflicts. `test_pause.py` covers pause,
+local checks while paused, resume prerequisites and unrelated host settings.
+`test_remove.py` covers exact ownership, retained checks and shared caches,
+modified-region conflicts and repeated removal. `test_switch.py` covers both
+host directions, unchanged pins, target prerequisites and failed transitions.
+They run through the existing `agent-guard` CI context; no new guard policy or
+required CI context is introduced.
+
 `skill-review.json` defines the invented named task, failing gate and scoped
 repair for the installed skill's interface fixture. The test resolves a linked
 skill to the same runner as the CLI, retains failed evidence across an external

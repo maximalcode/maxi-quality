@@ -31,6 +31,11 @@ and invoke it, for example:
 
 - `$guardian setup local checks for this project` previews the existing checks
   and applies the agreed setup. It preserves existing check declarations.
+- `$guardian status` reports the selected installation and saved check evidence
+  without running checks or changing configuration.
+- `$guardian pause`, `$guardian resume`, `$guardian remove`, or an explicit
+  `$guardian switch to Codex` use the shared lifecycle preview and apply path.
+  See [lifecycle operations](GUARDIAN-SETUP.md#pause-resume-remove-or-switch).
 - `$guardian review this change against task SPEC.md, base develop` executes
   checks and separately assesses the named requirements, leaving source and
   configuration unchanged.
