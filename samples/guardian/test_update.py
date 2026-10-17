@@ -104,6 +104,54 @@ class GuardianUpdateTests(unittest.TestCase):
         self.assertEqual(json.loads(repeated.stdout)["outcome"], "unchanged")
         self.assertEqual(self.snapshot(), selected)
 
+    def test_successful_gate_must_not_replace_candidate_runtime_pin(self):
+        old_lock = self.target / ".git/old-lock.json"
+        old_lock.write_bytes((self.target / ".claude/quality-runtime.json").read_bytes())
+        gitignore = self.target / ".gitignore"
+        gitignore.write_text(gitignore.read_text() + ".claude/quality-runtime.json\n")
+
+        update = self.setup("--guardian", "claude", *self.release,
+                            "--gate", "cp .git/old-lock.json .claude/quality-runtime.json",
+                            "--apply")
+        report = json.loads(update.stdout)
+
+        self.assertNotEqual(update.returncode, 0, report)
+        self.assertNotEqual(report["outcome"], "applied")
+        self.assertEqual(self.lock()["version"], "v9.0.0")
+        self.assertIn(".claude/quality-runtime.json", report["error"])
+
+    def test_update_without_host_flag_refreshes_saved_host_state_and_lifecycle(self):
+        codex_target = project(self.root / "codex-target")
+        old_commit = subprocess.check_output(["git", "rev-parse", "v9.0.0"],
+                                              cwd=self.source, text=True).strip()
+        codex_setup = command([sys.executable, str(RUNNER), "setup", str(codex_target),
+                               "--source", str(self.source), "--version", "v9.0.0",
+                               "--commit", old_commit, "--guardian", "codex", "--apply", "--json"],
+                              codex_target, self.env)
+        self.assertEqual(codex_setup.returncode, 0, codex_setup.stdout + codex_setup.stderr)
+
+        for target, host in ((self.target, "claude"), (codex_target, "codex")):
+            updated = command([sys.executable, str(RUNNER), "setup", str(target),
+                               "--source", str(self.source), *self.release, "--apply", "--json"],
+                              target, self.env)
+            report = json.loads(updated.stdout)
+            self.assertEqual(updated.returncode, 0, report)
+            state = json.loads((target / ".claude/guardian-state.json").read_text())
+            self.assertEqual(state["selected_host"], host)
+            self.assertEqual(state["release"]["version"], "v9.0.1")
+            self.assertEqual(state["release"]["commit"], self.release[-1])
+
+            status = command([sys.executable, str(RUNNER), "status", str(target),
+                              "--json"], target, self.env)
+            self.assertEqual(status.returncode, 0, status.stdout + status.stderr)
+            status_report = json.loads(status.stdout)
+            self.assertEqual(status_report["selection"]["host"], host)
+            for action in ("pause", "resume"):
+                lifecycle = command([sys.executable, str(RUNNER), action, str(target),
+                                     "--apply", "--json"], target, self.env)
+                self.assertEqual(lifecycle.returncode, 0,
+                                 lifecycle.stdout + lifecycle.stderr)
+
     def test_failed_gate_restores_prior_owned_state_and_retains_failure_evidence(self):
         before = self.snapshot()
         old_lock = self.lock()
@@ -210,6 +258,71 @@ class GuardianUpdateTests(unittest.TestCase):
         self.assertIn("preserved them", report["error"])
         self.assertTrue(settings.read_text().endswith("\n\n"))
         self.assertTrue((self.target / ".git/guardian-update-pending.json").is_file())
+
+    def test_failed_update_preserves_gate_edit_and_leaves_recovery_pending(self):
+        settings = self.target / ".claude/settings.json"
+        edit_then_fail = (
+            "python3 -c 'import json,pathlib; p=pathlib.Path(\".claude/settings.json\"); "
+            "v=json.loads(p.read_text()); v[\"user_note\"]=\"keep my change\"; "
+            "p.write_text(json.dumps(v,indent=2)+\"\\n\")'; exit 17"
+        )
+        failed = self.setup("--guardian", "claude", *self.release, "--gate", edit_then_fail,
+                            "--apply")
+        report = json.loads(failed.stdout)
+
+        self.assertEqual(settings.exists(), True)
+        self.assertEqual(json.loads(settings.read_text())["user_note"], "keep my change")
+        self.assertIn("pending", report["outcome"])
+        self.assertTrue((self.target / ".git/guardian-update-pending.json").is_file())
+        status = command([sys.executable, str(RUNNER), "status", str(self.target), "--json"],
+                         self.target, self.env)
+        status_report = json.loads(status.stdout)
+        self.assertEqual(status_report["verification"]["pending_update"]["status"],
+                         "recovery_conflict")
+        self.assertIn(".claude/settings.json",
+                      status_report["verification"]["pending_update"]["conflicts"])
+
+    def test_interrupted_update_preserves_gate_edit_and_reports_pending_rollback(self):
+        edit_then_interrupt = (
+            "python3 -c 'import json,pathlib; p=pathlib.Path(\".claude/settings.json\"); "
+            "v=json.loads(p.read_text()); v[\"user_note\"]=\"keep interrupted change\"; "
+            "p.write_text(json.dumps(v,indent=2)+\"\\n\")'; "
+            'kill -TERM "$GUARDIAN_UPDATE_PARENT_PID"; sleep 0.1; exit 0'
+        )
+        interrupted = self.setup("--guardian", "claude", *self.release, "--gate",
+                                 edit_then_interrupt, "--apply")
+        report = json.loads(interrupted.stdout)
+
+        self.assertEqual(report["outcome"], "update_rollback_pending")
+        self.assertEqual(json.loads((self.target / ".claude/settings.json").read_text())[
+            "user_note"], "keep interrupted change")
+        self.assertTrue((self.target / ".git/guardian-update-pending.json").is_file())
+
+    def test_recovery_accepts_a_file_already_restored_before_interruption(self):
+        argv = [sys.executable, str(RUNNER), "setup", str(self.target), "--guardian", "claude",
+                *self.release, "--gate",
+                'kill -KILL "$GUARDIAN_UPDATE_PARENT_PID"; sleep 4; exit 0', "--apply", "--json"]
+        process = subprocess.Popen(argv, cwd=self.target, env=self.env, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True)
+        self.assertEqual(process.wait(timeout=5), -9)
+        pending_path = self.target / ".git/guardian-update-pending.json"
+        pending = json.loads(pending_path.read_text())
+        entry = pending["paths"][".claude/settings.json"]["before"]
+        settings = self.target / ".claude/settings.json"
+        settings.write_bytes(__import__("base64").b64decode(entry["value"]))
+        os.chmod(settings, entry["mode"])
+        # Model a crash after one path has been restored and both workers exited.
+        pending["setup_pid"] = -1
+        pending["checker_pid"] = -1
+        pending_path.write_text(json.dumps(pending))
+        process.communicate(timeout=5)
+
+        recovered = self.setup("--apply")
+        report = json.loads(recovered.stdout)
+        self.assertEqual(recovered.returncode, 0, report)
+        self.assertEqual(report["outcome"], "update_recovered")
+        self.assertEqual(self.lock()["version"], "v9.0.0")
+        self.assertEqual(settings.stat().st_mode & 0o777, entry["mode"])
 
     def test_update_preview_names_shared_other_host_and_apply_refuses(self):
         old_commit = subprocess.check_output(["git", "rev-parse", "v9.0.0"],

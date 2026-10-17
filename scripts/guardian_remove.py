@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import importlib
 import json
 from pathlib import Path
@@ -14,49 +13,6 @@ import guardian_pause as pause
 import guardian_setup as setup
 
 runtime = importlib.import_module("quality-runtime")
-
-
-def _instruction_name(host: str) -> tuple[str, str, str]:
-    if host == "claude":
-        return ("CLAUDE.md", "<!-- BEGIN maxi-quality agent-guard",
-                "<!-- END maxi-quality agent-guard -->")
-    if host == "codex":
-        return ("AGENTS.md", "<!-- BEGIN maxi-quality codex-guard",
-                "<!-- END maxi-quality codex-guard -->")
-    raise setup.Refused(f"unsupported Guardian host {host!r}")
-
-
-def _plan_instruction(root: Path, host: str, expected_digest: str | None) -> tuple[dict[str, bytes], list[str]]:
-    """Plan removal of one unchanged marker-delimited region, preserving its surroundings."""
-    name, begin, end = _instruction_name(host)
-    path = setup.safe_path(root, name)
-    if not path.exists():
-        return {}, []
-    text = path.read_text(encoding="utf-8")
-    begin_count = text.count(begin)
-    end_count = text.count(end)
-    if not begin_count and not end_count:
-        return {}, []
-    if begin_count != 1 or end_count != 1:
-        return {}, [f"{name} has an ambiguous Guardian instruction region"]
-    start = text.find(begin)
-    opening_end = text.find("-->", start)
-    end_start = text.find(end, opening_end + 3)
-    if opening_end < 0 or end_start < 0:
-        return {}, [f"{name} has an incomplete Guardian instruction region"]
-    body = text[opening_end + 3:end_start]
-    actual_digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
-    if not expected_digest or actual_digest != expected_digest:
-        return {}, [f"{name} Guardian instruction region was changed; preserving it"]
-    end_after = end_start + len(end)
-    if text[end_after:end_after + 2] == "\r\n":
-        end_after += 2
-    elif text[end_after:end_after + 1] == "\n":
-        end_after += 1
-    updated = text[:start] + text[end_after:]
-    if updated == text:
-        return {}, []
-    return {name: updated.encode("utf-8")}, []
 
 
 def _plan_skill_link(root: Path, state: dict) -> tuple[list[str], list[str]]:
@@ -180,7 +136,7 @@ def remove(args, runner) -> tuple[dict, int]:
         else:
             conflicts.append(f"unsupported Guardian lifecycle state: {lifecycle_state}")
 
-        instruction_changes, instruction_conflicts = _plan_instruction(
+        instruction_changes, instruction_conflicts = lifecycle.remove_instruction_region(
             root, host, state.get("owned", {}).get("instruction_region"))
         conflicts.extend(instruction_conflicts)
         link_removals, link_conflicts = _plan_skill_link(root, state)

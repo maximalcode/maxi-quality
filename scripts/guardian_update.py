@@ -89,6 +89,13 @@ def current_value(root: Path, name: str) -> dict | None:
     return None
 
 
+def same_content(left: dict | None, right: dict | None) -> bool:
+    """Compare snapshotted content and object kind, ignoring file mode metadata."""
+    if left is None or right is None:
+        return left is right
+    return left.get("kind") == right.get("kind") and left.get("value") == right.get("value")
+
+
 def restore_value(root: Path, name: str, value: dict | None) -> None:
     path = root / name
     if path.is_symlink() or path.is_file():
@@ -130,8 +137,8 @@ def recover(root: Path, metadata: Path, pending: dict) -> None:
     if active:
         raise PendingUpdateError("Guardian update is still running; wait for it to finish before recovery")
     conflicts = [name for name, entry in pending.get("paths", {}).items()
-                 if current_value(root, name) not in (entry.get("candidate"),
-                                                       entry.get("before"))]
+                 if not any(same_content(current_value(root, name), snapshot)
+                            for snapshot in (entry.get("candidate"), entry.get("before")))]
     if conflicts:
         raise PendingUpdateError("pending update found changed project files; preserved them and "
                                  "refused recovery: " + ", ".join(conflicts))

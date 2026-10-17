@@ -81,10 +81,11 @@ def status(root: str, host: str | None = None, *, git, check,
             "outcome": "incomplete",
             "freshness": "unknown",
             "pending_update": {
-                "status": "incomplete",
+                "status": "recovery_conflict" if pending_update.get("recovery_conflicts") else "incomplete",
                 "current_version": (pending_update.get("current_version") or {}).get("version"),
                 "requested_version": version.get("version"),
                 "host": pending_update.get("host"),
+                "conflicts": pending_update.get("recovery_conflicts", []),
             },
         }
         diagnosis = {**diagnosis, "status": "update_pending", "healthy": False,

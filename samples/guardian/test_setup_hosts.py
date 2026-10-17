@@ -141,6 +141,21 @@ class SelectedHostSetupTests(unittest.TestCase):
         self.assertEqual(text.count("<!-- BEGIN maxi-quality agent-guard"), 1)
         self.assertEqual(text.count("<!-- END maxi-quality agent-guard -->"), 1)
 
+    def test_claude_region_in_agents_is_removed_using_recorded_path(self):
+        personal = "# Shared instructions\nKeep this exact text.\n"
+        agents = self.target / "AGENTS.md"
+        agents.write_text(personal)
+        result, applied = self.setup("--guardian", "claude", "--apply")
+        self.assertEqual(result.returncode, 0, applied)
+        state = json.loads((self.target / ".claude/guardian-state.json").read_text())
+        self.assertEqual(state["owned"]["instruction_region"]["path"], "AGENTS.md")
+
+        removed = command([sys.executable, str(RUNNER), "remove", str(self.target),
+                           "--apply", "--json"], self.target, self.env)
+        report = json.loads(removed.stdout)
+        self.assertEqual(removed.returncode, 0, report)
+        self.assertEqual(agents.read_text(), personal)
+
     def test_switch_back_to_claude_preserves_personal_agents_instructions(self):
         personal = "# Personal instructions\nKeep this workflow.\n"
         agents = self.target / "AGENTS.md"
@@ -156,7 +171,9 @@ class SelectedHostSetupTests(unittest.TestCase):
         report = json.loads(result.stdout)
         self.assertEqual(result.returncode, 0, report)
         self.assertEqual(report["outcome"], "switched")
-        self.assertEqual(agents.read_bytes(), codex_agents)
+        self.assertEqual(agents.read_text(), personal)
+        self.assertNotIn("<!-- BEGIN maxi-quality codex-guard", agents.read_text())
+        self.assertIn("<!-- BEGIN maxi-quality codex-guard", codex_agents.decode())
         claude = self.target / "CLAUDE.md"
         self.assertTrue(claude.is_file())
         self.assertEqual(claude.read_text().count("<!-- BEGIN maxi-quality agent-guard"), 1)

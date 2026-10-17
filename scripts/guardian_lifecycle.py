@@ -9,6 +9,10 @@ from pathlib import Path
 
 STATE_NAME = ".claude/guardian-state.json"
 SCHEMA = 1
+INSTRUCTION_MARKERS = {
+    "claude": ("<!-- BEGIN maxi-quality agent-guard", "<!-- END maxi-quality agent-guard -->"),
+    "codex": ("<!-- BEGIN maxi-quality codex-guard", "<!-- END maxi-quality codex-guard -->"),
+}
 
 
 def canonical_digest(value: object) -> str:
@@ -141,6 +145,126 @@ def state_bytes(host: str, version: str, commit: str, skill_path: str | None,
     return (json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
 
+def instruction_path(root: Path, host: str) -> Path:
+    """Return the concrete instruction file selected for this host."""
+    if host == "codex":
+        return root / "AGENTS.md"
+    if host != "claude":
+        raise ValueError(f"unsupported Guardian host {host!r}")
+    claude = root / "CLAUDE.md"
+    agents = root / "AGENTS.md"
+    if claude.exists() or claude.is_symlink():
+        return claude
+    if agents.exists() or agents.is_symlink():
+        text = agents.read_text(encoding="utf-8") if agents.is_file() else ""
+        claude_begin = INSTRUCTION_MARKERS["claude"][0]
+        codex_begin = INSTRUCTION_MARKERS["codex"][0]
+        if codex_begin in text and claude_begin not in text:
+            return claude
+        return agents
+    return claude
+
+
+def instruction_region(path: Path, host: str, content: bytes | None = None) -> dict | None:
+    """Record the path and exact body hash for one complete managed region."""
+    begin, end = INSTRUCTION_MARKERS[host]
+    if content is None and not path.is_file():
+        return None
+    text = content.decode("utf-8") if content is not None else path.read_text(encoding="utf-8")
+    first = text.find(begin)
+    starts = [] if first < 0 else [first]
+    if first >= 0 and text.find(begin, first + len(begin)) >= 0:
+        starts.append(text.find(begin, first + len(begin)))
+    ends = text.count(end)
+    if not starts and not ends:
+        return None
+    if len(starts) != 1 or ends != 1:
+        raise ValueError(f"{path.name} has an ambiguous Guardian instruction region")
+    start = starts[0]
+    opening_end = text.find("-->", start)
+    end_start = text.find(end, opening_end + 3)
+    if opening_end < 0 or end_start < 0:
+        raise ValueError(f"{path.name} has an incomplete Guardian instruction region")
+    return {"path": path.name,
+            "sha256": hashlib.sha256(text[opening_end + 3:end_start].encode("utf-8")).hexdigest()}
+
+
+def instruction_separator(text: str) -> str:
+    """Return the exact boundary inserted when a new region is appended."""
+    return "" if not text or text.endswith("\n\n") else ("\n" if text.endswith("\n") else "\n\n")
+
+
+def remove_instruction_region(root: Path, host: str, record: object,
+                              content: bytes | None = None
+                              ) -> tuple[dict[str, bytes], list[str]]:
+    """Remove one unchanged owned region while preserving all surrounding text."""
+    if record is None:
+        return {}, []
+    begin, end = INSTRUCTION_MARKERS[host]
+    if isinstance(record, dict):
+        name, expected = record.get("path"), record.get("sha256")
+    elif isinstance(record, str):
+        # Older state stored only a digest. Infer a path only when exactly one
+        # allowed instruction file contains the matching complete region.
+        expected = record
+        candidates = [root / name for name in (("CLAUDE.md", "AGENTS.md")
+                      if host == "claude" else ("AGENTS.md",))]
+        matching = []
+        for candidate in candidates:
+            if candidate.is_symlink():
+                continue
+            try:
+                parsed = instruction_region(candidate, host)
+            except (OSError, UnicodeError, ValueError):
+                continue
+            if parsed and parsed["sha256"] == expected:
+                matching.append(candidate.name)
+        if len(matching) != 1:
+            return {}, ["Guardian instruction region ownership is ambiguous; preserving it"]
+        name = matching[0]
+    else:
+        return {}, ["Guardian instruction region ownership is malformed; preserving it"]
+    allowed = ("CLAUDE.md", "AGENTS.md") if host == "claude" else ("AGENTS.md",)
+    if name not in allowed or not isinstance(expected, str):
+        return {}, ["Guardian instruction region ownership is malformed; preserving it"]
+    path = root / name
+    if content is None and not path.exists():
+        return {}, []
+    if path.is_symlink():
+        return {}, [f"{name} is a symbolic link; preserving it as an ownership conflict"]
+    try:
+        text = content.decode("utf-8") if content is not None else path.read_text(encoding="utf-8")
+        first = text.find(begin)
+        starts = [] if first < 0 else [first]
+        if first >= 0 and text.find(begin, first + len(begin)) >= 0:
+            starts.append(text.find(begin, first + len(begin)))
+        if not starts and end not in text:
+            return {}, []
+        if len(starts) != 1 or text.count(end) != 1:
+            return {}, [f"{name} has an ambiguous Guardian instruction region; preserving it"]
+        start = starts[0]
+        opening_end = text.find("-->", start)
+        end_start = text.find(end, opening_end + 3)
+        if opening_end < 0 or end_start < 0:
+            return {}, [f"{name} has an incomplete Guardian instruction region; preserving it"]
+        body = text[opening_end + 3:end_start]
+        actual = hashlib.sha256(body.encode("utf-8")).hexdigest()
+        if actual != expected:
+            return {}, [f"{name} Guardian instruction region was changed; preserving it"]
+        end_after = end_start + len(end)
+        if text[end_after:end_after + 2] == "\r\n":
+            end_after += 2
+        elif text[end_after:end_after + 1] == "\n":
+            end_after += 1
+        updated = text[:start] + text[end_after:]
+        separator = record.get("separator") if isinstance(record, dict) else None
+        if isinstance(separator, str) and separator and updated[:start].endswith(separator):
+            updated = updated[:start - len(separator)] + updated[start:]
+        return ({name: updated.encode("utf-8")} if updated != text else {}), []
+    except (OSError, UnicodeError) as exc:
+        return {}, [f"{name} Guardian instruction region could not be read; preserving it: {exc}"]
+
+
 def status_overlay(root: Path, diagnosis: dict, queried_host: str | None = None) -> dict:
     """Apply explicitly recorded lifecycle state to read-only host diagnosis."""
     state = read_state(root)
@@ -177,7 +301,7 @@ def status_overlay(root: Path, diagnosis: dict, queried_host: str | None = None)
 
 
 def owned_records(settings: dict, host: str, expected_samples: bool,
-                  runtime) -> dict:
+                  runtime, instruction: dict | None = None) -> dict:
     """Capture exact managed hook entries and deny values from planned settings."""
     hooks = []
     for event, matcher, name, _timeout in runtime.host_specs(host, expected_samples):
@@ -189,7 +313,7 @@ def owned_records(settings: dict, host: str, expected_samples: bool,
     owned_deny = [rule for rule in deny if isinstance(rule, str) and (
         rule == "Edit(/.claude/agent-guard-receipt.json)"
         or (expected_samples and rule == "Edit(/samples/expected/**)"))]
-    return {"hooks": hooks, "deny": owned_deny, "instruction_region": None}
+    return {"hooks": hooks, "deny": owned_deny, "instruction_region": instruction}
 
 
 def hook_is_owned(entry: dict, record: dict) -> bool:

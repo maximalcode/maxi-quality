@@ -126,6 +126,8 @@ class SwitchTests(unittest.TestCase):
                              .get("hooks", {}).values()))
         self.assertTrue((self.target / ".claude/skills/guardian").is_symlink())
         self.assertFalse((self.target / ".agents/skills/guardian").exists())
+        self.assertNotIn("<!-- BEGIN maxi-quality codex-guard",
+                         (self.target / "AGENTS.md").read_text())
         self.assertEqual(json.loads((self.target / ".claude/guardian-state.json").read_text())["selected_host"],
                          "claude")
 
@@ -161,6 +163,58 @@ class SwitchTests(unittest.TestCase):
         result, report = self.switch("codex", apply=True)
         self.assertEqual(result.returncode, 3, report)
         self.assertIn("resume", report["error"])
+        self.assertEqual(self.snapshot(), before)
+
+    def test_instruction_ownership_survives_pause_switch_back_remove_and_re_setup(self):
+        personal = "# Personal project instructions\nKeep this workflow.\n"
+        (self.target / "CLAUDE.md").write_text(personal)
+        self.setup_guardian("claude")
+
+        for action in ("pause", "resume"):
+            result = command([sys.executable, str(RUNNER), action, str(self.target),
+                              "--apply", "--json"], self.target, self.env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        switched, report = self.switch("codex", apply=True)
+        self.assertEqual(switched.returncode, 0, report)
+        switched, report = self.switch("claude", apply=True)
+        self.assertEqual(switched.returncode, 0, report)
+
+        removed = command([sys.executable, str(RUNNER), "remove", str(self.target),
+                           "--apply", "--json"], self.target, self.env)
+        remove_report = json.loads(removed.stdout)
+        self.assertEqual(removed.returncode, 0, remove_report)
+        self.assertEqual(remove_report["outcome"], "removed")
+        self.assertEqual((self.target / "CLAUDE.md").read_text(), personal)
+
+        re_setup = command([sys.executable, str(RUNNER), "setup", str(self.target),
+                            "--source", str(self.source), "--version", "v9.0.0",
+                            "--commit", self.commit, "--guardian", "claude", "--apply"],
+                           self.target, self.env)
+        self.assertEqual(re_setup.returncode, 0, re_setup.stdout + re_setup.stderr)
+
+    def test_claude_region_in_personal_agents_is_removed_on_switch(self):
+        personal = "# Shared project instructions\nKeep this workflow.\n"
+        (self.target / "AGENTS.md").write_text(personal)
+        self.setup_guardian("claude")
+        self.assertIn("<!-- BEGIN maxi-quality agent-guard", (self.target / "AGENTS.md").read_text())
+
+        switched, report = self.switch("codex", apply=True)
+        self.assertEqual(switched.returncode, 0, report)
+        agents = (self.target / "AGENTS.md").read_text()
+        self.assertTrue(agents.startswith(personal))
+        self.assertNotIn("<!-- BEGIN maxi-quality agent-guard", agents)
+
+    def test_switch_preserves_edited_old_instruction_region_as_conflict(self):
+        (self.target / "CLAUDE.md").write_text("# Personal instructions\n")
+        self.setup_guardian("claude")
+        instructions = self.target / "CLAUDE.md"
+        instructions.write_text(instructions.read_text().replace("Run the project gate", "Skip the project gate"))
+        before = self.snapshot()
+
+        switched, report = self.switch("codex", apply=True)
+        self.assertEqual(switched.returncode, 3, report)
+        self.assertEqual(report["outcome"], "refused")
         self.assertEqual(self.snapshot(), before)
 
 

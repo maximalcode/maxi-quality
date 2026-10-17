@@ -204,8 +204,46 @@ def _plan(args, runner) -> dict:
         raise setup.Refused("owned settings changed; reconcile them before switching")
     changes = {name: _json_bytes(value) for name, value in deactivation["settings"].items()}
     changes.update(proposed)
+    source_region = state.get("owned", {}).get("instruction_region")
+    source_region_changes, instruction_conflicts = lifecycle.remove_instruction_region(
+        root, source, source_region)
+    if instruction_conflicts:
+        raise setup.Refused("owned instructions changed; reconcile them before switching: "
+                            + "; ".join(instruction_conflicts))
+    for name, content in source_region_changes.items():
+        if name in proposed:
+            # The new host may use the same AGENTS.md. Remove the proven old
+            # region from the target's planned bytes before applying them.
+            adjusted, conflicts = lifecycle.remove_instruction_region(
+                root, source, source_region, content=proposed[name])
+            if conflicts:
+                raise setup.Refused("owned instructions changed in the target plan: "
+                                    + "; ".join(conflicts))
+            if adjusted:
+                proposed.update(adjusted)
+                changes[name] = adjusted[name]
+        else:
+            changes[name] = content
     expected_samples = (root / "samples" / "expected").is_dir()
-    owned = lifecycle.owned_records(target_settings, target, expected_samples, runtime)
+    instruction_path = (root / setup._claude_instruction_name(root)
+                        if target == "claude" and setup._claude_instruction_name(root)
+                        else lifecycle.instruction_path(root, target))
+    instruction_content = changes.get(str(instruction_path.relative_to(root)))
+    if instruction_content is None:
+        instruction_content = proposed.get(str(instruction_path.relative_to(root)))
+    target_instruction = lifecycle.instruction_region(
+        instruction_path, target, instruction_content)
+    if target_instruction:
+        target_name = str(instruction_path.relative_to(root))
+        base_bytes = source_region_changes.get(target_name)
+        if base_bytes is None:
+            base_bytes = instruction_path.read_bytes() if instruction_path.is_file() else b""
+        base_text = base_bytes.decode("utf-8")
+        target_marker = lifecycle.INSTRUCTION_MARKERS[target][0]
+        if target_marker not in base_text:
+            target_instruction["separator"] = lifecycle.instruction_separator(base_text)
+    owned = lifecycle.owned_records(target_settings, target, expected_samples,
+                                    runtime, target_instruction)
     target_skill_path = lifecycle.skill_path_for_host(target) if source_target else None
     state_bytes = lifecycle.state_bytes(
         target, lock["version"], lock["commit"], target_skill_path,

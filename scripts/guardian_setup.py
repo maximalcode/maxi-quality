@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import importlib
 import io
 import json
@@ -61,6 +60,31 @@ def restore_files(root: Path, saved: dict[str, tuple[str, bytes | str, int] | No
             os.chmod(path, mode)
 
 
+def rollback_update(root: Path, metadata: Path, pending: dict,
+                    saved: dict[str, tuple[str, bytes | str, int] | None]) -> list[str]:
+    """Restore unchanged candidate paths and leave a journal for user-edited paths."""
+    conflicts = []
+    for name, entry in pending.get("paths", {}).items():
+        current = guardian_update.current_value(root, name)
+        if not any(guardian_update.same_content(current, allowed)
+                   for allowed in (entry.get("candidate"), entry.get("before"))):
+            conflicts.append(name)
+            continue
+        guardian_update.restore_value(root, name, entry.get("before"))
+    if conflicts:
+        pending.pop("recovery_pid", None)
+        pending["recovery_conflicts"] = conflicts
+        guardian_update.write_pending(metadata, pending)
+        return conflicts
+    # The receipt is written by the failed check and is not part of the setup
+    # candidate. Restore its pre-update bytes after the owned files are safe.
+    receipt = saved.get(".claude/agent-guard-receipt.json")
+    if receipt is not None:
+        restore_files(root, {".claude/agent-guard-receipt.json": receipt})
+    guardian_update.remove_pending(metadata)
+    return []
+
+
 def candidate_diagnosis(launcher: str, root: Path, host: str,
                         lock: dict) -> dict:
     """Prove the newly selected release is the active runtime before the gate."""
@@ -79,6 +103,20 @@ def candidate_diagnosis(launcher: str, root: Path, host: str,
                       + (result.stderr.strip() or json.dumps(diagnosis, sort_keys=True)))
     return {"outcome": "succeeded", "version": release["version"],
             "commit": release["commit"], "host": host}
+
+
+def changed_candidate_paths(root: Path, expected: dict[str, tuple[str, bytes | str]]) -> list[str]:
+    """Name candidate files or links changed while the project gate ran."""
+    changed = []
+    for name, (kind, value) in expected.items():
+        path = root / name
+        if kind == "symlink":
+            matches = path.is_symlink() and os.readlink(path) == value
+        else:
+            matches = path.is_file() and not path.is_symlink() and path.read_bytes() == value
+        if not matches:
+            changed.append(name)
+    return changed
 
 
 def verify_candidate(root: Path, args, metadata: Path, pending: dict) -> tuple[dict, int, bool]:
@@ -333,21 +371,6 @@ def skill_link(root: Path, source: Path, host: str) -> tuple[str, str, bool]:
     return name, str(target), True
 
 
-def region_digest(path: Path, marker: str,
-                  end_marker: str = "<!-- END maxi-quality agent-guard -->") -> str | None:
-    if not path.exists() or not path.is_file():
-        return None
-    text = path.read_text(encoding="utf-8")
-    start = text.find(marker)
-    if start < 0:
-        return None
-    opening_end = text.find("-->", start)
-    end = text.find(end_marker, opening_end)
-    if opening_end < 0 or end < 0:
-        return None
-    return hashlib.sha256(text[opening_end + 3:end].encode()).hexdigest()
-
-
 def validate_payload(source: Path, lock: dict, guardian: bool) -> None:
     # Validate without touching the user's cache or target. No network access.
     with tempfile.TemporaryDirectory(prefix="guardian-payload-") as directory:
@@ -460,9 +483,11 @@ def setup(args, runner) -> tuple[dict, int]:
         pending_update = guardian_update.read_pending(metadata)
         if pending_update:
             report["pending_update"] = {
-                "status": "incomplete", "host": pending_update.get("host"),
+                "status": "recovery_conflict" if pending_update.get("recovery_conflicts") else "incomplete",
+                "host": pending_update.get("host"),
                 "current_version": pending_update.get("current_version"),
                 "requested_version": pending_update.get("requested_version"),
+                "conflicts": pending_update.get("recovery_conflicts", []),
                 "recovery": "explicit setup --apply restores the prior setup when candidate files are unchanged",
             }
             if not args.apply:
@@ -543,8 +568,11 @@ def setup(args, runner) -> tuple[dict, int]:
                                      update_installation, report["host"])
         links: dict[str, str] = {}
         skill_owned = False
-        if args.guardian and lock:
-            skill_name, skill_target, create_link = skill_link(root, source, args.guardian)
+        guardian_host = args.guardian
+        if guardian_host is None and previous_state:
+            guardian_host = previous_state.get("selected_host")
+        if guardian_host and lock and (args.guardian is not None or args.version is not None):
+            skill_name, skill_target, create_link = skill_link(root, source, guardian_host)
             skill_path = root / skill_name
             if skill_path.exists() or skill_path.is_symlink():
                 if not (skill_path.is_symlink() and skill_path.resolve() == Path(skill_target).resolve()):
@@ -555,33 +583,32 @@ def setup(args, runner) -> tuple[dict, int]:
             elif create_link:
                 links[skill_name] = skill_target
                 skill_owned = True
-            settings_name = ".codex/hooks.json" if args.guardian == "codex" else ".claude/settings.json"
+            settings_name = ".codex/hooks.json" if guardian_host == "codex" else ".claude/settings.json"
             settings_bytes = changes.get(settings_name)
             settings_value = (json.loads(settings_bytes) if settings_bytes is not None else
                               settings(root, settings_name))
             expected_samples = (root / "samples/expected").is_dir()
-            owned = lifecycle.owned_records(settings_value, args.guardian,
-                                             expected_samples, runtime)
-            instruction_name = "AGENTS.md" if args.guardian == "codex" else "CLAUDE.md"
-            begin_marker = ("<!-- BEGIN maxi-quality codex-guard"
-                            if args.guardian == "codex"
-                            else "<!-- BEGIN maxi-quality agent-guard")
-            end_marker = ("<!-- END maxi-quality codex-guard -->"
-                          if args.guardian == "codex"
-                          else "<!-- END maxi-quality agent-guard -->")
-            instruction = changes.get(instruction_name)
-            if instruction is None:
-                candidate = migration.instruction_path(root)
-                instruction_path = candidate if candidate else root / instruction_name
-                owned["instruction_region"] = region_digest(
-                    instruction_path, begin_marker, end_marker)
-            else:
-                with tempfile.NamedTemporaryFile() as temporary:
-                    temporary.write(instruction)
-                    temporary.flush()
-                    owned["instruction_region"] = region_digest(
-                        Path(temporary.name), begin_marker, end_marker)
-            state = lifecycle.state_bytes(args.guardian, lock["version"], lock["commit"],
+            instruction_path = lifecycle.instruction_path(root, guardian_host)
+            if guardian_host == "claude":
+                instruction_path = root / _claude_instruction_name(root) if _claude_instruction_name(root) else instruction_path
+            instruction = changes.get(str(instruction_path.relative_to(root)))
+            instruction_record = lifecycle.instruction_region(
+                instruction_path, guardian_host, instruction)
+            if instruction_record:
+                previous_region = previous_state.get("owned", {}).get("instruction_region")
+                if (isinstance(previous_region, dict)
+                        and previous_region.get("path") == instruction_record["path"]):
+                    if isinstance(previous_region.get("separator"), str):
+                        instruction_record["separator"] = previous_region["separator"]
+                else:
+                    old_text = (instruction_path.read_text(encoding="utf-8")
+                                if instruction_path.is_file() else "")
+                    marker = lifecycle.INSTRUCTION_MARKERS[guardian_host][0]
+                    if marker not in old_text:
+                        instruction_record["separator"] = lifecycle.instruction_separator(old_text)
+            owned = lifecycle.owned_records(settings_value, guardian_host,
+                                             expected_samples, runtime, instruction_record)
+            state = lifecycle.state_bytes(guardian_host, lock["version"], lock["commit"],
                                           skill_name if skill_owned else None,
                                           skill_target if skill_owned else None,
                                           owned)
@@ -623,6 +650,10 @@ def setup(args, runner) -> tuple[dict, int]:
             durable_originals = snapshot_files(root, durable_names)
             candidate_values = {name: ("file", content) for name, content in changes.items()}
             candidate_values.update({name: ("symlink", target) for name, target in links.items()})
+            gate_name = ".claude/agent-guard.json"
+            durable_names.add(gate_name)
+            durable_originals.setdefault(gate_name, snapshot_files(root, {gate_name})[gate_name])
+            candidate_values.setdefault(gate_name, ("file", (root / gate_name).read_bytes()))
             pending = {
                 "schema": 1, "setup_pid": os.getpid(), "checker_pid": None,
                 "host": report["host"], "current_version": old_lock,
@@ -640,29 +671,53 @@ def setup(args, runner) -> tuple[dict, int]:
                                                  "commit": candidate["commit"],
                                                  "host": candidate["host"]}
                     observation["candidate_diagnosis"] = candidate
+                if rc == 0:
+                    expected = {name: value for name, value in candidate_values.items()
+                                if value is not None}
+                    changed = changed_candidate_paths(root, expected)
+                    post_candidate_error = None
+                    if changed:
+                        post_candidate_error = "candidate files changed during project verification: " + ", ".join(changed)
+                    elif candidate:
+                        try:
+                            candidate_diagnosis(launcher, root, report["host"], lock)
+                        except (OSError, ValueError, Refused, subprocess.CalledProcessError) as exc:
+                            post_candidate_error = "requested runtime pin was not active after project verification: " + str(exc)
+                    if post_candidate_error:
+                        rc = 3
+                        observation["outcome"] = "incomplete"
+                        observation["error"] = post_candidate_error
+                        report["verification"] = observation
                 report["verification"] = observation
                 report["next_step"] = observation.get("next_step")
                 if interrupted:
                     report["outcome"] = "update_interrupted"
-                    report["error"] = "candidate verification was interrupted; the prior selection was restored"
+                    report["error"] = "candidate verification was interrupted"
                     report["verification"]["outcome"] = "interrupted"
+                    conflicts = rollback_update(root, metadata, pending, originals)
+                    if conflicts:
+                        report["outcome"] = "update_rollback_pending"
+                        report["error"] += "; rollback preserved changed project files and remains pending: " + ", ".join(conflicts)
+                        report["pending_recovery"] = {"status": "conflict", "paths": conflicts}
+                    else:
+                        report["error"] += "; the prior selection was restored"
                     report["verification"]["error"] = report["error"]
-                    restore_files(root, originals)
-                    guardian_update.remove_pending(metadata)
                     return report, 3
                 if rc:
                     report["outcome"] = ("update_checks_failed" if observation.get("execution", {}).get("outcome") == "failed"
                                           else "update_checks_incomplete")
                     report["error"] = observation.get("error") or "candidate project verification did not pass"
-                    restore_files(root, originals)
-                    guardian_update.remove_pending(metadata)
+                    conflicts = rollback_update(root, metadata, pending, originals)
+                    if conflicts:
+                        report["outcome"] = "update_rollback_pending"
+                        report["error"] += "; rollback preserved changed project files and remains pending: " + ", ".join(conflicts)
+                        report["pending_recovery"] = {"status": "conflict", "paths": conflicts}
                     return report, rc
                 report["outcome"] = "applied" if changes else "unchanged"
                 guardian_update.remove_pending(metadata)
                 return report, 0
             except BaseException:
-                restore_files(root, originals)
-                guardian_update.remove_pending(metadata)
+                rollback_update(root, metadata, pending, originals)
                 raise
         activate(root, changes, links)
         report["outcome"] = "applied" if changes else "unchanged"
