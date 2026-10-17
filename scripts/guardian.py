@@ -14,6 +14,8 @@ import subprocess
 import sys
 import tempfile
 
+import guardian_status
+
 sys.dont_write_bytecode = True
 GUARD_DIR = Path(__file__).resolve().parent / "agent-guard"
 RECOVERY_GUIDE = (str(Path(__file__).resolve().parent.parent / "docs/GUARDIAN-SETUP.md")
@@ -153,6 +155,23 @@ def check(path: str) -> tuple[dict, int]:
 
 
 def display(report: dict) -> None:
+    if "installation" in report:
+        installation = report["installation"]
+        verification = report["verification"]
+        print(f"Guardian status for {report['project_root']} ({report['host']['name']})")
+        print(f"Installation: {installation['status']} ({installation['profile']})")
+        release = installation.get("release")
+        if release:
+            print(f"Version: {release['version']} @ {release['commit']}")
+        print(f"Host trust: {report['host']['trust']}; observed enforcement: "
+              f"{report['host']['observed_enforcement']}")
+        print(f"Last project check: {verification['outcome']} "
+              f"(freshness: {verification['freshness']})")
+        if verification.get("command"):
+            print(f"Executed command: {verification['command']}")
+        for check_result in installation.get("checks", []):
+            print(f"{check_result['status']}: {check_result['id']}: {check_result['detail']}")
+        return
     print(f"Guardian: {report['outcome']} (freshness: {report['freshness']})")
     if "project_root" in report:
         print(f"Project / working directory: {report['project_root']}")
@@ -179,6 +198,10 @@ def main() -> int:
     execute.add_argument("--task", help="named task/issue/spec reference; not an assessment")
     inspect = commands.add_parser("check", help="check saved evidence against current content")
     inspect.add_argument("report")
+    inspect_status = commands.add_parser("status", help="read installation and saved check status")
+    inspect_status.add_argument("root")
+    inspect_status.add_argument("--host", choices=("claude", "codex"), default="claude")
+    inspect_status.add_argument("--json", action="store_true", help="print machine-readable status")
     for command in (execute, inspect):
         command.add_argument("--json", action="store_true", help="print machine-readable evidence")
     setup = commands.add_parser("setup", help="preview local setup or an explicit pinned update")
@@ -198,7 +221,14 @@ def main() -> int:
         report, rc = importlib.import_module("guardian_setup").setup(args, sys.modules[__name__])
         print(json.dumps(report, indent=2))
         return rc if rc >= 0 else 128 - rc
-    report, rc = run(args) if args.action == "run" else check(args.report)
+    if args.action == "status":
+        report = guardian_status.status(
+            args.root, args.host, git=git, check=check,
+            clear_git_environment=clear_git_environment,
+            runtime=Path(__file__).with_name("quality-runtime.py"))
+        rc = 0
+    else:
+        report, rc = run(args) if args.action == "run" else check(args.report)
     if args.json:
         print(json.dumps(report, indent=2))
     else:

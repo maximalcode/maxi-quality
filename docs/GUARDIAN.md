@@ -80,6 +80,23 @@ recorder's scope: Git-visible changed files, not ignored build outputs, external
 dependency data or the environment. It cannot prove that tooling or remote data
 has stayed unchanged. Rerun the gate when those inputs change.
 
+Read the selected host's installation diagnosis and most recent saved project
+check without running a check or changing project files:
+
+```bash
+python3 /path/to/maxi-quality/scripts/guardian.py status /path/to/project \
+  --host claude --json
+```
+
+Status keeps installation wiring, host trust, observed live enforcement, and
+project-check evidence separate. Trust and live enforcement remain `unverified`
+unless the host itself has supplied an observation; repository configuration
+alone does not prove that hooks ran. With no saved result, the project check is
+`not_run` with unknown freshness. Existing results retain their actual command,
+execution outcome and exit code, while freshness is recalculated read-only.
+An opaque compound gate remains one observed command; status does not assign
+results to tools inside it.
+
 Evidence: [`samples/guardian/`](../samples/guardian/README.md) runs real
 subprocesses against invented repositories. Existing recorder and Stop fixtures
 remain in [`samples/agent-guard/`](../samples/agent-guard/README.md).

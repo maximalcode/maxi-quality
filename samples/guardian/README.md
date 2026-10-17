@@ -12,6 +12,11 @@ Stop compatibility, and another checkout's inherited Git routing environment.
 
 These prove the local mechanism, not adoption cost on a real consuming project
 or enforcement inside an agent host. No tool-specific findings are parsed.
+The read-only `guardian status` cases cover no evidence, successful evidence,
+failure, a missing command, and stale evidence. They also assert that
+status leaves project files and saved receipts unchanged, keeps host trust and
+live enforcement unknown, and reports a compound gate only as the command that
+actually ran.
 
 The setup cases additionally require Cargo with an installed toolchain and
 exercise the dependency-free `rust-local/` crate offline through step 1. The
