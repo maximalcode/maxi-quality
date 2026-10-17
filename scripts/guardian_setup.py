@@ -9,9 +9,11 @@ import io
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import tempfile
 import tomllib
+import guardian_update
 
 runtime = importlib.import_module("quality-runtime")
 migration = importlib.import_module("quality-runtime-migrate")
@@ -20,6 +22,117 @@ lifecycle = importlib.import_module("guardian_lifecycle")
 
 class Refused(ValueError):
     """Configuration needs a deliberate correction before setup can proceed."""
+
+
+class UpdateInterrupted(Exception):
+    """A catchable termination arrived while candidate verification was running."""
+
+
+def snapshot_files(root: Path, names: set[str]) -> dict[str, tuple[str, bytes | str, int] | None]:
+    """Capture exact file or symlink state for the short update transaction."""
+    saved = {}
+    for name in names:
+        path = root / name
+        if path.is_symlink():
+            saved[name] = ("symlink", os.readlink(path), 0)
+        elif path.is_file():
+            saved[name] = ("file", path.read_bytes(), path.stat().st_mode & 0o777)
+        elif path.exists():
+            raise Refused(f"{path}: update transaction can only replace files and links")
+        else:
+            saved[name] = None
+    return saved
+
+
+def restore_files(root: Path, saved: dict[str, tuple[str, bytes | str, int] | None]) -> None:
+    """Restore snapshotted paths after failed candidate verification."""
+    for name, entry in saved.items():
+        path = root / name
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        if entry is None:
+            continue
+        kind, value, mode = entry
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if kind == "symlink":
+            path.symlink_to(value)
+        else:
+            path.write_bytes(value)
+            os.chmod(path, mode)
+
+
+def candidate_diagnosis(launcher: str, root: Path, host: str,
+                        lock: dict) -> dict:
+    """Prove the newly selected release is the active runtime before the gate."""
+    result = subprocess.run([launcher, "diagnose", "--root", str(root), "--host", host,
+                             "--json"], cwd=root, capture_output=True, text=True, check=False)
+    try:
+        diagnosis = json.loads(result.stdout)
+    except (ValueError, TypeError) as exc:
+        raise Refused("candidate launcher could not report its selected release: "
+                      + (result.stderr.strip() or str(exc))) from exc
+    release = diagnosis.get("release")
+    if (result.returncode or not diagnosis.get("healthy") or not isinstance(release, dict)
+            or release.get("version") != lock["version"]
+            or release.get("commit") != lock["commit"]):
+        raise Refused("candidate launcher diagnosis did not confirm the requested active pin: "
+                      + (result.stderr.strip() or json.dumps(diagnosis, sort_keys=True)))
+    return {"outcome": "succeeded", "version": release["version"],
+            "commit": release["commit"], "host": host}
+
+
+def verify_candidate(root: Path, args, metadata: Path, pending: dict) -> tuple[dict, int, bool]:
+    """Run the selected project's real gate through the normal public runner."""
+    runner_argv = [os.sys.executable, str(Path(__file__).with_name("guardian.py")), "run",
+                   str(root), "--base", args.base, "--json"]
+    if args.task:
+        runner_argv.extend(["--task", args.task])
+    wait_for_journal = (
+        "import json, os, sys, time\n"
+        "journal, owner = sys.argv[1], int(sys.argv[2])\n"
+        "while True:\n"
+        "    try:\n"
+        "        with open(journal, encoding='utf-8') as stream: record = json.load(stream)\n"
+        "    except (OSError, ValueError): record = {}\n"
+        "    if record.get('checker_pid') == os.getpid(): break\n"
+        "    try: os.kill(owner, 0)\n"
+        "    except ProcessLookupError: raise SystemExit(125)\n"
+        "    time.sleep(0.02)\n"
+        "os.execv(sys.argv[3], sys.argv[3:])\n"
+    )
+    argv = [os.sys.executable, "-c", wait_for_journal,
+            str(guardian_update.pending_path(metadata)), str(os.getpid()), *runner_argv]
+    env = os.environ.copy()
+    env["GUARDIAN_UPDATE_PARENT_PID"] = str(os.getpid())
+    process = subprocess.Popen(argv, cwd=root, env=env, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True, start_new_session=True)
+    pending["checker_pid"] = process.pid
+    guardian_update.write_pending(metadata, pending)
+    interrupted = False
+
+    def stop_checker(_signum, _frame):
+        nonlocal interrupted
+        interrupted = True
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
+    previous = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        signal.signal(signal.SIGINT, stop_checker)
+        signal.signal(signal.SIGTERM, stop_checker)
+        stdout, stderr = process.communicate()
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+    try:
+        observation = json.loads(stdout)
+    except (TypeError, ValueError):
+        observation = {"outcome": "incomplete", "execution": {"outcome": "not_run",
+                         "exit_code": None}, "error": stderr.strip() or
+                         "candidate verification returned no JSON"}
+    return observation, process.returncode or 0, interrupted
 
 
 def read_object(path: Path) -> dict:
@@ -61,7 +174,8 @@ def settings(root: Path, name: str) -> dict:
 
 
 def discover(root: Path, trusted_source: Path | None = None,
-             allow_removed: bool = False) -> tuple[dict, dict | None, str, str | None, list[str]]:
+             allow_removed: bool = False, preferred_host: str | None = None
+             ) -> tuple[dict, dict | None, str, str | None, list[str], list[str]]:
     gate = read_object(safe_path(root, ".claude/agent-guard.json"))
     if (root / ".claude/agent-guard.json").exists() and (
             not isinstance(gate.get("gate_command"), str) or not gate["gate_command"].strip()):
@@ -73,9 +187,14 @@ def discover(root: Path, trusted_source: Path | None = None,
         value = settings(root, name)
         if runtime._residual_guard_hooks(value):
             hosts.append(host)
+    other_guard_hosts = []
     if len(hosts) > 1:
-        raise Refused("multiple Guardian hosts are configured; reconcile the selected integration first")
-    host = hosts[0] if hosts else None
+        if preferred_host not in hosts:
+            raise Refused("multiple Guardian hosts are configured; reconcile the selected integration first")
+        host = preferred_host
+        other_guard_hosts = [candidate for candidate in hosts if candidate != host]
+    else:
+        host = hosts[0] if hosts else None
     legacy = runtime._legacy_profile(root, None)
     if lock and legacy:
         raise Refused("conflicting versioned and legacy runtime configuration")
@@ -104,7 +223,7 @@ def discover(root: Path, trusted_source: Path | None = None,
         if path.exists():
             tomllib.loads(path.read_text())
             found.append(name)
-    return gate, lock, profile, host, found
+    return gate, lock, profile, host, found, other_guard_hosts
 
 
 def proposed_files(root: Path, gate: dict, lock: dict | None, enable: bool,
@@ -291,6 +410,29 @@ def setup(args, runner) -> tuple[dict, int]:
         root = Path(args.root).resolve()
         if runner.repo_root(str(root)) != str(root):
             raise Refused("target must be a Git working tree root")
+        metadata = Path(runner.git("rev-parse", "--absolute-git-dir", cwd=str(root)).strip())
+        pending_update = guardian_update.read_pending(metadata)
+        if pending_update:
+            report["pending_update"] = {
+                "status": "incomplete", "host": pending_update.get("host"),
+                "current_version": pending_update.get("current_version"),
+                "requested_version": pending_update.get("requested_version"),
+                "recovery": "explicit setup --apply restores the prior setup when candidate files are unchanged",
+            }
+            if not args.apply:
+                report["outcome"] = "update_pending"
+                report["error"] = "an earlier Guardian update did not finish; no update evidence is verified"
+                report["next_step"] = "Review the pending candidate, then run setup --apply to recover the prior selection."
+                return report, 3
+            try:
+                guardian_update.recover(root, metadata, pending_update)
+            except guardian_update.PendingUpdateError as exc:
+                report["outcome"] = "update_recovery_refused"
+                report["error"] = str(exc)
+                return report, 3
+            report["outcome"] = "update_recovered"
+            report["pending_update"]["status"] = "recovered"
+            return report, 0
         source = Path(args.source).resolve()
         previous_state = lifecycle.read_state(root)
         prior_lifecycle = previous_state.get("lifecycle", "active")
@@ -303,12 +445,15 @@ def setup(args, runner) -> tuple[dict, int]:
                 raise Refused("Guardian was removed; re-setup requires explicit --guardian, --version and --commit")
             if lifecycle.has_guard_hooks(root, previous_state["selected_host"]) is not False:
                 raise Refused("removed Guardian settings are still present or unreadable; reconcile them before re-setup")
-        gate, old_lock, profile, host, found = discover(root, source, allow_removed=removed)
+        preferred_host = (previous_state.get("selected_host") if previous_state else args.guardian)
+        gate, old_lock, profile, host, found, other_guard_hosts = discover(
+            root, source, allow_removed=removed, preferred_host=preferred_host)
         if (args.guardian and previous_state
                 and previous_state["selected_host"] != args.guardian):
             raise Refused("changing an existing host is outside setup; request an explicit switch")
         report.update(current_gate=gate.get("gate_command"), current_version=old_lock,
-                      installation_profile=profile, host=host, quality_configuration=found)
+                      installation_profile=profile, host=host, quality_configuration=found,
+                      other_integrations=other_guard_hosts)
         if args.gate is not None:
             if not args.gate.strip():
                 raise Refused("--gate must be non-empty")
@@ -400,6 +545,10 @@ def setup(args, runner) -> tuple[dict, int]:
                 changes[state_path] = state
         report["changes"] = {name: content.decode() for name, content in changes.items()}
         report["changes"].update({name: f"symlink -> {target}" for name, target in links.items()})
+        if changed_version and other_guard_hosts:
+            report["integration_conflicts"] = [
+                f"{other} shares the project runtime pin; updating {report['host']} would change its active version"
+                for other in other_guard_hosts]
         report["commands"] = [gate["gate_command"]]
         report["trust_prerequisite"] = ("Review and trust the exact definitions in Codex /hooks; live enforcement remains unverified."
                                          if report["host"] == "codex" else
@@ -413,20 +562,64 @@ def setup(args, runner) -> tuple[dict, int]:
         report["outcome"] = "preview"
         if not args.apply:
             return report, 0
+        if changed_version and other_guard_hosts:
+            report["outcome"] = "refused"
+            report["error"] = "; ".join(report["integration_conflicts"])
+            return report, 3
         if changed_version:
             runtime.prepare(source, lock["version"], lock["commit"], None)
         if changed_version and lock and lock.get("guard_enabled") is True:
             runtime.install_launcher(source, lock["commit"], str(launcher_dir))
+        if changed_version:
+            transaction_names = set(changes) | set(links) | {".claude/agent-guard-receipt.json"}
+            originals = snapshot_files(root, transaction_names)
+            durable_names = set(changes) | set(links)
+            durable_originals = snapshot_files(root, durable_names)
+            candidate_values = {name: ("file", content) for name, content in changes.items()}
+            candidate_values.update({name: ("symlink", target) for name, target in links.items()})
+            pending = {
+                "schema": 1, "setup_pid": os.getpid(), "checker_pid": None,
+                "host": report["host"], "current_version": old_lock,
+                "requested_version": lock,
+                "paths": guardian_update.encode_snapshot(durable_originals, candidate_values),
+            }
+            guardian_update.write_pending(metadata, pending)
+            try:
+                activate(root, changes, links)
+                candidate = (candidate_diagnosis(launcher, root, report["host"], lock)
+                             if lock.get("guard_enabled") is True else None)
+                observation, rc, interrupted = verify_candidate(root, args, metadata, pending)
+                if candidate:
+                    observation["candidate"] = {"version": candidate["version"],
+                                                 "commit": candidate["commit"],
+                                                 "host": candidate["host"]}
+                    observation["candidate_diagnosis"] = candidate
+                report["verification"] = observation
+                report["next_step"] = observation.get("next_step")
+                if interrupted:
+                    report["outcome"] = "update_interrupted"
+                    report["error"] = "candidate verification was interrupted; the prior selection was restored"
+                    report["verification"]["outcome"] = "interrupted"
+                    report["verification"]["error"] = report["error"]
+                    restore_files(root, originals)
+                    guardian_update.remove_pending(metadata)
+                    return report, 3
+                if rc:
+                    report["outcome"] = ("update_checks_failed" if observation.get("execution", {}).get("outcome") == "failed"
+                                          else "update_checks_incomplete")
+                    report["error"] = observation.get("error") or "candidate project verification did not pass"
+                    restore_files(root, originals)
+                    guardian_update.remove_pending(metadata)
+                    return report, rc
+                report["outcome"] = "applied" if changes else "unchanged"
+                guardian_update.remove_pending(metadata)
+                return report, 0
+            except BaseException:
+                restore_files(root, originals)
+                guardian_update.remove_pending(metadata)
+                raise
         activate(root, changes, links)
         report["outcome"] = "applied" if changes else "unchanged"
-        if changed_version:
-            # Record the selected compound shell command through step 1.
-            observation, rc = runner.run(args)
-            report["verification"] = observation
-            report["next_step"] = observation["next_step"]
-            if rc:
-                report["outcome"] = "applied_checks_failed"
-            return report, rc
         return report, 0
     except (OSError, ValueError, SyntaxError, runtime.RuntimeError_, migration.Refused,
             subprocess.CalledProcessError) as exc:

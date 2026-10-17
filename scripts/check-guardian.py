@@ -637,12 +637,15 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, report)
         self.assertEqual(report["current_version"]["version"], "v9.0.0")
         self.assertEqual(report["requested_version"]["version"], "v9.0.1")
+        before_failed_update = self.snapshot(root)
         proc, report = self.setup(root, *update, "--apply")
         self.assertEqual(proc.returncode, 17, report)
-        self.assertEqual(report["outcome"], "applied_checks_failed")
+        self.assertEqual(report["outcome"], "update_checks_failed")
         self.assertEqual(report["verification"]["execution"]["exit_code"], 17)
         self.assertEqual(report["next_step"], report["verification"]["next_step"])
-        self.assertEqual(json.loads((root / ".claude/quality-runtime.json").read_text())["commit"], sha)
+        self.assertEqual(self.snapshot(root), before_failed_update)
+        self.assertEqual(json.loads((root / ".claude/quality-runtime.json").read_text())["version"],
+                         "v9.0.0")
 
     def test_setup_accepts_trusted_prior_launcher_and_rejects_tampering(self):
         source, _ = self.release()
