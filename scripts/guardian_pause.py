@@ -343,6 +343,22 @@ def resume_plan(root: Path, state: dict, host: str) -> dict:
                 or not gate["gate_command"].strip()):
             raise setup.Refused("the project gate or pinned installation changed while paused")
         setup.validate_host_configuration(root, host)
+        current_settings = _setting(root, _settings_name(host))
+        observed = lifecycle.owned_records(
+            current_settings, host, (root / "samples" / "expected").is_dir(), runtime)
+        saved = state.get("owned", {})
+        saved_hooks = saved.get("hooks", [])
+        returned_hooks = any(
+            any(current.get("event") == record.get("event")
+                and current.get("matcher") == record.get("matcher")
+                and current.get("name") == record.get("name")
+                and current.get("sha256") == record.get("sha256")
+                for current in observed["hooks"])
+            for record in saved_hooks if isinstance(record, dict))
+        saved_deny = saved.get("deny", [])
+        returned_deny = any(rule in observed["deny"] for rule in saved_deny
+                            if isinstance(rule, str))
+        owned_wiring_present = returned_hooks or returned_deny
         settings_changes, conflicts = _restore_settings(root, state)
         if conflicts:
             raise setup.Refused("host settings changed while paused; reconcile before resuming")
@@ -368,10 +384,12 @@ def resume_plan(root: Path, state: dict, host: str) -> dict:
         changes[lifecycle.STATE_NAME] = _state_bytes(active_state)
         for name in changes:
             setup.safe_path(root, name)
-        return {"changes": changes, "conflicts": [], "error": None}
+        return {"changes": changes, "conflicts": [], "error": None,
+                "owned_wiring_present": owned_wiring_present}
     except (OSError, ValueError, setup.Refused, runtime.RuntimeError_,
             subprocess.CalledProcessError) as exc:
-        return {"changes": {}, "conflicts": conflicts, "error": str(exc)}
+        return {"changes": {}, "conflicts": conflicts, "error": str(exc),
+                "owned_wiring_present": False}
 
 
 def _resume(args, runner) -> tuple[dict, int]:

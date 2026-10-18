@@ -301,7 +301,7 @@ def status_overlay(root: Path, diagnosis: dict, queried_host: str | None = None)
         result["selected_lifecycle"] = "paused"
         pause = importlib.import_module("guardian_pause")
         preflight = pause.resume_plan(root, state, state["selected_host"])
-        if preflight["error"] is None:
+        if preflight["error"] is None and not preflight["owned_wiring_present"]:
             result["status"] = "paused"
             result["healthy"] = False
             result["live_enforcement"] = "inactive"
@@ -312,6 +312,15 @@ def status_overlay(root: Path, diagnosis: dict, queried_host: str | None = None)
                  if check.get("status") == "fail" else check)
                 for check in result.get("checks", [])
             ]
+        elif preflight["error"] is None:
+            result["lifecycle"] = "conflict"
+            result["status"] = "conflict"
+            result["healthy"] = False
+            result["live_enforcement"] = "unverified"
+            result.setdefault("checks", []).append({
+                "id": "paused-owned-wiring", "status": "fail",
+                "detail": "selected-host Guardian hooks or deny rules are present while lifecycle is paused; use resume to reconcile"
+            })
         else:
             result["lifecycle"] = "broken"
             result["status"] = "broken"

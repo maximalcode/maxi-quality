@@ -198,16 +198,25 @@ class PauseResumeTests(unittest.TestCase):
                 selected_target = project(self.base / f"selected-{selected}")
                 self.target = selected_target
                 self.setup_guardian(selected)
+                settings_name = (".claude/settings.json" if selected == "claude"
+                                 else ".codex/hooks.json")
+                selected_settings = selected_target / settings_name
+                original = json.loads(selected_settings.read_text())
+                original.setdefault("hooks", {}).setdefault("SessionStart", []).append({
+                    "hooks": [{"type": "command", "command": "echo foreign"}]
+                })
+                selected_settings.write_text(json.dumps(original, indent=2) + "\n")
+                original_settings = selected_settings.read_bytes()
 
                 other_target = project(self.base / f"other-{other}")
                 self.target = other_target
                 self.setup_guardian(other)
-                settings_name = (".claude/settings.json" if other == "claude"
+                other_settings_name = (".claude/settings.json" if other == "claude"
                                  else ".codex/hooks.json")
-                other_settings = other_target / settings_name
-                selected_settings = selected_target / settings_name
-                selected_settings.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(other_settings, selected_settings)
+                other_settings = other_target / other_settings_name
+                copied_settings = selected_target / other_settings_name
+                copied_settings.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(other_settings, copied_settings)
                 self.target = selected_target
 
                 paused, report = self.lifecycle("pause", "--apply")
@@ -223,6 +232,50 @@ class PauseResumeTests(unittest.TestCase):
                 self.assertEqual(value["host"]["observed_enforcement"], "inactive", value)
                 self.assertNotIn("fail", [check["status"]
                                            for check in value["installation"]["checks"]], value)
+
+                paused_settings = selected_settings.read_bytes()
+                state = json.loads((selected_target / ".claude/guardian-state.json").read_text())
+                record = state["owned"]["hooks"][0]
+                original_value = json.loads(original_settings)
+                group = next(group for group in original_value["hooks"][record["event"]]
+                             if group.get("matcher") == record.get("matcher"))
+                entry = group["hooks"][0]
+
+                current = json.loads(paused_settings)
+                current_group = {"hooks": [entry]}
+                if record.get("matcher") is not None:
+                    current_group["matcher"] = record["matcher"]
+                current.setdefault("hooks", {}).setdefault(record["event"], []).append(
+                    current_group)
+                selected_settings.write_text(json.dumps(current, indent=2) + "\n")
+                status = command([sys.executable, str(RUNNER), "status", str(selected_target),
+                                  "--json"], selected_target, self.env)
+                value = json.loads(status.stdout)
+                self.assertEqual(value["installation"]["status"], "conflict", value)
+                self.assertEqual(value["installation"]["selected_lifecycle"], "paused", value)
+                self.assertNotEqual(value["host"]["observed_enforcement"], "inactive", value)
+
+                selected_settings.write_bytes(paused_settings)
+                if selected == "claude":
+                    current = json.loads(paused_settings)
+                    rule = state["owned"]["deny"][0]
+                    current.setdefault("permissions", {}).setdefault("deny", []).append(rule)
+                    selected_settings.write_text(json.dumps(current, indent=2) + "\n")
+                    status = command([sys.executable, str(RUNNER), "status", str(selected_target),
+                                      "--json"], selected_target, self.env)
+                    value = json.loads(status.stdout)
+                    self.assertEqual(value["installation"]["status"], "conflict", value)
+                    self.assertEqual(value["installation"]["selected_lifecycle"], "paused", value)
+
+                selected_settings.write_bytes(original_settings)
+                status = command([sys.executable, str(RUNNER), "status", str(selected_target),
+                                  "--json"], selected_target, self.env)
+                value = json.loads(status.stdout)
+                self.assertEqual(value["installation"]["status"], "conflict", value)
+                self.assertEqual(value["installation"]["selected_lifecycle"], "paused", value)
+                resumed, resume_report = self.lifecycle("resume", "--apply")
+                self.assertEqual(resumed.returncode, 0, resume_report)
+                self.assertEqual(resume_report["outcome"], "resumed")
 
     def test_resume_refuses_changed_pin_and_missing_prerequisite(self):
         self.setup_guardian("claude")
