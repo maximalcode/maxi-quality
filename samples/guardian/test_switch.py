@@ -217,6 +217,40 @@ class SwitchTests(unittest.TestCase):
         self.assertEqual(report["outcome"], "refused")
         self.assertEqual(self.snapshot(), before)
 
+    def test_switch_diagnostic_failure_restores_private_file_modes(self):
+        (self.target / "AGENTS.md").write_text("# Personal instructions\n")
+        self.setup_guardian("claude")
+        agents = self.target / "AGENTS.md"
+        settings = self.target / ".claude/settings.json"
+        agents.chmod(0o600)
+        settings.chmod(0o640)
+        before = self.snapshot()
+        injection = self.base / "injection"
+        injection.mkdir()
+        (injection / "sitecustomize.py").write_text(
+            f"import sys\nsys.path.insert(0, {str(BASELINE / 'scripts')!r})\n"
+            "import importlib\n"
+            "runtime = importlib.import_module('quality-runtime')\n"
+            "original = runtime.diagnose\n"
+            "def diagnose(root, *args, **kwargs):\n"
+            "    report = original(root, *args, **kwargs)\n"
+            "    if kwargs.get('host') == 'codex':\n"
+            "        report['checks'].append({'id':'injected','status':'fail','detail':'injected target failure'})\n"
+            "    return report\n"
+            "runtime.diagnose = diagnose\n")
+        injected_env = {**self.env, "PYTHONPATH": str(injection)}
+        switched = command([sys.executable, str(RUNNER), "switch", str(self.target),
+                           "--host", "codex", "--apply", "--json"],
+                          self.target, injected_env)
+        report = json.loads(switched.stdout)
+        self.assertEqual(switched.returncode, 3, report)
+        self.assertIn("injected target failure", report["error"])
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(agents.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(settings.stat().st_mode & 0o777, 0o640)
+        self.assertTrue((self.target / ".claude/skills/guardian").is_symlink())
+        self.assertFalse((self.target / ".agents/skills/guardian").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

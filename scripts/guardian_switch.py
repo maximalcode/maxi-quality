@@ -115,43 +115,6 @@ def _skill_plan(root: Path, state: dict, target: str) -> tuple[dict[str, str], P
     return links, old_link, source_target
 
 
-def _snapshot(root: Path, names: set[str]) -> dict[str, tuple[str, bytes | str] | None]:
-    saved = {}
-    for name in names:
-        path = root / name
-        # A link itself may be the owned skill path we are moving.  Its parent
-        # chain still must be ordinary project directories.
-        for parent in path.parents:
-            if parent == root:
-                break
-            if parent.is_symlink():
-                raise setup.Refused(f"{path}: reconcile symbolic links before switching")
-        if path.is_symlink():
-            saved[name] = ("symlink", os.readlink(path))
-        elif path.exists():
-            saved[name] = ("file", path.read_bytes())
-        else:
-            saved[name] = None
-    return saved
-
-
-def _restore(root: Path, saved: dict[str, tuple[str, bytes | str] | None]) -> None:
-    for name, value in saved.items():
-        path = root / name
-        if path.is_symlink() or path.exists():
-            if path.is_dir() and not path.is_symlink():
-                raise setup.Refused(f"cannot restore non-file path {path}")
-            path.unlink()
-        if value is None:
-            continue
-        path.parent.mkdir(parents=True, exist_ok=True)
-        kind, content = value
-        if kind == "symlink":
-            path.symlink_to(content)
-        else:
-            path.write_bytes(content)
-
-
 def _diagnose_target(root: Path, target: str) -> dict:
     report = runtime.diagnose(root, host=target)
     failures = [item["detail"] for item in report.get("checks", [])
@@ -192,7 +155,8 @@ def _plan(args, runner) -> dict:
     launcher = _owned_launcher(root, state, source)
     with contextlib.redirect_stdout(io.StringIO()):
         proposed = setup.proposed_files(root, gate, lock, True, launcher,
-                                        host=None, update=False, selected_host=target)
+                                        host=None, update=False, selected_host=target,
+                                        create_instruction=True)
     target_bytes = proposed.get(target_name)
     target_settings = (json.loads(target_bytes) if target_bytes is not None
                        else target_existing)
@@ -225,9 +189,9 @@ def _plan(args, runner) -> dict:
         else:
             changes[name] = content
     expected_samples = (root / "samples" / "expected").is_dir()
-    instruction_path = (root / setup._claude_instruction_name(root)
-                        if target == "claude" and setup._claude_instruction_name(root)
-                        else lifecycle.instruction_path(root, target))
+    instruction_path = lifecycle.instruction_path(root, target, create=True)
+    if instruction_path is None:
+        raise setup.Refused("could not choose the target host instruction file")
     instruction_content = changes.get(str(instruction_path.relative_to(root)))
     if instruction_content is None:
         instruction_content = proposed.get(str(instruction_path.relative_to(root)))
@@ -289,7 +253,7 @@ def _switch(args, runner) -> tuple[dict, int]:
         names = set(plan["changes"]) | set(plan["links"])
         if plan["remove_link"]:
             names.add(plan["remove_link"])
-        saved = _snapshot(plan["root"], names)
+        saved = setup.snapshot_files(plan["root"], names)
         try:
             setup.activate(plan["root"], plan["changes"], plan["links"])
             if plan["remove_link"]:
@@ -299,7 +263,7 @@ def _switch(args, runner) -> tuple[dict, int]:
                 old_link.unlink()
             validation = _diagnose_target(plan["root"], plan["target"])
         except Exception:
-            _restore(plan["root"], saved)
+            setup.restore_files(plan["root"], saved)
             raise
         report["validation"] = validation
         report["outcome"] = "switched"

@@ -32,6 +32,11 @@ def snapshot_files(root: Path, names: set[str]) -> dict[str, tuple[str, bytes | 
     saved = {}
     for name in names:
         path = root / name
+        for parent in path.parents:
+            if parent == root:
+                break
+            if parent.is_symlink():
+                raise Refused(f"{path}: reconcile symbolic links before setup")
         if path.is_symlink():
             saved[name] = ("symlink", os.readlink(path), 0)
         elif path.is_file():
@@ -175,23 +180,6 @@ def verify_candidate(root: Path, args, metadata: Path, pending: dict) -> tuple[d
 
 CLAUDE_BEGIN = "<!-- BEGIN maxi-quality agent-guard"
 CLAUDE_END = "<!-- END maxi-quality agent-guard -->"
-CODEX_BEGIN = "<!-- BEGIN maxi-quality codex-guard"
-
-
-def _claude_instruction_name(root: Path) -> str | None:
-    """Choose the instruction file that Claude migration may own a region in."""
-    claude = root / "CLAUDE.md"
-    if claude.exists() or claude.is_symlink():
-        return claude.name
-    agents = root / "AGENTS.md"
-    if not agents.exists() and not agents.is_symlink():
-        return None
-    text = agents.read_text(encoding="utf-8")
-    # An AGENTS.md containing the Codex region belongs to that adapter. Keep it
-    # intact when switching hosts and give Claude its native instruction file.
-    if CODEX_BEGIN in text and CLAUDE_BEGIN not in text:
-        return claude.name
-    return agents.name
 
 
 def _seed_claude_region(path: Path) -> None:
@@ -309,7 +297,8 @@ def discover(root: Path, trusted_source: Path | None = None,
 
 def proposed_files(root: Path, gate: dict, lock: dict | None, enable: bool,
                    launcher: str, host: str | None = None,
-                   update: bool = False, selected_host: str | None = None) -> dict[str, bytes]:
+                   update: bool = False, selected_host: str | None = None,
+                   create_instruction: bool = False) -> dict[str, bytes]:
     names = [".claude/agent-guard.json"]
     if lock is not None:
         names.append(runtime.LOCK_NAME)
@@ -318,9 +307,12 @@ def proposed_files(root: Path, gate: dict, lock: dict | None, enable: bool,
     instruction_name = None
     if migrate and operation_host == "codex":
         names.extend([".codex/hooks.json", "AGENTS.md", ".gitignore"])
+        instruction_name = "AGENTS.md"
     elif migrate and operation_host == "claude":
         names.extend([".claude/settings.json", ".gitignore"])
-        instruction_name = _claude_instruction_name(root)
+        instruction_path = lifecycle.instruction_path(
+            root, operation_host, create=create_instruction)
+        instruction_name = instruction_path.name if instruction_path else None
         if instruction_name is not None:
             names.append(instruction_name)
     for name in names:
@@ -519,6 +511,10 @@ def setup(args, runner) -> tuple[dict, int]:
         preferred_host = (previous_state.get("selected_host") if previous_state else args.guardian)
         gate, old_lock, profile, host, found, other_guard_hosts = discover(
             root, source, allow_removed=removed, preferred_host=preferred_host)
+        if previous_state and not removed:
+            lifecycle.verify_instruction_region(
+                root, previous_state["selected_host"],
+                previous_state.get("owned", {}).get("instruction_region"))
         if (args.guardian and previous_state
                 and previous_state["selected_host"] != args.guardian):
             raise Refused("changing an existing host is outside setup; request an explicit switch")
@@ -588,12 +584,12 @@ def setup(args, runner) -> tuple[dict, int]:
             settings_value = (json.loads(settings_bytes) if settings_bytes is not None else
                               settings(root, settings_name))
             expected_samples = (root / "samples/expected").is_dir()
-            instruction_path = lifecycle.instruction_path(root, guardian_host)
-            if guardian_host == "claude":
-                instruction_path = root / _claude_instruction_name(root) if _claude_instruction_name(root) else instruction_path
-            instruction = changes.get(str(instruction_path.relative_to(root)))
-            instruction_record = lifecycle.instruction_region(
-                instruction_path, guardian_host, instruction)
+            instruction_path = lifecycle.instruction_path(
+                root, guardian_host, create=guardian_host == "codex")
+            instruction = (changes.get(str(instruction_path.relative_to(root)))
+                           if instruction_path else None)
+            instruction_record = (lifecycle.instruction_region(
+                instruction_path, guardian_host, instruction) if instruction_path else None)
             if instruction_record:
                 previous_region = previous_state.get("owned", {}).get("instruction_region")
                 if (isinstance(previous_region, dict)
@@ -653,7 +649,8 @@ def setup(args, runner) -> tuple[dict, int]:
             gate_name = ".claude/agent-guard.json"
             durable_names.add(gate_name)
             durable_originals.setdefault(gate_name, snapshot_files(root, {gate_name})[gate_name])
-            candidate_values.setdefault(gate_name, ("file", (root / gate_name).read_bytes()))
+            if gate_name not in candidate_values and (root / gate_name).is_file():
+                candidate_values[gate_name] = ("file", (root / gate_name).read_bytes())
             pending = {
                 "schema": 1, "setup_pid": os.getpid(), "checker_pid": None,
                 "host": report["host"], "current_version": old_lock,

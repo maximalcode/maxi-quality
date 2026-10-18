@@ -212,6 +212,21 @@ class PauseResumeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 3, refused)
         self.assertEqual(self.snapshot(), before)
 
+    def test_paused_status_exposes_a_broken_runtime_prerequisite(self):
+        for host in ("claude", "codex"):
+            with self.subTest(host=host):
+                self.target = project(self.base / f"paused-{host}")
+                self.setup_guardian(host)
+                paused, report = self.lifecycle("pause", "--apply")
+                self.assertEqual(paused.returncode, 0, report)
+                shutil.rmtree(self.base / "cache")
 
+                status = command([sys.executable, str(RUNNER), "status", str(self.target),
+                                  "--json"], self.target, self.env)
+                value = json.loads(status.stdout)
+                self.assertEqual(status.returncode, 0, status.stderr)
+                self.assertEqual(value["installation"]["status"], "broken", value)
+                self.assertEqual(value["installation"]["lifecycle"], "broken", value)
+                self.assertEqual(value["installation"]["selected_lifecycle"], "paused", value)
 if __name__ == "__main__":
     unittest.main()

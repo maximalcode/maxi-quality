@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import os
 from pathlib import Path
 
 STATE_NAME = ".claude/guardian-state.json"
@@ -145,10 +146,11 @@ def state_bytes(host: str, version: str, commit: str, skill_path: str | None,
     return (json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
 
-def instruction_path(root: Path, host: str) -> Path:
-    """Return the concrete instruction file selected for this host."""
+def instruction_path(root: Path, host: str, *, create: bool = False) -> Path | None:
+    """Select the host's instruction file, optionally choosing its new-file path."""
     if host == "codex":
-        return root / "AGENTS.md"
+        path = root / "AGENTS.md"
+        return path if create or path.exists() or path.is_symlink() else None
     if host != "claude":
         raise ValueError(f"unsupported Guardian host {host!r}")
     claude = root / "CLAUDE.md"
@@ -160,9 +162,9 @@ def instruction_path(root: Path, host: str) -> Path:
         claude_begin = INSTRUCTION_MARKERS["claude"][0]
         codex_begin = INSTRUCTION_MARKERS["codex"][0]
         if codex_begin in text and claude_begin not in text:
-            return claude
+            return claude if create else None
         return agents
-    return claude
+    return claude if create else None
 
 
 def instruction_region(path: Path, host: str, content: bytes | None = None) -> dict | None:
@@ -187,6 +189,26 @@ def instruction_region(path: Path, host: str, content: bytes | None = None) -> d
         raise ValueError(f"{path.name} has an incomplete Guardian instruction region")
     return {"path": path.name,
             "sha256": hashlib.sha256(text[opening_end + 3:end_start].encode("utf-8")).hexdigest()}
+
+
+def verify_instruction_region(root: Path, host: str, record: object) -> None:
+    """Refuse to refresh ownership when the previously recorded region changed."""
+    if record is None:
+        return
+    if isinstance(record, dict):
+        name, expected = record.get("path"), record.get("sha256")
+    elif isinstance(record, str):
+        path = instruction_path(root, host, create=True)
+        assert path is not None
+        name, expected = path.name, record
+    else:
+        raise ValueError("Guardian instruction region ownership is malformed")
+    allowed = ("CLAUDE.md", "AGENTS.md") if host == "claude" else ("AGENTS.md",)
+    if name not in allowed or not isinstance(expected, str):
+        raise ValueError("Guardian instruction region ownership is malformed")
+    current = instruction_region(root / name, host)
+    if current is None or current["path"] != name or current["sha256"] != expected:
+        raise ValueError(f"{name} Guardian instruction region was changed; preserving it")
 
 
 def instruction_separator(text: str) -> str:
@@ -284,12 +306,17 @@ def status_overlay(root: Path, diagnosis: dict, queried_host: str | None = None)
                            and pinned.get("version") == release.get("version")
                            and pinned.get("commit") == release.get("commit"))
         remaining = has_guard_hooks(root, state["selected_host"])
-        if release_matches and remaining is False:
+        prerequisite_errors = _paused_prerequisite_errors(root, pinned)
+        if release_matches and remaining is False and not prerequisite_errors:
             result["status"] = "paused"
             result["healthy"] = False
             result["live_enforcement"] = "inactive"
         else:
             result["lifecycle"] = "broken"
+            result["status"] = "broken"
+            result["healthy"] = False
+            if prerequisite_errors:
+                result.setdefault("checks", []).extend(prerequisite_errors)
     elif lifecycle == "removed":
         if has_guard_hooks(root, state["selected_host"]) is False:
             result["status"] = "not-installed"
@@ -298,6 +325,26 @@ def status_overlay(root: Path, diagnosis: dict, queried_host: str | None = None)
         else:
             result["lifecycle"] = "conflict"
     return result
+
+
+def _paused_prerequisite_errors(root: Path, release: object) -> list[dict[str, str]]:
+    """Reuse runtime cache and launcher validators for a deliberately disabled guard."""
+    if not isinstance(release, dict) or not isinstance(release.get("commit"), str):
+        return [{"id": "release-lock", "status": "fail",
+                 "detail": "paused Guardian state has no pinned release commit"}]
+    runtime = importlib.import_module("quality-runtime")
+    lock = dict(release, guard_enabled=False)
+    try:
+        cache = runtime.validate_cache(root, lock)
+    except (OSError, ValueError, runtime.RuntimeError_) as exc:
+        return [{"id": "runtime-cache", "status": "fail", "detail": str(exc)}]
+    launcher = (Path.home() / ".local/share/maxi-quality/launchers"
+                / release["commit"] / "quality-runtime")
+    if (not launcher.is_file() or not os.access(launcher, os.X_OK)
+            or not runtime._launcher_identity(launcher)):
+        return [{"id": "launcher", "status": "fail",
+                 "detail": f"selected runtime launcher is missing or differs from the pinned cache: {launcher}"}]
+    return []
 
 
 def owned_records(settings: dict, host: str, expected_samples: bool,

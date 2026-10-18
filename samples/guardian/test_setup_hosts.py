@@ -17,12 +17,13 @@ def command(argv, cwd, env=None):
     return subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, check=False)
 
 
-def project(path):
+def project(path, *, guardian_gate=True):
     path.mkdir()
     subprocess.run(["git", "init", "-q", str(path)], check=True)
     (path / "source.txt").write_text("fixture\n")
-    (path / ".claude").mkdir()
-    (path / ".claude/agent-guard.json").write_text('{"gate_command":"true"}\n')
+    if guardian_gate:
+        (path / ".claude").mkdir()
+        (path / ".claude/agent-guard.json").write_text('{"gate_command":"true"}\n')
     subprocess.run(["git", "add", "."], cwd=path, check=True)
     subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
                     "-c", "core.hooksPath=/dev/null", "commit", "-qm", "fixture"], cwd=path, check=True)
@@ -110,6 +111,52 @@ class SelectedHostSetupTests(unittest.TestCase):
         self.assertEqual(report["host"]["name"], "claude")
         self.assertEqual(report["verification"]["outcome"], "succeeded")
         self.assertEqual(report["installation"]["release"]["version"], "v9.0.0")
+
+    def test_fresh_selected_host_setup_uses_planned_gate_candidate(self):
+        for host in ("claude", "codex"):
+            with self.subTest(host=host):
+                target = project(self.root / f"fresh-{host}", guardian_gate=False)
+                (target / "Makefile").write_text("check:\n\t@test -f source.txt\n")
+                result = command(
+                    [sys.executable, str(RUNNER), "setup", str(target),
+                     "--source", str(self.source), "--version", "v9.0.0",
+                     "--commit", self.commit, "--gate", "make check",
+                     "--guardian", host, "--apply"],
+                    target, self.env)
+                report = json.loads(result.stdout)
+                self.assertEqual(result.returncode, 0, report)
+                self.assertEqual(report["host"], host)
+                self.assertEqual(
+                    json.loads((target / ".claude/agent-guard.json").read_text())["gate_command"],
+                    "make check")
+
+    def test_re_setup_does_not_claim_an_edited_instruction_region(self):
+        for host, filename in (("claude", "CLAUDE.md"), ("codex", "AGENTS.md")):
+            with self.subTest(host=host):
+                target = project(self.root / f"edited-{host}")
+                (target / filename).write_text("# Personal instructions\nKeep this workflow.\n")
+                args = [sys.executable, str(RUNNER), "setup", str(target),
+                        "--source", str(self.source), "--version", "v9.0.0",
+                        "--commit", self.commit, "--guardian", host, "--apply"]
+                first = command(args, target, self.env)
+                self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+                instructions = target / filename
+                original = instructions.read_text()
+                edited = original.replace("<!-- END maxi-quality", "Keep my change.\n<!-- END maxi-quality")
+                self.assertNotEqual(edited, original)
+                instructions.write_text(edited)
+
+                repeated = command(args, target, self.env)
+                report = json.loads(repeated.stdout)
+                self.assertEqual(repeated.returncode, 3, report)
+                self.assertIn("instruction region", report["error"])
+                self.assertEqual(instructions.read_text(), edited)
+
+                removed = command([sys.executable, str(RUNNER), "remove", str(target),
+                                   "--apply", "--json"], target, self.env)
+                remove_report = json.loads(removed.stdout)
+                self.assertEqual(removed.returncode, 3, remove_report)
+                self.assertEqual(instructions.read_text(), edited)
 
     def test_claude_setup_preserves_plain_claude_instructions(self):
         personal = "# Personal instructions\nKeep the existing project workflow.\n"
@@ -243,6 +290,7 @@ class SelectedHostSetupTests(unittest.TestCase):
         self.assertEqual(explicit_report["installation"]["lifecycle"], "other-host")
         active = command([sys.executable, str(runner), "status", str(self.target), "--json"],
                          self.target, self.env)
+        self.assertEqual(active.returncode, 0, active.stderr)
         active_report = json.loads(active.stdout)
         self.assertNotEqual(active_report["installation"]["status"], "paused")
         self.assertEqual(active_report["installation"]["lifecycle"], "broken")
