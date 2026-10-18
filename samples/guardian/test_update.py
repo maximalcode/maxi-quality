@@ -282,6 +282,49 @@ class GuardianUpdateTests(unittest.TestCase):
         self.assertIn(".claude/settings.json",
                       status_report["verification"]["pending_update"]["conflicts"])
 
+    def test_failed_update_preserves_gate_mode_change_and_leaves_recovery_pending(self):
+        settings = self.target / ".claude/settings.json"
+        os.chmod(settings, 0o644)
+        self.assertEqual(settings.stat().st_mode & 0o777, 0o644)
+        failed = self.setup("--guardian", "claude", *self.release, "--gate",
+                            "chmod 600 .claude/settings.json; exit 17", "--apply")
+        report = json.loads(failed.stdout)
+
+        self.assertEqual(failed.returncode, 17, report)
+        self.assertEqual(settings.stat().st_mode & 0o777, 0o600)
+        self.assertIn("pending", report["outcome"])
+        self.assertTrue((self.target / ".git/guardian-update-pending.json").is_file())
+        status = command([sys.executable, str(RUNNER), "status", str(self.target), "--json"],
+                         self.target, self.env)
+        status_report = json.loads(status.stdout)
+        self.assertEqual(status_report["verification"]["pending_update"]["status"],
+                         "recovery_conflict")
+        self.assertIn(".claude/settings.json",
+                      status_report["verification"]["pending_update"]["conflicts"])
+
+    def test_explicit_recovery_preserves_gate_mode_change(self):
+        settings = self.target / ".claude/settings.json"
+        os.chmod(settings, 0o644)
+        argv = [sys.executable, str(RUNNER), "setup", str(self.target), "--guardian", "claude",
+                *self.release, "--gate",
+                'kill -KILL "$GUARDIAN_UPDATE_PARENT_PID"; sleep 4; exit 0',
+                "--apply", "--json"]
+        process = subprocess.Popen(argv, cwd=self.target, env=self.env, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True)
+        self.assertEqual(process.wait(timeout=5), -9)
+        os.chmod(settings, 0o600)
+        self.assertEqual(settings.stat().st_mode & 0o777, 0o600)
+        time.sleep(4)
+        process.communicate(timeout=5)
+        time.sleep(1)
+        recovered = self.setup("--apply")
+        report = json.loads(recovered.stdout)
+
+        self.assertEqual(recovered.returncode, 3, report)
+        self.assertIn("preserved them", report["error"])
+        self.assertEqual(settings.stat().st_mode & 0o777, 0o600)
+        self.assertTrue((self.target / ".git/guardian-update-pending.json").is_file())
+
     def test_interrupted_update_preserves_gate_edit_and_reports_pending_rollback(self):
         edit_then_interrupt = (
             "python3 -c 'import json,pathlib; p=pathlib.Path(\".claude/settings.json\"); "

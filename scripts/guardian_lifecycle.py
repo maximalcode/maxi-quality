@@ -301,10 +301,17 @@ def status_overlay(root: Path, diagnosis: dict, queried_host: str | None = None)
         result["selected_lifecycle"] = "paused"
         pause = importlib.import_module("guardian_pause")
         preflight = pause.resume_plan(root, state, state["selected_host"])
-        if preflight["error"] is None and diagnosis.get("healthy") is True:
+        if preflight["error"] is None:
             result["status"] = "paused"
             result["healthy"] = False
             result["live_enforcement"] = "inactive"
+            result["checks"] = [
+                ({**check, "status": "skip",
+                  "detail": "active enforcement is intentionally paused; "
+                            "resume preflight validates restoration prerequisites"}
+                 if check.get("status") == "fail" else check)
+                for check in result.get("checks", [])
+            ]
         else:
             result["lifecycle"] = "broken"
             result["status"] = "broken"

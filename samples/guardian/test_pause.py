@@ -186,12 +186,43 @@ class PauseResumeTests(unittest.TestCase):
         lock = json.loads((self.target / ".claude/quality-runtime.json").read_text())
         self.assertTrue(lock["guard_enabled"])
         self.assertEqual(codex_path.read_bytes(), before)
-
         resumed, resume_report = self.lifecycle("resume", "--apply")
         self.assertEqual(resumed.returncode, 0, resume_report)
         self.assertTrue(json.loads((self.target / ".claude/quality-runtime.json").read_text())[
             "guard_enabled"])
         self.assertEqual(codex_path.read_bytes(), before)
+
+    def test_status_reports_paused_when_other_host_guardian_remains_active(self):
+        for selected, other in (("claude", "codex"), ("codex", "claude")):
+            with self.subTest(selected=selected, other=other):
+                selected_target = project(self.base / f"selected-{selected}")
+                self.target = selected_target
+                self.setup_guardian(selected)
+
+                other_target = project(self.base / f"other-{other}")
+                self.target = other_target
+                self.setup_guardian(other)
+                settings_name = (".claude/settings.json" if other == "claude"
+                                 else ".codex/hooks.json")
+                other_settings = other_target / settings_name
+                selected_settings = selected_target / settings_name
+                selected_settings.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(other_settings, selected_settings)
+                self.target = selected_target
+
+                paused, report = self.lifecycle("pause", "--apply")
+                self.assertEqual(paused.returncode, 0, report)
+                lock = json.loads((selected_target / ".claude/quality-runtime.json").read_text())
+                self.assertTrue(lock["guard_enabled"])
+                status = command([sys.executable, str(RUNNER), "status", str(selected_target),
+                                  "--json"], selected_target, self.env)
+                value = json.loads(status.stdout)
+                self.assertEqual(status.returncode, 0, status.stderr)
+                self.assertEqual(value["installation"]["status"], "paused", value)
+                self.assertEqual(value["installation"]["selected_lifecycle"], "paused", value)
+                self.assertEqual(value["host"]["observed_enforcement"], "inactive", value)
+                self.assertNotIn("fail", [check["status"]
+                                           for check in value["installation"]["checks"]], value)
 
     def test_resume_refuses_changed_pin_and_missing_prerequisite(self):
         self.setup_guardian("claude")

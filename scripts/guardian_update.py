@@ -73,7 +73,14 @@ def encode_snapshot(snapshot: dict[str, tuple[str, bytes | str, int] | None],
         if new is None:
             new_value = None
         elif new[0] == "file":
+            # activate() preserves an existing file's mode and creates a new
+            # file with mkstemp's 0600 mode. Recording that expected result
+            # lets rollback distinguish candidate state from a gate's chmod.
+            candidate_mode = (old[2] if old is not None and old[0] == "file"
+                              else 0o600 if old is None else None)
             new_value = {"kind": "file", "value": base64.b64encode(new[1]).decode()}
+            if candidate_mode is not None:
+                new_value["mode"] = candidate_mode
         else:
             new_value = {"kind": "symlink", "value": new[1]}
         paths[name] = {"before": old_value, "candidate": new_value}
@@ -85,15 +92,21 @@ def current_value(root: Path, name: str) -> dict | None:
     if path.is_symlink():
         return {"kind": "symlink", "value": os.readlink(path)}
     if path.is_file():
-        return {"kind": "file", "value": base64.b64encode(path.read_bytes()).decode()}
+        return {"kind": "file", "value": base64.b64encode(path.read_bytes()).decode(),
+                "mode": path.stat().st_mode & 0o777}
     return None
 
 
 def same_content(left: dict | None, right: dict | None) -> bool:
-    """Compare snapshotted content and object kind, ignoring file mode metadata."""
+    """Compare exact file state; snapshots without a file mode are not trusted."""
     if left is None or right is None:
         return left is right
-    return left.get("kind") == right.get("kind") and left.get("value") == right.get("value")
+    if left.get("kind") != right.get("kind") or left.get("value") != right.get("value"):
+        return False
+    if left.get("kind") == "file":
+        return (isinstance(right.get("mode"), int)
+                and left.get("mode") == right.get("mode"))
+    return True
 
 
 def restore_value(root: Path, name: str, value: dict | None) -> None:
