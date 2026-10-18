@@ -30,6 +30,11 @@ because each one is only a defect if reach is a goal.
   not survive that pressure.
 - **Public and genuinely adoptable, no support obligation.** Chosen.
 
+**Partial supersession, 2026-09-26:** [ADR 0003](0003-local-quality-and-code-guardian.md)
+replaces the final consequence excluding quality judgement: optional Guardian
+AI assessment is now in scope, separately identified from executed checks.
+The audience, support obligation and existing version contract remain intact.
+
 ## Consequences
 
 - The **supported stack** is stated in `README.md` so an Adopter learns the

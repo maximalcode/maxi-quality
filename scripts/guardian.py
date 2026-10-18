@@ -14,6 +14,9 @@ import subprocess
 import sys
 import tempfile
 
+import guardian_status
+import guardian_update
+
 sys.dont_write_bytecode = True
 GUARD_DIR = Path(__file__).resolve().parent / "agent-guard"
 RECOVERY_GUIDE = (str(Path(__file__).resolve().parent.parent / "docs/GUARDIAN-SETUP.md")
@@ -153,6 +156,23 @@ def check(path: str) -> tuple[dict, int]:
 
 
 def display(report: dict) -> None:
+    if "installation" in report:
+        installation = report["installation"]
+        verification = report["verification"]
+        print(f"Guardian status for {report['project_root']} ({report['host']['name']})")
+        print(f"Installation: {installation['status']} ({installation['profile']})")
+        release = installation.get("release")
+        if release:
+            print(f"Version: {release['version']} @ {release['commit']}")
+        print(f"Host trust: {report['host']['trust']}; observed enforcement: "
+              f"{report['host']['observed_enforcement']}")
+        print(f"Last project check: {verification['outcome']} "
+              f"(freshness: {verification['freshness']})")
+        if verification.get("command"):
+            print(f"Executed command: {verification['command']}")
+        for check_result in installation.get("checks", []):
+            print(f"{check_result['status']}: {check_result['id']}: {check_result['detail']}")
+        return
     print(f"Guardian: {report['outcome']} (freshness: {report['freshness']})")
     if "project_root" in report:
         print(f"Project / working directory: {report['project_root']}")
@@ -179,13 +199,19 @@ def main() -> int:
     execute.add_argument("--task", help="named task/issue/spec reference; not an assessment")
     inspect = commands.add_parser("check", help="check saved evidence against current content")
     inspect.add_argument("report")
+    inspect_status = commands.add_parser("status", help="read installation and saved check status")
+    inspect_status.add_argument("root")
+    inspect_status.add_argument("--host", choices=("claude", "codex"),
+                                help="inspect a host explicitly; otherwise use the selected host")
+    inspect_status.add_argument("--json", action="store_true", help="print machine-readable status")
     for command in (execute, inspect):
         command.add_argument("--json", action="store_true", help="print machine-readable evidence")
     setup = commands.add_parser("setup", help="preview local setup or an explicit pinned update")
     setup.add_argument("root")
     setup.add_argument("--apply", action="store_true", help="apply the displayed selection")
     setup.add_argument("--gate", help="explicitly select or replace the whole gate command")
-    setup.add_argument("--guardian", choices=("codex",), help="enable the native Codex integration")
+    setup.add_argument("--guardian", choices=("claude", "codex"),
+                       help="enable the selected host's native Guardian integration")
     setup.add_argument("--version", help="requested immutable release tag")
     setup.add_argument("--commit", help="full commit matching the requested release tag")
     setup.add_argument("--source", default=str(Path(__file__).resolve().parent.parent),
@@ -193,12 +219,68 @@ def main() -> int:
     setup.add_argument("--base", default="HEAD", help="comparison base for post-update checks")
     setup.add_argument("--task", help="task reference for post-update evidence")
     setup.add_argument("--json", action="store_true")
+    lifecycle_commands = {}
+    for action in ("pause", "resume", "remove"):
+        operation = commands.add_parser(action, help=f"preview or apply selected-host {action}")
+        operation.add_argument("root")
+        operation.add_argument("--host", choices=("claude", "codex"),
+                                help="defaults to the recorded selected host")
+        operation.add_argument("--apply", action="store_true",
+                               help="apply the displayed changes; default is read-only preview")
+        operation.add_argument("--json", action="store_true")
+        lifecycle_commands[action] = operation
+    switch = commands.add_parser("switch", help="preview or apply an explicit selected-host change")
+    switch.add_argument("root")
+    switch.add_argument("--host", choices=("claude", "codex"), required=True,
+                        help="explicit destination host")
+    switch.add_argument("--apply", action="store_true",
+                        help="apply the displayed changes; default is read-only preview")
+    switch.add_argument("--json", action="store_true")
+    lifecycle_commands["switch"] = switch
     args = parser.parse_args()
     if args.action == "setup":
         report, rc = importlib.import_module("guardian_setup").setup(args, sys.modules[__name__])
         print(json.dumps(report, indent=2))
         return rc if rc >= 0 else 128 - rc
-    report, rc = run(args) if args.action == "run" else check(args.report)
+    if args.action == "status":
+        report = guardian_status.status(
+            args.root, args.host, git=git, check=check,
+            clear_git_environment=clear_git_environment,
+            runtime=Path(__file__).with_name("quality-runtime.py"))
+        rc = 0
+    elif args.action in lifecycle_commands:
+        module_name, function_name = {
+            "pause": ("guardian_pause", "pause"),
+            "resume": ("guardian_pause", "resume"),
+            "remove": ("guardian_remove", "remove"),
+            "switch": ("guardian_switch", "switch"),
+        }[args.action]
+        try:
+            clear_git_environment()
+            root = str(Path(args.root).resolve())
+            if repo_root(root) != root:
+                raise ValueError("target must be a Git working tree root")
+            metadata = Path(git("rev-parse", "--absolute-git-dir", cwd=root).strip())
+            pending = guardian_update.read_pending(metadata)
+            if pending:
+                raise guardian_update.PendingUpdateError(
+                    "a Guardian update is incomplete; run setup --apply to recover before "
+                    f"using {args.action}")
+            operation = getattr(importlib.import_module(module_name), function_name)
+        except (ImportError, AttributeError):
+            report, rc = ({"outcome": "unavailable",
+                           "error": f"{args.action} is not available in this Guardian release"}, 3)
+        except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+            report, rc = ({"outcome": "refused", "error": str(exc)}, 3)
+        else:
+            report, rc = operation(args, sys.modules[__name__])
+        if args.json:
+            print(json.dumps(report, indent=2))
+        else:
+            print(json.dumps(report, indent=2))
+        return rc if rc >= 0 else 128 - rc
+    else:
+        report, rc = run(args) if args.action == "run" else check(args.report)
     if args.json:
         print(json.dumps(report, indent=2))
     else:

@@ -12,6 +12,11 @@ Stop compatibility, and another checkout's inherited Git routing environment.
 
 These prove the local mechanism, not adoption cost on a real consuming project
 or enforcement inside an agent host. No tool-specific findings are parsed.
+The read-only `guardian status` cases cover no evidence, successful evidence,
+failure, a missing command, and stale evidence. They also assert that
+status leaves project files and saved receipts unchanged, keeps host trust and
+live enforcement unknown, and reports a compound gate only as the command that
+actually ran.
 
 The setup cases additionally require Cargo with an installed toolchain and
 exercise the dependency-free `rust-local/` crate offline through step 1. The
@@ -22,6 +27,22 @@ comparisons. Invented tagged baseline repositories exercise payload validation,
 read-only previews, repeated application, native Codex wiring, retained unrelated
 hooks, immutable updates and truthful post-update failure evidence. The tests
 never launch an agent host or assert that hooks are trusted.
+
+`test_setup_hosts.py` adds separate selected-Claude and selected-Codex setup flows:
+read-only preview, one-host application, shared skill link, existing gate run,
+selected-host status and repeat-apply idempotence. It also keeps foreign host
+settings and skill links intact and verifies that an explicitly inspected other
+host does not inherit the selected host's lifecycle overlay.
+
+The lifecycle suites exercise the same public CLI. `test_update.py` proves
+candidate-pin verification, failed and interrupted transition recovery,
+preserved user edits and shared-pin conflicts. `test_pause.py` covers pause,
+local checks while paused, resume prerequisites and unrelated host settings.
+`test_remove.py` covers exact ownership, retained checks and shared caches,
+modified-region conflicts and repeated removal. `test_switch.py` covers both
+host directions, unchanged pins, target prerequisites and failed transitions.
+They run through the existing `agent-guard` CI context; no new guard policy or
+required CI context is introduced.
 
 `skill-review.json` defines the invented named task, failing gate and scoped
 repair for the installed skill's interface fixture. The test resolves a linked

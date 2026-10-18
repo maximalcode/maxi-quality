@@ -43,6 +43,28 @@ is no public v1.0.0 through v1.0.3 to backfill. `CLAUDE.md` §2 has the reason.
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- Read-only Guardian status separates selected-host installation, saved check
+  outcome and freshness, host trust and observed native enforcement.
+- The common setup entry can deliberately select Claude or Codex, with a
+  project-local link to the shared Guardian skill and recorded ownership.
+- Preview-first pause, resume, removal and explicit host switch preserve the
+  project gate, unrelated host settings and shared runtime files. Modified
+  managed content is reported as a conflict instead of being discarded.
+
+### Changed
+
+- Failed or incomplete pinned-update verification restores the previous setup
+  and retains the failed candidate evidence. Interrupted updates remain visible
+  and require explicit recovery when the process could not finish rollback.
+  Another integration sharing the pin prevents an unselected version change.
+- ADR 0003 establishes independently usable local checks and optional Guardian;
+  native host observation and real pilot adoption cost remain separate evidence.
+  The existing guard and convention budgets are unchanged.
+
 ## [v1.3.0] — 2026-10-08
 
 Everything on `develop` since v1.2.0.
