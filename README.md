@@ -86,7 +86,10 @@ jobs:
 ```
 
 No token, no secrets, no checkout of this repo. Every push and pull request now
-runs Semgrep, Gitleaks and OSV-Scanner.
+runs Semgrep, Gitleaks and OSV-Scanner. Its
+[analysis-scope artifact and summary](docs/ANALYSIS-SCOPE.md)
+show what that run examined and what remains unknown, including ordinary failed
+runs. Collection is non-gating; delivery limits are documented.
 
 ### A repo that already exists
 
@@ -220,6 +223,7 @@ one language at a time, when someone has the week to spend on it.
 | Dead code and unused dependencies | knip (TypeScript) and deptry (Python), gating the measured issue types only | [`actions/deadcode/`](actions/deadcode/) |
 | Secrets and dependencies | Gitleaks and OSV-Scanner behind one runner | [`scripts/scan.sh`](scripts/scan.sh) |
 | CI | reusable workflow, pinned by the `@v1` tag | [`quality.yml`](.github/workflows/quality.yml) |
+| Analysis scope | Per-run language/job/tool evidence and own-run scope beside standing-report finding trends | [`docs/ANALYSIS-SCOPE.md`](docs/ANALYSIS-SCOPE.md) |
 | PR feedback | findings annotated on the diff, on by default | [#40](https://github.com/maximalcode/maxi-quality/issues/40) |
 | Per-repo policy | disable or downgrade rules, exclude paths, add your own | `.maxi-quality.yml` |
 | Pre-commit hook | opt-in, runs on staged content, `--no-verify` always works | `adopt.sh --hooks` |

@@ -58,6 +58,23 @@ run_action() {
     RUNNER_TEMP="$WORK/$label" GITHUB_OUTPUT="$WORK/$label/outputs" \
     bash "$WORK/action.sh" > "$WORK/$label/action.log" 2>&1 || ACTION_RC=$?
   echo "$label: action exit $ACTION_RC; $(sed -n '/^semgrep=/p' "$WORK/$label/outputs")"
+  SCOPE="$WORK/$label/maxi-quality-layer2-scope.json"
+  test -s "$SCOPE"
+  python3 - "$SCOPE" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["schema_version"] == 1
+assert d["kind"] == "layer2-scope"
+assert d["identity"]["producer"] == "gate"
+assert set(d["tools"]) == {"semgrep", "gitleaks", "osv", "licenses", "sbom"}
+for name, tool in d["tools"].items():
+    if name == "semgrep" and tool["state"] == "run":
+        assert all(m["status"] == "known" and m["count"] is not None
+                   for m in tool["measurements"].values())
+    else:
+        assert all(m["count"] is None for m in tool["measurements"].values())
+print(f"{sys.argv[1]}: scope={d['analysis']['outcome']}/{d['collection']['status']}")
+PY
 }
 
 SOURCE="$WORK/source"

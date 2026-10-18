@@ -3,7 +3,7 @@
 Handover doc. Read [`CONCEPT.md`](CONCEPT.md) for *what this is*; read this for
 *what actually exists, what is proven, and what to do next.*
 
-**Last updated:** 2026-10-04 · **Branches:** `develop` (default, where work
+**Last updated:** 2026-10-10 · **Branches:** `develop` (default, where work
 lands) → `main` (release) · **Tags:** `v1` (moving, follows `main`) · `v1.0.x`
 (immutable — the newest is on
 [Releases](https://github.com/maximalcode/maxi-quality/releases))
@@ -101,6 +101,8 @@ semgrep/conventions/   no-ambient-clock, mutation-requires-authz,
 scripts/adopt.sh          adopt into a consumer: detect languages, drop the copies.
                           --hooks and --editor are the two opt-in extras
 scripts/scan.sh           Layer 2 runner: semgrep + gitleaks + osv (+ SBOM, licences)
+scripts/layer2_scope.py   own-run scanner scope, measurements and full diagnostics
+scripts/workflow_scope.py language presence and current-attempt job/tool reconciliation
 scripts/policy.py         resolves a consumer's .maxi-quality.yml, emits semgrep
                           args, classifies findings into gating vs warn-only, and
                           splits per-file parse failures out of scan failures (#43)
@@ -111,7 +113,8 @@ hooks/pre-commit          OPT-IN hook (#40): gitleaks on the staged diff, semgre
                           on the staged CONTENT. Installed only by
                           `adopt.sh --hooks`; bash 3.2, because macOS
 scripts/check-pins.sh     bump policy (#13): pin consistency + upstream drift
-scripts/quality-report.py renders the standing-report issue body (no network)
+scripts/quality-report.py renders findings, own-run scope and 52-entry attempt history
+                          for the standing report (no network)
 scripts/coverage.py       coverage ratchet: lcov + Cobertura vs a committed floor,
                           and --diff-file: coverage of the lines a diff ADDED,
                           which the aggregate cannot see (#112). Both GATE —
@@ -224,6 +227,9 @@ scripts/pom-region.py     inserts/refreshes/verifies the Java managed region in 
 
 docs/ADOPTION.md       how a project takes this on, per language
 docs/REFERENCE.md      every input, flag, exit code and rule id
+docs/ANALYSIS-SCOPE.md own-run scope contract, units, diagnostics and fixture limits
+docs/adr/0004-analysis-scope-belongs-to-its-run.md
+                       accepted scope ownership and non-gating reporting boundaries
 docs/EVAL-editor-parity.md  the editor parity run (#121), PRE-REGISTERED: protocol,
                        exclusions, verdict definitions and the bar that arms or
                        disarms the custom-extension eval (#122), all written
@@ -247,7 +253,8 @@ examples/              five copyable consumer repos — ts-npm, dotnet, python-u
                        each scans clean, is detected as the language it claims,
                        and that any policy file in it actually resolves
 
-actions/layer2/        the Layer 2 gate — how the rules reach a consumer
+actions/layer2/        the Layer 2 gate and its own-run scope artifact/summary
+actions/workflow-scope/ non-gating manifest, job-fragment transport and collector
 actions/deadcode/      knip and deptry inside the Layer 1 jobs (#97) — the same
                        delivery vehicle, carrying scripts/ to a runner that only
                        checked out the consumer

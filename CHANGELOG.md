@@ -43,6 +43,25 @@ is no public v1.0.0 through v1.0.3 to backfill. `CLAUDE.md` §2 has the reason.
 
 ---
 
+## Unreleased
+
+### Added
+
+- Per-run analysis-scope artifacts and job summaries for the quality workflow
+  and the standing report's independent Layer 2 scan. The records distinguish
+  language presence and selection, job/tool execution, measured scope and
+  unavailable evidence, including ordinary failures and actual Rust
+  target/feature/freshness data. Scope collection remains non-gating in v1.
+
+### Changed
+
+- Standing-report history retains the latest 52 run/attempt entries rather
+  than replacing entries from the same day. Finding changes appear beside
+  scope changes and changed checking conditions; legacy history keeps unknown
+  scope, and older completions cannot replace a newer current report.
+
+---
+
 ## [v1.3.0] — 2026-10-08
 
 Everything on `develop` since v1.2.0.

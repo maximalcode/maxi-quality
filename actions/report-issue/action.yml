@@ -48,6 +48,27 @@ inputs:
       CycloneDX SBOM from the layer2 action's sbom-out. Optional: a missing or
       malformed file costs the report its dependency table, never its history.
     default: ''
+  scope:
+    description: 'Same-run layer2-scope.json artifact produced by the report scan.'
+    default: ''
+  run-id:
+    description: 'Own report run identity fallback when scope handoff is unavailable.'
+    default: ''
+  run-attempt:
+    description: 'Own report attempt identity fallback when scope handoff is unavailable.'
+    default: ''
+  invocation-id:
+    description: 'Invocation identity used by the own Layer 2 scope artifact.'
+    default: ''
+  started-at:
+    description: 'Timestamp captured before the scan, used when scope handoff is unavailable.'
+    default: ''
+  commit:
+    description: 'Commit analyzed by the own report scan.'
+    default: ''
+  ref:
+    description: 'Ref analyzed by the own report scan.'
+    default: ''
   token:
     description: 'Token with issues:write on the CONSUMER repo.'
     default: ${{ github.token }}
@@ -75,6 +96,13 @@ runs:
         OSV: ${{ inputs.osv }}
         LICENSES: ${{ inputs.licenses }}
         SBOM: ${{ inputs.sbom }}
+        SCOPE: ${{ inputs.scope }}
+        RUN_ID: ${{ inputs.run-id }}
+        RUN_ATTEMPT: ${{ inputs.run-attempt }}
+        INVOCATION_ID: ${{ inputs.invocation-id }}
+        STARTED_AT: ${{ inputs.started-at }}
+        COMMIT: ${{ inputs.commit }}
+        REF: ${{ inputs.ref }}
       run: |
         set -Eeuo pipefail
 
@@ -89,6 +117,14 @@ runs:
               --gitleaks "$GITLEAKS"
               --osv "$OSV"
               --licenses "$LICENSES")
+
+        [[ -n "$SCOPE" ]] && ARGS+=(--scope "$SCOPE")
+        ARGS+=(--run-id "${RUN_ID:-${GITHUB_RUN_ID:-unknown}}"
+               --run-attempt "${RUN_ATTEMPT:-${GITHUB_RUN_ATTEMPT:-unknown}}"
+               --invocation-id "${INVOCATION_ID:-${GITHUB_RUN_ID:-unknown}}"
+               --started-at "${STARTED_AT:-}"
+               --commit "${COMMIT:-${GITHUB_SHA:-unknown}}"
+               --ref "${REF:-${GITHUB_REF:-unknown}}")
 
         if [[ -n "$SBOM" && -f "$SBOM" ]]; then
           ARGS+=(--sbom "$SBOM")

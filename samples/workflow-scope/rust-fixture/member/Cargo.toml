@@ -1,0 +1,19 @@
+[package]
+name = "scope-member"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+gated = []
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "always-bin"
+path = "src/always.rs"
+
+[[bin]]
+name = "gated-bin"
+path = "src/gated.rs"
+required-features = ["gated"]
