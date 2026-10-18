@@ -228,5 +228,74 @@ class PauseResumeTests(unittest.TestCase):
                 self.assertEqual(value["installation"]["status"], "broken", value)
                 self.assertEqual(value["installation"]["lifecycle"], "broken", value)
                 self.assertEqual(value["installation"]["selected_lifecycle"], "paused", value)
+
+    def test_status_and_resume_share_paused_installation_prerequisites(self):
+        for host in ("claude", "codex"):
+            with self.subTest(host=host):
+                self.target = project(self.base / f"preflight-{host}")
+                gate = self.target / ".claude/agent-guard.json"
+                sentinel = self.home / "status-gate-ran"
+                gate_command = f"touch {sentinel}"
+                gate.write_text(json.dumps({"gate_command": gate_command}) + "\n")
+                self.setup_guardian(host)
+                self.assertTrue(sentinel.is_file())
+                sentinel.unlink()
+                paused, report = self.lifecycle("pause", "--apply")
+                self.assertEqual(paused.returncode, 0, report)
+                gate_before = gate.read_bytes()
+                state_path = self.target / ".claude/guardian-state.json"
+                state_before = state_path.read_bytes()
+
+                def assert_broken_without_writes(label):
+                    before = self.snapshot()
+                    status = command([sys.executable, str(RUNNER), "status", str(self.target),
+                                      "--json"], self.target, self.env)
+                    value = json.loads(status.stdout)
+                    self.assertEqual(status.returncode, 0, f"{label}: {status.stderr}")
+                    self.assertEqual(value["installation"]["status"], "broken", label)
+                    self.assertEqual(value["installation"]["lifecycle"], "broken", label)
+                    self.assertEqual(value["installation"]["selected_lifecycle"], "paused", label)
+                    self.assertFalse(sentinel.exists(), label)
+                    self.assertEqual(self.snapshot(), before, label)
+                    refused, refusal = self.lifecycle("resume", "--apply")
+                    self.assertEqual(refused.returncode, 3, f"{label}: {refusal}")
+                    self.assertFalse(sentinel.exists(), label)
+                    self.assertEqual(self.snapshot(), before, label)
+
+                gate.unlink()
+                assert_broken_without_writes("missing gate")
+                gate.write_text("not json\n")
+                assert_broken_without_writes("invalid gate JSON")
+                gate.write_bytes(gate_before)
+
+                state = json.loads(state_before)
+                state["owned"].pop("paused_restore")
+                state_path.write_text(json.dumps(state))
+                assert_broken_without_writes("missing paused restoration data")
+                state_path.write_bytes(state_before)
+
+                if host == "codex":
+                    config = self.target / ".codex/config.toml"
+                    config.parent.mkdir(parents=True, exist_ok=True)
+                    config.write_text("[features]\nhooks = false\n")
+                    assert_broken_without_writes("Codex hooks disabled")
+                    config.unlink()
+                else:
+                    settings = self.target / ".claude/settings.json"
+                    value = json.loads(settings.read_text())
+                    value["disableAllHooks"] = True
+                    settings.write_text(json.dumps(value) + "\n")
+                    assert_broken_without_writes("Claude hooks disabled")
+
+                lock = json.loads((self.target / ".claude/quality-runtime.json").read_text())
+                launcher = (self.home / ".local/share/maxi-quality/launchers"
+                            / lock["commit"] / "quality-runtime")
+                launcher_before = launcher.read_bytes()
+                launcher_mode = launcher.stat().st_mode & 0o777
+                launcher.write_text("#!/bin/sh\nexit 99\n")
+                launcher.chmod(launcher_mode)
+                assert_broken_without_writes("replaced executable launcher")
+                launcher.write_bytes(launcher_before)
+                launcher.chmod(launcher_mode)
 if __name__ == "__main__":
     unittest.main()

@@ -5,9 +5,7 @@ from __future__ import annotations
 import copy
 import importlib
 import json
-import os
 from pathlib import Path
-import shutil
 import subprocess
 
 import guardian_lifecycle as lifecycle
@@ -157,26 +155,6 @@ def _validate_pin(state: dict, lock: dict) -> None:
     if (lock.get("version") != release.get("version")
             or lock.get("commit") != release.get("commit")):
         raise setup.Refused("the runtime lock no longer matches the recorded fixed Guardian version")
-
-
-def _launcher_available(launcher: str, via_python: bool, root: Path) -> bool:
-    """Check the hook's pinned launcher path without inferring host trust."""
-    if launcher == "$HOME/.local/bin/quality-runtime":
-        path = Path.home() / ".local/bin/quality-runtime"
-    elif via_python or "/" in launcher or launcher.startswith("."):
-        path = Path(launcher)
-        if not path.is_absolute():
-            path = root / path
-    else:
-        search_path = os.pathsep.join(
-            str(Path(part) if Path(part).is_absolute() else root / part)
-            for part in os.environ.get("PATH", os.defpath).split(os.pathsep)
-        )
-        resolved = shutil.which(launcher, path=search_path)
-        if resolved is None:
-            return False
-        path = Path(resolved)
-    return path.is_file() and (via_python or os.access(path, os.X_OK))
 
 
 def _check_active(root: Path, state: dict, host: str) -> dict:
@@ -348,6 +326,54 @@ def _restore_settings(root: Path, state: dict) -> tuple[dict[str, bytes], list[s
     return {name: (json.dumps(planned, indent=2, ensure_ascii=False) + "\n").encode()}, []
 
 
+def resume_plan(root: Path, state: dict, host: str) -> dict:
+    """Validate and plan resuming without writing or executing project checks."""
+    conflicts = []
+    try:
+        lock = _read_lock(root, require_guard=False)
+        _validate_pin(state, lock)
+        if lock != state.get("owned", {}).get("paused_lock"):
+            raise setup.Refused("paused runtime lock was changed; reconcile it before resuming")
+        try:
+            runtime.validate_cache(root, lock)
+        except runtime.RuntimeError_ as exc:
+            raise setup.Refused(str(exc)) from exc
+        gate = setup.read_object(setup.safe_path(root, ".claude/agent-guard.json"))
+        if (not isinstance(gate.get("gate_command"), str)
+                or not gate["gate_command"].strip()):
+            raise setup.Refused("the project gate or pinned installation changed while paused")
+        setup.validate_host_configuration(root, host)
+        settings_changes, conflicts = _restore_settings(root, state)
+        if conflicts:
+            raise setup.Refused("host settings changed while paused; reconcile before resuming")
+        restored = _setting(root, _settings_name(host))
+        restored.update(json.loads(settings_changes[_settings_name(host)]))
+        for record in state["owned"].get("hooks", []):
+            found = runtime._owned_command(restored, record["event"], record["name"],
+                                           record.get("matcher"), host)
+            if found is None or not lifecycle.hook_is_owned(found[0], record):
+                raise setup.Refused(f"pinned {record['name']} hook could not be validated for resume")
+            launcher_ok, launcher_error = runtime._launcher_ok(
+                found[1], found[2], root)
+            if not launcher_ok:
+                raise setup.Refused("the hook launcher is not the pinned trusted runtime: "
+                                    + launcher_error)
+        enabled_lock = dict(lock, guard_enabled=True)
+        changes = dict(settings_changes)
+        changes[runtime.LOCK_NAME] = (json.dumps(enabled_lock, indent=2) + "\n").encode()
+        active_state = copy.deepcopy(state)
+        active_state["lifecycle"] = "active"
+        active_state["owned"].pop("paused_restore", None)
+        active_state["owned"].pop("paused_lock", None)
+        changes[lifecycle.STATE_NAME] = _state_bytes(active_state)
+        for name in changes:
+            setup.safe_path(root, name)
+        return {"changes": changes, "conflicts": [], "error": None}
+    except (OSError, ValueError, setup.Refused, runtime.RuntimeError_,
+            subprocess.CalledProcessError) as exc:
+        return {"changes": {}, "conflicts": conflicts, "error": str(exc)}
+
+
 def _resume(args, runner) -> tuple[dict, int]:
     report = {"outcome": "refused", "host": None, "changes": {},
               "conflicts": [], "trust": "unverified", "error": None}
@@ -368,43 +394,11 @@ def _resume(args, runner) -> tuple[dict, int]:
             return report, 0
         if state.get("lifecycle") != "paused":
             raise setup.Refused("Guardian is not paused; use setup or the matching lifecycle operation")
-        lock = _read_lock(root, require_guard=False)
-        _validate_pin(state, lock)
-        if lock != state.get("owned", {}).get("paused_lock"):
-            raise setup.Refused("paused runtime lock was changed; reconcile it before resuming")
-        try:
-            runtime.validate_cache(root, lock)
-        except runtime.RuntimeError_ as exc:
-            raise setup.Refused(str(exc)) from exc
-        gate = setup.read_object(setup.safe_path(root, ".claude/agent-guard.json"))
-        if (not isinstance(gate.get("gate_command"), str)
-                or not gate["gate_command"].strip()):
-            raise setup.Refused("the project gate or pinned installation changed while paused")
-        setup.validate_host_configuration(root, host)
-        settings_changes, conflicts = _restore_settings(root, state)
-        report["conflicts"] = conflicts
-        if conflicts:
-            raise setup.Refused("host settings changed while paused; reconcile before resuming")
-        # Check that every restored runtime command still names a usable pinned launcher.
-        restored = _setting(root, _settings_name(host))
-        restored.update(json.loads(settings_changes[_settings_name(host)]))
-        for record in state["owned"].get("hooks", []):
-            found = runtime._owned_command(restored, record["event"], record["name"],
-                                           record.get("matcher"), host)
-            if found is None or not lifecycle.hook_is_owned(found[0], record):
-                raise setup.Refused(f"pinned {record['name']} hook could not be validated for resume")
-            if not _launcher_available(found[1], found[2], root):
-                raise setup.Refused("the hook launcher is unavailable; install its pinned launcher before resuming")
-        enabled_lock = dict(lock, guard_enabled=True)
-        changes = dict(settings_changes)
-        changes[runtime.LOCK_NAME] = (json.dumps(enabled_lock, indent=2) + "\n").encode()
-        active_state = copy.deepcopy(state)
-        active_state["lifecycle"] = "active"
-        active_state["owned"].pop("paused_restore", None)
-        active_state["owned"].pop("paused_lock", None)
-        changes[lifecycle.STATE_NAME] = _state_bytes(active_state)
-        for name in changes:
-            setup.safe_path(root, name)
+        plan = resume_plan(root, state, host)
+        report["conflicts"] = plan["conflicts"]
+        if plan["error"]:
+            raise setup.Refused(plan["error"])
+        changes = plan["changes"]
         report.update(outcome="preview", lifecycle="active",
                       changes={name: content.decode() for name, content in changes.items()},
                       trust="unverified")

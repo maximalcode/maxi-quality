@@ -401,6 +401,10 @@ def validate_workflows(root: Path, lock: dict) -> None:
 
 def validate_host_configuration(root: Path, host: str) -> None:
     """Validate existing host-specific settings before enabling that adapter."""
+    if host == "claude":
+        if settings(root, ".claude/settings.json").get("disableAllHooks") is True:
+            raise Refused("Claude settings disable all hooks; enable them deliberately before Guardian setup")
+        return
     if host != "codex":
         return
     config = safe_path(root, ".codex/config.toml")

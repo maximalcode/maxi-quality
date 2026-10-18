@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
-import os
 from pathlib import Path
 
 STATE_NAME = ".claude/guardian-state.json"
@@ -300,14 +299,9 @@ def status_overlay(root: Path, diagnosis: dict, queried_host: str | None = None)
         return result
     if lifecycle == "paused":
         result["selected_lifecycle"] = "paused"
-        pinned = state.get("release")
-        release = diagnosis.get("release")
-        release_matches = (isinstance(pinned, dict) and isinstance(release, dict)
-                           and pinned.get("version") == release.get("version")
-                           and pinned.get("commit") == release.get("commit"))
-        remaining = has_guard_hooks(root, state["selected_host"])
-        prerequisite_errors = _paused_prerequisite_errors(root, pinned)
-        if release_matches and remaining is False and not prerequisite_errors:
+        pause = importlib.import_module("guardian_pause")
+        preflight = pause.resume_plan(root, state, state["selected_host"])
+        if preflight["error"] is None and diagnosis.get("healthy") is True:
             result["status"] = "paused"
             result["healthy"] = False
             result["live_enforcement"] = "inactive"
@@ -315,8 +309,10 @@ def status_overlay(root: Path, diagnosis: dict, queried_host: str | None = None)
             result["lifecycle"] = "broken"
             result["status"] = "broken"
             result["healthy"] = False
-            if prerequisite_errors:
-                result.setdefault("checks", []).extend(prerequisite_errors)
+            if preflight["error"]:
+                result.setdefault("checks", []).append({
+                    "id": "resume-preflight", "status": "fail",
+                    "detail": preflight["error"]})
     elif lifecycle == "removed":
         if has_guard_hooks(root, state["selected_host"]) is False:
             result["status"] = "not-installed"
@@ -325,26 +321,6 @@ def status_overlay(root: Path, diagnosis: dict, queried_host: str | None = None)
         else:
             result["lifecycle"] = "conflict"
     return result
-
-
-def _paused_prerequisite_errors(root: Path, release: object) -> list[dict[str, str]]:
-    """Reuse runtime cache and launcher validators for a deliberately disabled guard."""
-    if not isinstance(release, dict) or not isinstance(release.get("commit"), str):
-        return [{"id": "release-lock", "status": "fail",
-                 "detail": "paused Guardian state has no pinned release commit"}]
-    runtime = importlib.import_module("quality-runtime")
-    lock = dict(release, guard_enabled=False)
-    try:
-        cache = runtime.validate_cache(root, lock)
-    except (OSError, ValueError, runtime.RuntimeError_) as exc:
-        return [{"id": "runtime-cache", "status": "fail", "detail": str(exc)}]
-    launcher = (Path.home() / ".local/share/maxi-quality/launchers"
-                / release["commit"] / "quality-runtime")
-    if (not launcher.is_file() or not os.access(launcher, os.X_OK)
-            or not runtime._launcher_identity(launcher)):
-        return [{"id": "launcher", "status": "fail",
-                 "detail": f"selected runtime launcher is missing or differs from the pinned cache: {launcher}"}]
-    return []
 
 
 def owned_records(settings: dict, host: str, expected_samples: bool,
