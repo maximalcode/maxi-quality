@@ -59,6 +59,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from guard import (  # noqa: E402
     CONFIG,
+    checked_head,
     RECEIPT,
     InspectionError,
     fingerprint,
@@ -184,7 +185,7 @@ def execute_and_record(root, args, declared, *, cwd=None, stdout=None, stderr=No
     caller cannot mistake an older receipt for this invocation's result.
     """
     before = fingerprint(root)
-    checked_head = git("rev-parse", "HEAD", cwd=root).strip()
+    head = checked_head(root)
     if timeout is None:
         rc = subprocess.run(args, cwd=cwd, stdout=stdout, stderr=stderr).returncode
         termination = None
@@ -193,7 +194,7 @@ def execute_and_record(root, args, declared, *, cwd=None, stdout=None, stderr=No
                                       stderr=stderr, timeout=timeout)
     receipt = {
         "fingerprint": before,
-        "checked_head": checked_head,
+        "checked_head": head,
         "verdict": "pass" if rc == 0 else "fail",
         "exit_code": rc,
         **({"termination": termination} if termination else {}),
@@ -215,7 +216,7 @@ def execute_and_record(root, args, declared, *, cwd=None, stdout=None, stderr=No
         raise RecordingError(receipt, exc) from exc
 
     if timeout is None and declared is not None and completion_path(root).exists():
-        save_completion(root, {"state": {"head": checked_head, "fingerprint": before,
+        save_completion(root, {"state": {"head": head, "fingerprint": before,
                                          "command": declared},
                                "outcome": receipt["verdict"], "exit_code": rc})
     return receipt
@@ -276,7 +277,7 @@ def save_completion(root: str, value: dict) -> None:
 
 
 def completion_key(root: str) -> dict:
-    return {"head": git("rev-parse", "HEAD", cwd=root).strip(),
+    return {"head": checked_head(root),
             "fingerprint": fingerprint(root), "command": gate_command(root)}
 
 

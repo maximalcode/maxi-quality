@@ -62,6 +62,23 @@ class CompletionTests(unittest.TestCase):
         return {name: (self.root / name).read_bytes() for name in
                 ("source.txt", "check.py", ".claude/agent-guard.json")}
 
+    def test_unborn_head_records_reuses_and_invalidates_on_first_commit(self):
+        subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/unborn"],
+                       cwd=self.root, check=True)
+        recorded = subprocess.run([sys.executable, str(RECORDER), "--gate"],
+                                  cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(recorded.returncode, 0, recorded.stderr)
+        self.assertEqual(self.stop().stdout, "")
+        self.assertEqual(self.starts(), 1)
+        self.assertEqual(self.status()["verification"], "succeeded")
+        subprocess.run(["git", "add", "."], cwd=self.root, check=True)
+        subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                        "-c", "core.hooksPath=/dev/null", "commit", "-qm", "first commit"],
+                       cwd=self.root, check=True)
+        self.assertEqual(self.status()["verification"], "unverified")
+        self.assertEqual(self.stop().stdout, "")
+        self.assertEqual(self.starts(), 2)
+
     def test_clean_opted_in_tree_checks_missing_and_stale_evidence(self):
         subprocess.run(["git", "add", "."], cwd=self.root, check=True)
         subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",

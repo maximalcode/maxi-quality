@@ -172,6 +172,19 @@ def git(*args: str, cwd: str | None = None, reject_stderr: bool = False) -> str:
     return result.stdout
 
 
+def checked_head(root: str) -> str | None:
+    """Bind evidence to HEAD, including a branch before its first commit."""
+    try:
+        return git("rev-parse", "--verify", "HEAD", cwd=root).strip()
+    except subprocess.CalledProcessError as error:
+        branch = git("symbolic-ref", "HEAD", cwd=root).strip()
+        ref = subprocess.run(("git", "show-ref", "--verify", "--quiet", branch),
+                             cwd=root, capture_output=True)
+        if ref.returncode == 1 and not ref.stderr:
+            return None
+        raise error
+
+
 def repo_root(start: str | None = None) -> str | None:
     """The working tree root, or None if we are not in one.
 
