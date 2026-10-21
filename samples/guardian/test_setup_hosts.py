@@ -20,6 +20,8 @@ def command(argv, cwd, env=None):
 def project(path, *, guardian_gate=True):
     path.mkdir()
     subprocess.run(["git", "init", "-q", str(path)], check=True)
+    # Keep all fixture writers synchronous with the test that owns cleanup.
+    subprocess.run(["git", "config", "maintenance.auto", "false"], cwd=path, check=True)
     (path / "source.txt").write_text("fixture\n")
     if guardian_gate:
         (path / ".claude").mkdir()
