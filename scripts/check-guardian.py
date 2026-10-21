@@ -24,6 +24,8 @@ def command(argv, cwd, **kwargs):
 def project(path, gate="printf 'ok\\n'"):
     path.mkdir()
     command(["git", "init", "-q", str(path)], path, check=True)
+    # Detached maintenance can still write .git/objects during TemporaryDirectory cleanup.
+    command(["git", "config", "maintenance.auto", "false"], path, check=True)
     (path / "source.txt").write_text("original\n")
     if gate is not None:
         (path / ".claude").mkdir()

@@ -363,12 +363,14 @@ def skill_link(root: Path, source: Path, host: str) -> tuple[str, str, bool]:
     return name, str(target), True
 
 
-def validate_payload(source: Path, lock: dict, guardian: bool) -> None:
+def validate_payload(source: Path, lock: dict, guardian: bool, automatic: bool = False) -> None:
     # Validate without touching the user's cache or target. No network access.
     with tempfile.TemporaryDirectory(prefix="guardian-payload-") as directory:
         payload = runtime.prepare(source, lock["version"], lock["commit"], directory)
         for path in payload.glob("*.py"):
             compile(path.read_bytes(), str(path), "exec")
+        if automatic and "AUTOMATIC_COMPLETION_SCHEMA = 1" not in (payload / "record-gate.py").read_text():
+            raise Refused("requested runtime does not support automatic completion; select a compatible pin")
         launcher = runtime._git(source, "show", f"{lock['commit']}:scripts/quality-runtime.py")
         compile(launcher, "quality-runtime.py", "exec")
         if guardian and not (payload / "codex-patch-guard.py").exists():
@@ -529,6 +531,13 @@ def setup(args, runner) -> tuple[dict, int]:
             if not args.gate.strip():
                 raise Refused("--gate must be non-empty")
             gate["gate_command"] = args.gate
+        if args.no_automatic_check:
+            gate.pop("automatic_completion", None)
+        elif args.automatic_check is not None:
+            gate["automatic_completion"] = {
+                "command": gate.get("gate_command"), "check_only": True,
+                "timeout_seconds": args.automatic_check}
+        report["automatic_completion"] = runner.recorder.automatic_policy(gate)
         report["selected_gate"] = gate.get("gate_command")
         report["suggestions"] = (["cargo fmt --check", "cargo clippy --offline", "cargo test --offline"]
                                  if "Cargo.toml" in found else [])
@@ -558,8 +567,9 @@ def setup(args, runner) -> tuple[dict, int]:
         changed_version = lock is not None and (lock != old_lock or enable)
         if lock:
             validate_workflows(root, lock)
-        if changed_version:
-            validate_payload(source, lock, report["host"] == "codex")
+        if lock and (changed_version or report["automatic_completion"] is not None):
+            validate_payload(source, lock, report["host"] == "codex",
+                             report["automatic_completion"] is not None)
         launcher_dir = Path.home() / ".local/share/maxi-quality/launchers" / (lock["commit"] if lock else "unused")
         launcher = str(launcher_dir / "quality-runtime")
         update_installation = bool(changed_version and host and lock and lock.get("guard_enabled") is True)

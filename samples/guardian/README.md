@@ -91,3 +91,17 @@ improvement is discoverable guidance, not fewer environment changes or an
 automatic installer. Preview does not fix PATH, download tools, weaken a check
 or change hook trust. These invented subprocess proofs establish neither real
 adoption cost nor reliable AI obedience or native host enforcement.
+
+Automatic completion (#308) is exercised by `test_completion.py` through real
+Stop/recorder/Guardian subprocesses in invented temporary repositories. It
+observes start counts, source/configuration bytes, receipts, status, timeout and
+child-process termination, interruption, concurrent Stops, regular recovery,
+wrong/partial/stale evidence, clean checkouts, changed commands and explicit
+unverified handoff. The same matrix runs independently for each native payload.
+`test_setup_hosts.py` also invokes the installed hook commands for Claude and
+Codex independently and checks pause/resume/switch/removal with activation.
+These run through `scripts/check-guardian.py`; existing freshness and lifecycle
+cases remain part of the same entry point. The synthetic payloads prove protocol
+and process behavior, not live host enforcement or human interaction. Live
+observations and pilot measurements of the new automation remain unperformed.
+The real-release first-install test belongs separately to #309.

@@ -234,3 +234,65 @@ hook enforcement. Pausing or resuming never creates a passed check, and a
 successful gate never grants native host trust. Existing installations without
 ownership metadata must first use the setup preview to establish an explicit
 selection; ambiguous or modified settings are preserved for reconciliation.
+
+## Optional automatic completion checks
+
+Automatic execution is off by default. After reviewing the **whole declared
+command**, explicitly approve it as a short, check-only command:
+
+```bash
+python3 scripts/guardian.py setup /path/to/project --automatic-check 20
+python3 scripts/guardian.py setup /path/to/project --automatic-check 20 --apply
+```
+
+This uses the same preview/apply path and selected host as setup. A compatible
+pinned runtime is required; older releases such as v1.3.0 cannot execute this
+feature. No new release or real-project rollout is implied by these examples.
+The project declaration in `.claude/agent-guard.json` retains `gate_command`
+and adds `automatic_completion` with `command` equal to that exact command,
+`check_only: true`, and `timeout_seconds: 20`. Changing the command requires
+renewed approval, or `setup --no-automatic-check --apply`. Other project settings
+are retained. Pause disables automatic execution; resume restores the choice.
+Host switching and removal keep their existing ownership boundaries.
+
+Approval means inspecting scripts behind command aliases too: they must not
+format or repair source/configuration. Common explicit write/fix options and
+`cargo fmt` without `--check` are refused, but this is not a shell sandbox or a
+proof about arbitrary programs. Choose `cargo fmt --check`, `ruff check`, or
+other actual check modes as appropriate. The recorder detects a changed source
+snapshot and does not verify it. Generated ignored build/test artifacts,
+diagnostics and receipts may be written.
+
+The supported direct budget is 1–40 seconds. Both native adapters retain their
+60-second hook window, leaving 20 seconds for inspection and recording. The
+recorder terminates the check's process group on timeout/interruption (including
+surviving children), retains failure evidence, and never launches a background
+manager. Commands must run synchronously without daemonizing. Gates that need
+more time, or cannot be approved as check-only, stay on the regular `guardian run`
+path. The gate is not split or shortened: partial checks never replace it.
+
+A current passing receipt is reused. With activation, a missing or stale receipt
+also triggers a check on a clean checkout; without activation the existing
+read-only-session exemption remains. An automatic attempt is recorded before
+execution in per-worktree Git metadata, so repeated Stops cannot restart an
+unchanged failed or interrupted attempt. Concurrent Stops also cannot duplicate
+it. Relevant changes allow a new attempt; an explicit regular run is always
+available. A matching failed regular receipt is not automatically retried.
+Missing tools remain failures, with the actual shell diagnostic in `stderr.log`.
+`guardian status` reads configuration, current receipt and the last automatic
+attempt without running a check. Its last regular project-check observation is
+reported separately. Neither status nor setup claims live host enforcement.
+
+For a blocker requiring human judgement:
+
+```bash
+python3 scripts/guardian.py handoff /path/to/project --reason "Gate remains open; explain attempts and the decision needed"
+```
+
+This permits an **unverified** handoff for the current state, including invalid
+automatic configuration. It does not change the gate or write a passing receipt.
+A relevant change or regular declared run supersedes the handoff. The native
+loop-guard escape also warns that checks may remain open. After at most two
+unsuccessful corrections of one problem, report the cause or uncertainty,
+attempts and decision needed. This is a workflow rule, not repair orchestration
+inside the hook.

@@ -20,6 +20,8 @@ def command(argv, cwd, env=None):
 def project(path, *, guardian_gate=True):
     path.mkdir()
     subprocess.run(["git", "init", "-q", str(path)], check=True)
+    # Keep all fixture writers synchronous with the test that owns cleanup.
+    subprocess.run(["git", "config", "maintenance.auto", "false"], cwd=path, check=True)
     (path / "source.txt").write_text("fixture\n")
     if guardian_gate:
         (path / ".claude").mkdir()
@@ -72,6 +74,59 @@ class SelectedHostSetupTests(unittest.TestCase):
     def snapshot(self):
         return {str(path.relative_to(self.target)): path.read_bytes()
                 for path in self.target.rglob("*") if path.is_file() and ".git" not in path.parts}
+
+    def test_automatic_completion_through_each_installed_host_and_lifecycle(self):
+        for host in ("claude", "codex"):
+            with self.subTest(host=host):
+                self.target = project(self.root / ("automatic-" + host))
+                gate = "printf x >> .git/automatic-starts"
+                result, report = self.setup("--guardian", host, "--gate", gate,
+                                            "--automatic-check", "2", "--apply")
+                self.assertEqual(result.returncode, 0, report)
+                count = self.target / ".git/automatic-starts"
+                initial = len(count.read_text())
+                settings = self.target / (".claude/settings.json" if host == "claude"
+                                          else ".codex/hooks.json")
+                hook = json.loads(settings.read_text())["hooks"]["Stop"][0]["hooks"][0]
+                self.assertEqual(hook["timeout"], 60)
+                env = {**self.env, "CLAUDE_PROJECT_DIR": str(self.target)}
+                payload = {"cwd": str(self.target), "hook_event_name": "Stop",
+                           "stop_hook_active": False, "session_id": "fixture"}
+                if host == "codex":
+                    payload.update(transcript_path="", last_assistant_message="Done")
+
+                def stop():
+                    return subprocess.run(["bash", "-c", hook["command"]], cwd=self.target,
+                                          env=env, input=json.dumps(payload), text=True,
+                                          capture_output=True, timeout=10)
+
+                (self.target / "source.txt").write_text("changed after setup")
+                self.assertEqual(stop().stdout, "")
+                self.assertEqual(len(count.read_text()), initial + 1)
+                self.assertEqual(stop().stdout, "")
+                self.assertEqual(len(count.read_text()), initial + 1)
+                runner = self.installed_runner(host)
+                for action in ("pause", "resume"):
+                    proc = command([sys.executable, str(runner), action, str(self.target),
+                                    "--apply", "--json"], self.target, self.env)
+                    self.assertEqual(proc.returncode, 0, proc.stdout)
+                    (self.target / "source.txt").write_text(action)
+                    stop()
+                    if action == "pause":
+                        self.assertEqual(len(count.read_text()), initial + 1)
+                    else:
+                        self.assertEqual(len(count.read_text()), initial + 2)
+                policy = json.loads((self.target / ".claude/agent-guard.json").read_text())
+                destination = "codex" if host == "claude" else "claude"
+                switched = command([sys.executable, str(runner), "switch", str(self.target),
+                                    "--host", destination, "--apply", "--json"], self.target, self.env)
+                self.assertEqual(switched.returncode, 0, switched.stdout)
+                self.assertEqual(json.loads((self.target / ".claude/agent-guard.json").read_text()), policy)
+                removed = command([sys.executable, str(runner), "remove", str(self.target),
+                                   "--apply", "--json"], self.target, self.env)
+                self.assertEqual(removed.returncode, 0, removed.stdout)
+                stop()
+                self.assertEqual(len(count.read_text()), initial + 2)
 
     def test_claude_setup_preview_apply_run_and_selected_status(self):
         codex_hooks = self.target / ".codex/hooks.json"

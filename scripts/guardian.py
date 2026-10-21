@@ -158,6 +158,7 @@ def check(path: str) -> tuple[dict, int]:
 def display(report: dict) -> None:
     if "installation" in report:
         installation = report["installation"]
+        print("Automatic completion: " + json.dumps(report.get("automatic_completion")))
         verification = report["verification"]
         print(f"Guardian status for {report['project_root']} ({report['host']['name']})")
         print(f"Installation: {installation['status']} ({installation['profile']})")
@@ -166,7 +167,7 @@ def display(report: dict) -> None:
             print(f"Version: {release['version']} @ {release['commit']}")
         print(f"Host trust: {report['host']['trust']}; observed enforcement: "
               f"{report['host']['observed_enforcement']}")
-        print(f"Last project check: {verification['outcome']} "
+        print(f"Last regular project check: {verification['outcome']} "
               f"(freshness: {verification['freshness']})")
         if verification.get("command"):
             print(f"Executed command: {verification['command']}")
@@ -210,6 +211,11 @@ def main() -> int:
     setup.add_argument("root")
     setup.add_argument("--apply", action="store_true", help="apply the displayed selection")
     setup.add_argument("--gate", help="explicitly select or replace the whole gate command")
+    automatic = setup.add_mutually_exclusive_group()
+    automatic.add_argument("--automatic-check", type=int, metavar="SECONDS",
+                           help="approve the exact whole gate as check-only for automatic Stop execution (1–40s)")
+    automatic.add_argument("--no-automatic-check", action="store_true",
+                           help="disable automatic execution, retaining the gate")
     setup.add_argument("--guardian", choices=("claude", "codex"),
                        help="enable the selected host's native Guardian integration")
     setup.add_argument("--version", help="requested immutable release tag")
@@ -237,7 +243,23 @@ def main() -> int:
                         help="apply the displayed changes; default is read-only preview")
     switch.add_argument("--json", action="store_true")
     lifecycle_commands["switch"] = switch
+    handoff = commands.add_parser("handoff", help="end with an explicit unresolved human decision")
+    handoff.add_argument("root")
+    handoff.add_argument("--reason", required=True, help="open checks, attempts and decision needed")
+    handoff.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    if args.action == "handoff":
+        try:
+            clear_git_environment()
+            root = str(Path(args.root).resolve())
+            if repo_root(root) != root:
+                raise ValueError("target must be a Git working tree root")
+            report = recorder.request_handoff(root, args.reason)
+        except (OSError, ValueError, InspectionError) as exc:
+            print(json.dumps({"outcome": "incomplete", "error": str(exc)}))
+            return 3
+        print(json.dumps(report, indent=2))
+        return 0
     if args.action == "setup":
         report, rc = importlib.import_module("guardian_setup").setup(args, sys.modules[__name__])
         print(json.dumps(report, indent=2))
@@ -247,6 +269,10 @@ def main() -> int:
             args.root, args.host, git=git, check=check,
             clear_git_environment=clear_git_environment,
             runtime=Path(__file__).with_name("quality-runtime.py"))
+        try:
+            report["automatic_completion"] = recorder.completion_status(str(Path(args.root).resolve()))
+        except (OSError, ValueError, InspectionError) as exc:
+            report["automatic_completion"] = {"verification": "unverified", "error": str(exc)}
         rc = 0
     elif args.action in lifecycle_commands:
         module_name, function_name = {

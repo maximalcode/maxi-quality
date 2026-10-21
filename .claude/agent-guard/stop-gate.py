@@ -32,6 +32,7 @@ where no session can end.
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 import shlex
 import sys
@@ -47,7 +48,7 @@ from guard import (  # noqa: E402
     InspectionError,
     block_stop,
     changed_files,
-    is_declared_gate,
+    receipt_problem,
     fingerprint,
     ledger_append,
     LEDGER,
@@ -140,6 +141,8 @@ OUTCOMES = {
     "not-a-repo":         False,   # plumbing: allowed
     "clean":              False,   # nothing differs from HEAD
     "pass":               False,   # gate ran, passed, still describes this tree
+    "handoff":            False,
+    "completion-unverified": True,
     "no-receipt":         True,
     "gate-failed":        True,
     "not-the-gate":       True,
@@ -319,6 +322,8 @@ def main() -> int:
     # Documented loop guard. Checked before anything else, so a repo that
     # cannot pass its own gate costs one blocked turn rather than eight.
     if event.get("stop_hook_active") is True:
+        warn("Human handoff: checks may remain open or failed; this stop is not verified. "
+             "Report the blocker, attempts and decision needed; run the regular gate after resolution.")
         return record(event, repo_root(event.get("cwd")), "loop-guard", now=now)
 
     root = repo_root(event.get("cwd"))
@@ -327,16 +332,31 @@ def main() -> int:
         return ALLOW  # nowhere to write; same case as an unreadable payload
 
     try:
+        spec = importlib.util.spec_from_file_location(
+            "completion_recorder", os.path.join(os.path.dirname(__file__), "record-gate.py"))
+        completion = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(completion)
         changed = changed_files(root)
+        attempt = completion.read_completion(root)
+        if (attempt.get("outcome") == "handoff"
+                and attempt.get("state") == completion.completion_key(root)):
+            warn("Human handoff — UNVERIFIED: " + attempt["reason"] +
+                 " Checks remain open; run the regular gate after the decision.")
+            return record(event, root, "handoff", len(changed), now=now)
+        configuration = completion.completion_configuration(root)
         current = fingerprint(root) if changed else None
     except InspectionError:
         block_stop("Cannot verify the working tree: Git could not inspect it "
                    "without errors or warnings. Restore readable access to "
                    "the working tree, then run the gate again.")
         return record(event, root, "inspection-failed", now=now)
-    if not changed:
-        # Nothing differs from HEAD. There is no such thing as an ungated
-        # change here, and a read-only session must not be made to run a gate.
+    except (OSError, ValueError) as exc:
+        block_stop("Automatic completion is unavailable/unverified: " + str(exc) +
+                   "\nResolve the configuration or evidence problem; run the regular gate:\n" +
+                   instruction(root))
+        return record(event, root, "completion-unverified", now=now)
+    if not changed and not configuration["enabled"]:
+        # Preserve the read-only-session exemption without explicit activation.
         return record(event, root, "clean", now=now)
 
     # With --untracked-files=all, Git still collapses embedded repositories
@@ -354,9 +374,32 @@ def main() -> int:
         )
         return record(event, root, "unverifiable-directory", len(changed), now=now)
 
-    receipt = read_receipt(root)
+    try:
+        status = completion.automatic_completion(root)
+        attempt = status["attempt"]
+        if status["enabled"] and status["verification"] != "succeeded":
+            block_stop("Automatic completion remains UNVERIFIED: " +
+                       str(attempt.get("outcome", "another check is running")) +
+                       (". " + attempt["error"] if attempt.get("error") else "") +
+                       ". No automatic retry for unchanged content. Inspect stdout.log and "
+                       "stderr.log in " + str(completion.completion_path(root).parent) +
+                       ". Run the whole gate regularly:\n" + instruction(root) +
+                       "\nIf a human decision is required, use guardian handoff with --reason; "
+                       "report open checks and at most two unsuccessful correction attempts.")
+            return record(event, root, "completion-unverified", len(changed), now=now)
+        # Automatic execution may have changed the tree; never use the old snapshot.
+        current = fingerprint(root)
+    except (OSError, ValueError, InspectionError) as exc:
+        block_stop("Automatic completion is unavailable/unverified: " + str(exc) +
+                   "\nResolve the configuration or evidence problem; run the regular gate:\n" +
+                   instruction(root))
+        return record(event, root, "completion-unverified", len(changed), now=now)
 
-    if receipt is None:
+    receipt = read_receipt(root)
+    problem = receipt_problem(receipt, {**status["state"], "fingerprint": current},
+                              allow_undeclared=True)
+
+    if problem == "no-receipt":
         block_stop(
             f"The gate has not run. {len(changed)} file(s) differ from HEAD and "
             f"there is no {RECEIPT}.\n\nRun it, then stop:\n\n  "
@@ -365,7 +408,7 @@ def main() -> int:
         )
         return record(event, root, "no-receipt", len(changed), now=now)
 
-    if receipt.get("verdict") != "pass":
+    if problem == "gate-failed":
         block_stop(
             "The last recorded gate run FAILED"
             + (f" ({receipt['command']})" if isinstance(receipt.get("command"), str) else "")
@@ -375,7 +418,7 @@ def main() -> int:
         return record(event, root, "gate-failed", len(changed), now=now)
 
     declared = gate_command(root)
-    if declared is not None and not is_declared_gate(receipt, declared):
+    if problem == "not-the-gate":
         # Fresh and passing, for a command that is not the gate. The
         # fingerprint cannot see this: the content really was checked, by a
         # check that was only part of what this repo calls checking.
@@ -390,7 +433,7 @@ def main() -> int:
         )
         return record(event, root, "not-the-gate", len(changed), now=now)
 
-    if receipt.get("fingerprint") != current:
+    if problem == "content-changed":
         block_stop(
             "The gate passed, but the working tree has changed since — the "
             "recorded verdict describes code that no longer exists.\n\nRun it "
