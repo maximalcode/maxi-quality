@@ -47,6 +47,9 @@ step to take. So the verdict is a field, not the file's existence.
 from __future__ import annotations
 
 import json
+import fcntl
+from pathlib import Path
+import signal
 import os
 import shlex
 import subprocess
@@ -61,6 +64,10 @@ from guard import (  # noqa: E402
     fingerprint,
     gate_argv,
     gate_command,
+    git,
+    read_receipt,
+    receipt_problem,
+    receipt_scope_problem,
     is_declared_gate,
     repo_root,
 )
@@ -168,7 +175,8 @@ class RecordingError(OSError):
         self.receipt = receipt
 
 
-def execute_and_record(root, args, declared, *, cwd=None, stdout=None, stderr=None):
+def execute_and_record(root, args, declared, *, cwd=None, stdout=None, stderr=None,
+                       timeout=None):
     """Execute once and write the authoritative receipt; callers may retain output.
 
     The CLI keeps its historical working directory. Local project runners pass
@@ -176,11 +184,19 @@ def execute_and_record(root, args, declared, *, cwd=None, stdout=None, stderr=No
     caller cannot mistake an older receipt for this invocation's result.
     """
     before = fingerprint(root)
-    rc = subprocess.run(args, cwd=cwd, stdout=stdout, stderr=stderr).returncode
+    checked_head = git("rev-parse", "HEAD", cwd=root).strip()
+    if timeout is None:
+        rc = subprocess.run(args, cwd=cwd, stdout=stdout, stderr=stderr).returncode
+        termination = None
+    else:
+        rc, termination = bounded_run(args, cwd=cwd, stdout=stdout,
+                                      stderr=stderr, timeout=timeout)
     receipt = {
         "fingerprint": before,
+        "checked_head": checked_head,
         "verdict": "pass" if rc == 0 else "fail",
         "exit_code": rc,
+        **({"termination": termination} if termination else {}),
         # Preserve quoting: joining argv with spaces describes a different
         # command when the declaration contains shell operators (#178).
         "command": shlex.join(args),
@@ -198,7 +214,180 @@ def execute_and_record(root, args, declared, *, cwd=None, stdout=None, stderr=No
     except OSError as exc:
         raise RecordingError(receipt, exc) from exc
 
+    if timeout is None and declared is not None and completion_path(root).exists():
+        save_completion(root, {"state": {"head": checked_head, "fingerprint": before,
+                                         "command": declared},
+                               "outcome": receipt["verdict"], "exit_code": rc})
     return receipt
+
+
+# Leave 20 seconds of the native 60-second window for inspection and recording.
+MAX_AUTOMATIC_SECONDS = 40
+AUTOMATIC_COMPLETION_SCHEMA = 1
+
+
+def automatic_policy(config: dict) -> dict | None:
+    """Approval is bound to an exact whole command, never inferred from its name."""
+    policy = config.get("automatic_completion")
+    if policy is None:
+        return None
+    if (not isinstance(policy, dict) or policy.get("check_only") is not True
+            or type(policy.get("timeout_seconds")) is not int
+            or not 1 <= policy["timeout_seconds"] <= MAX_AUTOMATIC_SECONDS
+            or policy.get("command") != config.get("gate_command")
+            or not isinstance(policy.get("command"), str) or not policy["command"].strip()):
+        raise ValueError("automatic_completion requires check_only=true, the exact gate command "
+                         "and timeout_seconds between 1 and 40; reapprove a changed gate")
+    words = shlex.split(policy["command"])
+    if any(word in ("--fix", "--fix-only", "--unsafe-fixes", "--write", "-w")
+           or word.startswith(("--fix=", "--write=")) for word in words):
+        raise ValueError("automatic completion cannot use a repair/write option")
+    formatters = ("fmt" in words or "black" in words or "prettier" in words
+                  or ("ruff" in words and "format" in words))
+    if formatters and "--check" not in words:
+        raise ValueError("automatic formatting checks require --check")
+    return policy
+
+
+def completion_path(root: str, name: str = "state.json") -> Path:
+    metadata = Path(git("rev-parse", "--absolute-git-dir", cwd=root).strip())
+    return metadata / "guardian-completion" / name
+
+
+def read_completion(root: str) -> dict:
+    path = completion_path(root)
+    if not path.exists():
+        return {}
+    value = json.loads(path.read_text())
+    if (not isinstance(value, dict) or not isinstance(value.get("state"), dict)
+            or set(value["state"]) != {"head", "fingerprint", "command"}
+            or value.get("outcome") not in ("pass", "fail", "timeout", "interrupted", "incomplete", "handoff")
+            or (value.get("outcome") == "handoff" and not isinstance(value.get("reason"), str))):
+        raise ValueError("unreadable automatic completion attempt; run the regular gate")
+    return value
+
+
+def save_completion(root: str, value: dict) -> None:
+    path = completion_path(root)
+    path.parent.mkdir(exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(value, indent=2) + "\n")
+    temporary.replace(path)
+
+
+def completion_key(root: str) -> dict:
+    return {"head": git("rev-parse", "HEAD", cwd=root).strip(),
+            "fingerprint": fingerprint(root), "command": gate_command(root)}
+
+
+def completion_configuration(root: str) -> dict:
+    """Read the explicit project approval and its lifecycle without executing checks."""
+    config_path = Path(root) / CONFIG
+    config = json.loads(config_path.read_text()) if config_path.exists() else {}
+    if not isinstance(config, dict):
+        raise ValueError("gate configuration must be an object")
+    policy = automatic_policy(config)
+    lifecycle_path = Path(root) / ".claude/guardian-state.json"
+    lifecycle = json.loads(lifecycle_path.read_text()) if lifecycle_path.exists() else {}
+    if not isinstance(lifecycle, dict):
+        raise ValueError("Guardian lifecycle state must be an object")
+    enabled = policy is not None and lifecycle.get("lifecycle", "active") == "active"
+    return {"enabled": enabled, "policy": policy}
+
+
+def completion_status(root: str) -> dict:
+    """Read-only status shared by setup, the public status command and Stop."""
+    configuration = completion_configuration(root)
+    attempt = read_completion(root)
+    current = completion_key(root)
+    receipt = read_receipt(root)
+    matches = isinstance(receipt, dict) and receipt_scope_problem(receipt, current) is None
+    valid = receipt_problem(receipt, current) is None
+    if matches and receipt.get("verdict") == "fail" and attempt.get("state") != current:
+        attempt = {"state": current, "outcome": "fail", "exit_code": receipt.get("exit_code")}
+    return {**configuration,
+            "verification": "succeeded" if valid else "unverified",
+            "attempt": attempt, "attempt_current": attempt.get("state") == current,
+            "state": current}
+
+
+def request_handoff(root: str, reason: str) -> dict:
+    """Record an explicit decision request, never manufacture passing evidence."""
+    if not reason.strip():
+        raise ValueError("handoff requires the unresolved decision or blocker")
+    state = {"state": completion_key(root), "outcome": "handoff",
+             "reason": reason, "verification": "unverified"}
+    save_completion(root, state)
+    return state
+
+
+def bounded_run(args, *, cwd, stdout, stderr, timeout):
+    """Own the process group; timeout or interruption cannot leave a test running."""
+    process = subprocess.Popen(args, cwd=cwd, stdout=stdout, stderr=stderr,
+                               stdin=subprocess.DEVNULL, start_new_session=True)
+    interrupted = False
+
+    def interrupt(_number, _frame):
+        nonlocal interrupted
+        interrupted = True
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    handlers = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        for number in handlers:
+            signal.signal(number, interrupt)
+        try:
+            rc = process.wait(timeout=timeout)
+            return (130, "interrupted") if interrupted else (rc, None)
+        except subprocess.TimeoutExpired:
+            return 124, "timeout"
+    finally:
+        # Also kill surviving children if the shell itself has already exited.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+        for number, handler in handlers.items():
+            signal.signal(number, handler)
+
+
+def automatic_completion(root: str) -> dict:
+    """At most one attempt per unchanged state, using the regular recorder."""
+    status = completion_status(root)
+    if not status["enabled"] or status["verification"] == "succeeded":
+        return status
+    path = completion_path(root, "lock")
+    path.parent.mkdir(exist_ok=True)
+    with path.open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {**status, "busy": True}
+        status = completion_status(root)
+        if status["attempt_current"] or status["verification"] == "succeeded":
+            return status
+        attempt = {"state": status["state"], "outcome": "interrupted",
+                   "verification": "unverified"}
+        # Persist BEFORE execution: even killing the hook cannot cause a retry loop.
+        save_completion(root, attempt)
+        try:
+            with completion_path(root, "stdout.log").open("wb") as stdout, \
+                    completion_path(root, "stderr.log").open("wb") as stderr:
+                receipt = execute_and_record(
+                    root, list(gate_argv(status["state"]["command"])),
+                    status["state"]["command"], cwd=root, stdout=stdout, stderr=stderr,
+                    timeout=status["policy"]["timeout_seconds"])
+            attempt["outcome"] = receipt.get("termination", receipt["verdict"])
+            attempt["exit_code"] = receipt["exit_code"]
+        except (OSError, InspectionError) as exc:
+            attempt["outcome"] = "incomplete"
+            attempt["error"] = str(exc)
+        save_completion(root, attempt)
+        return completion_status(root)
 
 
 if __name__ == "__main__":

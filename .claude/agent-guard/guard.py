@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Shared machinery for the three agent-guard hooks.
 
-WHY A FINGERPRINT AND NOT A RE-RUN
+WHY A FINGERPRINT BEFORE ANY OPTIONAL RUN
 
 The `Stop` hook has to answer "has this repo's gate run against the code the
 session is about to call done?". The obvious implementation is to run the gate
-inside the hook. That was rejected: Layer 1 on a multi-language monorepo is
+inside the hook unconditionally. That was rejected: Layer 1 on a multi-language monorepo is
 minutes, the hook runs on EVERY stop, and a guard that costs minutes per stop
 is a guard someone deletes. So the hook answers the question from a receipt —
 a recorded verdict plus a fingerprint of exactly what was verified — and the
-comparison is a hash, not a toolchain.
+comparison is a hash, not a toolchain. Explicitly approved short check-only
+commands may now run when evidence is missing; long gates remain regular work.
 
 WHAT THE FINGERPRINT COVERS
 
@@ -19,10 +20,10 @@ assume-unchanged or skip-worktree are always included, even if unchanged. Rename
 deletions move it. A file the gate never saw cannot be inside a receipt that
 matches, which is the only property the Stop hook needs.
 
-It deliberately does NOT cover HEAD itself. Committing does not invalidate a
-receipt for content that did not change, and rebasing onto new upstream work
-does not either — the gate ran on these changes, and CI is what gates the
-merge. A receipt is a statement about a diff, not about a commit.
+The fingerprint itself does not cover HEAD. New recorder receipts also carry
+checked_head, so a changed base cannot reuse their result. Legacy receipts
+retain their original diff-only compatibility; regular Guardian reports have
+always checked HEAD as well.
 
 THIS GUARDS DRIFT, NOT MALICE
 
@@ -400,6 +401,27 @@ def is_declared_gate(receipt: dict, declared: str) -> bool:
     if "\n" in declared.strip():
         return False
     return ran == words
+
+
+def receipt_scope_problem(receipt: dict, state: dict, *, allow_undeclared: bool = False) -> str | None:
+    """Compare a receipt's actual assignment and content, independently of success."""
+    declared = state["command"]
+    if ((declared is None and not allow_undeclared)
+            or (declared is not None and not is_declared_gate(receipt, declared))):
+        return "not-the-gate"
+    if (receipt.get("fingerprint") != state["fingerprint"]
+            or receipt.get("checked_head", state["head"]) != state["head"]):
+        return "content-changed"
+    return None
+
+
+def receipt_problem(receipt: dict | None, state: dict, *, allow_undeclared: bool = False) -> str | None:
+    """One receipt assessment for status and enforcement, with explicit legacy scope."""
+    if receipt is None:
+        return "no-receipt"
+    if receipt.get("verdict") != "pass" or receipt.get("exit_code") != 0:
+        return "gate-failed"
+    return receipt_scope_problem(receipt, state, allow_undeclared=allow_undeclared)
 
 
 def emit(payload: dict) -> None:

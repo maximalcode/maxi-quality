@@ -64,7 +64,9 @@ Explicit inspection can establish a diagnosis for the owner's report; it never
 rewrites the runner's observation or replaces a whole-gate rerun.
 
 The report is an observation, not another receipt authority. The recorder still
-writes `.claude/agent-guard-receipt.json`, and existing Stop behavior is unchanged.
+writes `.claude/agent-guard-receipt.json`. Stop retains receipt checking by default;
+[explicit automatic completion](GUARDIAN-SETUP.md#optional-automatic-completion-checks)
+can run an approved short check through that same recorder.
 The runner's explicit root overrides inherited Git checkout routing variables.
 
 Check saved evidence after an edit or commit:
