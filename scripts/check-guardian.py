@@ -849,6 +849,10 @@ class SetupTests(unittest.TestCase):
 
 def check_prerequisites():
     """Fail before the corpus when a required tool or Rust toolchain is absent."""
+    if sys.version_info < (3, 11):
+        print("Guardian validation prerequisite failed: Python 3.11+ is required "
+              "for setup's TOML reader", file=sys.stderr)
+        return False
     for tool in ("git", "bash", "cargo", "rustc"):
         try:
             result = command([tool, "--version"], BASELINE, timeout=10)

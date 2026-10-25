@@ -2,7 +2,7 @@
 
 Run `python3 scripts/check-guardian.py`. The cases create invented Git projects,
 with no CI configuration or agent host settings, and invoke the runner as a real
-subprocess. The full suite requires Python, Git, Bash (the existing gate shell),
+subprocess. The full suite requires Python 3.11+, Git, Bash (the existing gate shell),
 and callable Cargo/Rust compiler binaries for the existing Rust setup fixture.
 The entry point checks these tools before starting the corpus; missing tools or
 an unavailable toolchain fail validation rather than skipping cases.
