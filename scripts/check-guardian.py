@@ -847,7 +847,28 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(self.snapshot(root), before)
 
 
+def check_prerequisites():
+    """Fail before the corpus when a required tool or Rust toolchain is absent."""
+    if sys.version_info < (3, 11):
+        print("Guardian validation prerequisite failed: Python 3.11+ is required "
+              "for setup's TOML reader", file=sys.stderr)
+        return False
+    for tool in ("git", "bash", "cargo", "rustc"):
+        try:
+            result = command([tool, "--version"], BASELINE, timeout=10)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"Guardian validation prerequisite failed: {tool}: {exc}", file=sys.stderr)
+            return False
+        if result.returncode:
+            print(f"Guardian validation prerequisite failed: {tool}: "
+                  f"{result.stderr.strip() or result.stdout.strip()}", file=sys.stderr)
+            return False
+    return True
+
+
 if __name__ == "__main__":
+    if not check_prerequisites():
+        raise SystemExit(1)
     suite = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])
     suite.addTests(unittest.defaultTestLoader.discover(
         str(BASELINE / "samples/guardian"), pattern="test_*.py"))
