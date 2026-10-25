@@ -2928,14 +2928,19 @@ jobs:
   # is no agent job, and hanging a second surface's contract off the first one's
   # context would make a failure here report as "editor-contract failed".
   #
-  # It needs no toolchain — python3 and git, both already on the runner — so the
-  # 50-minute argument that keeps configs/editor/ out of samples/ does not apply
-  # here, and configs/agent/ takes an ordinary fixture corpus like every other
-  # config in this repo.
+  # Hook fixtures use Python and Git. Guardian setup also runs a dependency-free
+  # Rust fixture with the runner's Cargo/toolchain, checked before the corpus.
+  # Keep these checks in the existing context rather than adding a protection gap.
   agent-guard:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Prepare the pinned release for Guardian first-setup fixtures
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git fetch --no-tags --depth=1 origin refs/tags/v1.3.0:refs/tags/v1.3.0
+          test "$(git rev-parse 'refs/tags/v1.3.0^{commit}')" = 8940116445bbeed3637983e1cd756629eafba7d5
       - name: Install PyYAML for release-lock fixtures
         shell: bash
         run: |

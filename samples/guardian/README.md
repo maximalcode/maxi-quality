@@ -2,7 +2,10 @@
 
 Run `python3 scripts/check-guardian.py`. The cases create invented Git projects,
 with no CI configuration or agent host settings, and invoke the runner as a real
-subprocess. They require only Python, Git and Bash (the existing gate shell).
+subprocess. The full suite requires Python, Git, Bash (the existing gate shell),
+and callable Cargo/Rust compiler binaries for the existing Rust setup fixture.
+The entry point checks these tools before starting the corpus; missing tools or
+an unavailable toolchain fail validation rather than skipping cases.
 
 `cases.json` pins passing execution, short-circuited compound failure, an absent
 executable, misleading dependency text, a missing declaration, an invalid base,
@@ -104,4 +107,36 @@ These run through `scripts/check-guardian.py`; existing freshness and lifecycle
 cases remain part of the same entry point. The synthetic payloads prove protocol
 and process behavior, not live host enforcement or human interaction. Live
 observations and pilot measurements of the new automation remain unperformed.
-The real-release first-install test belongs separately to #309.
+
+## First setup with a published release
+
+`test_real_release.py` runs Claude Code and Codex independently from invented
+projects without Guardian configuration or a gate declaration. It uses the
+published **v1.3.0** payload at
+`8940116445bbeed3637983e1cd756629eafba7d5`. Prepare that release explicitly before
+running the existing entry point, including in a shallow checkout:
+
+```sh
+git fetch --no-tags --depth=1 origin refs/tags/v1.3.0:refs/tags/v1.3.0
+python3 scripts/check-guardian.py
+```
+
+The existing `agent-guard` CI job performs that fetch and verifies the peeled tag
+commit. The test also refuses a missing or mismatched tag/commit, and exercises
+public setup rejection of missing and mismatched payloads. No synthetic release
+substitution or skipped success is permitted. Payload preparation happens before
+the tests; hooks do not download runtimes or tools.
+
+Output identifies the payload version/commit separately from the current setup
+checkout's commit and dirty state. Both hosts exercise the public setup preview,
+application, regular `run` with its recorder, and read-only `status`. Inventory
+assertions prove the initially absent declaration is created by setup and preview
+changes nothing; execution output and current evidence prove the declared gate
+ran. Each case isolates its project, home and cache and needs neither agent host
+installed or authenticated. Automatic completion remains disabled.
+
+These are fixture results for the current entry point with an older published
+payload. They establish neither live host trust/enforcement nor real deployment,
+pilot adoption cost or maintenance cost. Status keeps unobserved host properties
+explicitly unverified; existing lifecycle and ownership suites remain the source
+of their respective regression coverage.
