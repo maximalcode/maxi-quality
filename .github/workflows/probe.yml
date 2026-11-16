@@ -1,0 +1,15 @@
+name: container-image probe
+on: push
+permissions:
+  contents: read
+jobs:
+  default-empty:
+    uses: ./.github/workflows/probe-reusable.yml
+  explicit-empty:
+    uses: ./.github/workflows/probe-reusable.yml
+    with:
+      container-image: ''
+  rust-image:
+    uses: ./.github/workflows/probe-reusable.yml
+    with:
+      container-image: 'rust:1.97.1-bookworm'
