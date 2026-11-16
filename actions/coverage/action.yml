@@ -113,6 +113,15 @@ runs:
       run: |
         set -Eeuo pipefail
 
+        # Root in a job container does not own the checkout, and git refuses to
+        # read a repository it does not own — so the patch gate below could not
+        # find its merge base. scripts/git-trust.sh has the measurement and the
+        # reason this is scoped to the step. A no-op wherever the checkout is
+        # the runner user's own.
+        # shellcheck source=/dev/null
+        . "${GITHUB_ACTION_PATH}/../../scripts/git-trust.sh"
+        trust_checkout .
+
         # globstar, or `**` is just `*`.
         #
         # Without it the documented pattern — `**/coverage.cobertura.xml`, which

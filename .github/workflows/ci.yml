@@ -1207,6 +1207,29 @@ jobs:
           echo 'OK: re-run is idempotent and an existing [lints] is left alone'
       - name: Rust preflight must report every workspace finding
         run: python3 samples/preflight/test_preflight.py rust
+      # quality.yml's `container-image` input. Nothing else in this file runs a
+      # step inside a container, and a job container is where four things this
+      # workflow used to assume stop being true at once: steps are root with no
+      # sudo, HOME is /github/home, cargo lives in /usr/local/cargo, and git
+      # refuses a checkout the runner's user owns.
+      #
+      # The selftest EXTRACTS the shipped steps — detection, this whole job's
+      # consumer-facing twin, and the Layer 2 action — and runs them as root
+      # inside the real image, so there is no copy to drift. It also asserts
+      # that every job carries the container key and a byte-identical
+      # prerequisites step, which is the only thing keeping eight copies honest.
+      #
+      # It lives in THIS job because the image under test is the Rust one and
+      # the claim is about the Rust layer. A job of its own would be a 29th
+      # required context, and adding one of those is a deliberate act on the
+      # branch protection, not a side effect of a feature.
+      - name: The shipped steps must run as root inside the container image
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -c 'import yaml' 2>/dev/null \
+            || python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
+          python3 samples/container/selftest.py --docker
 
 
   # #10 — Java Layer 1. Error Prone is the bug finder, NullAway the null-safety

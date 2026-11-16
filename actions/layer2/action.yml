@@ -168,9 +168,31 @@ runs:
         # version — it resolved to whatever PyPI served that morning, in every
         # consumer's CI, twelve lines above a sha256 check. Caught by the
         # repo's own Scorecard gate blocking a release (#87).
+        #
+        # THE LAST RUNG IS FOR A SLIM CONTAINER IMAGE. rust:1.97.1-bookworm has
+        # python3 and no pip at all, so both installs above it end in "No
+        # module named pip" and this step used to stop there, having scanned
+        # nothing. As root on an image with apt the distribution's own package
+        # is one line away — no sudo, because a job container has none and root
+        # does not need it. Anywhere else the rung declines and the failure is
+        # the one this step always had.
+        #
+        # That package is whatever version the image's distribution carries,
+        # not 6.0.3. It is reached only where pip is not available to honour
+        # the pin, and the first rung has always accepted an already-installed
+        # PyYAML of any version on the same terms.
+        apt_install() {
+          if [[ "$(id -u)" != 0 ]] || ! command -v apt-get >/dev/null 2>&1; then
+            return 1
+          fi
+          echo "no pip on this image; installing $* from its package index"
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "$@"
+        }
         python3 -c 'import yaml' 2>/dev/null \
           || python3 -m pip install --quiet 'pyyaml==6.0.3' 2>/dev/null \
-          || python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
+          || python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3' \
+          || apt_install python3-yaml
         python3 -c 'import yaml'
         echo "::endgroup::"
 
@@ -309,6 +331,14 @@ runs:
         WORKSPACE: ${{ github.workspace }}
       run: |
         set -Eeuo pipefail
+        # Root in a job container does not own the checkout, and git refuses to
+        # read a repository it does not own — which stops Gitleaks and the
+        # changed-only fetch below. scripts/git-trust.sh has the measurement
+        # and the reason this is scoped to the step. A no-op wherever the
+        # checkout is the runner user's own.
+        # shellcheck source=/dev/null
+        . "${GITHUB_ACTION_PATH}/../../scripts/git-trust.sh"
+        trust_checkout "$TARGET"
         python3 "${GITHUB_ACTION_PATH}/../../scripts/check-quality-lock.py" "$TARGET"
         ARGS=(--require-tools)
         if [[ -n "$JSON_OUT" ]]; then

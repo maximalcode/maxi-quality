@@ -31,7 +31,8 @@ jobs:
 | `licenses` | *(empty)* | Comma-separated SPDX allowlist. Anything outside it fails. **No default allowlist**, deliberately |
 | `annotate` | `true` | Render Semgrep findings on the pull-request diff, not only in the job log. Additive — emitted after the verdict, cannot change it |
 | `max-annotations` | `50` | Cap per run. GitHub drops them past an undocumented limit; the omitted count is always stated |
-| `runner` | `ubuntu-latest` | The `runs-on` label for every job. Point it at `self-hosted` when GitHub-hosted minutes are the thing that can make the gate go dark |
+| `runner` | `ubuntu-latest` | The `runs-on` label for every job — **which machine**. Point it at `self-hosted` when GitHub-hosted minutes are the thing that can make the gate go dark. See [below](#runner-and-container-image) |
+| `container-image` | *(empty)* | Run every job inside this image on that machine — **what the jobs run in**. Empty means no container, exactly as before the input existed. Linux runners only. See [below](#runner-and-container-image) |
 | `coverage-report` | *(empty)* | **Name of an artifact** uploaded earlier in the same run. Set it and the coverage gate runs — the aggregate ratchet plus the patch gate. Empty means there is no coverage job in the graph at all. Requires `needs:` from your test job |
 | `coverage-floor-file` | `.maxi-quality/coverage.json` | The committed floor, in **your** repo |
 | `coverage-patch-threshold` | `50` | Minimum coverage of the lines the change **adds**. `0` keeps the measurement and drops the gate |
@@ -58,6 +59,80 @@ every `pom.xml` would analyse the same tree once per module.
 The workflow also **outputs what it detected**, so a caller can assert detection
 actually fired. Without that, a run is green in two very different cases — the
 gate ran and passed, or every language job silently skipped.
+
+### `runner` and `container-image`
+
+Two inputs, two questions. `runner` is the `runs-on` label: **which machine**
+runs the jobs. `container-image` is **what they run in** on it.
+
+```yaml
+jobs:
+  quality:
+    uses: maximalcode/maxi-quality/.github/workflows/quality.yml@v1
+    with:
+      runner: self-hosted
+      container-image: rust:1.97.1-bookworm
+```
+
+With `container-image` empty — the default — nothing changes: the jobs run
+directly on the runner, and a self-hosted one has to carry every toolchain the
+gate uses and keeps whatever a job installs. With an image, the toolchain is
+the image's and the machine needs only Docker. That is the reason the input
+exists; on a GitHub-hosted runner it is rarely worth setting.
+
+**Empty really is "no container".** GitHub's runner turns a job container whose
+image evaluates to the empty string into no container at all. That was checked
+before it was relied on, because the other reading would have broken every
+existing caller: it is what `ConvertToJobContainer` in `actions/runner` does,
+and it was measured from inside a reusable workflow on a hosted runner
+(2.338.2, 2026-11-16) — the default and an explicit `''` both ran on the host
+as the runner user, and a real image ran as uid 0 inside it.
+
+A job container is not a hosted runner with a different root filesystem. Four
+things differ, each was a failure first, and the **Container prerequisites**
+step that opens every job is what closes them. It is skipped entirely when the
+input is empty.
+
+| Inside a job container | What the workflow does about it |
+|---|---|
+| Steps run as **root**, and there is **no `sudo`** | Nothing calls `sudo`. Missing tools are installed as root, directly |
+| `HOME` is `/github/home`, not the image's own home | Nothing assumes `~/.cargo`: `cargo-deny` goes to `$CARGO_HOME/bin` when `~/.cargo/bin` does not exist, which is where the official Rust image keeps cargo (`/usr/local/cargo`) |
+| The checkout belongs to the runner's user, so git stops with `detected dubious ownership` | The workspace is added as a `safe.directory` in `/github/home/.gitconfig`, which the runner creates for the job and discards after it. `actions/checkout` does not do this for later steps — the setting it adds is gone again by the next one |
+| A slim image has no `jq`, no `pip`, no PyYAML and no `pipx` | Each job installs the ones **it** needs from the image's own package index with `apt-get` |
+
+**What the image has to bring.** `bash`, and the toolchain of every language
+the repository has: `rustup` for Rust, `mvn` for Java, and so on. The
+`setup-*` actions the other jobs use install into the image when they support
+its distribution and fail when they do not. On an image without `apt`, or one
+that does not run as root, the prerequisites step cannot install anything: it
+stops and names what is missing, and the image has to carry `git`, `curl`,
+`jq`, `python3` (3.11 or newer), PyYAML, and `uv` or `pipx` itself.
+
+The `apt` packages are whatever version the image's distribution carries. That
+is not the pinning standard the rest of the workflow holds — and it does not
+replace it: semgrep, gitleaks, osv-scanner and cargo-deny are still installed
+by exact version and verified digest, inside a container exactly as outside.
+
+**What this rests on.** Measured against **`rust:1.97.1-bookworm`** and nothing
+else. `samples/container/selftest.py` extracts the shipped steps and runs them
+as root inside that image, on a checkout owned by another user, on every CI
+run: detection, the whole Rust job (the clean fixture passes and
+`samples/rust` still fails), and the Layer 2 action. Not measured: any other
+image, a non-root image, and a self-hosted runner.
+
+One thing to expect on a self-hosted runner, stated because it follows from how
+Docker mounts a directory rather than because it was measured here: files a
+root container writes into the workspace — `target/`, `node_modules/` — are
+owned by root on the host afterwards, and a later job that runs directly on the
+same runner as an unprivileged user cannot delete them. Keep a runner's jobs
+all inside containers, or all outside.
+
+The composite actions do not depend on that step. `actions/layer2`,
+`actions/deadcode` and `actions/coverage` each trust the checkout for git
+**for their own step only** — through the environment, never by writing a
+global config, because an action cannot tell a job container from somebody's
+workstation — and Layer 2 installs PyYAML and `pipx` from the image when there
+is no `pip` to install them with.
 
 ---
 
