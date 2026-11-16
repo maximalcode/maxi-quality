@@ -1,0 +1,11 @@
+# This probe shares a repository with the baseline it is probing, and Gitleaks
+# walks every ref a full checkout fetches — so it reads the baseline's history
+# too, planted fixture secrets included. Those files are not in this tree and
+# would not be in a consumer's history; they are allowlisted by path so the
+# scan answers for this tree alone.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "The baseline's own fixtures, reachable only through its other branches"
+paths = ['''^samples/semgrep/''', '''^\.github/workflows/ci\.yml$''']
