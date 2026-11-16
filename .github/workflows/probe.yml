@@ -3,13 +3,74 @@ on: push
 permissions:
   contents: read
 jobs:
-  default-empty:
-    uses: ./.github/workflows/probe-reusable.yml
-  explicit-empty:
-    uses: ./.github/workflows/probe-reusable.yml
-    with:
-      container-image: ''
-  rust-image:
-    uses: ./.github/workflows/probe-reusable.yml
+  # What an existing consumer writes: no inputs at all.
+  host:
+    uses: maximalcode/maxi-quality/.github/workflows/quality.yml@31d92d899816d792734f6d4ff03749789154263b
+
+  # The same call, inside the image.
+  container:
+    uses: maximalcode/maxi-quality/.github/workflows/quality.yml@31d92d899816d792734f6d4ff03749789154263b
     with:
       container-image: 'rust:1.97.1-bookworm'
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage
+          path: cov/lcov.info
+
+  # ...and with the coverage job in the graph, which downloads an artifact
+  # into the container.
+  container-coverage:
+    needs: tests
+    uses: maximalcode/maxi-quality/.github/workflows/quality.yml@31d92d899816d792734f6d4ff03749789154263b
+    with:
+      container-image: 'rust:1.97.1-bookworm'
+      coverage-report: coverage
+      coverage-raise: 'true'
+
+  # The three composite actions at the commit under test, called directly from
+  # a container job with no prerequisites step in front of them.
+  actions-direct:
+    runs-on: ubuntu-latest
+    container:
+      image: rust:1.97.1-bookworm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: The conditions under test hold
+        shell: bash
+        run: |
+          set -u
+          echo "uid=$(id -u) HOME=$HOME"
+          [[ "$(id -u)" == 0 ]] || { echo "::error::not root"; exit 1; }
+          if git status >/dev/null 2>&1; then echo "::error::git already trusts the checkout"; exit 1; fi
+          if python3 -c 'import yaml' 2>/dev/null; then echo "::error::the image has PyYAML"; exit 1; fi
+          echo "OK: root, git refuses the checkout, no PyYAML"
+      - name: layer2
+        uses: maximalcode/maxi-quality/actions/layer2@31d92d899816d792734f6d4ff03749789154263b
+      - name: coverage (patch gate reads git history)
+        uses: maximalcode/maxi-quality/actions/coverage@31d92d899816d792734f6d4ff03749789154263b
+        with:
+          report: cov/lcov.info
+          raise: 'true'
+          base-ref: HEAD~1
+          patch-threshold: '0'
+      - name: deadcode (the ratchet reads git history)
+        uses: maximalcode/maxi-quality/actions/deadcode@31d92d899816d792734f6d4ff03749789154263b
+        with:
+          tool: knip
+          mode: auto
+          changed-only: HEAD~1
+      - name: Nothing was written to the global git config
+        shell: bash
+        run: |
+          if git config --global --get-all safe.directory; then
+            echo "::error::an action left a global safe.directory behind"; exit 1
+          fi
+          if git status >/dev/null 2>&1; then echo "::error::the trust outlived the steps"; exit 1; fi
+          echo "OK: no global git config, and git refuses the checkout again"
