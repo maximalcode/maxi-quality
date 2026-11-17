@@ -929,7 +929,7 @@ jobs:
       # the file does not compile.
       - name: Dead code and unused dependencies (knip)
         if: inputs.dead-code != 'off'
-        uses: maximalcode/maxi-quality/actions/deadcode@613a26c952d3a5b224b15e7268b182826c1e53b2
+        uses: maximalcode/maxi-quality/actions/deadcode@11666fd8ed0a2d61beaede70399b419cd609ef3a
         with:
           tool: knip
           dir: ${{ matrix.dir }}
@@ -1163,7 +1163,7 @@ jobs:
       # at the granularity deptry is designed for).
       - name: Unused and undeclared dependencies (deptry)
         if: inputs.dead-code != 'off'
-        uses: maximalcode/maxi-quality/actions/deadcode@613a26c952d3a5b224b15e7268b182826c1e53b2
+        uses: maximalcode/maxi-quality/actions/deadcode@11666fd8ed0a2d61beaede70399b419cd609ef3a
         with:
           tool: deptry
           dir: ${{ matrix.dir }}
@@ -1462,9 +1462,8 @@ jobs:
     steps:
       # Same step as the detect job — see there. Skipped without a container.
       # pyyaml and pipx are here for the action below, not for this job's own
-      # steps: the pinned release of actions/layer2 predates this input and
-      # cannot provision a slim image itself. The action at HEAD can, so both
-      # words can go once release finalization moves the pin past it.
+      # steps. Since v1.4.0 the action can install both itself; installing them
+      # here keeps every tool this job needs in one apt run.
       - name: Container prerequisites
         if: inputs.container-image != ''
         shell: bash
@@ -1499,7 +1498,7 @@ jobs:
           fetch-depth: 0
       # Release finalization pins this action to release-payload.sha. A moved
       # tag cannot change the action revision selected by this workflow.
-      - uses: maximalcode/maxi-quality/actions/layer2@613a26c952d3a5b224b15e7268b182826c1e53b2
+      - uses: maximalcode/maxi-quality/actions/layer2@11666fd8ed0a2d61beaede70399b419cd609ef3a
         with:
           changed-only: ${{ inputs.changed-only }}
           licenses: ${{ inputs.licenses }}
@@ -1656,7 +1655,7 @@ jobs:
 
       - name: Coverage gate
         id: cov
-        uses: maximalcode/maxi-quality/actions/coverage@613a26c952d3a5b224b15e7268b182826c1e53b2
+        uses: maximalcode/maxi-quality/actions/coverage@11666fd8ed0a2d61beaede70399b419cd609ef3a
         with:
           report: ${{ steps.find.outputs.reports }}
           floor-file: ${{ inputs.coverage-floor-file }}
