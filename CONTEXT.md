@@ -1,7 +1,7 @@
 # maxi-quality
 
-A shared lint and static-analysis baseline that repositories **consume** rather
-than copy. This file is the glossary — it fixes the words the docs, the issues
+A shared quality baseline for local checks, an optional Code Guardian, and
+optional CI execution. This file is the glossary — it fixes the words the docs, the issues
 and the rules in `CLAUDE.md` use. It holds no implementation detail and no plan;
 `docs/CONCEPT.md` remains the source of truth for the design, and the issue
 tracker for the work.
@@ -51,6 +51,41 @@ Whether a language is written in a repository the owner maintains. It is a
 taste judgment, it is the one test no fixture corpus can substitute for, and it
 is what keeps the baseline from growing configs nobody exercises.
 _Avoid_: "a real consuming project" — the fused phrase this replaces.
+
+### Adoption
+
+**Capability selection**:
+The checks and integrations an Adopter chooses for a repository. A successful
+result for that selection establishes nothing about unselected capabilities.
+_Avoid_: treating a selection as a package or repository boundary, or calling a
+minimal selection a verification of the complete baseline.
+
+**Selected host**:
+The agent environment an Adopter chooses for a Guardian integration. Support for
+another host does not select it or require using both together.
+_Avoid_: treating the existence of another host's settings as a selection or
+authorization to change them.
+
+### Quality assessment
+
+These terms describe the accepted product direction in ADR 0003; they do not
+assert that the complete Guardian workflow is implemented.
+
+**Code Guardian**:
+An independently usable quality module that coordinates project checks,
+completion policy and AI assessment of a change against an identified task.
+_Avoid_: using "agent hooks" for the whole module, or treating an AI assessment
+as an executed check.
+
+**Check evidence**:
+The recorded scope, outcome and code state of an executed project check.
+_Avoid_: treating a configured check, a skipped check or an AI judgement as a
+passing result.
+
+**Completion policy**:
+The project's agreement about the check evidence required to call a change
+verified, including explicit human overrides.
+_Avoid_: equating session completion with successful verification.
 
 ### What is promised
 

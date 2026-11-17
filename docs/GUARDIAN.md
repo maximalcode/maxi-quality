@@ -64,7 +64,9 @@ Explicit inspection can establish a diagnosis for the owner's report; it never
 rewrites the runner's observation or replaces a whole-gate rerun.
 
 The report is an observation, not another receipt authority. The recorder still
-writes `.claude/agent-guard-receipt.json`, and existing Stop behavior is unchanged.
+writes `.claude/agent-guard-receipt.json`. Stop retains receipt checking by default;
+[explicit automatic completion](GUARDIAN-SETUP.md#optional-automatic-completion-checks)
+can run an approved short check through that same recorder.
 The runner's explicit root overrides inherited Git checkout routing variables.
 
 Check saved evidence after an edit or commit:
@@ -79,6 +81,23 @@ declaration. It never updates the receipt or saved report. Freshness shares the
 recorder's scope: Git-visible changed files, not ignored build outputs, external
 dependency data or the environment. It cannot prove that tooling or remote data
 has stayed unchanged. Rerun the gate when those inputs change.
+
+Read the selected host's installation diagnosis and most recent saved project
+check without running a check or changing project files:
+
+```bash
+python3 /path/to/maxi-quality/scripts/guardian.py status /path/to/project \
+  --host claude --json
+```
+
+Status keeps installation wiring, host trust, observed live enforcement, and
+project-check evidence separate. Trust and live enforcement remain `unverified`
+unless the host itself has supplied an observation; repository configuration
+alone does not prove that hooks ran. With no saved result, the project check is
+`not_run` with unknown freshness. Existing results retain their actual command,
+execution outcome and exit code, while freshness is recalculated read-only.
+An opaque compound gate remains one observed command; status does not assign
+results to tools inside it.
 
 Evidence: [`samples/guardian/`](../samples/guardian/README.md) runs real
 subprocesses against invented repositories. Existing recorder and Stop fixtures

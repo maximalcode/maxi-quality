@@ -108,46 +108,72 @@ discovery of arbitrary toolchains.
 
 ## Enable Guardian
 
-Use the same entry with the selected native host and an immutable release:
+Use the same entry with the selected native host and an immutable release. The
+host-specific skill invokes its own host by default; the host-neutral local
+command requires an explicit selection:
 
 ```bash
-python3 scripts/guardian.py setup /path/to/project --guardian codex \
-  --version v1.2.0 --commit <full-commit-for-that-release> \
+python3 scripts/guardian.py setup /path/to/project --guardian claude \
+  --version v1.3.0 --commit <full-commit-for-that-release> \
   --source /path/to/maxi-quality
 ```
 
-The version and commit above illustrate the syntax; select a release that
-contains native Codex support. Setup requires a matching local release tag and
+For Codex, replace `claude` with `codex`:
+
+```bash
+python3 scripts/guardian.py setup /path/to/project --guardian codex \
+  --version v1.3.0 --commit <full-commit-for-that-release> \
+  --source /path/to/maxi-quality
+```
+
+The version and commit above illustrate the syntax. The selected immutable
+release must contain the requested host adapter. Setup requires a matching local release tag and
 validates every guard payload file before application. Missing or incompatible
 payloads refuse with a prerequisite; there is no moving-release fallback or
 implicit download. Add `--apply` after inspecting the selection.
 
 Fresh Guardian setup uses the existing versioned runtime internally. It installs
 a release-specific launcher outside the project, prepares the immutable cache,
-and writes only the selected Codex integration, instructions, release lock and
-runtime-state ignores. Unrelated hook entries and settings remain intact.
+and writes only the selected host integration, its project-local skill link,
+instructions, release lock, selected-host ownership state and runtime-state
+ignores. The project-local skill links to the skill in the trusted source
+checkout, so the runner and instructions stay shared. An existing skill path is
+preserved and reported as a conflict. Unrelated hook entries and settings remain
+intact.
 Normal setup has no storage-mode question. Existing versioned profiles retain
-unrelated hooks and settings. A deliberate pinned update previews the owned
-hook changes and switches them to a release-specific launcher location; the
-old launcher remains untouched. The selected launcher is installed only when
-`--apply` is used, and the selected project checks run afterward. Native host
-trust and live hook enforcement remain separate observations.
+unrelated hooks and settings.
 
-**Host trust and live enforcement remain unverified.** Review and trust the exact
-hook definitions through Codex `/hooks`. A successful setup or gate run proves
-neither host trust nor live enforcement. Project configuration that disables
-hooks or adds ambiguous inline hook configuration must be reconciled first.
+**Host trust and live enforcement remain unverified.** Review and trust the
+exact hook definitions in the selected host. For Codex, use `/hooks`. A
+successful setup or gate run proves neither host trust nor live enforcement.
+Project configuration that disables hooks or adds ambiguous inline hook
+configuration must be reconciled first.
 
 ## Update deliberately
 
 Repeat setup with `--version`, `--commit` and the local `--source` for the
 requested release. Preview shows the old and requested pins and every proposed
-file change. Application validates the payload before activation, then runs the
-selected project gate through `guardian run`. The returned evidence retains the
-actual command, output paths and exit code. Failed payload validation preserves
-the previous usable selection. A failed post-update gate leaves the new pin
-visible, reports `applied_checks_failed` and returns a nonzero status; it never
-claims successful verification or silently rolls back evidence.
+file change. Application validates the payload, selects and diagnoses the new
+launcher, then runs the selected project's gate through the normal Guardian
+runner. The returned evidence retains the candidate pin, actual command, output
+paths and exit code. Failed payload validation preserves the previous usable
+selection. Failed or incomplete project verification restores the previous
+selection and returns a nonzero status while retaining the candidate run report.
+
+An update writes a small journal in the worktree's Git metadata before it
+changes project files. Status and setup preview remain read-only and report an
+unfinished transition as incomplete. After a hard process termination, run
+`setup --apply` explicitly to restore the previous setup. Recovery proceeds
+only when no recorded setup or gate process remains active and every candidate
+file still matches the journal; user edits are preserved and reported as a
+conflict. A hard power loss cannot run recovery itself, and another setup
+process must be invoked to complete it. Do not start a second update while the
+journal reports a live process.
+
+If another Guardian host shares the project's runtime pin, preview names that
+integration and the shared effect. An update that would move its effective pin
+is refused until the installations are reconciled deliberately. Native host
+trust and live hook enforcement remain separate observations.
 
 Existing copied/shared profiles are kept on their current delivery path. They
 can preview and reapply their existing setup, and explicitly select a gate,
@@ -162,3 +188,111 @@ required to check their pins against a selected release; conflicts must be
 resolved deliberately outside setup. The setup fixtures prove the local
 mechanism only. Real migration cost, fresh-installation observation and live
 host trust are separate evidence.
+
+## Pause, resume, remove or switch
+
+Every lifecycle change starts with a read-only preview. Add `--apply` to perform
+that same operation. `pause`, `resume` and `remove` default to the recorded
+selected host; `switch` requires an explicit destination. Merely opening a
+project in another host changes nothing.
+
+```bash
+python3 scripts/guardian.py status /path/to/project
+python3 scripts/guardian.py pause /path/to/project
+python3 scripts/guardian.py pause /path/to/project --apply
+python3 scripts/guardian.py resume /path/to/project --apply
+python3 scripts/guardian.py switch /path/to/project --host codex
+python3 scripts/guardian.py switch /path/to/project --host codex --apply
+python3 scripts/guardian.py remove /path/to/project
+python3 scripts/guardian.py remove /path/to/project --apply
+```
+
+Pause removes only the selected host's recorded automatic hook and deny entries.
+It retains the fixed version, skill and restoration information. Local checks
+remain available through `guardian.py run`. Resume validates the stored pin,
+cache, launcher and host prerequisites before restoring those entries; it neither
+updates the version nor reruns the gate. Old evidence remains old evidence.
+Changes to owned entries produce a conflict instead of being overwritten.
+
+Removal also removes the unchanged managed instruction region and the exact
+project skill link owned by this setup. It preserves the project gate, unrelated
+host settings, the other host's integrations, historical evidence, launchers and
+shared caches. Retained lifecycle metadata records the removal so status can
+show **not installed**. Shared runtime files may still serve other projects or
+local checks. A changed region or replaced skill link is a conflict for explicit
+reconciliation, not permission to delete it. Repeating removal changes nothing.
+
+Switch keeps the selected gate and immutable release while validating the new
+host binding and deactivating the old owned binding. It does not update the
+runtime. A rejected transition preserves the previous setup. Resume a paused
+installation before switching. Review the new host's trust prerequisites after
+a successful switch; structurally valid wiring is not live enforcement proof.
+
+`status` remains read-only throughout. It separates installation, deliberate
+pause/removal, saved execution result and freshness, host trust and observed
+hook enforcement. Pausing or resuming never creates a passed check, and a
+successful gate never grants native host trust. Existing installations without
+ownership metadata must first use the setup preview to establish an explicit
+selection; ambiguous or modified settings are preserved for reconciliation.
+
+## Optional automatic completion checks
+
+Automatic execution is off by default. After reviewing the **whole declared
+command**, explicitly approve it as a short, check-only command:
+
+```bash
+python3 scripts/guardian.py setup /path/to/project --automatic-check 20
+python3 scripts/guardian.py setup /path/to/project --automatic-check 20 --apply
+```
+
+This uses the same preview/apply path and selected host as setup. A compatible
+pinned runtime is required; older releases such as v1.3.0 cannot execute this
+feature. No new release or real-project rollout is implied by these examples.
+The project declaration in `.claude/agent-guard.json` retains `gate_command`
+and adds `automatic_completion` with `command` equal to that exact command,
+`check_only: true`, and `timeout_seconds: 20`. Changing the command requires
+renewed approval, or `setup --no-automatic-check --apply`. Other project settings
+are retained. Pause disables automatic execution; resume restores the choice.
+Host switching and removal keep their existing ownership boundaries.
+
+Approval means inspecting scripts behind command aliases too: they must not
+format or repair source/configuration. Common explicit write/fix options and
+`cargo fmt` without `--check` are refused, but this is not a shell sandbox or a
+proof about arbitrary programs. Choose `cargo fmt --check`, `ruff check`, or
+other actual check modes as appropriate. The recorder detects a changed source
+snapshot and does not verify it. Generated ignored build/test artifacts,
+diagnostics and receipts may be written.
+
+The supported direct budget is 1–40 seconds. Both native adapters retain their
+60-second hook window, leaving 20 seconds for inspection and recording. The
+recorder terminates the check's process group on timeout/interruption (including
+surviving children), retains failure evidence, and never launches a background
+manager. Commands must run synchronously without daemonizing. Gates that need
+more time, or cannot be approved as check-only, stay on the regular `guardian run`
+path. The gate is not split or shortened: partial checks never replace it.
+
+A current passing receipt is reused. With activation, a missing or stale receipt
+also triggers a check on a clean checkout; without activation the existing
+read-only-session exemption remains. An automatic attempt is recorded before
+execution in per-worktree Git metadata, so repeated Stops cannot restart an
+unchanged failed or interrupted attempt. Concurrent Stops also cannot duplicate
+it. Relevant changes allow a new attempt; an explicit regular run is always
+available. A matching failed regular receipt is not automatically retried.
+Missing tools remain failures, with the actual shell diagnostic in `stderr.log`.
+`guardian status` reads configuration, current receipt and the last automatic
+attempt without running a check. Its last regular project-check observation is
+reported separately. Neither status nor setup claims live host enforcement.
+
+For a blocker requiring human judgement:
+
+```bash
+python3 scripts/guardian.py handoff /path/to/project --reason "Gate remains open; explain attempts and the decision needed"
+```
+
+This permits an **unverified** handoff for the current state, including invalid
+automatic configuration. It does not change the gate or write a passing receipt.
+A relevant change or regular declared run supersedes the handoff. The native
+loop-guard escape also warns that checks may remain open. After at most two
+unsuccessful corrections of one problem, report the cause or uncertainty,
+attempts and decision needed. This is a workflow rule, not repair orchestration
+inside the hook.

@@ -296,6 +296,9 @@ samples/guards/           the fetch-and-execute shapes ci.yml's supply-chain gua
 samples/coverage/         coverage fixtures, hand-checked: 65.00 / 75.00 / 40.00 /
                           66.67 %, and 71.67 % when the first two are summed
 samples/sbom/             CycloneDX fixture — all three licence spellings
+samples/container/        quality.yml's container-image input: the shipped steps
+                          extracted and run as root inside rust:1.97.1-bookworm,
+                          on a checkout another user owns
 samples/policy/           the policy file's own suite: one fixture per knob
                           (disable, warn, exclude, extends, groups), each
                           asserted with its policy AND with it ablated away, plus

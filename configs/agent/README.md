@@ -6,6 +6,13 @@ Claude Code. The sections below describe the original Claude Code profile;
 its `permissions.deny` rules are not Codex settings. Native patch fixtures live
 in [`samples/codex-agent-guard`](../../samples/codex-agent-guard/README.md).
 
+**Claude Code launch scope:** launch with the adopted repo root as the session's
+**primary working directory**. In the subdirectory-launch observation recorded
+in [§5a](#5a-the-deny-rules-observed-live), Claude Code loaded neither the root's
+`permissions.deny` rules nor its hooks; `--add-dir ..` granted access to the
+parent without loading that contract. Adoption alone does not protect every
+session launched somewhere inside the repo.
+
 **Runtime decision:** copied and shared agent hooks require **Python 3.8 or
 newer**, available as `python3` on the agent host's `PATH`. `adopt.sh --agent`
 (and `--install-shared`) checks that it runs at the required version before
@@ -577,8 +584,11 @@ it; `EXCLUDED` in `guard.py` is the fix.
 **2026-08-23, Claude Code 2.1.236.** Five headless sessions
 (`claude -p --permission-mode acceptEdits --allowedTools Edit`), each in a
 throwaway git repository whose `.claude/settings.json` carried nothing but the
-`permissions` block under test. `acceptEdits` matters: without a deny rule the
-edit goes through unattended, so anything that stops it is the rule.
+`permissions` block under test, launched with that repo root as the primary
+working directory. This evidence covers **repo-root launches only**: the nested
+target in row 4 is not a session launched in a subdirectory.
+`acceptEdits` matters: without a deny rule the edit goes through unattended, so
+anything that stops it is the rule.
 
 | `permissions.deny` | `Edit` target | Result |
 |---|---|---|
@@ -607,6 +617,27 @@ a first attempt asked the session to flip the receipt's verdict from `fail` to
 `Edit` at all. That measures the model, not the rule. The runs above were
 rewritten as edits a session has no reason to object to, so the permission layer
 is the only thing left that can refuse.
+
+**2026-08-30, Claude Code 2.1.236 — subdirectory launch.** The live verifier in
+[the adversarial review §4.3](../../docs/REVIEW-agent-guard-2026-08-30.md#43-a-session-launched-in-a-subdirectory-of-an-adopted-repo-carries-none-of-the-contract)
+reported that launching in a subdirectory of an adopted repo loaded neither the
+repo root's deny rules nor its hooks. With `--add-dir ..`, it read and edited the
+protected `samples/expected/eslint.json` on disk with **zero refusal**. The
+observed settings lookup used the session's primary working directory without
+falling back to the parent. This is the review's dated Claude observation,
+reconciled here for [#222](https://github.com/maximalcode/maxi-quality/issues/222);
+it is not a new live run or evidence about Codex or later Claude Code versions.
+
+**Startup warning boundary — docs checked 2026-10-09.** The current
+[settings reference](https://code.claude.com/docs/en/settings#where-claude-code-keeps-the-local-file-in-a-git-repository)
+documents the primary-working-directory lookup without parent fallback; the
+[permissions reference](https://code.claude.com/docs/en/permissions#additional-directories-grant-file-access-not-configuration)
+says additional directories do not load hooks or permissions. Consequently, a
+`SessionStart` warning in the repo's unloaded settings could not run either.
+Claude Code supports [user-level hooks and warning output](https://code.claude.com/docs/en/hooks#json-output),
+but installing a warning in `~/.claude/settings.json` would be per-user
+configuration, outside this repo-local contract (§1). No startup warning is
+shipped for this case; launch from the adopted repo root.
 
 ## 6. What has NOT been measured
 

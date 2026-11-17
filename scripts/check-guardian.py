@@ -24,6 +24,8 @@ def command(argv, cwd, **kwargs):
 def project(path, gate="printf 'ok\\n'"):
     path.mkdir()
     command(["git", "init", "-q", str(path)], path, check=True)
+    # Detached maintenance can still write .git/objects during TemporaryDirectory cleanup.
+    command(["git", "config", "maintenance.auto", "false"], path, check=True)
     (path / "source.txt").write_text("original\n")
     if gate is not None:
         (path / ".claude").mkdir()
@@ -37,6 +39,12 @@ def project(path, gate="printf 'ok\\n'"):
 def run(root, cwd=None, base="HEAD", **kwargs):
     proc = command([sys.executable, str(RUNNER), "run", str(root), "--base", base,
                     "--task", "fixture task", "--json"], cwd or root, **kwargs)
+    return proc, json.loads(proc.stdout)
+
+
+def status(root, host="claude"):
+    proc = command([sys.executable, str(RUNNER), "status", str(root),
+                    "--host", host, "--json"], root)
     return proc, json.loads(proc.stdout)
 
 
@@ -105,6 +113,78 @@ class GuardianTests(unittest.TestCase):
         self.assertEqual(json.loads(check().stdout)["freshness"], "stale")
         self.assertIn('"decision": "block"', stop())
         self.assertEqual((root / ".claude/agent-guard-receipt.json").read_bytes(), receipt)
+
+    def test_status_without_evidence_is_read_only_and_keeps_installation_unknowns_separate(self):
+        root = project(self.root / "status-no-evidence")
+        before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+        proc, report = status(root)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(report["installation"]["status"], "unavailable")
+        self.assertEqual(report["installation"]["profile"], "unconfigured")
+        self.assertEqual(report["host"]["trust"], "unverified")
+        self.assertEqual(report["host"]["observed_enforcement"], "unverified")
+        self.assertEqual(report["verification"]["outcome"], "not_run")
+        self.assertEqual(report["verification"]["freshness"], "unknown")
+        after = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+        self.assertEqual(after, before)
+
+    def test_status_reuses_last_report_and_reports_freshness_without_running_gate(self):
+        gate = "printf 'first' && printf 'second'"
+        root = project(self.root / "status-with-evidence", gate)
+        proc, evidence = run(root)
+        self.assertEqual(proc.returncode, 0)
+        receipt = (root / ".claude/agent-guard-receipt.json").read_bytes()
+        before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+        proc, report = status(root)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(report["verification"]["outcome"], "succeeded")
+        self.assertEqual(report["verification"]["freshness"], "current")
+        self.assertEqual(report["verification"]["report_path"], evidence["report_path"])
+        self.assertEqual(report["verification"]["command"], gate)
+        self.assertNotIn("tool_results", report["verification"])
+        self.assertEqual(report["host"]["trust"], "unverified")
+        self.assertEqual(report["host"]["observed_enforcement"], "unverified")
+        after = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+        self.assertEqual(after, before)
+        (root / "source.txt").write_text("changed after check\n")
+        proc, report = status(root)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(report["verification"]["outcome"], "succeeded")
+        self.assertEqual(report["verification"]["freshness"], "stale")
+        self.assertEqual((root / ".claude/agent-guard-receipt.json").read_bytes(), receipt)
+
+    def test_status_surfaces_broken_runtime_wiring_without_claiming_a_check(self):
+        root = project(self.root / "status-broken-wiring")
+        (root / ".claude/quality-runtime.json").write_text("{broken")
+        before = (root / ".claude/quality-runtime.json").read_bytes()
+        proc, report = status(root)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(report["installation"]["status"], "broken")
+        self.assertEqual(report["installation"]["profile"], "invalid-lock")
+        self.assertEqual(report["verification"]["outcome"], "not_run")
+        self.assertEqual(report["host"]["observed_enforcement"], "unverified")
+        self.assertEqual((root / ".claude/quality-runtime.json").read_bytes(), before)
+
+    def test_status_preserves_failed_and_missing_command_evidence(self):
+        failed_root = project(self.root / "status-failed", "exit 19")
+        proc, failed = run(failed_root)
+        self.assertEqual(proc.returncode, 19)
+        proc, report = status(failed_root)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(report["verification"]["outcome"], "failed")
+        self.assertEqual(report["verification"]["execution"],
+                         {"outcome": "failed", "exit_code": 19})
+        self.assertEqual(report["verification"]["freshness"], "current")
+
+        missing_root = project(self.root / "status-unstartable", "guardian-command-that-is-not-installed")
+        proc, incomplete = run(missing_root)
+        self.assertEqual(proc.returncode, 127)
+        self.assertEqual(incomplete["outcome"], "failed")
+        proc, report = status(missing_root)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(report["verification"]["outcome"], "failed")
+        self.assertEqual(report["verification"]["execution"]["exit_code"], 127)
+        self.assertEqual(report["verification"]["command"], "guardian-command-that-is-not-installed")
 
     def test_other_checkout_and_inherited_git_environment(self):
         caller = project(self.root / "caller", "exit 12")
@@ -430,8 +510,11 @@ class SetupTests(unittest.TestCase):
 
     def release(self):
         source = project(self.root / "release")
-        shutil.copytree(BASELINE / "scripts/agent-guard", source / "scripts/agent-guard")
-        shutil.copy(BASELINE / "scripts/quality-runtime.py", source / "scripts/quality-runtime.py")
+        shutil.copytree(BASELINE / "scripts", source / "scripts")
+        shutil.copytree(BASELINE / "skills/guardian", source / "skills/guardian")
+        (source / "docs").mkdir()
+        for name in ("GUARDIAN.md", "GUARDIAN-SETUP.md", "GUARDIAN-SKILL.md"):
+            shutil.copy(BASELINE / "docs" / name, source / "docs" / name)
         command(["git", "add", "."], source, check=True)
         command(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
                  "-c", "core.hooksPath=/dev/null", "commit", "-qm", "release fixture"], source, check=True)
@@ -556,12 +639,15 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, report)
         self.assertEqual(report["current_version"]["version"], "v9.0.0")
         self.assertEqual(report["requested_version"]["version"], "v9.0.1")
+        before_failed_update = self.snapshot(root)
         proc, report = self.setup(root, *update, "--apply")
         self.assertEqual(proc.returncode, 17, report)
-        self.assertEqual(report["outcome"], "applied_checks_failed")
+        self.assertEqual(report["outcome"], "update_checks_failed")
         self.assertEqual(report["verification"]["execution"]["exit_code"], 17)
         self.assertEqual(report["next_step"], report["verification"]["next_step"])
-        self.assertEqual(json.loads((root / ".claude/quality-runtime.json").read_text())["commit"], sha)
+        self.assertEqual(self.snapshot(root), before_failed_update)
+        self.assertEqual(json.loads((root / ".claude/quality-runtime.json").read_text())["version"],
+                         "v9.0.0")
 
     def test_setup_accepts_trusted_prior_launcher_and_rejects_tampering(self):
         source, _ = self.release()
@@ -761,5 +847,30 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(self.snapshot(root), before)
 
 
+def check_prerequisites():
+    """Fail before the corpus when a required tool or Rust toolchain is absent."""
+    if sys.version_info < (3, 11):
+        print("Guardian validation prerequisite failed: Python 3.11+ is required "
+              "for setup's TOML reader", file=sys.stderr)
+        return False
+    for tool in ("git", "bash", "cargo", "rustc"):
+        try:
+            result = command([tool, "--version"], BASELINE, timeout=10)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"Guardian validation prerequisite failed: {tool}: {exc}", file=sys.stderr)
+            return False
+        if result.returncode:
+            print(f"Guardian validation prerequisite failed: {tool}: "
+                  f"{result.stderr.strip() or result.stdout.strip()}", file=sys.stderr)
+            return False
+    return True
+
+
 if __name__ == "__main__":
-    unittest.main()
+    if not check_prerequisites():
+        raise SystemExit(1)
+    suite = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])
+    suite.addTests(unittest.defaultTestLoader.discover(
+        str(BASELINE / "samples/guardian"), pattern="test_*.py"))
+    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    raise SystemExit(0 if result.wasSuccessful() else 1)

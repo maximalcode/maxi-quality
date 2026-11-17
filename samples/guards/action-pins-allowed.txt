@@ -1,0 +1,8 @@
+# Third-party references whose complete ref is exactly 40 lowercase hex.
+actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+actions/upload-artifact@0123456789abcdef0123456789abcdef01234567
+github/codeql-action/upload-sarif@fedcba9876543210fedcba9876543210fedcba98
+
+# Existing exemptions: local composite actions and this repository's own calls.
+./actions/deadcode
+maximalcode/maxi-quality/.github/workflows/quality.yml@v1

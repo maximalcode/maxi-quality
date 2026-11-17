@@ -1,6 +1,6 @@
 ---
 name: guardian
-description: Set up local quality checks, review a change against a named task, or review and repair scoped findings using Guardian evidence. Use for requested Guardian setup, pinned updates, review, or review-and-repair.
+description: Set up local quality checks, review a change against a named task, or review and repair scoped findings using Guardian evidence. Use for requested Guardian setup, status, pinned updates, pause, resume, removal, host switch, review, or review-and-repair.
 ---
 
 # Guardian
@@ -21,8 +21,8 @@ Read the target project's agent and contribution instructions. Establish its Git
 root and the requested operation.
 
 Default to **review**. **Review-and-repair** authorizes fixes only within the
-named task and agreed scope. **Setup/update** changes configuration only when
-requested. This skill does not authorize commits, publishing, a background
+named task and agreed scope. **Setup/update and lifecycle changes** change configuration only when
+requested. **Status** only reads installation and saved evidence. This skill does not authorize commits, publishing, a background
 coordinator or an architectural rewrite.
 
 ## Setup or deliberate update
@@ -34,18 +34,27 @@ entry as a human, starting with its read-only preview:
 python3 "$BASELINE/scripts/guardian.py" setup "$PROJECT" --json
 ```
 
+When setup is invoked from Claude Code, select `--guardian claude`; from Codex,
+select `--guardian codex`. This makes the invoking host the default integration.
+The local command has no invoking host, so enable either native integration only
+with an explicit `--guardian claude` or `--guardian codex`. Both use the same
+setup path and project gate. A different existing Guardian host requires an
+explicit switch operation; setup never changes it silently.
+
 Preserve the existing whole gate and quality settings. When a gate is absent,
 show the discovered suggestions and establish the user's intended checks before
 selecting `--gate`; a lint-only command does not prove tests ran. Preview the
 selected arguments, explain their concrete changes, then apply that same
-selection with `--apply` within the user's setup authorization. A pinned update
-uses the explicitly selected immutable `--version`, matching `--commit` and
-local `--source`. Keep runtime storage internal to setup.
+selection with `--apply` within the user's setup authorization. First native
+setup and pinned updates use a compatible immutable `--version`, its matching
+`--commit`, and the trusted local `--source`. Keep runtime storage internal to
+setup.
 
-Automatic completion is opt-in. Use `--guardian codex` only when that native
-integration is requested; it uses local checks and current recorder evidence,
-not a full AI review after each edit. Report configuration, trust and observed
-native enforcement separately. Missing hook support, disabled features or
+Automatic completion is opt-in. Use `--guardian claude` or `--guardian codex`
+only when that native integration is requested; it uses local checks and
+current recorder evidence, not a full AI review after each edit. Report
+configuration, trust and observed native enforcement separately. Missing hook
+support, disabled features or
 unaccepted definitions mean **unavailable enforcement**; unknown host trust or
 unobserved enforcement stays **unverified**. A script or setup success is not a
 live host observation. Preserve setup refusals and failed post-update checks.
@@ -57,6 +66,29 @@ A setup preview or an application returning `verification: not_run` is not a
 passing check. For failed post-update verification, follow **Prerequisite
 recovery** below before reporting the next action. Stop here unless review was
 also requested.
+
+## Status and lifecycle
+
+For status, run the shared entry without executing a gate or changing settings:
+
+```bash
+python3 "$BASELINE/scripts/guardian.py" status "$PROJECT" --json
+```
+
+For requested pause, resume, removal or host switch, read the matching lifecycle
+section in `BASELINE/docs/GUARDIAN-SETUP.md`. Use `pause`, `resume` or `remove`
+with the project root; `switch` also requires the expressly selected `--host`.
+Preview first, explain the affected owned entries and any conflicts, then apply
+with `--apply` within the user's authorization. The recorded host remains selected
+until an explicit switch; entering the project through another host is no switch
+request. Preserve modified or ambiguous entries for the owner's decision.
+
+Report the resulting lifecycle, unchanged gate and pin, preserved evidence,
+conflicts and host prerequisites. Pause, resume, removal and switch do not turn
+old evidence into a fresh pass. Pending interrupted updates require the explicit
+recovery reported by setup before another lifecycle change can proceed. Unknown
+trust and unobserved native enforcement stay unverified. Stop here unless a
+check or review was also requested.
 
 ## Review and measured evidence
 

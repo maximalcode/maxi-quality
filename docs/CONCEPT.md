@@ -15,6 +15,25 @@ A reusable static-analysis baseline that makes every current and future project
 only, one-time setup, stamped onto new repos in minutes. Public and adoptable by
 anyone; supported for nobody (§1a).
 
+**Direction accepted 2026-09-26:** local quality checks are the common foundation;
+a Code Guardian is an independently usable module and CI/CD is optional.
+[ADR 0003](adr/0003-local-quality-and-code-guardian.md) records the decision and
+its boundaries. This is an accepted design, not a claim of completed delivery.
+The implementation descriptions below and STATUS retain their evidence scope;
+implementation work belongs in the issue tracker. The 2026-10-14 clarification
+in ADR 0003 makes Claude Code the primary working host with Codex compatibility,
+keeps ordinary setup simple, and places human decisions at the start, at
+blockers or decision points, and at the end. The agreed workflow stops after at
+most two unsuccessful correction attempts on the same problem. Subagent roles
+and workflow coordination belong to maxi-skills; Guardian retains its review
+requirements and remains independently usable. ADR 0003 defines the bounded
+follow-up pilot and its adoption and maintenance criteria. These are design
+requirements, not additional delivery claims.
+The 2026-10-16 clarification centres ordinary setup and updates on one selected
+host, normally the host invoking setup. Claude and Codex share quality logic
+through their own adapters; operating or verifying both together is not a
+prerequisite. Host switches are deliberate and preserve unrelated settings.
+
 **On CodeQL — measured 2026-08-02, and it is not wired in.** Publishing this
 repo made CodeQL free *for this repo*, which was a reason to measure it, not to
 adopt it. Measured: 1 of 8 planted TypeScript findings, 2 of 19 Python, 4 of 30
@@ -35,22 +54,30 @@ Full numbers in [EVAL-vs-oss-tools.md](EVAL-vs-oss-tools.md).
 | # | Goal |
 |---|---|
 | G1 | One repo holds all lint/analysis config + custom rules; projects **consume** it, never copy-paste-drift it. |
-| G2 | New project onboarding ≤ 10 minutes: copy 2–3 small files, done. |
-| G3 | Two layers everywhere (see §4/§5). |
-| G4 | Runs both locally (fast, pre-commit) and in CI (gate, reusable workflow). |
+| G2 | One setup and update path, accessible through a skill or local command, preserves project checks and makes selected changes explicit. |
+| G3 | Adopters select the capabilities they need, including formatting only, security checks only, Guardian with existing checks, or the complete baseline (ADR 0003). |
+| G4 | Local checks work without an agent or CI. The optional Guardian and optional CI use the same project check agreement. |
 | G5 | 100% free: OSS tools + GitHub Actions free tier, no paid SaaS. (Originally "optional self-hosted SonarQube CE" — dropped, §6.) |
 
 **G3 in detail:**
 - *Layer 1 (deep, per language):* compiler-integrated analyzers — best signal.
 - *Layer 2 (broad, cross-language):* Semgrep with **my own rules**, plus secrets
-  + dependency scanning. Same bar for every repo regardless of stack.
+  + dependency scanning.
+
+Selective adoption is the accepted design, not a claim that every combination
+is already exposed by the shipped setup and reusable workflow. The underlying
+checks keep their meaning when selected. Status must distinguish checked,
+disabled and unavailable capabilities. ADR 0003 requires improvements to both
+Adopter effort and owner maintenance effort; package counts, repository splits
+and independent release schedules remain undecided.
 
 ### Non-goals
 
 - No paid tools, no per-repo SaaS onboarding (SonarCloud etc. optional later).
 - Not a monorepo of my projects — only the quality tooling lives here.
-- No auto-fix bots, no AI review pipeline (separate idea; Semgrep rules stay
-  deterministic).
+- No unsolicited repair or full implementation orchestrator. Guardian AI
+  assessment and explicitly requested repair are in scope under ADR 0003;
+  Semgrep rules remain deterministic.
 - No chasing 100% rule coverage on day one — start strict-but-adoptable,
   ratchet up.
 

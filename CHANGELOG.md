@@ -43,6 +43,98 @@ is no public v1.0.0 through v1.0.3 to backfill. `CLAUDE.md` §2 has the reason.
 
 ---
 
+## [v1.4.0] — 2026-11-17
+
+Everything on `develop` since v1.3.0.
+
+### Added
+
+- **`container-image` input on `quality.yml`.** Runs every job inside a
+  container image on whatever machine `runner` selects, so a self-hosted
+  runner needs Docker rather than every toolchain the gate uses. **Empty is the
+  default and means no container** — nothing changes for a caller that does
+  not set it. Inside a container each job installs the tools it needs as root
+  from the image's own package index (no `sudo`), makes the checkout readable
+  to git, and ends by handing the files root wrote back to the runner's user
+  so a self-hosted runner can clean up. Measured against
+  `rust:1.97.1-bookworm` only;
+  [`docs/REFERENCE.md`](docs/REFERENCE.md#runner-and-container-image) says what
+  the image must bring and what was not run.
+- `actions/layer2`, `actions/deadcode` and `actions/coverage` work as root in a
+  job container when called directly: each trusts a checkout owned by another
+  user for its own step only, and Layer 2 installs PyYAML and `pipx` from the
+  image when it has no `pip`. On a runner where they already worked, nothing
+  changes.
+- The three actions no longer write Python bytecode beside their own scripts.
+  As root in a job container that left a root-owned `__pycache__` in the
+  runner's `_actions` directory, which a self-hosted runner could not delete —
+  the next job on it failed in "Set up job".
+- Read-only Guardian status separates selected-host installation, saved check
+  outcome and freshness, host trust and observed native enforcement.
+- The common setup entry can deliberately select Claude or Codex, with a
+  project-local link to the shared Guardian skill and recorded ownership.
+- Preview-first pause, resume, removal and explicit host switch preserve the
+  project gate, unrelated host settings and shared runtime files. Modified
+  managed content is reported as a conflict instead of being discarded.
+- **Opt-in automatic completion checks.** `setup --automatic-check SECONDS`
+  approves the exact whole gate to run check-only at Stop, for Claude Code and
+  Codex, through the shared recorder. A current passing receipt is reused,
+  repeated runs over an unchanged failure are prevented, and a run is bounded
+  to 1–40 seconds and terminated on timeout. Long gates stay regular work and no
+  gate is shortened. Without activation, installations keep manual gate runs.
+
+### Changed
+
+- Failed or incomplete pinned-update verification restores the previous setup
+  and retains the failed candidate evidence. Interrupted updates remain visible
+  and require explicit recovery when the process could not finish rollback.
+  Another integration sharing the pin prevents an unselected version change.
+- ADR 0003 establishes independently usable local checks and optional Guardian;
+  native host observation and real pilot adoption cost remain separate evidence.
+  The existing guard and convention budgets are unchanged.
+- Guardian first setup has a permanent regression test against the published
+  v1.3.0 payload, for Claude Code and Codex in disposable projects.
+
+### Fixed
+
+- The SHA-pin guard validates the complete reference after `@` as exactly 40
+  lowercase hex characters. It used to accept a 40-character substring, a
+  truncated suffix such as `+suffix` or `/extra`, and skip quoted values.
+- Gate recording is preserved in a repository with no commit yet, and setup
+  preserves personal Claude instructions.
+
+### Rule changes
+
+**None.** No Semgrep convention, rule id or severity changed; the ruleset
+remains 40 rule ids across 12 conventions, and no analyzer version moved.
+Three locked transitive dependencies of this repository's own tooling were
+updated or waived for security findings; none of them reaches a consumer.
+
+- **zod 4.4.3 → 4.6.7** for
+  [GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5);
+  Knip stays at 6.33.0.
+- **minimatch 10.2.6 → 11.0.9** through an npm override, for
+  [GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249). The
+  ESLint rule snapshot and both ESLint fixture manifests are unchanged.
+- **picomatch** has no fixed release for
+  [GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf); the
+  repository's own `osv-scanner.toml` waives it until 2026-12-17.
+
+### Compatibility and evidence
+
+- `container-image` is a new input with an empty default, so an existing call
+  runs as before: no job starts a container and the added first and last steps
+  of every job are skipped. That empty-image behaviour was checked in the
+  runner's source and measured from inside a reusable workflow.
+- The container path was measured in `rust:1.97.1-bookworm` only: in CI, on
+  GitHub-hosted runners, and on container-only self-hosted runners, where a
+  consumer's detect, Rust, TypeScript and Layer 2 jobs ran one after another
+  on the same runner. The .NET, Python and Java jobs were not run in a
+  container, and no other image was.
+- On a self-hosted runner a job that is killed before its last step leaves
+  root-owned files behind, and the runner then fails its next job in "Set up
+  job" until they are removed on the machine.
+
 ## [v1.3.0] — 2026-10-08
 
 Everything on `develop` since v1.2.0.
