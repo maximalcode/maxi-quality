@@ -5,11 +5,11 @@ permissions:
 jobs:
   # What an existing consumer writes: no inputs at all.
   host:
-    uses: maximalcode/maxi-quality/.github/workflows/quality.yml@80db418f8b94e8eae65b9d28bad2ab013e80dcd0
+    uses: maximalcode/maxi-quality/.github/workflows/quality.yml@386b9b8e0f6f3d1f04ff25e161d0dbad4d9f5e32
 
   # The same call, inside the image.
   container:
-    uses: maximalcode/maxi-quality/.github/workflows/quality.yml@80db418f8b94e8eae65b9d28bad2ab013e80dcd0
+    uses: maximalcode/maxi-quality/.github/workflows/quality.yml@386b9b8e0f6f3d1f04ff25e161d0dbad4d9f5e32
     with:
       container-image: 'rust:1.97.1-bookworm'
 
@@ -26,7 +26,7 @@ jobs:
   # into the container.
   container-coverage:
     needs: tests
-    uses: maximalcode/maxi-quality/.github/workflows/quality.yml@80db418f8b94e8eae65b9d28bad2ab013e80dcd0
+    uses: maximalcode/maxi-quality/.github/workflows/quality.yml@386b9b8e0f6f3d1f04ff25e161d0dbad4d9f5e32
     with:
       container-image: 'rust:1.97.1-bookworm'
       coverage-report: coverage
@@ -52,16 +52,16 @@ jobs:
           if python3 -c 'import yaml' 2>/dev/null; then echo "::error::the image has PyYAML"; exit 1; fi
           echo "OK: root, git refuses the checkout, no PyYAML"
       - name: layer2
-        uses: maximalcode/maxi-quality/actions/layer2@80db418f8b94e8eae65b9d28bad2ab013e80dcd0
+        uses: maximalcode/maxi-quality/actions/layer2@386b9b8e0f6f3d1f04ff25e161d0dbad4d9f5e32
       - name: coverage (patch gate reads git history)
-        uses: maximalcode/maxi-quality/actions/coverage@80db418f8b94e8eae65b9d28bad2ab013e80dcd0
+        uses: maximalcode/maxi-quality/actions/coverage@386b9b8e0f6f3d1f04ff25e161d0dbad4d9f5e32
         with:
           report: cov/lcov.info
           raise: 'true'
           base-ref: HEAD~1
           patch-threshold: '0'
       - name: deadcode (the ratchet reads git history)
-        uses: maximalcode/maxi-quality/actions/deadcode@80db418f8b94e8eae65b9d28bad2ab013e80dcd0
+        uses: maximalcode/maxi-quality/actions/deadcode@386b9b8e0f6f3d1f04ff25e161d0dbad4d9f5e32
         with:
           tool: knip
           mode: auto
