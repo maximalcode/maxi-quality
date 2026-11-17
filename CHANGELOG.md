@@ -47,6 +47,26 @@ is no public v1.0.0 through v1.0.3 to backfill. `CLAUDE.md` §2 has the reason.
 
 ### Added
 
+- **`container-image` input on `quality.yml`.** Runs every job inside a
+  container image on whatever machine `runner` selects, so a self-hosted
+  runner needs Docker rather than every toolchain the gate uses. **Empty is the
+  default and means no container** — nothing changes for a caller that does
+  not set it. Inside a container each job installs the tools it needs as root
+  from the image's own package index (no `sudo`), makes the checkout readable
+  to git, and ends by handing the files root wrote back to the runner's user
+  so a self-hosted runner can clean up. Measured against
+  `rust:1.97.1-bookworm` only;
+  [`docs/REFERENCE.md`](docs/REFERENCE.md#runner-and-container-image) says what
+  the image must bring and what was not run.
+- `actions/layer2`, `actions/deadcode` and `actions/coverage` work as root in a
+  job container when called directly: each trusts a checkout owned by another
+  user for its own step only, and Layer 2 installs PyYAML and `pipx` from the
+  image when it has no `pip`. On a runner where they already worked, nothing
+  changes.
+- The three actions no longer write Python bytecode beside their own scripts.
+  As root in a job container that left a root-owned `__pycache__` in the
+  runner's `_actions` directory, which a self-hosted runner could not delete —
+  the next job on it failed in "Set up job".
 - Read-only Guardian status separates selected-host installation, saved check
   outcome and freshness, host trust and observed native enforcement.
 - The common setup entry can deliberately select Claude or Codex, with a

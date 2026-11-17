@@ -110,6 +110,20 @@ runs:
         SCRIPTS="$ACTION_PATH/../../scripts"
         CHANGED_ARGS=()
 
+        # No bytecode beside the action's own scripts — root-owned in a job
+        # container, and a self-hosted runner cannot then delete `_actions`
+        # before the next job. actions/layer2 has the measurement.
+        export PYTHONDONTWRITEBYTECODE=1
+
+        # Root in a job container does not own the checkout, and git refuses to
+        # read a repository it does not own — so the ratchet below could not
+        # resolve its base. scripts/git-trust.sh has the measurement and the
+        # reason this is scoped to the step. A no-op wherever the checkout is
+        # the runner user's own.
+        # shellcheck source=/dev/null
+        . "$SCRIPTS/git-trust.sh"
+        trust_checkout .
+
         # `${arr[@]:+"${arr[@]}"}` throughout rather than a bare `"${arr[@]}"`:
         # under `set -u` an EMPTY array is an unbound variable in bash 3.2, and
         # this file is also run by hand on macOS while a change is being

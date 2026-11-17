@@ -115,6 +115,24 @@ install_via_pipx() {
   fi
 
   echo "semgrep ${VERSION}: no uv on this runner; installing via pipx on ${py}"
+  if ! have pipx && ! "$py" -m pip --version >/dev/null 2>&1; then
+    # NO PIP EITHER, so the bootstrap below has nothing to bootstrap with. That
+    # is a slim container image, not an exotic host: rust:1.97.1-bookworm
+    # carries python3 and neither pip nor pipx, and this used to end in a bare
+    # "No module named pip". As root on an image with apt, the distribution's
+    # pipx is one package — no sudo, because a job container has none and root
+    # does not need it. pipx is only the installer: `--python` below still
+    # chooses the interpreter, and the version check at the end still decides
+    # whether what it installed is the pin.
+    if [[ "$(id -u)" == 0 ]] && have apt-get; then
+      echo "semgrep ${VERSION}: no pip on ${py}; installing pipx from this image's package index"
+      apt-get update -qq
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends pipx
+    else
+      fatal "semgrep ${VERSION} needs uv, pipx or pip to install it, and this runner has none of them." \
+            "Install uv (preferred — it fetches its own interpreter), or pipx."
+    fi
+  fi
   if ! have pipx; then
     # Bootstrapped with the interpreter we CHOSE, not with the ambient one:
     # a pipx whose own venv is 3.9 cannot install a 3.10-only package however

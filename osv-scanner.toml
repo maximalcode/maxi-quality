@@ -1,0 +1,37 @@
+# OSV-Scanner waivers for THIS REPO's own root lockfile (package-lock.json).
+#
+# osv-scanner reads the osv-scanner.toml that sits beside each manifest it
+# scans, so this file covers the root npm tree and nothing else — the fixture
+# trees under samples/ carry their own, and no consumer ever receives this one.
+#
+# THE RULE THIS FILE IS AN EXCEPTION TO: a vulnerability in this tree is a real
+# finding, and the answer is to bump or drop the dependency. The two advisories
+# before this one were handled that way. A waiver is only for the case where
+# neither is possible, and it is never open-ended:
+#
+#   - every entry carries `ignoreUntil`. On that date the finding comes back
+#     and CI goes red again, which is the point — a waiver that cannot expire
+#     is a deleted check;
+#   - every entry says why no bump exists and what would end it;
+#   - an entry whose fix has shipped is removed, not left to expire.
+
+# picomatch — ReDoS through single-branch repeated extglobs (HIGH,
+# alias CVE-2026-112366).
+#
+# OSV widened the affected range on 2026-11-17 to include 4.0.7, which is the
+# newest release: there is no patched version to move to, in range or out of
+# it. It reaches this tree through knip (^4.0.7) and tinyglobby (^4.0.4), both
+# dev-only, and knip is a gate this baseline ships, so dropping it is not on
+# the table either.
+#
+# The exposure here is narrow: picomatch only ever matches glob patterns this
+# repo wrote itself, in lint and dead-code tooling. Nothing hands it input from
+# outside.
+#
+# Ends when picomatch publishes a fixed release (a fix is open upstream as
+# micromatch/picomatch pull request 194): bump the lockfile and delete this
+# entry. Decided by the repository owner on 2026-11-17.
+[[IgnoredVulns]]
+id = "GHSA-fc5q-39xc-vjpf"
+ignoreUntil = 2026-12-17
+reason = "picomatch ReDoS: no fixed release exists (4.0.7 is the newest and is affected); dev-only via knip and tinyglobby, matching this repo's own globs. Waived until 2026-12-17."

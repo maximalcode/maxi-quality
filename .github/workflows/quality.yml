@@ -68,8 +68,45 @@ on:
           machines. Layer 2 supports Linux/X64, macOS/ARM64 and macOS/X64 (see
           the platform table in actions/layer2); anything else fails loudly
           rather than downloading an unpinned binary.
+
+          This picks the MACHINE. What the jobs run in on that machine is
+          `container-image` below: leave it empty and they run directly on
+          the runner, which then has to carry every toolchain itself.
         type: string
         default: 'ubuntu-latest'
+      container-image:
+        description: >-
+          Run every job of this workflow inside this container image, on the
+          runner `runner` selects. Empty (the default) means NO container: the
+          jobs run directly on the runner, exactly as they did before this
+          input existed.
+
+          Exists for the self-hosted case `runner` opened up. A job that runs
+          directly on a machine the consumer owns needs that machine to carry
+          every toolchain, and leaves whatever it installs behind. Inside an
+          image the toolchain is the image's, and the box only needs Docker.
+
+          What a job can assume in there is not what it can assume on a hosted
+          runner, and each difference was a failure before it was a line in
+          this file: steps run as ROOT with no sudo, HOME is /github/home
+          rather than the image's own home, the checkout belongs to the
+          runner's user so git refuses to read it, and a slim image carries no
+          jq, no pip and no PyYAML. The "Container prerequisites" step at the
+          top of every job closes those gaps, and the last step of every job
+          hands the files root wrote back to the runner's user, which a
+          self-hosted runner needs in order to clean up — see the detect job.
+
+          The image has to supply what that step cannot: bash, and the
+          toolchain of every language the repo has. The Rust job needs rustup,
+          the Java job needs mvn, and so on — the setup-* actions the other
+          jobs use install into the image if they support its distribution,
+          and fail if they do not. Measured against rust:1.97.1-bookworm, and
+          only against that; docs/REFERENCE.md says what was and was not run.
+
+          Linux runners only: GitHub starts job containers through Docker,
+          which the macOS runners this workflow otherwise supports do not have.
+        type: string
+        default: ''
       node-version:
         type: string
         default: '24'
@@ -234,6 +271,26 @@ on:
 jobs:
   detect:
     runs-on: ${{ inputs.runner }}
+    # `container:` on EVERY job, and the empty default is load-bearing. The
+    # runner turns a container whose image evaluates to '' into "no container"
+    # — it does not fail, and it does not start one. Verified two ways before
+    # this was relied on, because the alternative reading ("an empty image is
+    # an error") would have reddened every existing consumer on the day `v1`
+    # next moved:
+    #
+    #   - actions/runner, PipelineTemplateConverter.ConvertToJobContainer:
+    #     `if (String.IsNullOrEmpty(result.Image)) return null;`, and
+    #     JobExtension only creates a container when that result is non-null.
+    #   - measured on a hosted runner (2.338.2, 2026-11-16), from inside a
+    #     reusable workflow with this exact mapping: the default and an
+    #     explicit '' both ran on the host as the runner user, and a real
+    #     image ran as uid 0 in the container.
+    #
+    # The mapping form rather than `container: ${{ inputs.container-image }}`
+    # so a later option (credentials for a private registry, say) is one more
+    # key and not a rewrite of eight jobs.
+    container:
+      image: ${{ inputs.container-image }}
     outputs:
       ts_dirs: ${{ steps.scan.outputs.ts_dirs }}
       dotnet_targets: ${{ steps.scan.outputs.dotnet_targets }}
@@ -246,6 +303,78 @@ jobs:
       has_rust: ${{ steps.scan.outputs.has_rust }}
       has_java: ${{ steps.scan.outputs.has_java }}
     steps:
+      # CONTAINER PREREQUISITES — the same step opens every job, and its script
+      # is byte-identical in all eight (ci.yml asserts that, and runs it inside
+      # the real image). Only NEEDS differs: what THIS job's steps call.
+      #
+      # It is skipped entirely when `container-image` is empty, so on a plain
+      # runner nothing here runs and nothing is installed or configured.
+      #
+      # Inline and repeated, not an action: the first-party actions are pinned
+      # to a released payload, and a job cannot call an action that payload
+      # does not contain. A copy that is checked for drift is the shape this
+      # repo already uses wherever delivery forces one.
+      #
+      # It does two things, and each closes a gap measured in that image:
+      #
+      # 1. TOOLS. rust:1.97.1-bookworm has git, curl and python3, and has no
+      #    jq, no pip, no PyYAML and no pipx — so detection stops at its first
+      #    `jq`, and Layer 2 died on "No module named pip" before it scanned
+      #    anything.
+      #    Missing tools are installed with the image's own apt, as root, with
+      #    no sudo (the image has none, and root does not need it). That is the
+      #    one distribution-specific line here; on an image without apt, or as
+      #    a non-root user, the step stops and names what is missing instead.
+      #
+      #    These packages come from the image's distribution at whatever
+      #    version it carries. That is not the pinning standard the rest of
+      #    this file holds itself to, and it is not pretending to be: a
+      #    consumer who chose an image chose its package index with it. The
+      #    pinned tools — semgrep, gitleaks, osv-scanner, cargo-deny — are
+      #    still installed by version and digest, exactly as on a hosted
+      #    runner.
+      #
+      # 2. GIT. The runner mounts a checkout owned by ITS user, and steps in
+      #    the container run as root, so every git command stops with
+      #    "detected dubious ownership". actions/checkout does add a
+      #    safe.directory — to a temporary global config it deletes again
+      #    before the step ends (measured: `git config --global --get-all
+      #    safe.directory` is empty in the very next step). --global here is
+      #    /github/home/.gitconfig, a directory the runner creates for the job
+      #    and discards after it, which is why this may write a global setting
+      #    and a plain runner's job must not.
+      #
+      # BEFORE checkout, deliberately: without git in the image checkout falls
+      # back to downloading an archive, and a workspace with no .git is one
+      # Gitleaks and every changed-only ratchet silently cannot read.
+      - name: Container prerequisites
+        if: inputs.container-image != ''
+        shell: bash
+        env:
+          NEEDS: git jq python3
+        run: |
+          set -Eeuo pipefail
+          missing=()
+          for tool in $NEEDS; do
+            case "$tool" in
+              # Not commands, so `command -v` cannot answer for them. PyYAML is
+              # a module; "pipx" stands for "something that can install the
+              # pinned semgrep", and uv is the installer's first choice.
+              pyyaml) python3 -c 'import yaml' 2>/dev/null || missing+=(python3-yaml) ;;
+              pipx) command -v uv >/dev/null 2>&1 || command -v pipx >/dev/null 2>&1 || missing+=(pipx) ;;
+              *) command -v "$tool" >/dev/null 2>&1 || missing+=("$tool") ;;
+            esac
+          done
+          if (( ${#missing[@]} )); then
+            if [[ "$(id -u)" != 0 ]] || ! command -v apt-get >/dev/null 2>&1; then
+              echo "::error::container-image has no ${missing[*]}, and this step can only install them as root on an image with apt. Add them to the image, or use one that carries them."
+              exit 1
+            fi
+            echo "installing from the image's package index: ${missing[*]}"
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${missing[@]}"
+          fi
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - id: scan
         shell: bash
@@ -677,16 +806,94 @@ jobs:
             echo "has_java=$has_java"
           } >> "$GITHUB_OUTPUT"
           echo "detected: ts=$ts_dirs dotnet=$dotnet_targets python=$python_dirs rust=$rust_dirs java=$java_dirs"
+      # THE LAST STEP OF EVERY JOB, and like the first it is byte-identical in
+      # all eight and skipped without a container.
+      #
+      # Steps in a job container run as root, so everything they write into the
+      # workspace, the runner's temp directory and the downloaded actions — the
+      # checkout, target/, node_modules/, the pinned tools, HOME, Python
+      # bytecode — is root's on the host too. A
+      # hosted runner is thrown away after the job and never notices. A
+      # self-hosted runner is a long-lived process running as an ordinary user,
+      # and it has to clean those directories itself before the next job:
+      # it can unlink a root-owned FILE in a directory it owns, but it cannot
+      # empty a root-owned DIRECTORY, so that cleanup — and with it a later job
+      # on the same machine — can fail.
+      #
+      # So ownership goes back to whoever owns the workspace directory, which
+      # the runner created before the container existed. `always()` because a
+      # failed gate leaves exactly the same files behind as a passing one.
+      #
+      # THREE directories, and the third was found the hard way. The runner
+      # downloads every action into `_actions`, next to its temp directory, and
+      # deletes that directory at the start of the next job. An action that
+      # runs Python as root leaves a root-owned `__pycache__` beside its own
+      # scripts, and on a self-hosted runner the next job then died in "Set up
+      # job" — before any step, so before anything here could repair it —
+      # with "Access to the path .../_actions/.../__pycache__/... is denied".
+      # Measured on a container-only self-hosted runner, 2026-11-17, with the
+      # released Layer 2 action. Returning the workspace and the temp directory
+      # was not enough.
+      #
+      # What it cannot cover: a job that is killed outright never reaches its
+      # last step, and an action's post step runs after this one.
+      - name: Hand the workspace back to the runner
+        if: always() && inputs.container-image != ''
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          owner="$(stat -c '%u:%g' "$GITHUB_WORKSPACE")"
+          if [[ "$(id -u)" == 0 && "$owner" != 0:0 ]]; then
+            dirs=("$GITHUB_WORKSPACE" "$RUNNER_TEMP")
+            actions="$(dirname "$RUNNER_TEMP")/_actions"
+            if [[ -d "$actions" ]]; then
+              dirs+=("$actions")
+            fi
+            chown -R "$owner" "${dirs[@]}"
+            echo "returned to $owner: ${dirs[*]}"
+          fi
 
   typescript:
     needs: detect
     if: needs.detect.outputs.has_ts == 'true'
     runs-on: ${{ inputs.runner }}
+    container:
+      image: ${{ inputs.container-image }}
     strategy:
       fail-fast: false
       matrix:
         dir: ${{ fromJSON(needs.detect.outputs.ts_dirs) }}
     steps:
+      # Same step as the detect job — see there. Skipped without a container.
+      # git for checkout; python3 for the dead-code gate script.
+      - name: Container prerequisites
+        if: inputs.container-image != ''
+        shell: bash
+        env:
+          NEEDS: git python3
+        run: |
+          set -Eeuo pipefail
+          missing=()
+          for tool in $NEEDS; do
+            case "$tool" in
+              # Not commands, so `command -v` cannot answer for them. PyYAML is
+              # a module; "pipx" stands for "something that can install the
+              # pinned semgrep", and uv is the installer's first choice.
+              pyyaml) python3 -c 'import yaml' 2>/dev/null || missing+=(python3-yaml) ;;
+              pipx) command -v uv >/dev/null 2>&1 || command -v pipx >/dev/null 2>&1 || missing+=(pipx) ;;
+              *) command -v "$tool" >/dev/null 2>&1 || missing+=("$tool") ;;
+            esac
+          done
+          if (( ${#missing[@]} )); then
+            if [[ "$(id -u)" != 0 ]] || ! command -v apt-get >/dev/null 2>&1; then
+              echo "::error::container-image has no ${missing[*]}, and this step can only install them as root on an image with apt. Add them to the image, or use one that carries them."
+              exit 1
+            fi
+            echo "installing from the image's package index: ${missing[*]}"
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${missing[@]}"
+          fi
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -729,16 +936,63 @@ jobs:
           mode: ${{ inputs.dead-code }}
           gate-exports: ${{ inputs.dead-code-exports }}
           changed-only: ${{ inputs.changed-only }}
+      # Same last step as the detect job — see there.
+      - name: Hand the workspace back to the runner
+        if: always() && inputs.container-image != ''
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          owner="$(stat -c '%u:%g' "$GITHUB_WORKSPACE")"
+          if [[ "$(id -u)" == 0 && "$owner" != 0:0 ]]; then
+            dirs=("$GITHUB_WORKSPACE" "$RUNNER_TEMP")
+            actions="$(dirname "$RUNNER_TEMP")/_actions"
+            if [[ -d "$actions" ]]; then
+              dirs+=("$actions")
+            fi
+            chown -R "$owner" "${dirs[@]}"
+            echo "returned to $owner: ${dirs[*]}"
+          fi
 
   dotnet:
     needs: detect
     if: needs.detect.outputs.has_dotnet == 'true'
     runs-on: ${{ inputs.runner }}
+    container:
+      image: ${{ inputs.container-image }}
     strategy:
       fail-fast: false
       matrix:
         target: ${{ fromJSON(needs.detect.outputs.dotnet_targets) }}
     steps:
+      # Same step as the detect job — see there. Skipped without a container.
+      - name: Container prerequisites
+        if: inputs.container-image != ''
+        shell: bash
+        env:
+          NEEDS: git
+        run: |
+          set -Eeuo pipefail
+          missing=()
+          for tool in $NEEDS; do
+            case "$tool" in
+              # Not commands, so `command -v` cannot answer for them. PyYAML is
+              # a module; "pipx" stands for "something that can install the
+              # pinned semgrep", and uv is the installer's first choice.
+              pyyaml) python3 -c 'import yaml' 2>/dev/null || missing+=(python3-yaml) ;;
+              pipx) command -v uv >/dev/null 2>&1 || command -v pipx >/dev/null 2>&1 || missing+=(pipx) ;;
+              *) command -v "$tool" >/dev/null 2>&1 || missing+=("$tool") ;;
+            esac
+          done
+          if (( ${#missing[@]} )); then
+            if [[ "$(id -u)" != 0 ]] || ! command -v apt-get >/dev/null 2>&1; then
+              echo "::error::container-image has no ${missing[*]}, and this step can only install them as root on an image with apt. Add them to the image, or use one that carries them."
+              exit 1
+            fi
+            echo "installing from the image's package index: ${missing[*]}"
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${missing[@]}"
+          fi
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
@@ -768,16 +1022,64 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: dotnet build "$TARGET"
+      # Same last step as the detect job — see there.
+      - name: Hand the workspace back to the runner
+        if: always() && inputs.container-image != ''
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          owner="$(stat -c '%u:%g' "$GITHUB_WORKSPACE")"
+          if [[ "$(id -u)" == 0 && "$owner" != 0:0 ]]; then
+            dirs=("$GITHUB_WORKSPACE" "$RUNNER_TEMP")
+            actions="$(dirname "$RUNNER_TEMP")/_actions"
+            if [[ -d "$actions" ]]; then
+              dirs+=("$actions")
+            fi
+            chown -R "$owner" "${dirs[@]}"
+            echo "returned to $owner: ${dirs[*]}"
+          fi
 
   python:
     needs: detect
     if: needs.detect.outputs.has_python == 'true'
     runs-on: ${{ inputs.runner }}
+    container:
+      image: ${{ inputs.container-image }}
     strategy:
       fail-fast: false
       matrix:
         dir: ${{ fromJSON(needs.detect.outputs.python_dirs) }}
     steps:
+      # Same step as the detect job — see there. Skipped without a container.
+      # git for checkout; python3 for the dead-code gate script.
+      - name: Container prerequisites
+        if: inputs.container-image != ''
+        shell: bash
+        env:
+          NEEDS: git python3
+        run: |
+          set -Eeuo pipefail
+          missing=()
+          for tool in $NEEDS; do
+            case "$tool" in
+              # Not commands, so `command -v` cannot answer for them. PyYAML is
+              # a module; "pipx" stands for "something that can install the
+              # pinned semgrep", and uv is the installer's first choice.
+              pyyaml) python3 -c 'import yaml' 2>/dev/null || missing+=(python3-yaml) ;;
+              pipx) command -v uv >/dev/null 2>&1 || command -v pipx >/dev/null 2>&1 || missing+=(pipx) ;;
+              *) command -v "$tool" >/dev/null 2>&1 || missing+=("$tool") ;;
+            esac
+          done
+          if (( ${#missing[@]} )); then
+            if [[ "$(id -u)" != 0 ]] || ! command -v apt-get >/dev/null 2>&1; then
+              echo "::error::container-image has no ${missing[*]}, and this step can only install them as root on an image with apt. Add them to the image, or use one that carries them."
+              exit 1
+            fi
+            echo "installing from the image's package index: ${missing[*]}"
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${missing[@]}"
+          fi
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
@@ -867,6 +1169,22 @@ jobs:
           dir: ${{ matrix.dir }}
           mode: ${{ inputs.dead-code }}
           changed-only: ${{ inputs.changed-only }}
+      # Same last step as the detect job — see there.
+      - name: Hand the workspace back to the runner
+        if: always() && inputs.container-image != ''
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          owner="$(stat -c '%u:%g' "$GITHUB_WORKSPACE")"
+          if [[ "$(id -u)" == 0 && "$owner" != 0:0 ]]; then
+            dirs=("$GITHUB_WORKSPACE" "$RUNNER_TEMP")
+            actions="$(dirname "$RUNNER_TEMP")/_actions"
+            if [[ -d "$actions" ]]; then
+              dirs+=("$actions")
+            fi
+            chown -R "$owner" "${dirs[@]}"
+            echo "returned to $owner: ${dirs[*]}"
+          fi
 
   # Rust rides the reusable workflow like every other language (#70). It used to
   # be a job scripts/adopt.sh stamped into the CONSUMER's workflow file, on the
@@ -884,11 +1202,43 @@ jobs:
     needs: detect
     if: needs.detect.outputs.has_rust == 'true'
     runs-on: ${{ inputs.runner }}
+    container:
+      image: ${{ inputs.container-image }}
     strategy:
       fail-fast: false
       matrix:
         dir: ${{ fromJSON(needs.detect.outputs.rust_dirs) }}
     steps:
+      # Same step as the detect job — see there. Skipped without a container.
+      # curl fetches the pinned cargo-deny.
+      - name: Container prerequisites
+        if: inputs.container-image != ''
+        shell: bash
+        env:
+          NEEDS: git curl
+        run: |
+          set -Eeuo pipefail
+          missing=()
+          for tool in $NEEDS; do
+            case "$tool" in
+              # Not commands, so `command -v` cannot answer for them. PyYAML is
+              # a module; "pipx" stands for "something that can install the
+              # pinned semgrep", and uv is the installer's first choice.
+              pyyaml) python3 -c 'import yaml' 2>/dev/null || missing+=(python3-yaml) ;;
+              pipx) command -v uv >/dev/null 2>&1 || command -v pipx >/dev/null 2>&1 || missing+=(pipx) ;;
+              *) command -v "$tool" >/dev/null 2>&1 || missing+=("$tool") ;;
+            esac
+          done
+          if (( ${#missing[@]} )); then
+            if [[ "$(id -u)" != 0 ]] || ! command -v apt-get >/dev/null 2>&1; then
+              echo "::error::container-image has no ${missing[*]}, and this step can only install them as root on an image with apt. Add them to the image, or use one that carries them."
+              exit 1
+            fi
+            echo "installing from the image's package index: ${missing[*]}"
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${missing[@]}"
+          fi
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # Self-hosted runners install rustup per-user into ~/.cargo/bin, and the
       # runner's non-login service shell does not have that on PATH — so the
@@ -929,7 +1279,21 @@ jobs:
           curl -sSfL -o /tmp/cargo-deny.tgz \
             https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
           echo "${CARGO_DENY_SHA256}  /tmp/cargo-deny.tgz" | sha256sum -c -
-          tar xzf /tmp/cargo-deny.tgz -C "$HOME/.cargo/bin" --strip-components=1 \
+          # WHERE IT GOES. ~/.cargo/bin wherever that exists, which is every
+          # runner this job ran on before `container-image` — so that path is
+          # untouched. In the official rust image it does not exist: cargo lives
+          # in /usr/local/cargo, HOME is /github/home, and extracting into a
+          # directory that is not there was the whole failure. CARGO_HOME is
+          # cargo's own answer to "where are your binaries", so it is asked
+          # second rather than guessed at; GITHUB_PATH because nothing
+          # promises that directory is on PATH the way the PATH step above
+          # promises ~/.cargo/bin is.
+          cargo_bin="$HOME/.cargo/bin"
+          if [[ ! -d "$cargo_bin" && -n "${CARGO_HOME:-}" ]]; then
+            cargo_bin="$CARGO_HOME/bin"
+            echo "$cargo_bin" >> "$GITHUB_PATH"
+          fi
+          tar xzf /tmp/cargo-deny.tgz -C "$cargo_bin" --strip-components=1 \
             cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny
 
       - name: Format, lint and audit
@@ -957,6 +1321,22 @@ jobs:
           # add 'licenses' once deny.toml's allowlist holds your policy.
           # cargo-deny reads the whole workspace graph already.
           cargo deny check advisories bans
+      # Same last step as the detect job — see there.
+      - name: Hand the workspace back to the runner
+        if: always() && inputs.container-image != ''
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          owner="$(stat -c '%u:%g' "$GITHUB_WORKSPACE")"
+          if [[ "$(id -u)" == 0 && "$owner" != 0:0 ]]; then
+            dirs=("$GITHUB_WORKSPACE" "$RUNNER_TEMP")
+            actions="$(dirname "$RUNNER_TEMP")/_actions"
+            if [[ -d "$actions" ]]; then
+              dirs+=("$actions")
+            fi
+            chown -R "$owner" "${dirs[@]}"
+            echo "returned to $owner: ${dirs[*]}"
+          fi
 
   # Java rides the reusable workflow like every other language. The pins live
   # HERE rather than in a job adopt.sh stamps into the consumer's file, which is
@@ -975,11 +1355,42 @@ jobs:
     needs: detect
     if: needs.detect.outputs.has_java == 'true'
     runs-on: ${{ inputs.runner }}
+    container:
+      image: ${{ inputs.container-image }}
     strategy:
       fail-fast: false
       matrix:
         dir: ${{ fromJSON(needs.detect.outputs.java_dirs) }}
     steps:
+      # Same step as the detect job — see there. Skipped without a container.
+      - name: Container prerequisites
+        if: inputs.container-image != ''
+        shell: bash
+        env:
+          NEEDS: git
+        run: |
+          set -Eeuo pipefail
+          missing=()
+          for tool in $NEEDS; do
+            case "$tool" in
+              # Not commands, so `command -v` cannot answer for them. PyYAML is
+              # a module; "pipx" stands for "something that can install the
+              # pinned semgrep", and uv is the installer's first choice.
+              pyyaml) python3 -c 'import yaml' 2>/dev/null || missing+=(python3-yaml) ;;
+              pipx) command -v uv >/dev/null 2>&1 || command -v pipx >/dev/null 2>&1 || missing+=(pipx) ;;
+              *) command -v "$tool" >/dev/null 2>&1 || missing+=("$tool") ;;
+            esac
+          done
+          if (( ${#missing[@]} )); then
+            if [[ "$(id -u)" != 0 ]] || ! command -v apt-get >/dev/null 2>&1; then
+              echo "::error::container-image has no ${missing[*]}, and this step can only install them as root on an image with apt. Add them to the image, or use one that carries them."
+              exit 1
+            fi
+            echo "installing from the image's package index: ${missing[*]}"
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${missing[@]}"
+          fi
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
         with:
@@ -1027,10 +1438,61 @@ jobs:
         shell: bash
         working-directory: ${{ matrix.dir }}
         run: mvn -B --no-transfer-progress spotless:check
+      # Same last step as the detect job — see there.
+      - name: Hand the workspace back to the runner
+        if: always() && inputs.container-image != ''
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          owner="$(stat -c '%u:%g' "$GITHUB_WORKSPACE")"
+          if [[ "$(id -u)" == 0 && "$owner" != 0:0 ]]; then
+            dirs=("$GITHUB_WORKSPACE" "$RUNNER_TEMP")
+            actions="$(dirname "$RUNNER_TEMP")/_actions"
+            if [[ -d "$actions" ]]; then
+              dirs+=("$actions")
+            fi
+            chown -R "$owner" "${dirs[@]}"
+            echo "returned to $owner: ${dirs[*]}"
+          fi
 
   layer2:
     runs-on: ${{ inputs.runner }}
+    container:
+      image: ${{ inputs.container-image }}
     steps:
+      # Same step as the detect job — see there. Skipped without a container.
+      # pyyaml and pipx are here for the action below, not for this job's own
+      # steps: the pinned release of actions/layer2 predates this input and
+      # cannot provision a slim image itself. The action at HEAD can, so both
+      # words can go once release finalization moves the pin past it.
+      - name: Container prerequisites
+        if: inputs.container-image != ''
+        shell: bash
+        env:
+          NEEDS: git curl python3 pyyaml pipx
+        run: |
+          set -Eeuo pipefail
+          missing=()
+          for tool in $NEEDS; do
+            case "$tool" in
+              # Not commands, so `command -v` cannot answer for them. PyYAML is
+              # a module; "pipx" stands for "something that can install the
+              # pinned semgrep", and uv is the installer's first choice.
+              pyyaml) python3 -c 'import yaml' 2>/dev/null || missing+=(python3-yaml) ;;
+              pipx) command -v uv >/dev/null 2>&1 || command -v pipx >/dev/null 2>&1 || missing+=(pipx) ;;
+              *) command -v "$tool" >/dev/null 2>&1 || missing+=("$tool") ;;
+            esac
+          done
+          if (( ${#missing[@]} )); then
+            if [[ "$(id -u)" != 0 ]] || ! command -v apt-get >/dev/null 2>&1; then
+              echo "::error::container-image has no ${missing[*]}, and this step can only install them as root on an image with apt. Add them to the image, or use one that carries them."
+              exit 1
+            fi
+            echo "installing from the image's package index: ${missing[*]}"
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${missing[@]}"
+          fi
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Gitleaks scans commit history, not just the tree.
@@ -1043,6 +1505,22 @@ jobs:
           licenses: ${{ inputs.licenses }}
           annotate: ${{ inputs.annotate }}
           max-annotations: ${{ inputs.max-annotations }}
+      # Same last step as the detect job — see there.
+      - name: Hand the workspace back to the runner
+        if: always() && inputs.container-image != ''
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          owner="$(stat -c '%u:%g' "$GITHUB_WORKSPACE")"
+          if [[ "$(id -u)" == 0 && "$owner" != 0:0 ]]; then
+            dirs=("$GITHUB_WORKSPACE" "$RUNNER_TEMP")
+            actions="$(dirname "$RUNNER_TEMP")/_actions"
+            if [[ -d "$actions" ]]; then
+              dirs+=("$actions")
+            fi
+            chown -R "$owner" "${dirs[@]}"
+            echo "returned to $owner: ${dirs[*]}"
+          fi
 
   # Coverage — off unless `coverage-report:` names an artifact (#75, #124).
   #
@@ -1059,7 +1537,38 @@ jobs:
   coverage:
     if: inputs.coverage-report != ''
     runs-on: ${{ inputs.runner }}
+    container:
+      image: ${{ inputs.container-image }}
     steps:
+      # Same step as the detect job — see there. Skipped without a container.
+      - name: Container prerequisites
+        if: inputs.container-image != ''
+        shell: bash
+        env:
+          NEEDS: git python3
+        run: |
+          set -Eeuo pipefail
+          missing=()
+          for tool in $NEEDS; do
+            case "$tool" in
+              # Not commands, so `command -v` cannot answer for them. PyYAML is
+              # a module; "pipx" stands for "something that can install the
+              # pinned semgrep", and uv is the installer's first choice.
+              pyyaml) python3 -c 'import yaml' 2>/dev/null || missing+=(python3-yaml) ;;
+              pipx) command -v uv >/dev/null 2>&1 || command -v pipx >/dev/null 2>&1 || missing+=(pipx) ;;
+              *) command -v "$tool" >/dev/null 2>&1 || missing+=("$tool") ;;
+            esac
+          done
+          if (( ${#missing[@]} )); then
+            if [[ "$(id -u)" != 0 ]] || ! command -v apt-get >/dev/null 2>&1; then
+              echo "::error::container-image has no ${missing[*]}, and this step can only install them as root on an image with apt. Add them to the image, or use one that carries them."
+              exit 1
+            fi
+            echo "installing from the image's package index: ${missing[*]}"
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${missing[@]}"
+          fi
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # The patch gate diffs against the merge base, which a shallow clone
@@ -1180,3 +1689,19 @@ jobs:
             cat "$FLOOR_FILE"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      # Same last step as the detect job — see there.
+      - name: Hand the workspace back to the runner
+        if: always() && inputs.container-image != ''
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          owner="$(stat -c '%u:%g' "$GITHUB_WORKSPACE")"
+          if [[ "$(id -u)" == 0 && "$owner" != 0:0 ]]; then
+            dirs=("$GITHUB_WORKSPACE" "$RUNNER_TEMP")
+            actions="$(dirname "$RUNNER_TEMP")/_actions"
+            if [[ -d "$actions" ]]; then
+              dirs+=("$actions")
+            fi
+            chown -R "$owner" "${dirs[@]}"
+            echo "returned to $owner: ${dirs[*]}"
+          fi

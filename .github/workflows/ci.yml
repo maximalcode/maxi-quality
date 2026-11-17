@@ -1207,6 +1207,29 @@ jobs:
           echo 'OK: re-run is idempotent and an existing [lints] is left alone'
       - name: Rust preflight must report every workspace finding
         run: python3 samples/preflight/test_preflight.py rust
+      # quality.yml's `container-image` input. Nothing else in this file runs a
+      # step inside a container, and a job container is where four things this
+      # workflow used to assume stop being true at once: steps are root with no
+      # sudo, HOME is /github/home, cargo lives in /usr/local/cargo, and git
+      # refuses a checkout the runner's user owns.
+      #
+      # The selftest EXTRACTS the shipped steps — detection, this whole job's
+      # consumer-facing twin, and the Layer 2 action — and runs them as root
+      # inside the real image, so there is no copy to drift. It also asserts
+      # that every job carries the container key and a byte-identical
+      # prerequisites step, which is the only thing keeping eight copies honest.
+      #
+      # It lives in THIS job because the image under test is the Rust one and
+      # the claim is about the Rust layer. A job of its own would be a 29th
+      # required context, and adding one of those is a deliberate act on the
+      # branch protection, not a side effect of a feature.
+      - name: The shipped steps must run as root inside the container image
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -c 'import yaml' 2>/dev/null \
+            || python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
+          python3 samples/container/selftest.py --docker
 
 
   # #10 — Java Layer 1. Error Prone is the bug finder, NullAway the null-safety
@@ -3000,7 +3023,20 @@ jobs:
   # directions. An adoption that produces a gate which does not gate is worse
   # than no adoption, because it looks green.
   adopt:
-    runs-on: ubuntu-latest
+    # PINNED TO 24.04, and this is the one job that is. It proves the agent
+    # hooks' documented floor by running them on Python 3.8
+    # (configs/agent/README.md), and actions/setup-python publishes no 3.8
+    # build for Ubuntu 26.04 — the manifest stops at 24.04 for 3.8 and 3.9.
+    # When `ubuntu-latest` moved to 26.04 the step did not run the floor on a
+    # newer interpreter, it failed outright: "The version '3.8' with
+    # architecture 'x64' was not found for Ubuntu 26.04".
+    #
+    # The alternative was to raise the tested version, which would have left
+    # "3.8 or newer" in the docs with nothing checking it. Whether the floor
+    # itself should move is a product decision; until it does, the image that
+    # can still run it is the honest place for the job. Everything else in this
+    # file stays on ubuntu-latest.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
