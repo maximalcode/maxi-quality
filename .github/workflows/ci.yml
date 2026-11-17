@@ -3023,7 +3023,20 @@ jobs:
   # directions. An adoption that produces a gate which does not gate is worse
   # than no adoption, because it looks green.
   adopt:
-    runs-on: ubuntu-latest
+    # PINNED TO 24.04, and this is the one job that is. It proves the agent
+    # hooks' documented floor by running them on Python 3.8
+    # (configs/agent/README.md), and actions/setup-python publishes no 3.8
+    # build for Ubuntu 26.04 — the manifest stops at 24.04 for 3.8 and 3.9.
+    # When `ubuntu-latest` moved to 26.04 the step did not run the floor on a
+    # newer interpreter, it failed outright: "The version '3.8' with
+    # architecture 'x64' was not found for Ubuntu 26.04".
+    #
+    # The alternative was to raise the tested version, which would have left
+    # "3.8 or newer" in the docs with nothing checking it. Whether the floor
+    # itself should move is a product decision; until it does, the image that
+    # can still run it is the honest place for the job. Everything else in this
+    # file stays on ubuntu-latest.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
