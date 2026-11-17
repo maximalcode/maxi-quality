@@ -52,8 +52,10 @@ is no public v1.0.0 through v1.0.3 to backfill. `CLAUDE.md` §2 has the reason.
   runner needs Docker rather than every toolchain the gate uses. **Empty is the
   default and means no container** — nothing changes for a caller that does
   not set it. Inside a container each job installs the tools it needs as root
-  from the image's own package index (no `sudo`) and makes the checkout
-  readable to git. Measured against `rust:1.97.1-bookworm` only;
+  from the image's own package index (no `sudo`), makes the checkout readable
+  to git, and ends by handing the files root wrote back to the runner's user
+  so a self-hosted runner can clean up. Measured against
+  `rust:1.97.1-bookworm` only;
   [`docs/REFERENCE.md`](docs/REFERENCE.md#runner-and-container-image) says what
   the image must bring and what was not run.
 - `actions/layer2`, `actions/deadcode` and `actions/coverage` work as root in a

@@ -88,10 +88,11 @@ and it was measured from inside a reusable workflow on a hosted runner
 (2.338.2, 2026-11-16) — the default and an explicit `''` both ran on the host
 as the runner user, and a real image ran as uid 0 inside it.
 
-A job container is not a hosted runner with a different root filesystem. Four
-things differ, each was a failure first, and the **Container prerequisites**
-step that opens every job is what closes them. It is skipped entirely when the
-input is empty.
+A job container is not a hosted runner with a different root filesystem. Five
+things differ. The **Container prerequisites** step that opens every job closes
+the first four, each of which was a failure first; the **Hand the workspace
+back to the runner** step that ends every job closes the fifth. Both are
+skipped entirely when the input is empty.
 
 | Inside a job container | What the workflow does about it |
 |---|---|
@@ -99,6 +100,7 @@ input is empty.
 | `HOME` is `/github/home`, not the image's own home | Nothing assumes `~/.cargo`: `cargo-deny` goes to `$CARGO_HOME/bin` when `~/.cargo/bin` does not exist, which is where the official Rust image keeps cargo (`/usr/local/cargo`) |
 | The checkout belongs to the runner's user, so git stops with `detected dubious ownership` | The workspace is added as a `safe.directory` in `/github/home/.gitconfig`, which the runner creates for the job and discards after it. `actions/checkout` does not do this for later steps — the setting it adds is gone again by the next one |
 | A slim image has no `jq`, no `pip`, no PyYAML and no `pipx` | Each job installs the ones **it** needs from the image's own package index with `apt-get` |
+| Everything a job writes — the checkout, `target/`, `node_modules/`, the temp directory — is owned by **root on the host** | The last step of every job, which runs even when the gate failed, gives the workspace and the runner's temp directory back to the user who owns the workspace |
 
 **What the image has to bring.** `bash`, and the toolchain of every language
 the repository has: `rustup` for Rust, `mvn` for Java, and so on. The
@@ -116,16 +118,20 @@ by exact version and verified digest, inside a container exactly as outside.
 **What this rests on.** Measured against **`rust:1.97.1-bookworm`** and nothing
 else. `samples/container/selftest.py` extracts the shipped steps and runs them
 as root inside that image, on a checkout owned by another user, on every CI
-run: detection, the whole Rust job (the clean fixture passes and
-`samples/rust` still fails), and the Layer 2 action. Not measured: any other
-image, a non-root image, and a self-hosted runner.
+run: detection, the whole Rust job (the clean fixture passes, `samples/rust`
+still fails, and after the last step nothing in the workspace or the temp
+directory is still owned by root), and the Layer 2 action. Not measured: any
+other image, a non-root image, and a self-hosted runner — the hand-back step
+is proven to restore ownership, not yet that a real runner then cleans up.
 
-One thing to expect on a self-hosted runner, stated because it follows from how
-Docker mounts a directory rather than because it was measured here: files a
-root container writes into the workspace — `target/`, `node_modules/` — are
-owned by root on the host afterwards, and a later job that runs directly on the
-same runner as an unprivileged user cannot delete them. Keep a runner's jobs
-all inside containers, or all outside.
+That last row is the one that only matters on a self-hosted runner. A hosted
+runner is discarded after the job. A self-hosted one is a long-lived process
+running as an ordinary user, and it cleans the workspace and its temp directory
+itself: it can remove a root-owned file from a directory it owns, but it cannot
+empty a root-owned directory. Two cases the hand-back step cannot reach: a job
+that is killed outright never runs its last step, and an action's own post step
+runs after it. If a runner does end up with files it cannot remove, they are
+under its `_work` directory.
 
 The composite actions do not depend on that step. `actions/layer2`,
 `actions/deadcode` and `actions/coverage` each trust the checkout for git

@@ -92,7 +92,9 @@ on:
           rather than the image's own home, the checkout belongs to the
           runner's user so git refuses to read it, and a slim image carries no
           jq, no pip and no PyYAML. The "Container prerequisites" step at the
-          top of every job closes those gaps — see the detect job.
+          top of every job closes those gaps, and the last step of every job
+          hands the files root wrote back to the runner's user, which a
+          self-hosted runner needs in order to clean up — see the detect job.
 
           The image has to supply what that step cannot: bash, and the
           toolchain of every language the repo has. The Rust job needs rustup,
@@ -804,6 +806,35 @@ jobs:
             echo "has_java=$has_java"
           } >> "$GITHUB_OUTPUT"
           echo "detected: ts=$ts_dirs dotnet=$dotnet_targets python=$python_dirs rust=$rust_dirs java=$java_dirs"
+      # THE LAST STEP OF EVERY JOB, and like the first it is byte-identical in
+      # all eight and skipped without a container.
+      #
+      # Steps in a job container run as root, so everything they write into the
+      # workspace and the runner's temp directory — the checkout, target/,
+      # node_modules/, the pinned tools, HOME — is root's on the host too. A
+      # hosted runner is thrown away after the job and never notices. A
+      # self-hosted runner is a long-lived process running as an ordinary user,
+      # and it has to clean those two directories itself before the next job:
+      # it can unlink a root-owned FILE in a directory it owns, but it cannot
+      # empty a root-owned DIRECTORY, so that cleanup — and with it a later job
+      # on the same machine — can fail.
+      #
+      # So ownership goes back to whoever owns the workspace directory, which
+      # the runner created before the container existed. `always()` because a
+      # failed gate leaves exactly the same files behind as a passing one.
+      #
+      # What it cannot cover: a job that is killed outright never reaches its
+      # last step, and an action's post step runs after this one.
+      - name: Hand the workspace back to the runner
+        if: always() && inputs.container-image != ''
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          owner="$(stat -c '%u:%g' "$GITHUB_WORKSPACE")"
+          if [[ "$(id -u)" == 0 && "$owner" != 0:0 ]]; then
+            chown -R "$owner" "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+            echo "returned the workspace and the temp directory to $owner"
+          fi
 
   typescript:
     needs: detect
@@ -888,6 +919,17 @@ jobs:
           mode: ${{ inputs.dead-code }}
           gate-exports: ${{ inputs.dead-code-exports }}
           changed-only: ${{ inputs.changed-only }}
+      # Same last step as the detect job — see there.
+      - name: Hand the workspace back to the runner
+        if: always() && inputs.container-image != ''
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          owner="$(stat -c '%u:%g' "$GITHUB_WORKSPACE")"
+          if [[ "$(id -u)" == 0 && "$owner" != 0:0 ]]; then
+            chown -R "$owner" "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+            echo "returned the workspace and the temp directory to $owner"
+          fi
 
   dotnet:
     needs: detect
@@ -958,6 +1000,17 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: dotnet build "$TARGET"
+      # Same last step as the detect job — see there.
+      - name: Hand the workspace back to the runner
+        if: always() && inputs.container-image != ''
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          owner="$(stat -c '%u:%g' "$GITHUB_WORKSPACE")"
+          if [[ "$(id -u)" == 0 && "$owner" != 0:0 ]]; then
+            chown -R "$owner" "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+            echo "returned the workspace and the temp directory to $owner"
+          fi
 
   python:
     needs: detect
@@ -1089,6 +1142,17 @@ jobs:
           dir: ${{ matrix.dir }}
           mode: ${{ inputs.dead-code }}
           changed-only: ${{ inputs.changed-only }}
+      # Same last step as the detect job — see there.
+      - name: Hand the workspace back to the runner
+        if: always() && inputs.container-image != ''
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          owner="$(stat -c '%u:%g' "$GITHUB_WORKSPACE")"
+          if [[ "$(id -u)" == 0 && "$owner" != 0:0 ]]; then
+            chown -R "$owner" "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+            echo "returned the workspace and the temp directory to $owner"
+          fi
 
   # Rust rides the reusable workflow like every other language (#70). It used to
   # be a job scripts/adopt.sh stamped into the CONSUMER's workflow file, on the
@@ -1225,6 +1289,17 @@ jobs:
           # add 'licenses' once deny.toml's allowlist holds your policy.
           # cargo-deny reads the whole workspace graph already.
           cargo deny check advisories bans
+      # Same last step as the detect job — see there.
+      - name: Hand the workspace back to the runner
+        if: always() && inputs.container-image != ''
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          owner="$(stat -c '%u:%g' "$GITHUB_WORKSPACE")"
+          if [[ "$(id -u)" == 0 && "$owner" != 0:0 ]]; then
+            chown -R "$owner" "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+            echo "returned the workspace and the temp directory to $owner"
+          fi
 
   # Java rides the reusable workflow like every other language. The pins live
   # HERE rather than in a job adopt.sh stamps into the consumer's file, which is
@@ -1326,6 +1401,17 @@ jobs:
         shell: bash
         working-directory: ${{ matrix.dir }}
         run: mvn -B --no-transfer-progress spotless:check
+      # Same last step as the detect job — see there.
+      - name: Hand the workspace back to the runner
+        if: always() && inputs.container-image != ''
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          owner="$(stat -c '%u:%g' "$GITHUB_WORKSPACE")"
+          if [[ "$(id -u)" == 0 && "$owner" != 0:0 ]]; then
+            chown -R "$owner" "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+            echo "returned the workspace and the temp directory to $owner"
+          fi
 
   layer2:
     runs-on: ${{ inputs.runner }}
@@ -1377,6 +1463,17 @@ jobs:
           licenses: ${{ inputs.licenses }}
           annotate: ${{ inputs.annotate }}
           max-annotations: ${{ inputs.max-annotations }}
+      # Same last step as the detect job — see there.
+      - name: Hand the workspace back to the runner
+        if: always() && inputs.container-image != ''
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          owner="$(stat -c '%u:%g' "$GITHUB_WORKSPACE")"
+          if [[ "$(id -u)" == 0 && "$owner" != 0:0 ]]; then
+            chown -R "$owner" "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+            echo "returned the workspace and the temp directory to $owner"
+          fi
 
   # Coverage — off unless `coverage-report:` names an artifact (#75, #124).
   #
@@ -1545,3 +1642,14 @@ jobs:
             cat "$FLOOR_FILE"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      # Same last step as the detect job — see there.
+      - name: Hand the workspace back to the runner
+        if: always() && inputs.container-image != ''
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          owner="$(stat -c '%u:%g' "$GITHUB_WORKSPACE")"
+          if [[ "$(id -u)" == 0 && "$owner" != 0:0 ]]; then
+            chown -R "$owner" "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+            echo "returned the workspace and the temp directory to $owner"
+          fi

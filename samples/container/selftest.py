@@ -21,14 +21,16 @@ under the conditions a job container imposes. There is no second copy to drift.
 
 THREE LAYERS, CHEAPEST FIRST
 
-1. Structure. Every job carries the container key and the identical
-   prerequisites step, and the default is the empty string. Runs anywhere.
-2. Shims. The prerequisites step and the semgrep installer's apt rung, driven
-   with a fake PATH so "root with apt", "not root" and "nothing missing" are
-   all reachable on one machine. Runs anywhere.
+1. Structure. Every job carries the container key, opens with the identical
+   prerequisites step and closes with the identical hand-back step, and the
+   default is the empty string. Runs anywhere.
+2. Shims. The prerequisites step, the hand-back step and the semgrep
+   installer's apt rung, driven with a fake PATH so "root with apt", "not
+   root" and "nothing missing" are all reachable on one machine. Runs anywhere.
 3. Docker. The detect job, the Rust job and the Layer 2 action, as root inside
-   rust:1.97.1-bookworm, on a checkout owned by uid 1001. Needs Docker, the
-   network, and a few minutes.
+   rust:1.97.1-bookworm, on a checkout owned by uid 1001 — and after the Rust
+   job, nothing in the workspace or the temp directory may still be root's.
+   Needs Docker, the network, and a few minutes.
 
 The Docker layer copies the fixture INTO the container and chowns it rather
 than bind-mounting it, because a bind mount's apparent owner depends on the
@@ -58,6 +60,8 @@ IMAGE = "rust:1.97.1-bookworm"
 IMAGE_EXPR = "${{ inputs.container-image }}"
 PREREQ = "Container prerequisites"
 PREREQ_IF = "inputs.container-image != ''"
+HANDBACK = "Hand the workspace back to the runner"
+HANDBACK_IF = "always() && inputs.container-image != ''"
 # The words a job may put in NEEDS. Anything else is a typo that the step
 # would hand to apt as a package name.
 NEEDS_WORDS = {"git", "curl", "jq", "python3", "pyyaml", "pipx"}
@@ -85,7 +89,7 @@ def step_named(steps: list[dict], name: str) -> dict:
 
 # --- 1. structure ------------------------------------------------------------
 
-def structure() -> str:
+def structure() -> tuple[str, str]:
     wf = load(WORKFLOW)
     # PyYAML reads the bare key `on` as the boolean True.
     inputs = (wf.get("on") or wf[True])["workflow_call"]["inputs"]
@@ -99,6 +103,7 @@ def structure() -> str:
         check(spec.get("type") == "string", "container-image must be a string input")
 
     bodies = {}
+    handbacks = {}
     for name, job in wf["jobs"].items():
         check(job.get("container") == {"image": IMAGE_EXPR},
               f"job '{name}': container must be exactly {{image: {IMAGE_EXPR}}}, "
@@ -122,6 +127,16 @@ def structure() -> str:
         check("git" in words, f"job '{name}': NEEDS must include git — checkout needs it")
         bodies[name] = first.get("run", "")
 
+        last = steps[-1]
+        if check(last.get("name") == HANDBACK,
+                 f"job '{name}': the last step must be '{HANDBACK}', not "
+                 f"{last.get('name') or last.get('uses')!r} — a self-hosted runner "
+                 "cannot clean up what a root container leaves behind"):
+            # always(): a failed gate leaves the same files as a passing one.
+            check(last.get("if") == HANDBACK_IF,
+                  f"job '{name}': '{HANDBACK}' must be guarded by `if: {HANDBACK_IF}`")
+            handbacks[name] = last.get("run", "")
+
     distinct = set(bodies.values())
     check(len(distinct) == 1,
           f"'{PREREQ}' differs between jobs ({len(distinct)} variants across "
@@ -139,9 +154,15 @@ def structure() -> str:
               f"{where}, step {step.get('name')!r}: calls sudo — a job container "
               "runs as root and has no sudo binary")
 
-    print(f"structure: {len(bodies)} jobs carry the container key and one identical "
-          f"'{PREREQ}' step")
-    return next(iter(distinct)) if distinct else ""
+    distinct_handback = set(handbacks.values())
+    check(len(distinct_handback) == 1,
+          f"'{HANDBACK}' differs between jobs ({len(distinct_handback)} variants across "
+          f"{sorted(handbacks)}) — the copies must be byte-identical")
+
+    print(f"structure: {len(bodies)} jobs carry the container key, open with one identical "
+          f"'{PREREQ}' step and close with one identical '{HANDBACK}' step")
+    return (next(iter(distinct)) if len(distinct) == 1 else "",
+            next(iter(distinct_handback)) if len(distinct_handback) == 1 else "")
 
 
 # --- 2. shims ----------------------------------------------------------------
@@ -188,11 +209,38 @@ for a in "$@"; do
 done'''
 
 
-def shims(prereq_body: str) -> None:
+def shims(prereq_body: str, handback_body: str) -> None:
     with tempfile.TemporaryDirectory() as raw:
         tmp = pathlib.Path(raw)
         script = tmp / "prereq.sh"
         script.write_text(prereq_body)
+        handback_script = tmp / "handback.sh"
+        handback_script.write_text(handback_body)
+
+        def handback(name: str, uid: str, owner: str) -> Shim:
+            shim = Shim(tmp, name)
+            shim.add("id", f"echo {uid}")
+            shim.add("stat", f"echo {owner}")
+            shim.add("chown", 'echo "chown $*" >> "$LOG"')
+            result = shim.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail",
+                               str(handback_script)],
+                              GITHUB_WORKSPACE="/__w/repo/repo", RUNNER_TEMP="/__w/_temp")
+            check(result.returncode == 0,
+                  f"hand-back ({name}) failed: {result.stdout}{result.stderr}")
+            return shim
+
+        # Root in a container, workspace owned by the runner's user: both
+        # directories go back to that user, recursively.
+        s = handback("handback-root", "0", "1001:1001")
+        check("chown -R 1001:1001 /__w/repo/repo /__w/_temp" in s.logged(),
+              f"hand-back did not return the workspace and temp directory: {s.logged()!r}")
+        # A runner that itself runs as root owns the workspace as root; there is
+        # nobody to hand anything back to.
+        s = handback("handback-rootrunner", "0", "0:0")
+        check(s.logged() == "", f"hand-back chowned a root-owned workspace: {s.logged()!r}")
+        # Not root: the files are already this user's, and chown would fail.
+        s = handback("handback-user", "1001", "1001:1001")
+        check(s.logged() == "", f"hand-back ran chown as a non-root user: {s.logged()!r}")
 
         def prereq(shim: Shim, needs: str) -> subprocess.CompletedProcess:
             return shim.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", str(script)],
@@ -292,7 +340,8 @@ chmod +x "$SHIM/pipx"'''
         check(s.logged() == "", f"a non-root run still called apt: {s.logged()!r}")
 
     print("shims: prerequisites and the semgrep installer install as root with apt, "
-          "refuse otherwise, and never call sudo")
+          "refuse otherwise, and never call sudo; hand-back chowns only as root, "
+          "only to another owner")
 
 
 # --- 3. docker ---------------------------------------------------------------
@@ -312,7 +361,7 @@ prepare() {
   mkdir -p /github/home /__w/_temp /__w/repo
   cp -a "/fixtures/$1" /__w/repo/repo
   if [[ -n "${2:-}" ]]; then cp -a "/fixtures/$2" "/__w/repo/$2"; fi
-  chown -R 1001:1001 /github/home /__w/repo
+  chown -R 1001:1001 /github/home /__w/repo /__w/_temp
   [[ "$(id -u)" == 0 ]] || die "the image does not run as root, so this proves nothing"
   [[ ! -O /__w/repo/repo ]] || die "the checkout is owned by this user — the fixture lost the condition under test"
 }
@@ -368,7 +417,15 @@ tail -15 /__w/_temp/bad.log
 # bait, so its diff is the finding that has to be there.
 grep -q '^Diff in /__w/repo/rust/' /__w/_temp/bad.log \
   || die "samples/rust failed, but not on the formatting finding it is baited with"
-echo "OK: the Rust job gates as root in the image — clean passes, samples/rust fails"
+# The job's last step. Before it, the job has left root-owned directories
+# behind (asserted, or the check after it proves nothing); after it, none.
+[[ -n "$(find "$GITHUB_WORKSPACE" /__w/_temp -user 0 -type d -print -quit)" ]] \
+  || die "the job left nothing root-owned behind — the hand-back step is not being exercised"
+step handback "$GITHUB_WORKSPACE" || die "the hand-back step failed"
+left="$(find "$GITHUB_WORKSPACE" /__w/_temp -user 0 -print -quit)"
+[[ -z "$left" ]] || die "still owned by root after the hand-back step: $left"
+[[ -d "$GITHUB_WORKSPACE/target" ]] || die "there was no target/ directory to hand back"
+echo "OK: the Rust job gates as root in the image — clean passes, samples/rust fails, and nothing is left owned by root"
 '''
 
 LAYER2 = r'''
@@ -415,7 +472,7 @@ def fixture(dest: pathlib.Path, source: pathlib.Path) -> None:
         subprocess.run(["git", *argv], cwd=dest, env=env, check=True)
 
 
-def docker(prereq_body: str, platform: str | None, only: str | None) -> None:
+def docker(prereq_body: str, handback_body: str, platform: str | None, only: str | None) -> None:
     wf = load(WORKFLOW)
     jobs = wf["jobs"]
     inputs = (wf.get("on") or wf[True])["workflow_call"]["inputs"]
@@ -438,6 +495,7 @@ def docker(prereq_body: str, platform: str | None, only: str | None) -> None:
             "toolchain": step_named(rust_steps, "Pinned Rust toolchain")["run"],
             "cargo-deny": deny["run"],
             "gate": step_named(rust_steps, "Format, lint and audit")["run"],
+            "handback": handback_body,
         }, {"NEEDS_RUST": needs("rust"),
             "RUST_VERSION": inputs["rust-version"]["default"],
             "CARGO_DENY_SHA256": deny["env"]["CARGO_DENY_SHA256"]}),
@@ -486,11 +544,11 @@ def main() -> int:
                         help="run one container scenario instead of all three")
     args = parser.parse_args()
 
-    prereq_body = structure()
-    if prereq_body:
-        shims(prereq_body)
+    prereq_body, handback_body = structure()
+    if prereq_body and handback_body:
+        shims(prereq_body, handback_body)
     if args.docker and not failures:
-        docker(prereq_body, args.platform, args.scenario)
+        docker(prereq_body, handback_body, args.platform, args.scenario)
     elif not args.docker:
         print("docker: skipped (pass --docker to run the shipped steps inside the image)")
 
