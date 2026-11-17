@@ -100,7 +100,7 @@ skipped entirely when the input is empty.
 | `HOME` is `/github/home`, not the image's own home | Nothing assumes `~/.cargo`: `cargo-deny` goes to `$CARGO_HOME/bin` when `~/.cargo/bin` does not exist, which is where the official Rust image keeps cargo (`/usr/local/cargo`) |
 | The checkout belongs to the runner's user, so git stops with `detected dubious ownership` | The workspace is added as a `safe.directory` in `/github/home/.gitconfig`, which the runner creates for the job and discards after it. `actions/checkout` does not do this for later steps — the setting it adds is gone again by the next one |
 | A slim image has no `jq`, no `pip`, no PyYAML and no `pipx` | Each job installs the ones **it** needs from the image's own package index with `apt-get` |
-| Everything a job writes — the checkout, `target/`, `node_modules/`, the temp directory — is owned by **root on the host** | The last step of every job, which runs even when the gate failed, gives the workspace and the runner's temp directory back to the user who owns the workspace |
+| Everything a job writes — the checkout, `target/`, `node_modules/`, the temp directory, bytecode beside a downloaded action — is owned by **root on the host** | The last step of every job, which runs even when the gate failed, gives the workspace, the runner's temp directory and its downloaded actions back to the user who owns the workspace |
 
 **What the image has to bring.** `bash`, and the toolchain of every language
 the repository has: `rustup` for Rust, `mvn` for Java, and so on. The
@@ -120,25 +120,42 @@ else. `samples/container/selftest.py` extracts the shipped steps and runs them
 as root inside that image, on a checkout owned by another user, on every CI
 run: detection, the whole Rust job (the clean fixture passes, `samples/rust`
 still fails, and after the last step nothing in the workspace or the temp
-directory is still owned by root), and the Layer 2 action. Not measured: any
-other image, a non-root image, and a self-hosted runner — the hand-back step
-is proven to restore ownership, not yet that a real runner then cleans up.
+directory is still owned by root), and the Layer 2 action run from a
+runner-shaped actions directory, which it must leave without a single
+root-owned file. Not measured: any other image, and a non-root image. On a
+self-hosted runner the failure above was observed; the fix for it has been run
+in that selftest and on hosted runners, and not yet on a self-hosted one.
 
 That last row is the one that only matters on a self-hosted runner. A hosted
 runner is discarded after the job. A self-hosted one is a long-lived process
 running as an ordinary user, and it cleans the workspace and its temp directory
 itself: it can remove a root-owned file from a directory it owns, but it cannot
-empty a root-owned directory. Two cases the hand-back step cannot reach: a job
-that is killed outright never runs its last step, and an action's own post step
-runs after it. If a runner does end up with files it cannot remove, they are
-under its `_work` directory.
+empty a root-owned directory.
+
+This is the one row that was learned on a real runner. On a container-only
+self-hosted runner (2026-11-17) the jobs started, installed their tools, scanned
+and handed the workspace and the temp directory back — and the next job on that
+runner still died in "Set up job", with `Access to the path
+.../_work/_actions/.../scripts/__pycache__/... is denied`. The runner deletes
+`_actions`, where it downloads every action, at the start of each job; the
+released Layer 2 action had run Python there as root, and Python had left a
+`__pycache__` behind. A job that fails in "Set up job" runs no step, so nothing
+in a workflow can repair it: the directory has to be removed on the machine. The
+hand-back step returns `_actions` as well now, and the actions no longer write
+bytecode at all.
+
+Two cases the hand-back step cannot reach: a job that is killed outright never
+runs its last step, and an action's own post step runs after it. If a runner
+does end up with files it cannot remove, they are under its `_work` directory,
+and it will fail every job until they are gone.
 
 The composite actions do not depend on that step. `actions/layer2`,
 `actions/deadcode` and `actions/coverage` each trust the checkout for git
 **for their own step only** — through the environment, never by writing a
 global config, because an action cannot tell a job container from somebody's
 workstation — and Layer 2 installs PyYAML and `pipx` from the image when there
-is no `pip` to install them with.
+is no `pip` to install them with. None of them writes Python bytecode beside
+its own scripts, for the reason above.
 
 ---
 

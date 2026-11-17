@@ -113,6 +113,11 @@ runs:
       run: |
         set -Eeuo pipefail
 
+        # No bytecode beside the action's own scripts — root-owned in a job
+        # container, and a self-hosted runner cannot then delete `_actions`
+        # before the next job. actions/layer2 has the measurement.
+        export PYTHONDONTWRITEBYTECODE=1
+
         # Root in a job container does not own the checkout, and git refuses to
         # read a repository it does not own — so the patch gate below could not
         # find its merge base. scripts/git-trust.sh has the measurement and the

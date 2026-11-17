@@ -63,6 +63,10 @@ is no public v1.0.0 through v1.0.3 to backfill. `CLAUDE.md` §2 has the reason.
   user for its own step only, and Layer 2 installs PyYAML and `pipx` from the
   image when it has no `pip`. On a runner where they already worked, nothing
   changes.
+- The three actions no longer write Python bytecode beside their own scripts.
+  As root in a job container that left a root-owned `__pycache__` in the
+  runner's `_actions` directory, which a self-hosted runner could not delete —
+  the next job on it failed in "Set up job".
 - Read-only Guardian status separates selected-host installation, saved check
   outcome and freshness, host trust and observed native enforcement.
 - The common setup entry can deliberately select Claude or Codex, with a

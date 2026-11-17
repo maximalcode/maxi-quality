@@ -810,11 +810,12 @@ jobs:
       # all eight and skipped without a container.
       #
       # Steps in a job container run as root, so everything they write into the
-      # workspace and the runner's temp directory — the checkout, target/,
-      # node_modules/, the pinned tools, HOME — is root's on the host too. A
+      # workspace, the runner's temp directory and the downloaded actions — the
+      # checkout, target/, node_modules/, the pinned tools, HOME, Python
+      # bytecode — is root's on the host too. A
       # hosted runner is thrown away after the job and never notices. A
       # self-hosted runner is a long-lived process running as an ordinary user,
-      # and it has to clean those two directories itself before the next job:
+      # and it has to clean those directories itself before the next job:
       # it can unlink a root-owned FILE in a directory it owns, but it cannot
       # empty a root-owned DIRECTORY, so that cleanup — and with it a later job
       # on the same machine — can fail.
@@ -822,6 +823,17 @@ jobs:
       # So ownership goes back to whoever owns the workspace directory, which
       # the runner created before the container existed. `always()` because a
       # failed gate leaves exactly the same files behind as a passing one.
+      #
+      # THREE directories, and the third was found the hard way. The runner
+      # downloads every action into `_actions`, next to its temp directory, and
+      # deletes that directory at the start of the next job. An action that
+      # runs Python as root leaves a root-owned `__pycache__` beside its own
+      # scripts, and on a self-hosted runner the next job then died in "Set up
+      # job" — before any step, so before anything here could repair it —
+      # with "Access to the path .../_actions/.../__pycache__/... is denied".
+      # Measured on a container-only self-hosted runner, 2026-11-17, with the
+      # released Layer 2 action. Returning the workspace and the temp directory
+      # was not enough.
       #
       # What it cannot cover: a job that is killed outright never reaches its
       # last step, and an action's post step runs after this one.
@@ -832,8 +844,13 @@ jobs:
           set -Eeuo pipefail
           owner="$(stat -c '%u:%g' "$GITHUB_WORKSPACE")"
           if [[ "$(id -u)" == 0 && "$owner" != 0:0 ]]; then
-            chown -R "$owner" "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
-            echo "returned the workspace and the temp directory to $owner"
+            dirs=("$GITHUB_WORKSPACE" "$RUNNER_TEMP")
+            actions="$(dirname "$RUNNER_TEMP")/_actions"
+            if [[ -d "$actions" ]]; then
+              dirs+=("$actions")
+            fi
+            chown -R "$owner" "${dirs[@]}"
+            echo "returned to $owner: ${dirs[*]}"
           fi
 
   typescript:
@@ -927,8 +944,13 @@ jobs:
           set -Eeuo pipefail
           owner="$(stat -c '%u:%g' "$GITHUB_WORKSPACE")"
           if [[ "$(id -u)" == 0 && "$owner" != 0:0 ]]; then
-            chown -R "$owner" "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
-            echo "returned the workspace and the temp directory to $owner"
+            dirs=("$GITHUB_WORKSPACE" "$RUNNER_TEMP")
+            actions="$(dirname "$RUNNER_TEMP")/_actions"
+            if [[ -d "$actions" ]]; then
+              dirs+=("$actions")
+            fi
+            chown -R "$owner" "${dirs[@]}"
+            echo "returned to $owner: ${dirs[*]}"
           fi
 
   dotnet:
@@ -1008,8 +1030,13 @@ jobs:
           set -Eeuo pipefail
           owner="$(stat -c '%u:%g' "$GITHUB_WORKSPACE")"
           if [[ "$(id -u)" == 0 && "$owner" != 0:0 ]]; then
-            chown -R "$owner" "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
-            echo "returned the workspace and the temp directory to $owner"
+            dirs=("$GITHUB_WORKSPACE" "$RUNNER_TEMP")
+            actions="$(dirname "$RUNNER_TEMP")/_actions"
+            if [[ -d "$actions" ]]; then
+              dirs+=("$actions")
+            fi
+            chown -R "$owner" "${dirs[@]}"
+            echo "returned to $owner: ${dirs[*]}"
           fi
 
   python:
@@ -1150,8 +1177,13 @@ jobs:
           set -Eeuo pipefail
           owner="$(stat -c '%u:%g' "$GITHUB_WORKSPACE")"
           if [[ "$(id -u)" == 0 && "$owner" != 0:0 ]]; then
-            chown -R "$owner" "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
-            echo "returned the workspace and the temp directory to $owner"
+            dirs=("$GITHUB_WORKSPACE" "$RUNNER_TEMP")
+            actions="$(dirname "$RUNNER_TEMP")/_actions"
+            if [[ -d "$actions" ]]; then
+              dirs+=("$actions")
+            fi
+            chown -R "$owner" "${dirs[@]}"
+            echo "returned to $owner: ${dirs[*]}"
           fi
 
   # Rust rides the reusable workflow like every other language (#70). It used to
@@ -1297,8 +1329,13 @@ jobs:
           set -Eeuo pipefail
           owner="$(stat -c '%u:%g' "$GITHUB_WORKSPACE")"
           if [[ "$(id -u)" == 0 && "$owner" != 0:0 ]]; then
-            chown -R "$owner" "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
-            echo "returned the workspace and the temp directory to $owner"
+            dirs=("$GITHUB_WORKSPACE" "$RUNNER_TEMP")
+            actions="$(dirname "$RUNNER_TEMP")/_actions"
+            if [[ -d "$actions" ]]; then
+              dirs+=("$actions")
+            fi
+            chown -R "$owner" "${dirs[@]}"
+            echo "returned to $owner: ${dirs[*]}"
           fi
 
   # Java rides the reusable workflow like every other language. The pins live
@@ -1409,8 +1446,13 @@ jobs:
           set -Eeuo pipefail
           owner="$(stat -c '%u:%g' "$GITHUB_WORKSPACE")"
           if [[ "$(id -u)" == 0 && "$owner" != 0:0 ]]; then
-            chown -R "$owner" "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
-            echo "returned the workspace and the temp directory to $owner"
+            dirs=("$GITHUB_WORKSPACE" "$RUNNER_TEMP")
+            actions="$(dirname "$RUNNER_TEMP")/_actions"
+            if [[ -d "$actions" ]]; then
+              dirs+=("$actions")
+            fi
+            chown -R "$owner" "${dirs[@]}"
+            echo "returned to $owner: ${dirs[*]}"
           fi
 
   layer2:
@@ -1471,8 +1513,13 @@ jobs:
           set -Eeuo pipefail
           owner="$(stat -c '%u:%g' "$GITHUB_WORKSPACE")"
           if [[ "$(id -u)" == 0 && "$owner" != 0:0 ]]; then
-            chown -R "$owner" "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
-            echo "returned the workspace and the temp directory to $owner"
+            dirs=("$GITHUB_WORKSPACE" "$RUNNER_TEMP")
+            actions="$(dirname "$RUNNER_TEMP")/_actions"
+            if [[ -d "$actions" ]]; then
+              dirs+=("$actions")
+            fi
+            chown -R "$owner" "${dirs[@]}"
+            echo "returned to $owner: ${dirs[*]}"
           fi
 
   # Coverage — off unless `coverage-report:` names an artifact (#75, #124).
@@ -1650,6 +1697,11 @@ jobs:
           set -Eeuo pipefail
           owner="$(stat -c '%u:%g' "$GITHUB_WORKSPACE")"
           if [[ "$(id -u)" == 0 && "$owner" != 0:0 ]]; then
-            chown -R "$owner" "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
-            echo "returned the workspace and the temp directory to $owner"
+            dirs=("$GITHUB_WORKSPACE" "$RUNNER_TEMP")
+            actions="$(dirname "$RUNNER_TEMP")/_actions"
+            if [[ -d "$actions" ]]; then
+              dirs+=("$actions")
+            fi
+            chown -R "$owner" "${dirs[@]}"
+            echo "returned to $owner: ${dirs[*]}"
           fi

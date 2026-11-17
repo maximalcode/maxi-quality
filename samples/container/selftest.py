@@ -217,14 +217,17 @@ def shims(prereq_body: str, handback_body: str) -> None:
         handback_script = tmp / "handback.sh"
         handback_script.write_text(handback_body)
 
-        def handback(name: str, uid: str, owner: str) -> Shim:
+        def handback(name: str, uid: str, owner: str,
+                     runner_temp: str = "/__w/_temp") -> Shim:
             shim = Shim(tmp, name)
             shim.add("id", f"echo {uid}")
             shim.add("stat", f"echo {owner}")
             shim.add("chown", 'echo "chown $*" >> "$LOG"')
+            # dirname is a real utility the step calls; link it like the others.
+            (shim.dir / "dirname").symlink_to(shutil.which("dirname"))
             result = shim.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail",
                                str(handback_script)],
-                              GITHUB_WORKSPACE="/__w/repo/repo", RUNNER_TEMP="/__w/_temp")
+                              GITHUB_WORKSPACE="/__w/repo/repo", RUNNER_TEMP=runner_temp)
             check(result.returncode == 0,
                   f"hand-back ({name}) failed: {result.stdout}{result.stderr}")
             return shim
@@ -234,6 +237,15 @@ def shims(prereq_body: str, handback_body: str) -> None:
         s = handback("handback-root", "0", "1001:1001")
         check("chown -R 1001:1001 /__w/repo/repo /__w/_temp" in s.logged(),
               f"hand-back did not return the workspace and temp directory: {s.logged()!r}")
+        # The runner keeps downloaded actions beside its temp directory and
+        # deletes them before the next job, so they go back as well — the
+        # directory a root-owned __pycache__ broke a real runner through.
+        work = tmp / "work"
+        (work / "_temp").mkdir(parents=True)
+        (work / "_actions").mkdir()
+        s = handback("handback-actions", "0", "1001:1001", runner_temp=str(work / "_temp"))
+        check(f"chown -R 1001:1001 /__w/repo/repo {work}/_temp {work}/_actions" in s.logged(),
+              f"hand-back did not return the actions directory: {s.logged()!r}")
         # A runner that itself runs as root owns the workspace as root; there is
         # nobody to hand anything back to.
         s = handback("handback-rootrunner", "0", "0:0")
@@ -358,10 +370,10 @@ export GITHUB_STEP_SUMMARY=/__w/_temp/summary.md
 die() { echo "::error::$*"; exit 1; }
 
 prepare() {
-  mkdir -p /github/home /__w/_temp /__w/repo
+  mkdir -p /github/home /__w/_temp /__w/_actions /__w/repo
   cp -a "/fixtures/$1" /__w/repo/repo
   if [[ -n "${2:-}" ]]; then cp -a "/fixtures/$2" "/__w/repo/$2"; fi
-  chown -R 1001:1001 /github/home /__w/repo /__w/_temp
+  chown -R 1001:1001 /github/home /__w/repo /__w/_temp /__w/_actions
   [[ "$(id -u)" == 0 ]] || die "the image does not run as root, so this proves nothing"
   [[ ! -O /__w/repo/repo ]] || die "the checkout is owned by this user — the fixture lost the condition under test"
 }
@@ -421,8 +433,13 @@ grep -q '^Diff in /__w/repo/rust/' /__w/_temp/bad.log \
 # behind (asserted, or the check after it proves nothing); after it, none.
 [[ -n "$(find "$GITHUB_WORKSPACE" /__w/_temp -user 0 -type d -print -quit)" ]] \
   || die "the job left nothing root-owned behind — the hand-back step is not being exercised"
+# What a released action that runs Python as root leaves in the runner's
+# actions directory. On a real self-hosted runner this is the directory that
+# failed the next job in "Set up job".
+mkdir -p /__w/_actions/owner/action/sha/scripts/__pycache__
+: > /__w/_actions/owner/action/sha/scripts/__pycache__/module.cpython-311.pyc
 step handback "$GITHUB_WORKSPACE" || die "the hand-back step failed"
-left="$(find "$GITHUB_WORKSPACE" /__w/_temp -user 0 -print -quit)"
+left="$(find "$GITHUB_WORKSPACE" /__w/_temp /__w/_actions -user 0 -print -quit)"
 [[ -z "$left" ]] || die "still owned by root after the hand-back step: $left"
 [[ -d "$GITHUB_WORKSPACE/target" ]] || die "there was no target/ directory to hand back"
 echo "OK: the Rust job gates as root in the image — clean passes, samples/rust fails, and nothing is left owned by root"
@@ -430,7 +447,15 @@ echo "OK: the Rust job gates as root in the image — clean passes, samples/rust
 
 LAYER2 = r'''
 prepare rust-clean
-export GITHUB_ACTION_PATH=/mq/actions/layer2
+# Where the runner would have downloaded the action: writable, and owned by the
+# runner's user. Running it from the read-only mount would hide exactly the
+# write this scenario has to catch.
+ACTION_ROOT=/__w/_actions/maximalcode/maxi-quality/head
+mkdir -p "$ACTION_ROOT"
+cp -a /mq/actions /mq/scripts /mq/semgrep /mq/configs "$ACTION_ROOT/"
+find "$ACTION_ROOT" -name __pycache__ -type d -prune -exec rm -rf {} +
+chown -R 1001:1001 /__w/_actions
+export GITHUB_ACTION_PATH="$ACTION_ROOT/actions/layer2"
 python3 -c 'import yaml' 2>/dev/null && die "the image now ships PyYAML — this no longer tests installing it"
 git -C "$GITHUB_WORKSPACE" status >/dev/null 2>&1 && die "git already trusts the checkout — the ownership condition is not reproduced"
 # NO prerequisites step: this is the action on its own, as a caller's own
@@ -444,12 +469,17 @@ step scan "$GITHUB_WORKSPACE" TARGET="$GITHUB_WORKSPACE" WORKSPACE="$GITHUB_WORK
 cat /__w/_temp/scan.out
 grep -q '^gitleaks=clean' /__w/_temp/scan.out || die "Gitleaks did not report clean — it needs git to read the checkout"
 grep -q '^semgrep=clean' /__w/_temp/scan.out || die "Semgrep did not report clean"
+# The action ran Python as root from the runner's actions directory. It must
+# not have left anything there: a self-hosted runner deletes that directory as
+# an ordinary user before the next job, and cannot if root wrote into it.
+left="$(find /__w/_actions -user 0 -print -quit)"
+[[ -z "$left" ]] || die "the action left root-owned files in the actions directory: $left"
 # Scoped to the step: nothing may have been written to the global config.
 [[ ! -e "$HOME/.gitconfig" ]] || die "the action wrote $HOME/.gitconfig: $(cat "$HOME/.gitconfig")"
 git -C "$GITHUB_WORKSPACE" status >/dev/null 2>&1 && die "the trust outlived the step that needed it"
 
 # The helper the other two actions share, on a directory BELOW the root.
-( . /mq/scripts/git-trust.sh
+( . "$ACTION_ROOT/scripts/git-trust.sh"
   trust_checkout "$GITHUB_WORKSPACE/src"
   git -C "$GITHUB_WORKSPACE/src" rev-parse HEAD >/dev/null ) \
   || die "trust_checkout did not find the repository root from a subdirectory"

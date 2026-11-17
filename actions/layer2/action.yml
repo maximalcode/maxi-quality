@@ -331,6 +331,15 @@ runs:
         WORKSPACE: ${{ github.workspace }}
       run: |
         set -Eeuo pipefail
+        # NO BYTECODE BESIDE THE ACTION'S OWN SCRIPTS. Python writes a
+        # `__pycache__` next to every module it imports, which here means inside
+        # the runner's `_actions` directory. Run as root in a job container,
+        # that directory is root's — and a self-hosted runner, which deletes
+        # `_actions` at the start of every job as an ordinary user, then fails
+        # the NEXT job in "Set up job" with "Access to the path ... is denied".
+        # Measured 2026-11-17 on a container-only self-hosted runner. A scan
+        # has no business leaving files in the action's directory anyway.
+        export PYTHONDONTWRITEBYTECODE=1
         # Root in a job container does not own the checkout, and git refuses to
         # read a repository it does not own — which stops Gitleaks and the
         # changed-only fetch below. scripts/git-trust.sh has the measurement
